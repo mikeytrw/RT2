@@ -116,6 +116,8 @@ bool NgxRuntime::CreateRRFeature(VkCommandBuffer command,
 	create.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_MaxQuality;
 	create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
 		NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+	m_Parameters->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality,
+		NVSDK_NGX_DLSS_Hint_Render_Preset_Default);
 	create.InEnableOutputSubrects = false;
 	create.InRoughnessMode = NVSDK_NGX_DLSS_Roughness_Mode_Packed;
 	create.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_Linear;
@@ -143,12 +145,22 @@ bool NgxRuntime::EvaluateRRFeature(VkCommandBuffer command,
 		&evaluation.noisyColor, &evaluation.diffuseAlbedo, &evaluation.specularAlbedo,
 		&evaluation.normalRoughness, &evaluation.depth, &evaluation.motion,
 		&evaluation.specularHitDistance, &evaluation.output };
-	for (const RRFeatureImage* image : images)
+	for (size_t i = 0; i < 8; ++i)
 	{
+		const RRFeatureImage* image = images[i];
 		if (!image->image || !image->view || image->format == VK_FORMAT_UNDEFINED ||
 			image->width == 0 || image->height == 0)
 		{
 			reason = "NGX feature evaluation received an invalid Vulkan resource";
+			if (resultCode) *resultCode = -1;
+			return false;
+		}
+		const VkImageLayout expected = i == 7 ? VK_IMAGE_LAYOUT_GENERAL :
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		if (image->layout != expected)
+		{
+			reason = i == 7 ? "NGX RR output must be GENERAL" :
+				"NGX RR inputs must be SHADER_READ_ONLY_OPTIMAL";
 			if (resultCode) *resultCode = -1;
 			return false;
 		}
@@ -209,14 +221,19 @@ bool NgxRuntime::EvaluateRRFeature(VkCommandBuffer command,
 	return true;
 }
 
-bool NgxRuntime::ReleaseRRFeature(std::string& reason)
+bool NgxRuntime::WaitForRRDeviceIdle(std::string& reason) const
 {
-	if (!m_RRFeature) return true;
 	if (m_Device == VK_NULL_HANDLE || vkDeviceWaitIdle(m_Device) != VK_SUCCESS)
 	{
 		reason = "device idle wait failed before NGX feature release";
 		return false;
 	}
+	return true;
+}
+
+bool NgxRuntime::ReleaseRRFeature(std::string& reason)
+{
+	if (!m_RRFeature) return true;
 	const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_ReleaseFeature(m_RRFeature);
 	if (NVSDK_NGX_FAILED(result))
 	{
@@ -571,7 +588,7 @@ bool NgxRuntime::Shutdown()
 	if (m_RRFeature)
 	{
 		std::string reason;
-		if (!ReleaseRRFeature(reason))
+		if (!WaitForRRDeviceIdle(reason) || !ReleaseRRFeature(reason))
 		{
 			m_Lifecycle.ExternalFailure(NgxSupportState::ShutdownFailure,
 				"cannot shut down NGX while RR feature is still owned: " + reason);

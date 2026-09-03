@@ -95,6 +95,10 @@ TEST_CASE("RR guides: payload and allocation ceiling arithmetic is explicit")
 	CHECK(payload <= RR_GUIDE_MAX_RT2_BYTES);
 	CHECK(RR_GUIDE_DEDICATED_COUNT <= RR_GUIDE_MAX_IMAGES);
 	CHECK(RR_GUIDE_DEDICATED_COUNT <= RR_GUIDE_MAX_ALLOCATIONS);
+	CHECK(ValidateRRGuideResourceBudget(6, 6, 224ull * 1024ull * 1024ull));
+	CHECK_FALSE(ValidateRRGuideResourceBudget(7, 6, 224ull * 1024ull * 1024ull));
+	CHECK_FALSE(ValidateRRGuideResourceBudget(6, 9, 224ull * 1024ull * 1024ull));
+	CHECK_FALSE(ValidateRRGuideResourceBudget(6, 6, 224ull * 1024ull * 1024ull + 1ull));
 }
 
 TEST_CASE("RR guides: render extent is the only source extent")
@@ -319,4 +323,37 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	CHECK(cli.find("--rr-guide-scenario") != std::string::npos);
 	CHECK(host.find("ComputeRRGuideFixtureIdentity") != std::string::npos);
 	CHECK(host.find("IsRRGuideControlledFixture") != std::string::npos);
+}
+
+TEST_CASE("W4 production seams: selected source, checked outcome, pinned preset and byte policy stay wired")
+{
+	const std::string renderer = ReadShader("RT2App/src/RendererGPU.cpp");
+	const std::string rendererHeader = ReadShader("RT2App/src/RendererGPU.h");
+	const std::string frameRenderer = ReadShader("RT2App/src/FrameRenderer.cpp");
+	const std::string ngx = ReadShader("RT2App/src/NgxRuntime.cpp");
+	const std::string host = ReadShader("RT2App/src/WalnutApp.cpp");
+	const std::string attributes = ReadShader(".gitattributes");
+	CHECK(rendererHeader.find("FullResolutionHdrSource") != std::string::npos);
+	CHECK(rendererHeader.find("RenderOutcome") != std::string::npos);
+	CHECK(renderer.find("m_HdrSource = {}") != std::string::npos);
+	CHECK(renderer.find("recorded.rrEvaluated ? m_RROutputImage : m_OutputImage") != std::string::npos);
+	CHECK(renderer.find("MarkEvaluationSubmitted(recorded.rrEvaluated)") != std::string::npos);
+	CHECK(host.find("lastRenderOutcome = m_RendererGPU.Render") != std::string::npos);
+	CHECK(host.find("render FAILED; no output committed") != std::string::npos);
+	CHECK(host.find("discardOutput") != std::string::npos);
+	CHECK(ngx.find("RayReconstruction_Hint_Render_Preset_Quality") != std::string::npos);
+	CHECK(ngx.find("NVSDK_NGX_DLSS_Hint_Render_Preset_Default") != std::string::npos);
+	CHECK(frameRenderer.find("VK_IMAGE_LAYOUT_GENERAL") != std::string::npos);
+	CHECK(frameRenderer.find("VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL") != std::string::npos);
+	CHECK(attributes.find("rr-guide-controlled.rt2scene text eol=lf") != std::string::npos);
+	CHECK(attributes.find("secondary_raygen.rgen text eol=lf") != std::string::npos);
+
+	const size_t pngBegin = renderer.find("bool RendererGPU::ReadbackOutput(");
+	const size_t hdrBegin = renderer.find("bool RendererGPU::ReadbackOutputLinear(");
+	const size_t gbufferBegin = renderer.find("// ---- NRD G-buffer images", hdrBegin);
+	REQUIRE(pngBegin != std::string::npos);
+	REQUIRE(hdrBegin != std::string::npos);
+	REQUIRE(gbufferBegin != std::string::npos);
+	CHECK(renderer.substr(pngBegin, hdrBegin - pngBegin).find("m_OutputImage") == std::string::npos);
+	CHECK(renderer.substr(hdrBegin, gbufferBegin - hdrBegin).find("m_OutputImage") == std::string::npos);
 }

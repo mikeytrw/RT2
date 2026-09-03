@@ -53,6 +53,7 @@ TEST_CASE("W4 RR lifecycle queries fixed Quality and creates one tuple")
 	CHECK(created.render == lifecycle.State().render);
 	CHECK(lifecycle.State().featureGeneration == 1);
 	CHECK(lifecycle.State().historyResetGeneration == 1);
+	CHECK(lifecycle.ResetPending());
 	REQUIRE(lifecycle.Reconcile(output, hooks));
 	CHECK(creates == 1);
 	CHECK(releases == 0);
@@ -61,6 +62,14 @@ TEST_CASE("W4 RR lifecycle queries fixed Quality and creates one tuple")
 	REQUIRE(lifecycle.BeginEvaluation().useRR);
 	CHECK(lifecycle.CompleteEvaluation(true, {}, 19, hooks).useRR);
 	CHECK(lifecycle.State().lastResult == 19);
+	CHECK(lifecycle.ResetPending());
+	lifecycle.MarkEvaluationSubmitted(true);
+	CHECK_FALSE(lifecycle.ResetPending());
+	REQUIRE(lifecycle.BeginEvaluation().useRR);
+	CHECK(lifecycle.CompleteEvaluation(true, {}, 20, hooks).useRR);
+	CHECK_FALSE(lifecycle.ResetPending());
+	lifecycle.MarkEvaluationSubmitted(false);
+	CHECK_FALSE(lifecycle.ResetPending());
 }
 
 TEST_CASE("W4 RR lifecycle evaluates atomically and latches one fallback")
@@ -91,6 +100,26 @@ TEST_CASE("W4 RR lifecycle evaluates atomically and latches one fallback")
 	CHECK(releaseCount == 0); // no retry or unsafe release on every frame
 	CHECK(lifecycle.Backend() == RRBackend::ActiveNativeNRD);
 	CHECK_FALSE(lifecycle.BeginEvaluation().useRR);
+}
+
+TEST_CASE("W4 RR reset is reasserted by resize and eligibility fallback")
+{
+	RRFeatureLifecycle lifecycle;
+	lifecycle.SetRequested(true);
+	const auto output = *OutputExtent::TryCreate(1280, 720);
+	RRFeatureHooks hooks;
+	hooks.queryOptimalSettings = [](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) {
+		out = QualitySettings(e.Width(), e.Height()); return true;
+	};
+	hooks.create = [](const RRQualityTuple&, std::string&) { return true; };
+	hooks.waitIdle = [](std::string&) { return true; };
+	hooks.release = [](std::string&) { return true; };
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	lifecycle.MarkEvaluationSubmitted(true);
+	CHECK_FALSE(lifecycle.ResetPending());
+	REQUIRE(lifecycle.SetIneligible(output, "unsupported camera projection", hooks));
+	CHECK(lifecycle.Backend() == RRBackend::NativeNRD);
+	CHECK(lifecycle.ResetPending());
 }
 
 TEST_CASE("W4 RR lifecycle releases at idle before one resize recreate")

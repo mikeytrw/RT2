@@ -77,6 +77,7 @@ struct RRFeatureState
 	bool featureOwned = false;
 	bool evaluationBegun = false;
 	bool rrOutputValid = false;
+	bool rrResetPending = false;
 	bool failureLatched = false;
 	uint64_t featureGeneration = 0;
 	uint64_t historyResetGeneration = 0;
@@ -112,6 +113,13 @@ public:
 	// feature exactly once for the current tuple.  Disabled/default mode never
 	// calls an NGX hook.
 	bool Reconcile(const OutputExtent& output, const RRFeatureHooks& hooks);
+	// Production uses the two phases explicitly: select and validate the one
+	// Quality tuple before allocating images, then activate it only after those
+	// images exist on a separately submitted graphics command buffer.
+	bool SelectTuple(const OutputExtent& output, const RRFeatureHooks& hooks);
+	bool Activate(const RRFeatureHooks& hooks);
+	bool SetIneligible(const OutputExtent& output, std::string reason,
+		const RRFeatureHooks& hooks);
 	// Called by the renderer immediately before application-owned images are
 	// destroyed.  It is the only legal way to forget a feature outside
 	// Reconcile, and enforces idle -> release ordering.
@@ -123,6 +131,12 @@ public:
 	RRFrameDecision BeginEvaluation();
 	RRFrameDecision CompleteEvaluation(bool success, std::string reason = {},
 		int32_t result = 0, const RRFeatureHooks& hooks = {});
+	bool ResetPending() const { return m_State.rrResetPending; }
+	void MarkEvaluationSubmitted(bool rrEvaluation)
+	{
+		if (rrEvaluation) m_State.rrResetPending = false;
+	}
+	const RRQualityTuple* SelectedTuple() const { return m_HasTuple ? &m_Tuple : nullptr; }
 
 	const RRFeatureState& State() const { return m_State; }
 	RRBackend Backend() const { return m_State.backend; }

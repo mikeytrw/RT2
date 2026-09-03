@@ -18,6 +18,7 @@ struct RRFeatureImage
 	VkImageView view = VK_NULL_HANDLE;
 	VkImage image = VK_NULL_HANDLE;
 	VkFormat format = VK_FORMAT_UNDEFINED;
+	VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
 	uint32_t width = 0;
 	uint32_t height = 0;
 };
@@ -73,6 +74,7 @@ public:
 		std::string& reason);
 	bool EvaluateRRFeature(VkCommandBuffer command, const RRFeatureEvaluation& evaluation,
 		std::string& reason, int32_t* resultCode = nullptr);
+	bool WaitForRRDeviceIdle(std::string& reason) const;
 	bool ReleaseRRFeature(std::string& reason);
 	bool HasRRFeature() const { return m_RRFeature != nullptr; }
 

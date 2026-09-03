@@ -13,31 +13,6 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordFrame(VkCommandBuffer c
 	RecordTopBarrier(cmd, ctx);
 	RecordASBarrier(cmd, ctx);
 	RecordUBOUpdates(cmd, ctx);
-	if (ctx.rrLifecycle && ctx.ngxRuntime)
-	{
-		RRFeatureHooks hooks;
-		hooks.queryOptimalSettings = [runtime = ctx.ngxRuntime](OutputExtent output,
-			RRQualityMode, RROptimalSettings& settings, std::string& reason) {
-			return runtime->QueryRROptimalSettings(output, settings, reason);
-		};
-		hooks.create = [runtime = ctx.ngxRuntime, cmd](const RRQualityTuple& tuple, std::string& reason) {
-			return runtime->CreateRRFeature(cmd, tuple, reason);
-		};
-		hooks.waitIdle = [runtime = ctx.ngxRuntime](std::string& reason) {
-			return runtime->ReleaseRRFeature(reason);
-		};
-		hooks.release = [](std::string&) { return true; };
-		hooks.resetHistory = [&ctx] { ctx.nrdNeedsReset = true; };
-		if (!ctx.rrLifecycle->Reconcile(ctx.outputExtent, hooks) &&
-			ctx.rrLifecycle->Backend() != RRBackend::ActiveNativeNRD)
-		{
-			outcome.recorded = false;
-			outcome.preserveDisplay = true;
-			outcome.failureReason = ctx.rrLifecycle->FallbackReason();
-			return outcome;
-		}
-	}
-
 	// Advance prev transform buffers to current after a scene edit so
 	// motion vectors go to zero on subsequent frames (NRD finding #3).
 	if (ctx.scene.NeedsTransformAdvance())
@@ -756,15 +731,47 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordRR(VkCommandBuffer cmd,
 	evaluation.motion = image(ctx.gbuffer.GetColor(GBufferTarget::MOTION));
 	evaluation.specularHitDistance = image(ctx.rrGuides.Get(RRGuideKind::SpecularHitDistance));
 	evaluation.output = image(*ctx.rrOutputImage);
+	// A0 contract: NGX reads all inputs in SHADER_READ_ONLY_OPTIMAL and writes
+	// only the dedicated output in GENERAL.  The explicit fields are captured
+	// alongside the handles so the runtime cannot silently accept a wrong layout.
+	RRFeatureImage* ngxInputs[] = { &evaluation.noisyColor, &evaluation.diffuseAlbedo,
+		&evaluation.specularAlbedo, &evaluation.normalRoughness, &evaluation.depth,
+		&evaluation.motion, &evaluation.specularHitDistance };
+	for (RRFeatureImage* input : ngxInputs)
+		input->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	evaluation.output.layout = VK_IMAGE_LAYOUT_GENERAL;
 	evaluation.jitterX = 0.0f;
 	evaluation.jitterY = 0.0f;
-	evaluation.reset = ctx.nrdNeedsReset ? 1 : 0;
+	evaluation.reset = ctx.rrLifecycle->ResetPending() ? 1 : 0;
 	evaluation.mvScaleX = 1.0f;
 	evaluation.mvScaleY = 1.0f;
 	glm::mat4 currentView = ctx.camera.GetView();
 	glm::mat4 currentProjection = ctx.camera.GetProjection();
 	evaluation.worldToView = glm::value_ptr(currentView);
 	evaluation.viewToClip = glm::value_ptr(currentProjection);
+	VkImageMemoryBarrier toNgx[7] = {};
+	const RRFeatureImage* inputImages[] = {
+		&evaluation.noisyColor, &evaluation.diffuseAlbedo, &evaluation.specularAlbedo,
+		&evaluation.normalRoughness, &evaluation.depth, &evaluation.motion,
+		&evaluation.specularHitDistance };
+	for (uint32_t i = 0; i < 7; ++i)
+	{
+		toNgx[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toNgx[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		toNgx[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		toNgx[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toNgx[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		toNgx[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toNgx[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toNgx[i].image = inputImages[i]->image;
+		toNgx[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		toNgx[i].subresourceRange.levelCount = 1;
+		toNgx[i].subresourceRange.layerCount = 1;
+	}
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+		0, nullptr, 0, nullptr, 7, toNgx);
 	std::string reason;
 	int32_t resultCode = 0;
 	const bool success = ctx.ngxRuntime->EvaluateRRFeature(cmd, evaluation, reason, &resultCode);
@@ -777,6 +784,26 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordRR(VkCommandBuffer cmd,
 		outcome.failureReason = completed.reason;
 		return outcome;
 	}
+	// A0's opaque NGX consumer requires every input in read-only layout. The
+	// producer stream returns them to GENERAL before later raster/RT frames.
+	VkImageMemoryBarrier inputBarriers[7] = {};
+	for (uint32_t i = 0; i < 7; ++i)
+	{
+		inputBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		inputBarriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		inputBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		inputBarriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		inputBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		inputBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		inputBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		inputBarriers[i].image = inputImages[i]->image;
+		inputBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		inputBarriers[i].subresourceRange.levelCount = 1;
+		inputBarriers[i].subresourceRange.layerCount = 1;
+	}
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		0, 0, nullptr, 0, nullptr, 7, inputBarriers);
 	VkImageMemoryBarrier outputBarrier{};
 	outputBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	outputBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;

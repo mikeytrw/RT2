@@ -39,6 +39,25 @@
 class RendererGPU
 {
 public:
+	struct FullResolutionHdrSource
+	{
+		VkImage image = VK_NULL_HANDLE;
+		VkImageView view = VK_NULL_HANDLE;
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		OutputExtent extent;
+		const char* name = "none";
+		bool valid = false;
+	};
+	struct RenderOutcome
+	{
+		bool submitted = false;
+		bool captureAllowed = false;
+		bool rrEvaluated = false;
+		bool failure = false;
+		std::string failureReason;
+		FullResolutionHdrSource hdrSource;
+	};
 	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 	RendererGPU() = default;
 	~RendererGPU() { Destroy(); }
@@ -52,7 +71,7 @@ public:
 	{
 		if (const auto extent = OutputExtent::TryCreate(width, height)) OnResize(*extent);
 	}
-	void Render(const Camera& camera);
+	RenderOutcome Render(const Camera& camera);
 	void SetRRGuideReportMode(bool enabled) { m_RRGuideReportMode = enabled; }
 	void SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR);
 	void ReleaseRRFeature();
@@ -100,6 +119,8 @@ public:
 	bool HasOutput() const { return m_OutputImage.IsValid() && m_DisplayImage.IsValid(); }
 	OutputExtent GetOutputExtent() const { return m_OutputExtent; }
 	RenderExtent GetRenderExtent() const { return m_RenderExtent; }
+	const FullResolutionHdrSource& GetHdrSource() const { return m_HdrSource; }
+	const RenderOutcome& GetLastRenderOutcome() const { return m_LastRenderOutcome; }
 
 	struct PickResult
 	{
@@ -185,6 +206,8 @@ private:
 	void DestroyRROutputImage();
 	void UpdateCameraUBO(const Camera& camera);
 	void UpdatePathTraceDescriptorSet();
+	bool ReadbackHdrSource(std::vector<float>& outPixelsRGBA32F,
+		uint32_t& outWidth, uint32_t& outHeight);
 
 	// G-buffer images + descriptor set
 	void CreateGBufferImages();
@@ -193,6 +216,9 @@ private:
 	void UpdateGBufferDescriptorSet();
 
 	void CreateFallbackTexture();
+	void UpdateRREligibility(const Camera& camera);
+	RRFeatureHooks MakeRRHooks();
+	bool PrepareRRFeature();
 
 	bool m_Initialized = false;
 
@@ -280,7 +306,11 @@ private:
 	NgxRuntime* m_NgxRuntime = nullptr; // non-owning; NgxRuntime owns SDK state
 	bool m_DevStaticRR = false;
 	bool m_ForceNativeRebuild = false;
+	bool m_RRModeEligible = false;
+	std::string m_RRModeReason = "RR developer mode is disabled";
 	RRFeatureLifecycle m_RR;
+	FullResolutionHdrSource m_HdrSource;
+	RenderOutcome m_LastRenderOutcome;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

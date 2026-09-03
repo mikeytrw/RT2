@@ -73,6 +73,7 @@ bool RRFeatureLifecycle::ValidateOptimal(const OutputExtent& output,
 void RRFeatureLifecycle::ResetHistory(const RRFeatureHooks& hooks)
 {
 	++m_State.historyResetGeneration;
+	m_State.rrResetPending = true;
 	if (hooks.resetHistory) hooks.resetHistory();
 }
 
@@ -113,7 +114,7 @@ void RRFeatureLifecycle::LatchFallback(std::string reason, int32_t result,
 	ResetHistory(hooks);
 }
 
-bool RRFeatureLifecycle::Reconcile(const OutputExtent& output, const RRFeatureHooks& hooks)
+bool RRFeatureLifecycle::SelectTuple(const OutputExtent& output, const RRFeatureHooks& hooks)
 {
 	m_State.output = output;
 	if (!m_State.requested)
@@ -138,7 +139,7 @@ bool RRFeatureLifecycle::Reconcile(const OutputExtent& output, const RRFeatureHo
 		m_State.backend = RRBackend::ActiveNativeNRD;
 		return false;
 	}
-	if (!hooks.queryOptimalSettings || !hooks.create)
+	if (!hooks.queryOptimalSettings)
 	{
 		LatchFallback("RR lifecycle hooks are unavailable", 0, hooks);
 		return false;
@@ -168,15 +169,31 @@ bool RRFeatureLifecycle::Reconcile(const OutputExtent& output, const RRFeatureHo
 		ResetHistory(hooks);
 	}
 	m_State.backend = RRBackend::RequestedRR;
-	if (!hooks.create(tuple, detail))
-	{
-		LatchFallback(Failure(RRFeatureOperation::Create, detail), 0, hooks);
-		return false;
-	}
 	m_Tuple = tuple;
 	m_HasTuple = true;
 	m_State.quality = tuple.quality;
 	m_State.render = tuple.render;
+	m_State.featureOwned = false;
+	m_State.rrOutputValid = false;
+	m_State.evaluationBegun = false;
+	return true;
+}
+
+bool RRFeatureLifecycle::Activate(const RRFeatureHooks& hooks)
+{
+	if (m_State.backend == RRBackend::ActiveRR && m_State.featureOwned)
+		return true;
+	if (m_State.backend != RRBackend::RequestedRR || !m_HasTuple || !hooks.create)
+	{
+		LatchFallback("RR activation has no selected tuple or create hook", 0, hooks);
+		return false;
+	}
+	std::string detail;
+	if (!hooks.create(m_Tuple, detail))
+	{
+		LatchFallback(Failure(RRFeatureOperation::Create, detail), 0, hooks);
+		return false;
+	}
 	m_State.featureOwned = true;
 	m_State.rrOutputValid = false;
 	m_State.evaluationBegun = false;
@@ -184,6 +201,37 @@ bool RRFeatureLifecycle::Reconcile(const OutputExtent& output, const RRFeatureHo
 	ResetHistory(hooks);
 	m_State.backend = RRBackend::ActiveRR;
 	return true;
+}
+
+bool RRFeatureLifecycle::SetIneligible(const OutputExtent& output, std::string reason,
+	const RRFeatureHooks& hooks)
+{
+	m_State.output = output;
+	if (m_State.featureOwned)
+	{
+		std::string detail;
+		if (!ReleaseFeature(hooks, detail))
+		{
+			LatchFallback(detail, 0, hooks);
+			return false;
+		}
+		ResetHistory(hooks);
+	}
+	m_HasTuple = false;
+	m_State.featureOwned = false;
+	m_State.rrOutputValid = false;
+	m_State.evaluationBegun = false;
+	m_State.backend = RRBackend::NativeNRD;
+	m_State.fallbackReason = std::move(reason);
+	ResetHistory(hooks);
+	return true;
+}
+
+bool RRFeatureLifecycle::Reconcile(const OutputExtent& output, const RRFeatureHooks& hooks)
+{
+	if (!SelectTuple(output, hooks)) return false;
+	if (!m_State.requested) return true;
+	return Activate(hooks);
 }
 
 bool RRFeatureLifecycle::InvalidateResources(const RRFeatureHooks& hooks)

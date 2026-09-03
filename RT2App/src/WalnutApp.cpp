@@ -3273,6 +3273,16 @@ private:
 		};
 
 		std::vector<GpuTimestampProfiler::Timings> benchmarkTimings;
+		RendererGPU::RenderOutcome lastRenderOutcome;
+		bool renderFailure = false;
+		auto discardOutput = [&](const std::string& path) {
+			if (path.empty()) return;
+			std::error_code removeError;
+			if (std::filesystem::remove(path, removeError))
+				RT_LOG("[Headless] discarded stale output: %s", path.c_str());
+			else if (removeError)
+				RT_LOG("[Headless] unable to discard output %s: %s", path.c_str(), removeError.message().c_str());
+		};
 		glm::mat4 expectedCurrentViewToClip(1.0f), expectedCurrentWorldToView(1.0f);
 		glm::mat4 expectedPreviousViewToClip(1.0f), expectedPreviousWorldToView(1.0f);
 		bool haveExpectedCameraSample = false;
@@ -3339,14 +3349,25 @@ private:
 			haveExpectedCameraSample = true;
 			Timer timer;
 			if (m_RendererGPU.IsAvailable())
-				m_RendererGPU.Render(m_Cam);
+			{
+				lastRenderOutcome = m_RendererGPU.Render(m_Cam);
+				if (lastRenderOutcome.failure || !lastRenderOutcome.submitted ||
+					!lastRenderOutcome.captureAllowed)
+				{
+					renderFailure = true;
+					RT_LOG("[Headless] frame %d discarded: %s", i + 1,
+						lastRenderOutcome.failureReason.empty() ? "no capture source" :
+						lastRenderOutcome.failureReason.c_str());
+				}
+			}
 			collectBenchmarkTiming();
 			float ms = timer.ElapsedMillis();
 			if (g_CLI.verbose || i == g_CLI.frames - 1)
 				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
 			fflush(stdout);
 
-			if (g_CLI.captureEvery > 0 && m_RendererGPU.IsAvailable())
+			if (g_CLI.captureEvery > 0 && m_RendererGPU.IsAvailable() &&
+				lastRenderOutcome.submitted && lastRenderOutcome.captureAllowed)
 			{
 				bool stillFrame = g_CLI.cameraSweepWarmup > 0 && i == g_CLI.cameraSweepWarmup - 1;
 				bool periodicFrame = i >= g_CLI.cameraSweepWarmup &&
@@ -3407,10 +3428,16 @@ private:
 			fflush(stdout);
 		}
 
-		if (!g_CLI.outputPath.empty() && m_RendererGPU.IsAvailable())
+		if (!g_CLI.outputPath.empty() && m_RendererGPU.IsAvailable() &&
+			lastRenderOutcome.submitted && lastRenderOutcome.captureAllowed && !renderFailure)
 			saveOutput(g_CLI.outputPath);
-		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable())
+		else if (renderFailure)
+			discardOutput(g_CLI.outputPath);
+		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable() &&
+			lastRenderOutcome.submitted && lastRenderOutcome.captureAllowed && !renderFailure)
 			saveHDROutput(g_CLI.outputHDRPath);
+		else if (renderFailure)
+			discardOutput(g_CLI.outputHDRPath);
 		if (!g_CLI.rrGuidePair.empty() && g_CLI.rrGuideReport.empty())
 		{
 			std::vector<float> pairPixels;
@@ -3511,6 +3538,13 @@ private:
 		}
 		rrGuideReportFailure = rrGuideReportFailure || rrGuidePairFailure;
 
+		if (renderFailure)
+		{
+			printf("[Headless] render FAILED; no output committed\n");
+			fflush(stdout);
+			Walnut::Application::Get().Close();
+			std::exit(EXIT_FAILURE);
+		}
 		if (rrGuideReportFailure)
 		{
 			// A requested report is a checked artifact, not best-effort logging.
