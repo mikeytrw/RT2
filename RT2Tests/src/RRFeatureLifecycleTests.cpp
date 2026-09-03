@@ -108,18 +108,22 @@ TEST_CASE("W4 RR reset is reasserted by resize and eligibility fallback")
 	lifecycle.SetRequested(true);
 	const auto output = *OutputExtent::TryCreate(1280, 720);
 	RRFeatureHooks hooks;
+	int resets = 0;
 	hooks.queryOptimalSettings = [](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) {
 		out = QualitySettings(e.Width(), e.Height()); return true;
 	};
 	hooks.create = [](const RRQualityTuple&, std::string&) { return true; };
 	hooks.waitIdle = [](std::string&) { return true; };
 	hooks.release = [](std::string&) { return true; };
+	hooks.resetHistory = [&] { ++resets; };
 	REQUIRE(lifecycle.Reconcile(output, hooks));
 	lifecycle.MarkEvaluationSubmitted(true);
 	CHECK_FALSE(lifecycle.ResetPending());
 	REQUIRE(lifecycle.SetIneligible(output, "unsupported camera projection", hooks));
 	CHECK(lifecycle.Backend() == RRBackend::NativeNRD);
 	CHECK(lifecycle.ResetPending());
+	CHECK(resets == 2);
+	CHECK(lifecycle.State().historyResetGeneration == 2);
 }
 
 TEST_CASE("W4 RR lifecycle releases at idle before one resize recreate")
