@@ -137,6 +137,10 @@ RRFeatureHooks RendererGPU::MakeRRHooks()
 {
 	RRFeatureHooks hooks;
 	if (!m_NgxRuntime) return hooks;
+	hooks.queryOptimalSettings = [runtime = m_NgxRuntime](OutputExtent output,
+		RRQualityMode, RROptimalSettings& settings, std::string& reason) {
+		return runtime->QueryRROptimalSettings(output, settings, reason);
+	};
 	hooks.waitIdle = [runtime = m_NgxRuntime](std::string& reason) {
 		return runtime->WaitForRRDeviceIdle(reason);
 	};
