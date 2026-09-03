@@ -45,8 +45,8 @@ RREligibilityDecision ClassifyRREligibility(bool developerSwitch, bool ngxSuppor
 {
 	if (!developerSwitch) return {RREligibility::DeveloperDisabled};
 	if (!ngxSupported) return {RREligibility::NgxUnavailable};
-	if (!rasterFirst) return {RREligibility::RequiresRasterFirst};
 	if (gbufferDebug) return {RREligibility::NativeDiagnosticBypass};
+	if (!rasterFirst) return {RREligibility::RequiresRasterFirst};
 	if (aperture > 0.0f) return {RREligibility::DepthOfField};
 	if (!projectionValid) return {RREligibility::UnsupportedCamera};
 	return {RREligibility::Eligible};

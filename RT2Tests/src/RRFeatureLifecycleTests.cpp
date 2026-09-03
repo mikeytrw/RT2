@@ -160,6 +160,7 @@ TEST_CASE("W4 production eligibility policy is normalized and stable")
 	const auto debug = ClassifyRREligibility(true, true, true, true, 0.0f, true);
 	CHECK(debug.kind == RREligibility::NativeDiagnosticBypass);
 	CHECK(debug.IsDiagnosticBypass());
+	CHECK(ClassifyRREligibility(true, true, false, true, 0.0f, true).IsDiagnosticBypass());
 	const auto pure = ClassifyRREligibility(true, true, false, false, 0.0f, true);
 	CHECK(pure.kind == RREligibility::RequiresRasterFirst);
 	CHECK_FALSE(pure.IsDiagnosticBypass());
