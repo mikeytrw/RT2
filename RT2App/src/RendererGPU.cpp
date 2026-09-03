@@ -179,6 +179,16 @@ bool RendererGPU::PrepareRRFeature()
 	if (!m_RRModeEligible || !m_NgxRuntime ||
 		m_RR.Backend() != RRBackend::RequestedRR)
 		return true;
+	if (!m_RR.SelectedTuple() || !m_RROutputImage.IsValid() || !m_RRGuides.IsValid())
+	{
+		m_RRModeEligible = false;
+		m_RRModeReason = "RR resources are unavailable after Quality selection";
+		RRFeatureHooks hooks = MakeRRHooks();
+		m_RR.SetIneligible(m_OutputExtent, m_RRModeReason, hooks);
+		m_ForceNativeRebuild = true;
+		RT_LOG("[RR] eligibility=native-nrd reason=%s", m_RRModeReason.c_str());
+		return true;
+	}
 	RRFeatureHooks hooks = MakeRRHooks();
 	hooks.create = [this](const RRQualityTuple& tuple, std::string& reason) {
 		bool created = false;
@@ -1258,8 +1268,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	// W4's static RR path owns temporal history while it is requested.  Keep
 	// spatial reuse available, but suppress DI/GI temporal reuse until the
 	// native fallback latch is reached.
-	const bool rrTemporalReuseDisabled = m_DevStaticRR && m_RR.IsRequested() &&
-		!m_RR.State().failureLatched;
+	const bool rrTemporalReuseDisabled = m_RR.Backend() == RRBackend::ActiveRR;
 	restirPC.freshCandidateCount = m_Settings.restirFreshCandidates;
 	restirPC.temporalMCap = m_Settings.restirTemporalMCap;
 	restirPC.spatialMCap = m_Settings.restirSpatialMCap;

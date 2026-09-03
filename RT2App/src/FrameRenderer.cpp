@@ -32,6 +32,15 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordFrame(VkCommandBuffer c
 	RT_LOG("[Frame] ReSTIR GI done");
 	RecordPathTraceOrDebug(cmd, ctx);
 	RT_LOG("[Frame] pathtrace/debug done");
+	if (ctx.rrLifecycle && ctx.rrLifecycle->Backend() == RRBackend::ActiveRR &&
+		(!ctx.rrOutputImage || !ctx.rrOutputImage->IsValid() ||
+			!ctx.rrGuides.IsValid()))
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = true;
+		outcome.failureReason = "active RR resources are unavailable";
+		return outcome;
+	}
 	outcome = RecordRR(cmd, ctx);
 	if (!outcome.recorded)
 		return outcome;
