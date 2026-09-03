@@ -173,6 +173,7 @@ bool RRFeatureLifecycle::SelectTuple(const OutputExtent& output, const RRFeature
 	m_HasTuple = true;
 	m_State.quality = tuple.quality;
 	m_State.render = tuple.render;
+	m_State.fallbackReason.clear();
 	m_State.featureOwned = false;
 	m_State.rrOutputValid = false;
 	m_State.evaluationBegun = false;
