@@ -3275,6 +3275,7 @@ private:
 		std::vector<GpuTimestampProfiler::Timings> benchmarkTimings;
 		RendererGPU::RenderOutcome lastRenderOutcome;
 		bool renderFailure = false;
+		bool outputPersistenceFailure = false;
 		auto discardOutput = [&](const std::string& path) {
 			if (path.empty()) return;
 			std::error_code removeError;
@@ -3376,14 +3377,18 @@ private:
 				                       i - g_CLI.cameraSweepWarmup >= g_CLI.cameraSweepCycles * g_CLI.cameraSweepPeriod;
 				if (stillFrame)
 				{
-					if (!g_CLI.outputPath.empty()) saveOutput(sequencePath(g_CLI.outputPath, "still", -1));
-					if (!g_CLI.outputHDRPath.empty()) saveHDROutput(sequencePath(g_CLI.outputHDRPath, "still", -1));
+					if (!g_CLI.outputPath.empty()) outputPersistenceFailure =
+						!saveOutput(sequencePath(g_CLI.outputPath, "still", -1)) || outputPersistenceFailure;
+					if (!g_CLI.outputHDRPath.empty()) outputPersistenceFailure =
+						!saveHDROutput(sequencePath(g_CLI.outputHDRPath, "still", -1)) || outputPersistenceFailure;
 				}
 				else if (periodicFrame)
 				{
 					const char* tag = holdFrame ? "hold" : "move";
-					if (!g_CLI.outputPath.empty()) saveOutput(sequencePath(g_CLI.outputPath, tag, i + 1));
-					if (!g_CLI.outputHDRPath.empty()) saveHDROutput(sequencePath(g_CLI.outputHDRPath, tag, i + 1));
+					if (!g_CLI.outputPath.empty()) outputPersistenceFailure =
+						!saveOutput(sequencePath(g_CLI.outputPath, tag, i + 1)) || outputPersistenceFailure;
+					if (!g_CLI.outputHDRPath.empty()) outputPersistenceFailure =
+						!saveHDROutput(sequencePath(g_CLI.outputHDRPath, tag, i + 1)) || outputPersistenceFailure;
 				}
 			}
 		}
@@ -3430,12 +3435,12 @@ private:
 
 		if (!g_CLI.outputPath.empty() && m_RendererGPU.IsAvailable() &&
 			lastRenderOutcome.submitted && lastRenderOutcome.captureAllowed && !renderFailure)
-			saveOutput(g_CLI.outputPath);
+			outputPersistenceFailure = !saveOutput(g_CLI.outputPath) || outputPersistenceFailure;
 		else if (renderFailure)
 			discardOutput(g_CLI.outputPath);
 		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable() &&
 			lastRenderOutcome.submitted && lastRenderOutcome.captureAllowed && !renderFailure)
-			saveHDROutput(g_CLI.outputHDRPath);
+			outputPersistenceFailure = !saveHDROutput(g_CLI.outputHDRPath) || outputPersistenceFailure;
 		else if (renderFailure)
 			discardOutput(g_CLI.outputHDRPath);
 		if (!g_CLI.rrGuidePair.empty() && g_CLI.rrGuideReport.empty())
@@ -3551,6 +3556,13 @@ private:
 			// Do not print the success marker when any semantic or durable-write
 			// check failed; automation must receive a nonzero status.
 			printf("[Headless] RR guide report FAILED\n");
+			fflush(stdout);
+			Walnut::Application::Get().Close();
+			std::exit(EXIT_FAILURE);
+		}
+		if (outputPersistenceFailure)
+		{
+			printf("[Headless] output persistence FAILED; no done marker\n");
 			fflush(stdout);
 			Walnut::Application::Get().Close();
 			std::exit(EXIT_FAILURE);

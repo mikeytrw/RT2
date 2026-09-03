@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "RRGuideContract.h"
+#include "RRFeatureLifecycle.h"
 #include "RenderExtents.h"
 #include <fstream>
 #include <iterator>
@@ -325,35 +326,40 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	CHECK(host.find("IsRRGuideControlledFixture") != std::string::npos);
 }
 
-TEST_CASE("W4 production seams: selected source, checked outcome, pinned preset and byte policy stay wired")
+TEST_CASE("W4 production RR authority executes normalized policy and lifecycle contracts")
 {
-	const std::string renderer = ReadShader("RT2App/src/RendererGPU.cpp");
-	const std::string rendererHeader = ReadShader("RT2App/src/RendererGPU.h");
-	const std::string frameRenderer = ReadShader("RT2App/src/FrameRenderer.cpp");
-	const std::string ngx = ReadShader("RT2App/src/NgxRuntime.cpp");
-	const std::string host = ReadShader("RT2App/src/WalnutApp.cpp");
-	const std::string attributes = ReadShader(".gitattributes");
-	CHECK(rendererHeader.find("FullResolutionHdrSource") != std::string::npos);
-	CHECK(rendererHeader.find("RenderOutcome") != std::string::npos);
-	CHECK(renderer.find("m_HdrSource = {}") != std::string::npos);
-	CHECK(renderer.find("recorded.rrEvaluated ? m_RROutputImage : m_OutputImage") != std::string::npos);
-	CHECK(renderer.find("MarkEvaluationSubmitted(recorded.rrEvaluated)") != std::string::npos);
-	CHECK(host.find("lastRenderOutcome = m_RendererGPU.Render") != std::string::npos);
-	CHECK(host.find("render FAILED; no output committed") != std::string::npos);
-	CHECK(host.find("discardOutput") != std::string::npos);
-	CHECK(ngx.find("RayReconstruction_Hint_Render_Preset_Quality") != std::string::npos);
-	CHECK(ngx.find("NVSDK_NGX_DLSS_Hint_Render_Preset_Default") != std::string::npos);
-	CHECK(frameRenderer.find("VK_IMAGE_LAYOUT_GENERAL") != std::string::npos);
-	CHECK(frameRenderer.find("VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL") != std::string::npos);
-	CHECK(attributes.find("rr-guide-controlled.rt2scene text eol=lf") != std::string::npos);
-	CHECK(attributes.find("secondary_raygen.rgen text eol=lf") != std::string::npos);
+	const auto eligible = ClassifyRREligibility(true, true, true, false, 0.0f, true);
+	CHECK(eligible.IsEligible());
+	CHECK(std::string(eligible.Reason()) == "eligible");
+	const auto diagnostic = ClassifyRREligibility(true, true, true, true, 0.0f, true);
+	CHECK(diagnostic.IsDiagnosticBypass());
+	CHECK(std::string(diagnostic.Reason()).find("G-buffer debug") != std::string::npos);
+	const auto fallback = ClassifyRREligibility(true, true, false, false, 0.0f, true);
+	CHECK(fallback.kind == RREligibility::RequiresRasterFirst);
 
-	const size_t pngBegin = renderer.find("bool RendererGPU::ReadbackOutput(");
-	const size_t hdrBegin = renderer.find("bool RendererGPU::ReadbackOutputLinear(");
-	const size_t gbufferBegin = renderer.find("// ---- NRD G-buffer images", hdrBegin);
-	REQUIRE(pngBegin != std::string::npos);
-	REQUIRE(hdrBegin != std::string::npos);
-	REQUIRE(gbufferBegin != std::string::npos);
-	CHECK(renderer.substr(pngBegin, hdrBegin - pngBegin).find("m_OutputImage") == std::string::npos);
-	CHECK(renderer.substr(hdrBegin, gbufferBegin - hdrBegin).find("m_OutputImage") == std::string::npos);
+	RRFeatureLifecycle lifecycle;
+	lifecycle.SetRequested(true);
+	const auto output = *OutputExtent::TryCreate(1280, 720);
+	int queryCount = 0, createCount = 0, resetCount = 0;
+	RRFeatureHooks hooks;
+	hooks.queryOptimalSettings = [&](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) {
+		++queryCount; out.render = *RenderExtent::TryCreate(e.Width() * 2 / 3, e.Height() * 2 / 3);
+		out.minimum = *RenderExtent::TryCreate(e.Width() / 2, e.Height() / 2);
+		out.maximum = *RenderExtent::TryCreate(e.Width(), e.Height()); return true;
+	};
+	hooks.create = [&](const RRQualityTuple& tuple, std::string&) {
+		++createCount; CHECK(tuple.output == output); CHECK(tuple.render.IsValid()); return true;
+	};
+	hooks.waitIdle = [](std::string&) { return true; };
+	hooks.release = [](std::string&) { return true; };
+	hooks.resetHistory = [&] { ++resetCount; };
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	CHECK(queryCount == 1);
+	CHECK(createCount == 1);
+	CHECK(resetCount == 1);
+	REQUIRE(lifecycle.BeginEvaluation().useRR);
+	REQUIRE(lifecycle.CompleteEvaluation(true, {}, 0, hooks).useRR);
+	lifecycle.MarkEvaluationSubmitted(true);
+	CHECK_FALSE(lifecycle.ResetPending());
 }
