@@ -702,7 +702,7 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 	}
 
     const bool rrActive = ctx.rrLifecycle && ctx.rrLifecycle->Backend() == RRBackend::ActiveRR;
-	if (!rrActive && ctx.nrdEnabled && ctx.nrd.IsAvailable() && useRasterFirst)
+	if (!rrActive && ctx.gbufferDebugMode < 0 && ctx.nrdEnabled && ctx.nrd.IsAvailable())
 		RecordNRDAndCompose(cmd, ctx);
 }
 

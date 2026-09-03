@@ -57,7 +57,7 @@ TEST_CASE("W4 RR lifecycle queries fixed Quality and creates one tuple")
 	REQUIRE(lifecycle.Reconcile(output, hooks));
 	CHECK(creates == 1);
 	CHECK(releases == 0);
-	CHECK(queries == 2); // every reconcile verifies the pinned tuple
+	CHECK(queries == 1); // the selected Quality tuple is the sole lifecycle authority
 	CHECK(resets == 1);
 	REQUIRE(lifecycle.BeginEvaluation().useRR);
 	CHECK(lifecycle.CompleteEvaluation(true, {}, 19, hooks).useRR);
@@ -144,7 +144,64 @@ TEST_CASE("W4 RR lifecycle releases at idle before one resize recreate")
 	CHECK(order[1] == "idle");
 	CHECK(order[2] == "release");
 	CHECK(lifecycle.State().featureGeneration == 2);
-	CHECK(lifecycle.State().historyResetGeneration == 3);
+	CHECK(lifecycle.State().historyResetGeneration == 2);
+}
+
+TEST_CASE("W4 production eligibility policy is normalized and stable")
+{
+	const auto eligible = ClassifyRREligibility(true, true, true, false, 0.0f, true);
+	CHECK(eligible.kind == RREligibility::Eligible);
+	CHECK(eligible.IsEligible());
+	CHECK(std::string(eligible.Reason()) == "eligible");
+	const auto debug = ClassifyRREligibility(true, true, true, true, 0.0f, true);
+	CHECK(debug.kind == RREligibility::NativeDiagnosticBypass);
+	CHECK(debug.IsDiagnosticBypass());
+	const auto pure = ClassifyRREligibility(true, true, false, false, 0.0f, true);
+	CHECK(pure.kind == RREligibility::RequiresRasterFirst);
+	CHECK_FALSE(pure.IsDiagnosticBypass());
+	const auto dof = ClassifyRREligibility(true, true, true, false, 1.0f, true);
+	CHECK(dof.kind == RREligibility::DepthOfField);
+	const auto camera = ClassifyRREligibility(true, true, true, false, 0.0f, false);
+	CHECK(camera.kind == RREligibility::UnsupportedCamera);
+}
+
+TEST_CASE("W4 production lifecycle keeps one generation and settles fallback truthfully")
+{
+	RRFeatureLifecycle lifecycle;
+	lifecycle.SetRequested(true);
+	const auto output = *OutputExtent::TryCreate(1920, 1080);
+	int queries = 0, creates = 0, evaluates = 0, resets = 0;
+	RRFeatureHooks hooks;
+	hooks.queryOptimalSettings = [&](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) {
+		++queries; out = QualitySettings(e.Width(), e.Height()); return true;
+	};
+	hooks.create = [&](const RRQualityTuple&, std::string&) { ++creates; return true; };
+	hooks.evaluate = [&](std::string&) { ++evaluates; return true; };
+	hooks.waitIdle = [](std::string&) { return true; };
+	hooks.release = [](std::string&) { return true; };
+	hooks.resetHistory = [&] { ++resets; };
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	CHECK(lifecycle.State().featureGeneration == 1);
+	CHECK(resets == 1);
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	CHECK(queries == 1);
+	CHECK(creates == 1);
+	CHECK(lifecycle.State().featureGeneration == 1);
+	REQUIRE(lifecycle.BeginEvaluation().useRR);
+	REQUIRE(lifecycle.CompleteEvaluation(true, {}, 0, hooks).useRR);
+	lifecycle.MarkEvaluationSubmitted(true);
+	CHECK_FALSE(lifecycle.ResetPending());
+	REQUIRE(lifecycle.BeginEvaluation().useRR);
+	REQUIRE(lifecycle.CompleteEvaluation(false, "injected", 9, hooks).fallbackLatched);
+	CHECK(lifecycle.Backend() == RRBackend::FallbackPending);
+	CHECK(lifecycle.State().failureLatched);
+	const std::string reason = lifecycle.FallbackReason();
+	CHECK_FALSE(lifecycle.Reconcile(output, hooks));
+	CHECK(lifecycle.Backend() == RRBackend::ActiveNativeNRD);
+	CHECK(lifecycle.State().failureLatched);
+	CHECK(lifecycle.FallbackReason() == reason);
+	CHECK(creates == 1);
+	CHECK(evaluates == 0);
 }
 
 TEST_CASE("W4 RR lifecycle rejects malformed optimal dimensions loudly")

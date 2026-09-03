@@ -307,6 +307,8 @@ private:
 	bool m_DevStaticRR = false;
 	bool m_ForceNativeRebuild = false;
 	bool m_RRModeEligible = false;
+	RREligibility m_RRModeEligibility = RREligibility::DeveloperDisabled;
+	bool m_RRDiagnosticBypass = false;
 	std::string m_RRModeReason = "RR developer mode is disabled";
 	RRFeatureLifecycle m_RR;
 	FullResolutionHdrSource m_HdrSource;

@@ -28,6 +28,7 @@ const char* RRBackendName(RRBackend backend)
 	case RRBackend::ActiveRR: return "active-rr";
 	case RRBackend::FallbackPending: return "fallback-pending";
 	case RRBackend::ActiveNativeNRD: return "active-native-nrd";
+	case RRBackend::NativeDiagnosticBypass: return "native-diagnostic-bypass";
 	}
 	return "unknown";
 }
@@ -129,6 +130,8 @@ void RendererGPU::SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR)
 		m_RR.SetRequested(false);
 	}
 	m_RRModeEligible = false;
+	m_RRModeEligibility = devStaticRR ? RREligibility::NgxUnavailable : RREligibility::DeveloperDisabled;
+	m_RRDiagnosticBypass = false;
 	m_RRModeReason = devStaticRR ? "RR eligibility has not been evaluated" :
 		"RR developer mode is disabled";
 }
@@ -153,27 +156,25 @@ RRFeatureHooks RendererGPU::MakeRRHooks()
 
 void RendererGPU::UpdateRREligibility(const Camera& camera)
 {
-	bool eligible = m_DevStaticRR && m_NgxRuntime &&
-		m_NgxRuntime->Snapshot().IsSupported();
-	std::string reason;
-	if (!m_DevStaticRR) reason = "RR developer mode is disabled";
-	else if (!m_NgxRuntime || !m_NgxRuntime->Snapshot().IsSupported())
-		reason = "NGX Ray Reconstruction is unavailable";
-	else if (!m_Settings.rasterFirst)
-		reason = "RR requires raster-first mode";
-	else if (m_Settings.gbufferDebugMode >= 0)
-		reason = "RR is unsupported for G-buffer debug mode";
-	else if (camera.m_Aperture > 0.0f)
-		reason = "RR is unsupported with depth of field/aperture";
-	else if (!std::isfinite(camera.GetVerticalFOV()) || camera.GetVerticalFOV() <= 0.0f)
-		reason = "RR is unsupported for the current camera projection";
-	if (!reason.empty()) eligible = false;
-	if (eligible != m_RRModeEligible || reason != m_RRModeReason)
+	const bool ngxSupported = m_NgxRuntime && m_NgxRuntime->Snapshot().IsSupported();
+	const bool projectionValid = std::isfinite(camera.GetVerticalFOV()) && camera.GetVerticalFOV() > 0.0f;
+	const RREligibilityDecision decision = ClassifyRREligibility(m_DevStaticRR, ngxSupported,
+		m_Settings.rasterFirst, m_Settings.gbufferDebugMode >= 0, camera.m_Aperture, projectionValid);
+	const bool eligible = decision.IsEligible();
+	const bool diagnosticBypass = decision.IsDiagnosticBypass();
+	const std::string reason = decision.Reason();
+	// Compare the normalized typed policy, never a raw empty-vs-literal reason
+	// sentinel. Stable eligibility therefore cannot force a rebuild each frame.
+	if (decision.kind != m_RRModeEligibility || eligible != m_RRModeEligible ||
+		diagnosticBypass != m_RRDiagnosticBypass)
 	{
 		m_RRModeEligible = eligible;
-		m_RRModeReason = reason.empty() ? "eligible" : reason;
+		m_RRModeEligibility = decision.kind;
+		m_RRDiagnosticBypass = diagnosticBypass;
+		m_RRModeReason = reason;
 		m_ForceNativeRebuild = true;
-		RT_LOG("[RR] eligibility=%s reason=%s", eligible ? "eligible" : "native-nrd",
+		RT_LOG("[RR] eligibility=%s reason=%s", eligible ? "eligible" :
+			diagnosticBypass ? "native-diagnostic-bypass" : "native-nrd",
 			m_RRModeReason.c_str());
 	}
 }
@@ -188,7 +189,7 @@ bool RendererGPU::PrepareRRFeature()
 		m_RRModeEligible = false;
 		m_RRModeReason = "RR resources are unavailable after Quality selection";
 		RRFeatureHooks hooks = MakeRRHooks();
-		m_RR.SetIneligible(m_OutputExtent, m_RRModeReason, hooks);
+		m_RR.SetIneligible(m_OutputExtent, m_RRModeReason, hooks, RRIneligibleMode::ActiveNativeNRD);
 		m_ForceNativeRebuild = true;
 		RT_LOG("[RR] eligibility=native-nrd reason=%s", m_RRModeReason.c_str());
 		return true;
@@ -494,7 +495,15 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 
 	m_OutputExtent = outputExtent;
 	m_RenderExtent = outputExtent.ToRenderNative();
-	if (m_RRModeEligible && m_NgxRuntime && !m_RR.State().failureLatched)
+	if (m_RR.State().failureLatched)
+	{
+		// The failed feature has already latched its exact reason. This rebuild is
+		// the sole safe edge that makes native NRD authoritative; never retry NGX.
+		m_RR.SetFallbackRecovered();
+		RT_LOG("[RR] fallback recovered backend=%s reason=%s", RRBackendName(m_RR.Backend()),
+			m_RR.FallbackReason().c_str());
+	}
+	else if (m_RRModeEligible && m_NgxRuntime)
 	{
 		RRFeatureHooks hooks = MakeRRHooks();
 		if (m_RR.SelectTuple(outputExtent, hooks))
@@ -508,10 +517,12 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 				m_RR.FallbackReason().c_str());
 		}
 	}
-	else if (m_DevStaticRR && !m_RR.State().failureLatched)
+	else if (m_DevStaticRR)
 	{
 		RRFeatureHooks hooks = MakeRRHooks();
-		if (!m_RR.SetIneligible(outputExtent, m_RRModeReason, hooks))
+		const RRIneligibleMode mode = m_RRDiagnosticBypass ? RRIneligibleMode::NativeDiagnosticBypass :
+			RRIneligibleMode::ActiveNativeNRD;
+		if (!m_RR.SetIneligible(outputExtent, m_RRModeReason, hooks, mode))
 			RT_LOG("[RR] eligibility fallback release failed: %s", m_RR.FallbackReason().c_str());
 	}
 

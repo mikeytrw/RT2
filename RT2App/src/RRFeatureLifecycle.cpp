@@ -25,6 +25,33 @@ std::string Failure(RRFeatureOperation operation, const std::string& detail)
 }
 }
 
+const char* RREligibilityDecision::Reason() const
+{
+	switch (kind)
+	{
+	case RREligibility::Eligible: return "eligible";
+	case RREligibility::DeveloperDisabled: return "RR developer mode is disabled";
+	case RREligibility::NgxUnavailable: return "NGX Ray Reconstruction is unavailable";
+	case RREligibility::RequiresRasterFirst: return "RR requires raster-first mode";
+	case RREligibility::NativeDiagnosticBypass: return "RR is unsupported for G-buffer debug mode";
+	case RREligibility::DepthOfField: return "RR is unsupported with depth of field/aperture";
+	case RREligibility::UnsupportedCamera: return "RR is unsupported for the current camera projection";
+	}
+	return "RR eligibility is unknown";
+}
+
+RREligibilityDecision ClassifyRREligibility(bool developerSwitch, bool ngxSupported,
+	bool rasterFirst, bool gbufferDebug, float aperture, bool projectionValid)
+{
+	if (!developerSwitch) return {RREligibility::DeveloperDisabled};
+	if (!ngxSupported) return {RREligibility::NgxUnavailable};
+	if (!rasterFirst) return {RREligibility::RequiresRasterFirst};
+	if (gbufferDebug) return {RREligibility::NativeDiagnosticBypass};
+	if (aperture > 0.0f) return {RREligibility::DepthOfField};
+	if (!projectionValid) return {RREligibility::UnsupportedCamera};
+	return {RREligibility::Eligible};
+}
+
 void RRFeatureLifecycle::ClearFailureLatch()
 {
 	m_State.failureLatched = false;
@@ -99,6 +126,8 @@ bool RRFeatureLifecycle::ReleaseFeature(const RRFeatureHooks& hooks, std::string
 	m_State.featureOwned = false;
 	m_State.rrOutputValid = false;
 	m_State.evaluationBegun = false;
+	if (m_State.failureLatched)
+		m_State.backend = RRBackend::FallbackPending;
 	return true;
 }
 
@@ -139,6 +168,9 @@ bool RRFeatureLifecycle::SelectTuple(const OutputExtent& output, const RRFeature
 		m_State.backend = RRBackend::ActiveNativeNRD;
 		return false;
 	}
+	if (m_HasTuple && m_Tuple.output == output &&
+		(m_State.backend == RRBackend::RequestedRR || m_State.backend == RRBackend::ActiveRR))
+		return true;
 	if (!hooks.queryOptimalSettings)
 	{
 		LatchFallback("RR lifecycle hooks are unavailable", 0, hooks);
@@ -166,7 +198,6 @@ bool RRFeatureLifecycle::SelectTuple(const OutputExtent& output, const RRFeature
 			LatchFallback(detail, 0, hooks);
 			return false;
 		}
-		ResetHistory(hooks);
 	}
 	m_State.backend = RRBackend::RequestedRR;
 	m_Tuple = tuple;
@@ -205,9 +236,10 @@ bool RRFeatureLifecycle::Activate(const RRFeatureHooks& hooks)
 }
 
 bool RRFeatureLifecycle::SetIneligible(const OutputExtent& output, std::string reason,
-	const RRFeatureHooks& hooks)
+	const RRFeatureHooks& hooks, RRIneligibleMode mode)
 {
 	m_State.output = output;
+	const bool wasActive = m_State.featureOwned || m_State.backend == RRBackend::ActiveRR;
 	if (m_State.featureOwned)
 	{
 		std::string detail;
@@ -216,15 +248,15 @@ bool RRFeatureLifecycle::SetIneligible(const OutputExtent& output, std::string r
 			LatchFallback(detail, 0, hooks);
 			return false;
 		}
-		ResetHistory(hooks);
 	}
 	m_HasTuple = false;
 	m_State.featureOwned = false;
 	m_State.rrOutputValid = false;
 	m_State.evaluationBegun = false;
-	m_State.backend = RRBackend::NativeNRD;
+	m_State.backend = mode == RRIneligibleMode::ActiveNativeNRD ? RRBackend::ActiveNativeNRD :
+		mode == RRIneligibleMode::NativeDiagnosticBypass ? RRBackend::NativeDiagnosticBypass : RRBackend::NativeNRD;
 	m_State.fallbackReason = std::move(reason);
-	ResetHistory(hooks);
+	if (wasActive) ResetHistory(hooks);
 	return true;
 }
 
@@ -243,7 +275,6 @@ bool RRFeatureLifecycle::InvalidateResources(const RRFeatureHooks& hooks)
 		return false;
 	}
 	m_HasTuple = false;
-	ResetHistory(hooks);
 	return true;
 }
 

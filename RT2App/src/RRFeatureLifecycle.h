@@ -17,6 +17,39 @@ enum class RRBackend
 	ActiveRR,
 	FallbackPending,
 	ActiveNativeNRD,
+	NativeDiagnosticBypass,
+};
+
+enum class RREligibility
+{
+	Eligible,
+	DeveloperDisabled,
+	NgxUnavailable,
+	RequiresRasterFirst,
+	NativeDiagnosticBypass,
+	DepthOfField,
+	UnsupportedCamera,
+};
+
+struct RREligibilityDecision
+{
+	RREligibility kind = RREligibility::DeveloperDisabled;
+
+	bool IsEligible() const { return kind == RREligibility::Eligible; }
+	bool IsDiagnosticBypass() const { return kind == RREligibility::NativeDiagnosticBypass; }
+	const char* Reason() const;
+};
+
+// CPU-linkable production policy. RendererGPU calls this before selecting a
+// low-resolution tuple or allocating any RR resources.
+RREligibilityDecision ClassifyRREligibility(bool developerSwitch, bool ngxSupported,
+	bool rasterFirst, bool gbufferDebug, float aperture, bool projectionValid);
+
+enum class RRIneligibleMode
+{
+	NativeNRD,
+	ActiveNativeNRD,
+	NativeDiagnosticBypass,
 };
 
 enum class RRQualityMode
@@ -119,7 +152,7 @@ public:
 	bool SelectTuple(const OutputExtent& output, const RRFeatureHooks& hooks);
 	bool Activate(const RRFeatureHooks& hooks);
 	bool SetIneligible(const OutputExtent& output, std::string reason,
-		const RRFeatureHooks& hooks);
+		const RRFeatureHooks& hooks, RRIneligibleMode mode = RRIneligibleMode::NativeNRD);
 	// Called by the renderer immediately before application-owned images are
 	// destroyed.  It is the only legal way to forget a feature outside
 	// Reconcile, and enforces idle -> release ordering.
@@ -135,6 +168,14 @@ public:
 	void MarkEvaluationSubmitted(bool rrEvaluation)
 	{
 		if (rrEvaluation) m_State.rrResetPending = false;
+	}
+	// A latched RR fault is one-way. After the safe idle/rebuild boundary the
+	// renderer records native NRD while retaining failureLatched/reason and
+	// never retrying NGX creation.
+	void SetFallbackRecovered()
+	{
+		if (m_State.backend == RRBackend::FallbackPending)
+			m_State.backend = RRBackend::ActiveNativeNRD;
 	}
 	const RRQualityTuple* SelectedTuple() const { return m_HasTuple ? &m_Tuple : nullptr; }
 
