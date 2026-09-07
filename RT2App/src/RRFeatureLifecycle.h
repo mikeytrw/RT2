@@ -22,6 +22,7 @@ enum class RRBackend
 
 enum class RREligibility
 {
+	Uninitialized,
 	Eligible,
 	DeveloperDisabled,
 	NgxUnavailable,
@@ -39,6 +40,14 @@ struct RREligibilityDecision
 	bool IsDiagnosticBypass() const { return kind == RREligibility::NativeDiagnosticBypass; }
 	const char* Reason() const;
 };
+
+// The state is deliberately separate from the requested setting: NativeNRD
+// means the normal renderer is selected, while ActiveNativeNRD means native
+// NRD is both requested and available for this frame.
+bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug,
+	bool nrdEnabled, bool nrdAvailable);
+bool ShouldCommitHeadlessOutput(bool requested, bool rendererAvailable,
+	bool submitted, bool captureAllowed, bool renderFailure);
 
 // CPU-linkable production policy. RendererGPU calls this before selecting a
 // low-resolution tuple or allocating any RR resources.
@@ -176,6 +185,11 @@ public:
 	{
 		if (m_State.backend == RRBackend::FallbackPending)
 			m_State.backend = RRBackend::ActiveNativeNRD;
+	}
+	void SetNativeNrdUnavailable()
+	{
+		if (m_State.backend == RRBackend::ActiveNativeNRD)
+			m_State.backend = RRBackend::NativeNRD;
 	}
 	const RRQualityTuple* SelectedTuple() const { return m_HasTuple ? &m_Tuple : nullptr; }
 

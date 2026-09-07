@@ -54,6 +54,7 @@ public:
 		bool submitted = false;
 		bool captureAllowed = false;
 		bool rrEvaluated = false;
+		bool nrdRecorded = false;
 		bool failure = false;
 		std::string failureReason;
 		FullResolutionHdrSource hdrSource;

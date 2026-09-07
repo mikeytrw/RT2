@@ -30,7 +30,7 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordFrame(VkCommandBuffer c
 	RT_LOG("[Frame] ReSTIR done");
 	RecordReSTIRGIPass(cmd, ctx);
 	RT_LOG("[Frame] ReSTIR GI done");
-	RecordPathTraceOrDebug(cmd, ctx);
+	outcome.nrdRecorded = RecordPathTraceOrDebug(cmd, ctx);
 	RT_LOG("[Frame] pathtrace/debug done");
 	if (ctx.rrLifecycle && ctx.rrLifecycle->Backend() == RRBackend::ActiveRR &&
 		(!ctx.rrOutputImage || !ctx.rrOutputImage->IsValid() ||
@@ -591,7 +591,7 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 	                     0, nullptr, 1, &historyPostBarrier, 0, nullptr);
 }
 
-void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
+bool FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 {
     if (ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugMode < 19 &&
         ctx.gbufferDebugPass.IsAvailable())
@@ -599,7 +599,7 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 		ctx.gbufferDebugPass.Record(cmd, ctx.renderExtent,
 		                          ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 		                          (uint32_t)ctx.gbufferDebugMode);
-		return;
+		return false;
 	}
 
 	bool useRasterFirst = ctx.rasterFirst && (ctx.camera.m_Aperture <= 0.0f);
@@ -698,12 +698,17 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 		ctx.gbufferDebugPass.Record(cmd, ctx.renderExtent,
 		                            ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 		                            (uint32_t)ctx.gbufferDebugMode);
-		return;
+		return false;
 	}
 
-    const bool rrActive = ctx.rrLifecycle && ctx.rrLifecycle->Backend() == RRBackend::ActiveRR;
-	if (!rrActive && ctx.gbufferDebugMode < 0 && ctx.nrdEnabled && ctx.nrd.IsAvailable())
+	const RRBackend backend = ctx.rrLifecycle ? ctx.rrLifecycle->Backend() : RRBackend::NativeNRD;
+	if (ShouldRecordNativeNRD(backend, ctx.gbufferDebugMode >= 0,
+		ctx.nrdEnabled, ctx.nrd.IsAvailable()))
+	{
 		RecordNRDAndCompose(cmd, ctx);
+		return true;
+	}
+	return false;
 }
 
 FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordRR(VkCommandBuffer cmd, Context& ctx)

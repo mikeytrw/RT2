@@ -130,7 +130,7 @@ void RendererGPU::SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR)
 		m_RR.SetRequested(false);
 	}
 	m_RRModeEligible = false;
-	m_RRModeEligibility = devStaticRR ? RREligibility::NgxUnavailable : RREligibility::DeveloperDisabled;
+	m_RRModeEligibility = devStaticRR ? RREligibility::Uninitialized : RREligibility::DeveloperDisabled;
 	m_RRDiagnosticBypass = false;
 	m_RRModeReason = devStaticRR ? "RR eligibility has not been evaluated" :
 		"RR developer mode is disabled";
@@ -162,11 +162,18 @@ void RendererGPU::UpdateRREligibility(const Camera& camera)
 		m_Settings.rasterFirst, m_Settings.gbufferDebugMode >= 0, camera.m_Aperture, projectionValid);
 	const bool eligible = decision.IsEligible();
 	const bool diagnosticBypass = decision.IsDiagnosticBypass();
-	const std::string reason = decision.Reason();
+	std::string reason = decision.Reason();
+	if (decision.kind == RREligibility::NgxUnavailable && m_NgxRuntime &&
+		!m_NgxRuntime->Snapshot().reason.empty())
+	{
+		// Preserve the lifecycle authority's exact SDK/requirement diagnosis;
+		// the typed policy still owns the eligibility comparison.
+		reason = m_NgxRuntime->Snapshot().reason;
+	}
 	// Compare the normalized typed policy, never a raw empty-vs-literal reason
 	// sentinel. Stable eligibility therefore cannot force a rebuild each frame.
 	if (decision.kind != m_RRModeEligibility || eligible != m_RRModeEligible ||
-		diagnosticBypass != m_RRDiagnosticBypass)
+		diagnosticBypass != m_RRDiagnosticBypass || reason != m_RRModeReason)
 	{
 		m_RRModeEligible = eligible;
 		m_RRModeEligibility = decision.kind;
@@ -189,7 +196,9 @@ bool RendererGPU::PrepareRRFeature()
 		m_RRModeEligible = false;
 		m_RRModeReason = "RR resources are unavailable after Quality selection";
 		RRFeatureHooks hooks = MakeRRHooks();
-		m_RR.SetIneligible(m_OutputExtent, m_RRModeReason, hooks, RRIneligibleMode::ActiveNativeNRD);
+		const RRIneligibleMode mode = m_Settings.nrdEnabled && m_NRD.IsAvailable() ?
+			RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD;
+		m_RR.SetIneligible(m_OutputExtent, m_RRModeReason, hooks, mode);
 		m_ForceNativeRebuild = true;
 		RT_LOG("[RR] eligibility=native-nrd reason=%s", m_RRModeReason.c_str());
 		return true;
@@ -521,7 +530,7 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	{
 		RRFeatureHooks hooks = MakeRRHooks();
 		const RRIneligibleMode mode = m_RRDiagnosticBypass ? RRIneligibleMode::NativeDiagnosticBypass :
-			RRIneligibleMode::ActiveNativeNRD;
+			(m_Settings.nrdEnabled ? RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD);
 		if (!m_RR.SetIneligible(outputExtent, m_RRModeReason, hooks, mode))
 			RT_LOG("[RR] eligibility fallback release failed: %s", m_RR.FallbackReason().c_str());
 	}
@@ -550,6 +559,12 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		           m_Device.queue,
 		           m_Device.queueFamily,
 		           m_RenderExtent);
+	}
+	if (m_RR.Backend() == RRBackend::ActiveNativeNRD && !m_NRD.IsAvailable())
+	{
+		m_RR.SetNativeNrdUnavailable();
+		RT_LOG("[RR] native NRD unavailable; backend=%s reason=%s",
+			RRBackendName(m_RR.Backend()), m_RR.FallbackReason().c_str());
 	}
 	else if (m_Settings.nrdEnabled && m_NRD.IsAvailable())
 	{
@@ -1197,6 +1212,8 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		           m_Device.queueFamily,
 		           m_RenderExtent);
 	}
+	if (m_RR.Backend() == RRBackend::ActiveNativeNRD && !m_NRD.IsAvailable())
+		m_RR.SetNativeNrdUnavailable();
 
 	UpdateCameraUBO(camera);
 
@@ -1415,7 +1432,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 
 	// ---- Submit this frame's work (async, no wait) ----
 	RT_LOG("[Render] submitting frame %d (NRD=%d composeCached=%d)",
-	       m_FrameIndex, m_Settings.nrdEnabled ? 1 : 0, m_ComposeDescriptorSetCached ? 1 : 0);
+		m_FrameIndex, recorded.nrdRecorded ? 1 : 0, m_ComposeDescriptorSetCached ? 1 : 0);
 	frame.Submit(m_Device.queue);
 	RT_LOG("[Render] submit ok, frame %d", m_FrameIndex);
 	m_RR.MarkEvaluationSubmitted(recorded.rrEvaluated);
@@ -1431,6 +1448,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	outcome.submitted = true;
 	outcome.captureAllowed = source.valid;
 	outcome.rrEvaluated = recorded.rrEvaluated;
+	outcome.nrdRecorded = recorded.nrdRecorded;
 	outcome.hdrSource = source;
 	m_HdrSource = source;
 

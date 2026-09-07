@@ -175,13 +175,12 @@ TEST_CASE("W4 production lifecycle keeps one generation and settles fallback tru
 	RRFeatureLifecycle lifecycle;
 	lifecycle.SetRequested(true);
 	const auto output = *OutputExtent::TryCreate(1920, 1080);
-	int queries = 0, creates = 0, evaluates = 0, resets = 0;
+	int queries = 0, creates = 0, resets = 0;
 	RRFeatureHooks hooks;
 	hooks.queryOptimalSettings = [&](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) {
 		++queries; out = QualitySettings(e.Width(), e.Height()); return true;
 	};
 	hooks.create = [&](const RRQualityTuple&, std::string&) { ++creates; return true; };
-	hooks.evaluate = [&](std::string&) { ++evaluates; return true; };
 	hooks.waitIdle = [](std::string&) { return true; };
 	hooks.release = [](std::string&) { return true; };
 	hooks.resetHistory = [&] { ++resets; };
@@ -201,12 +200,31 @@ TEST_CASE("W4 production lifecycle keeps one generation and settles fallback tru
 	CHECK(lifecycle.Backend() == RRBackend::FallbackPending);
 	CHECK(lifecycle.State().failureLatched);
 	const std::string reason = lifecycle.FallbackReason();
-	CHECK_FALSE(lifecycle.Reconcile(output, hooks));
+	REQUIRE(lifecycle.InvalidateResources(hooks));
+	CHECK(lifecycle.Backend() == RRBackend::FallbackPending);
+	lifecycle.SetFallbackRecovered();
 	CHECK(lifecycle.Backend() == RRBackend::ActiveNativeNRD);
 	CHECK(lifecycle.State().failureLatched);
 	CHECK(lifecycle.FallbackReason() == reason);
 	CHECK(creates == 1);
-	CHECK(evaluates == 0);
+	lifecycle.SetNativeNrdUnavailable();
+	CHECK(lifecycle.Backend() == RRBackend::NativeNRD);
+}
+
+TEST_CASE("W4 production dispatch and headless persistence decisions are checked")
+{
+	CHECK(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true));
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, true));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, false, true));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, true));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, true, true, true));
+	CHECK(ShouldCommitHeadlessOutput(true, true, true, true, false));
+	CHECK_FALSE(ShouldCommitHeadlessOutput(false, true, true, true, false));
+	CHECK_FALSE(ShouldCommitHeadlessOutput(true, false, true, true, false));
+	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, false, true, false));
+	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, true, false, false));
+	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, true, true, true));
 }
 
 TEST_CASE("W4 RR lifecycle rejects malformed optimal dimensions loudly")

@@ -3367,8 +3367,10 @@ private:
 				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
 			fflush(stdout);
 
-			if (g_CLI.captureEvery > 0 && m_RendererGPU.IsAvailable() &&
-				lastRenderOutcome.submitted && lastRenderOutcome.captureAllowed)
+			if (g_CLI.captureEvery > 0 && ShouldCommitHeadlessOutput(
+				!g_CLI.outputPath.empty() || !g_CLI.outputHDRPath.empty(),
+				m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
+				lastRenderOutcome.captureAllowed, renderFailure))
 			{
 				bool stillFrame = g_CLI.cameraSweepWarmup > 0 && i == g_CLI.cameraSweepWarmup - 1;
 				bool periodicFrame = i >= g_CLI.cameraSweepWarmup &&
@@ -3433,13 +3435,15 @@ private:
 			fflush(stdout);
 		}
 
-		if (!g_CLI.outputPath.empty() && m_RendererGPU.IsAvailable() &&
-			lastRenderOutcome.submitted && lastRenderOutcome.captureAllowed && !renderFailure)
+		if (ShouldCommitHeadlessOutput(!g_CLI.outputPath.empty(),
+			m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
+			lastRenderOutcome.captureAllowed, renderFailure))
 			outputPersistenceFailure = !saveOutput(g_CLI.outputPath) || outputPersistenceFailure;
 		else if (renderFailure)
 			discardOutput(g_CLI.outputPath);
-		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable() &&
-			lastRenderOutcome.submitted && lastRenderOutcome.captureAllowed && !renderFailure)
+		if (ShouldCommitHeadlessOutput(!g_CLI.outputHDRPath.empty(),
+			m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
+			lastRenderOutcome.captureAllowed, renderFailure))
 			outputPersistenceFailure = !saveHDROutput(g_CLI.outputHDRPath) || outputPersistenceFailure;
 		else if (renderFailure)
 			discardOutput(g_CLI.outputHDRPath);

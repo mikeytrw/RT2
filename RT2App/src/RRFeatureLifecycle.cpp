@@ -29,6 +29,7 @@ const char* RREligibilityDecision::Reason() const
 {
 	switch (kind)
 	{
+	case RREligibility::Uninitialized: return "RR eligibility has not been evaluated";
 	case RREligibility::Eligible: return "eligible";
 	case RREligibility::DeveloperDisabled: return "RR developer mode is disabled";
 	case RREligibility::NgxUnavailable: return "NGX Ray Reconstruction is unavailable";
@@ -38,6 +39,20 @@ const char* RREligibilityDecision::Reason() const
 	case RREligibility::UnsupportedCamera: return "RR is unsupported for the current camera projection";
 	}
 	return "RR eligibility is unknown";
+}
+
+bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug,
+	bool nrdEnabled, bool nrdAvailable)
+{
+	if (gbufferDebug || !nrdEnabled || !nrdAvailable)
+		return false;
+	return backend == RRBackend::NativeNRD || backend == RRBackend::ActiveNativeNRD;
+}
+
+bool ShouldCommitHeadlessOutput(bool requested, bool rendererAvailable,
+	bool submitted, bool captureAllowed, bool renderFailure)
+{
+	return requested && rendererAvailable && submitted && captureAllowed && !renderFailure;
 }
 
 RREligibilityDecision ClassifyRREligibility(bool developerSwitch, bool ngxSupported,

@@ -39,6 +39,7 @@ public:
 	{
 		bool recorded = true;
 		bool rrEvaluated = false;
+		bool nrdRecorded = false;
 		bool preserveDisplay = false;
 		VkImageView hdrSource = VK_NULL_HANDLE;
 		std::string failureReason;
@@ -130,7 +131,7 @@ private:
 	static void RecordRRGuidePass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx);
-	static void RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx);
+	static bool RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx);
 	static RecordedFrameOutcome RecordRR(VkCommandBuffer cmd, Context& ctx);
 	static void RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx);
 	static void RecordTonemapPass(VkCommandBuffer cmd, Context& ctx);
