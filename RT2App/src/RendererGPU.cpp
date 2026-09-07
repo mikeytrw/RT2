@@ -123,6 +123,7 @@ void RendererGPU::SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR)
 {
 	m_NgxRuntime = runtime;
 	m_DevStaticRR = devStaticRR;
+	m_AutomaticNativeNrdFallback = false;
 	m_RR.SetRequested(devStaticRR);
 	if (!devStaticRR && m_RROutputImage.IsValid())
 	{
@@ -196,7 +197,8 @@ bool RendererGPU::PrepareRRFeature()
 		m_RRModeEligible = false;
 		m_RRModeReason = "RR resources are unavailable after Quality selection";
 		RRFeatureHooks hooks = MakeRRHooks();
-		const RRIneligibleMode mode = m_Settings.nrdEnabled && m_NRD.IsAvailable() ?
+		m_AutomaticNativeNrdFallback = !m_RRDiagnosticBypass && m_Settings.rasterFirst;
+		const RRIneligibleMode mode = m_AutomaticNativeNrdFallback ?
 			RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD;
 		m_RR.SetIneligible(m_OutputExtent, m_RRModeReason, hooks, mode);
 		m_ForceNativeRebuild = true;
@@ -509,11 +511,14 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		// The failed feature has already latched its exact reason. This rebuild is
 		// the sole safe edge that makes native NRD authoritative; never retry NGX.
 		m_RR.SetFallbackRecovered();
+		m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass &&
+			m_Settings.rasterFirst;
 		RT_LOG("[RR] fallback recovered backend=%s reason=%s", RRBackendName(m_RR.Backend()),
 			m_RR.FallbackReason().c_str());
 	}
 	else if (m_RRModeEligible && m_NgxRuntime)
 	{
+		m_AutomaticNativeNrdFallback = false;
 		RRFeatureHooks hooks = MakeRRHooks();
 		if (m_RR.SelectTuple(outputExtent, hooks))
 		{
@@ -524,13 +529,17 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		{
 			RT_LOG("[RR] Quality extent unavailable (%s); native resolution is retained",
 				m_RR.FallbackReason().c_str());
+			m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass &&
+				m_Settings.rasterFirst;
+			m_RR.SetFallbackRecovered();
 		}
 	}
 	else if (m_DevStaticRR)
 	{
 		RRFeatureHooks hooks = MakeRRHooks();
+		m_AutomaticNativeNrdFallback = !m_RRDiagnosticBypass && m_Settings.rasterFirst;
 		const RRIneligibleMode mode = m_RRDiagnosticBypass ? RRIneligibleMode::NativeDiagnosticBypass :
-			(m_Settings.nrdEnabled ? RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD);
+			(m_AutomaticNativeNrdFallback ? RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD);
 		if (!m_RR.SetIneligible(outputExtent, m_RRModeReason, hooks, mode))
 			RT_LOG("[RR] eligibility fallback release failed: %s", m_RR.FallbackReason().c_str());
 	}
@@ -550,8 +559,8 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	m_PathTracePass.CreateDescriptorSet(m_Device, texCount > 0 ? texCount : 1);
 	UpdateGBufferDescriptorSet();
 
-	// Initialize NRD if enabled
-	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable())
+	// Initialize NRD for the authored path or for the explicit RR fallback.
+	if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) && !m_NRD.IsAvailable())
 	{
 		m_NRD.Init(m_Device.instance,
 		           m_Device.physicalDevice,
@@ -566,7 +575,7 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		RT_LOG("[RR] native NRD unavailable; backend=%s reason=%s",
 			RRBackendName(m_RR.Backend()), m_RR.FallbackReason().c_str());
 	}
-	else if (m_Settings.nrdEnabled && m_NRD.IsAvailable())
+	else if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) && m_NRD.IsAvailable())
 	{
 		m_NRD.OnResize(m_RenderExtent);
 	}
@@ -744,6 +753,7 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData, const Rend
 	m_ComposeDescriptorSetCached = false;
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
+	m_RR.RequestHistoryReset(MakeRRHooks());
 
 	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild() && !m_Scene.IsTextureUploadPending())
 	{
@@ -810,6 +820,7 @@ void RendererGPU::SetScene(GPUSceneData& sceneData, const RenderInstanceMap& ins
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_RR.RequestHistoryReset(MakeRRHooks());
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
 
@@ -908,6 +919,7 @@ void RendererGPU::ResetAccumulation()
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_RR.RequestHistoryReset(MakeRRHooks());
 	// Keep the previous camera matrices across accumulation resets.  A camera
 	// cut resets beauty history, but motion remains a current->previous render
 	// pixel signal for the frame that follows; clearing these here would make
@@ -1068,7 +1080,9 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// subpixel sequence adds temporal instability to both reservoir and NRD
 	// histories. This also enforces the policy for CLI-created settings.
 	bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
-	if (m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled && !restirActive)
+	const bool staticRRNoJitter = ShouldForceStaticRRNoJitter(
+		m_DevStaticRR && m_RR.IsRequested(), m_Settings.restirEnabled, m_Settings.restirGIEnabled);
+	if (!staticRRNoJitter && m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled && !restirActive)
 	{
 		// Halton sequence (base 2, base 3) for low-discrepancy jitter
 		auto halton = [](int index, int base) -> float {
@@ -1144,6 +1158,17 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_Settings.dirty = false;
 	}
 	UpdateRREligibility(camera);
+	if (!RequiredRenderStagesAvailable(IsAvailable(),
+		m_RR.Backend() == RRBackend::ActiveRR,
+		m_TonemapPass.IsAvailable(), m_TonemapPass.IsRRTonemapAvailable()))
+	{
+		outcome.failure = true;
+		outcome.failureReason = m_RR.Backend() == RRBackend::ActiveRR ?
+			"required RR tonemap shader/pipeline is unavailable" :
+			"required renderer stage is unavailable";
+		m_LastRenderOutcome = outcome;
+		return outcome;
+	}
 
 	RT_LOG("[Render] frame=%d needsASRebuild=%d", m_FrameIndex, m_Scene.NeedsASRebuild());
 
@@ -1201,8 +1226,28 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 			m_FrameIndex = 1;
 	}
 
-	// Lazy-init NRD when toggled on
-	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable() && m_RenderExtent.IsValid())
+	VkDevice device = m_Device.device;
+
+	// The frame slot must be idle before a rebuild can destroy/recreate images.
+	// Finalize the native/RR extent first; UpdateCameraUBO below then records the
+	// same dimensions that every shader-visible descriptor and dispatch uses.
+	FrameContext& frame = m_Frames[m_CurrentFrame];
+	frame.WaitForFence(device);
+	if (m_ForceNativeRebuild && m_OutputExtent.IsValid())
+	{
+		OnResize(m_OutputExtent);
+		if (m_OutputImage.image == VK_NULL_HANDLE)
+		{
+			outcome.failure = true;
+			outcome.failureReason = "renderer resize did not produce an output image";
+			m_LastRenderOutcome = outcome;
+			return outcome;
+		}
+	}
+
+	// Lazy-init NRD when toggled on, including the automatic RR fallback.
+	if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) &&
+		!m_NRD.IsAvailable() && m_RenderExtent.IsValid())
 	{
 		RT_LOG("[Render] initializing NRD (%ux%u)", m_RenderExtent.Width(), m_RenderExtent.Height());
 		m_NRD.Init(m_Device.instance,
@@ -1211,6 +1256,13 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		           m_Device.queue,
 		           m_Device.queueFamily,
 		           m_RenderExtent);
+	}
+	if (m_AutomaticNativeNrdFallback && !m_NRD.IsAvailable())
+	{
+		outcome.failure = true;
+		outcome.failureReason = "automatic native NRD fallback is unavailable";
+		m_LastRenderOutcome = outcome;
+		return outcome;
 	}
 	if (m_RR.Backend() == RRBackend::ActiveNativeNRD && !m_NRD.IsAvailable())
 		m_RR.SetNativeNrdUnavailable();
@@ -1227,22 +1279,8 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		return outcome;
 	}
 
-	VkDevice device = m_Device.device;
-
-	// ---- Frames-in-flight ring: wait for this frame slot to be free ----
-	FrameContext& frame = m_Frames[m_CurrentFrame];
-	frame.WaitForFence(device);
-	if (m_ForceNativeRebuild && m_OutputExtent.IsValid())
-	{
-		OnResize(m_OutputExtent);
-		if (m_OutputImage.image == VK_NULL_HANDLE)
-		{
-			outcome.failure = true;
-			outcome.failureReason = "renderer resize did not produce an output image";
-			m_LastRenderOutcome = outcome;
-			return outcome;
-		}
-	}
+	// The frame slot has already been waited and any extent rebuild has already
+	// completed before the camera UBO was populated.
 	m_GpuProfiler.ReadCompletedSlot(device, m_CurrentFrame);
 	if (auto completed = m_PickingPass.ReadCompletedSlot(m_CurrentFrame))
 	{
@@ -1360,6 +1398,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_Settings.rasterFirst,
 		m_RRGuideReportMode,
 		m_Settings.nrdEnabled,
+		m_AutomaticNativeNrdFallback,
 		m_Settings.nrdLobeDither,
 		m_Settings.restirEnabled,
 		restirPC,

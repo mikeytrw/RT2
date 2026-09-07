@@ -3361,6 +3361,17 @@ private:
 						lastRenderOutcome.failureReason.c_str());
 				}
 			}
+			else
+			{
+				// Required renderer stages (including RR guides and the base
+				// tonemap pipeline) are part of the checked headless outcome.
+				// Do not let a missing shader turn into a zero exit/done marker.
+				renderFailure = true;
+				lastRenderOutcome.failure = true;
+				lastRenderOutcome.failureReason = "required renderer stage is unavailable";
+				RT_LOG("[Headless] frame %d discarded: %s", i + 1,
+					lastRenderOutcome.failureReason.c_str());
+			}
 			collectBenchmarkTiming();
 			float ms = timer.ElapsedMillis();
 			if (g_CLI.verbose || i == g_CLI.frames - 1)

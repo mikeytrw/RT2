@@ -65,7 +65,7 @@ public:
 
 	void Destroy();
 
-	bool IsAvailable() const { return m_Initialized && !m_RRGuideInitFailed; }
+	bool IsAvailable() const { return m_Initialized && !m_RRGuideInitFailed && m_TonemapPass.IsAvailable(); }
 
 	void OnResize(const OutputExtent& outputExtent);
 	void OnResize(uint32_t width, uint32_t height)
@@ -306,6 +306,7 @@ private:
 	bool m_RRGuideReportMode = false;
 	NgxRuntime* m_NgxRuntime = nullptr; // non-owning; NgxRuntime owns SDK state
 	bool m_DevStaticRR = false;
+	bool m_AutomaticNativeNrdFallback = false;
 	bool m_ForceNativeRebuild = false;
 	bool m_RRModeEligible = false;
 	RREligibility m_RRModeEligibility = RREligibility::DeveloperDisabled;

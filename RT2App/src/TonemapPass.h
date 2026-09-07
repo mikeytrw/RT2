@@ -20,6 +20,7 @@ public:
     void Record(VkCommandBuffer cmd, const OutputExtent& extent, bool useRR = false) const;
 
     bool IsAvailable() const { return m_Pipeline != VK_NULL_HANDLE; }
+    bool IsRRTonemapAvailable() const { return m_RRPipeline != VK_NULL_HANDLE; }
 
 private:
     VkPipeline m_Pipeline = VK_NULL_HANDLE;

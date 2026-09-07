@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "RRFeatureLifecycle.h"
+#include "RenderSettings.h"
 
 #include <array>
 
@@ -225,6 +226,59 @@ TEST_CASE("W4 production dispatch and headless persistence decisions are checked
 	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, false, true, false));
 	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, true, false, false));
 	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, true, true, true));
+	CHECK(RequiredRenderStagesAvailable(true, false, true, false));
+	CHECK(RequiredRenderStagesAvailable(true, true, true, true));
+	CHECK_FALSE(RequiredRenderStagesAvailable(false, false, true, true));
+	CHECK_FALSE(RequiredRenderStagesAvailable(true, false, false, true));
+	CHECK_FALSE(RequiredRenderStagesAvailable(true, true, true, false));
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, false, true, true));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, false, false, true, true));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, false, true, true));
+	CHECK(ShouldForceStaticRRNoJitter(true, false, false));
+	CHECK(ShouldForceStaticRRNoJitter(false, true, false));
+	CHECK_FALSE(ShouldForceStaticRRNoJitter(false, false, false));
+}
+
+TEST_CASE("W4 production policy gives diagnostic bypass precedence over unavailable NGX")
+{
+	const auto decision = ClassifyRREligibility(true, false, true, true, 0.0f, true);
+	CHECK(decision.kind == RREligibility::NativeDiagnosticBypass);
+	CHECK(decision.IsDiagnosticBypass());
+	CHECK(std::string(decision.Reason()) == "RR is unsupported for G-buffer debug mode");
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true,
+		true, false, true, false));
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false,
+		true, false, true, true));
+}
+
+TEST_CASE("W4 zero-jitter policy reads the real non-ReSTIR production settings")
+{
+	RenderSettings settings;
+	settings.restirEnabled = false;
+	settings.restirGIEnabled = false;
+	CHECK(ShouldForceStaticRRNoJitter(true, settings.restirEnabled, settings.restirGIEnabled));
+	CHECK_FALSE(ShouldForceStaticRRNoJitter(false, settings.restirEnabled, settings.restirGIEnabled));
+}
+
+TEST_CASE("W4 production scene cuts request one RR history reset and steady frames do not")
+{
+	RRFeatureLifecycle lifecycle;
+	lifecycle.SetRequested(true);
+	int resets = 0;
+	RRFeatureHooks hooks;
+	hooks.resetHistory = [&] { ++resets; };
+	const auto output = *OutputExtent::TryCreate(1280, 720);
+	CHECK(lifecycle.SetIneligible(output, "native fallback", hooks,
+		RRIneligibleMode::ActiveNativeNRD));
+	lifecycle.MarkEvaluationSubmitted(false);
+	const uint64_t before = lifecycle.State().historyResetGeneration;
+	lifecycle.RequestHistoryReset(hooks); // SetScene/SetSceneKeepTextures/ResetAccumulation seam
+	CHECK(lifecycle.State().historyResetGeneration == before + 1);
+	CHECK(resets == 1);
+	CHECK(lifecycle.ResetPending());
+	lifecycle.MarkEvaluationSubmitted(true);
+	CHECK_FALSE(lifecycle.ResetPending());
+	CHECK(lifecycle.State().historyResetGeneration == before + 1);
 }
 
 TEST_CASE("W4 RR lifecycle rejects malformed optimal dimensions loudly")

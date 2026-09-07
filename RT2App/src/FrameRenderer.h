@@ -79,6 +79,10 @@ public:
 		bool rasterFirst;
 		bool rrGuideReportMode;
 		bool nrdEnabled;
+		// True only after a requested W4 RR path has settled on native NRD.
+		// This is deliberately separate from authored nrdEnabled so the
+		// developer fallback cannot alter the switch-off renderer path.
+		bool nativeNrdFallback;
 		int  lobeDither;  // 0=off, 1=Bayer, 2=IGN
 		bool restirEnabled;
 		SIReSTIRPushConstants restirPC;

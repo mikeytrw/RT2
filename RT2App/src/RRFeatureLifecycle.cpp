@@ -49,18 +49,40 @@ bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug,
 	return backend == RRBackend::NativeNRD || backend == RRBackend::ActiveNativeNRD;
 }
 
+bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirst,
+	bool nrdEnabled, bool nrdAvailable, bool automaticFallback)
+{
+	if (gbufferDebug || !rasterFirst || !nrdAvailable)
+		return false;
+	if (backend == RRBackend::ActiveNativeNRD)
+		return nrdEnabled || automaticFallback;
+	return backend == RRBackend::NativeNRD && nrdEnabled;
+}
+
+bool ShouldForceStaticRRNoJitter(bool staticRRRequested, bool restirDIEnabled,
+	bool restirGIEnabled)
+{
+	return staticRRRequested || restirDIEnabled || restirGIEnabled;
+}
+
 bool ShouldCommitHeadlessOutput(bool requested, bool rendererAvailable,
 	bool submitted, bool captureAllowed, bool renderFailure)
 {
 	return requested && rendererAvailable && submitted && captureAllowed && !renderFailure;
 }
 
+bool RequiredRenderStagesAvailable(bool rendererAvailable, bool rrActive,
+	bool tonemapAvailable, bool rrTonemapAvailable)
+{
+	return rendererAvailable && tonemapAvailable && (!rrActive || rrTonemapAvailable);
+}
+
 RREligibilityDecision ClassifyRREligibility(bool developerSwitch, bool ngxSupported,
 	bool rasterFirst, bool gbufferDebug, float aperture, bool projectionValid)
 {
 	if (!developerSwitch) return {RREligibility::DeveloperDisabled};
-	if (!ngxSupported) return {RREligibility::NgxUnavailable};
 	if (gbufferDebug) return {RREligibility::NativeDiagnosticBypass};
+	if (!ngxSupported) return {RREligibility::NgxUnavailable};
 	if (!rasterFirst) return {RREligibility::RequiresRasterFirst};
 	if (aperture > 0.0f) return {RREligibility::DepthOfField};
 	if (!projectionValid) return {RREligibility::UnsupportedCamera};

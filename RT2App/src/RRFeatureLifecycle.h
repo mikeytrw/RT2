@@ -46,8 +46,17 @@ struct RREligibilityDecision
 // NRD is both requested and available for this frame.
 bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug,
 	bool nrdEnabled, bool nrdAvailable);
+// Production dispatch policy. `automaticFallback` is set only for a requested
+// W4 RR frame that has settled on native NRD; the ordinary switch-off path
+// remains gated by the authored NRD/raster-first settings.
+bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirst,
+	bool nrdEnabled, bool nrdAvailable, bool automaticFallback);
+bool ShouldForceStaticRRNoJitter(bool staticRRRequested, bool restirDIEnabled,
+	bool restirGIEnabled);
 bool ShouldCommitHeadlessOutput(bool requested, bool rendererAvailable,
 	bool submitted, bool captureAllowed, bool renderFailure);
+bool RequiredRenderStagesAvailable(bool rendererAvailable, bool rrActive,
+	bool tonemapAvailable, bool rrTonemapAvailable);
 
 // CPU-linkable production policy. RendererGPU calls this before selecting a
 // low-resolution tuple or allocating any RR resources.
@@ -178,6 +187,10 @@ public:
 	{
 		if (rrEvaluation) m_State.rrResetPending = false;
 	}
+	// Scene replacement/cut invalidates RR history without changing the
+	// selected tuple. The pending bit is consumed only by a successful RR
+	// submission, so repeated steady frames do not reset history.
+	void RequestHistoryReset(const RRFeatureHooks& hooks = {}) { ResetHistory(hooks); }
 	// A latched RR fault is one-way. After the safe idle/rebuild boundary the
 	// renderer records native NRD while retaining failureLatched/reason and
 	// never retrying NGX creation.

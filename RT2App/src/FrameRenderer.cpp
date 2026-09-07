@@ -8,6 +8,21 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordFrame(VkCommandBuffer c
 {
 	RecordedFrameOutcome outcome;
 	RT_LOG("[Frame] RecordFrame begin");
+	if (!ctx.tonemapPass.IsAvailable())
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = true;
+		outcome.failureReason = "required tonemap shader/pipeline is unavailable";
+		return outcome;
+	}
+	if (ctx.rrLifecycle && ctx.rrLifecycle->Backend() == RRBackend::ActiveRR &&
+		!ctx.tonemapPass.IsRRTonemapAvailable())
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = true;
+		outcome.failureReason = "required RR tonemap shader/pipeline is unavailable";
+		return outcome;
+	}
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 	RecordTopBarrier(cmd, ctx);
@@ -604,7 +619,8 @@ bool FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 		return false;
 	}
 
-	bool useRasterFirst = ctx.rasterFirst && (ctx.camera.m_Aperture <= 0.0f);
+	bool useRasterFirst = ctx.rasterFirst &&
+		(ctx.camera.m_Aperture <= 0.0f || ctx.nativeNrdFallback);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
 	ctx.pathTracePass.Record(cmd, ctx.renderExtent, ctx.gbufferSet, useRasterFirst);
@@ -704,8 +720,8 @@ bool FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 	}
 
 	const RRBackend backend = ctx.rrLifecycle ? ctx.rrLifecycle->Backend() : RRBackend::NativeNRD;
-	if (ShouldRecordNativeNRD(backend, ctx.gbufferDebugMode >= 0,
-		ctx.nrdEnabled, ctx.nrd.IsAvailable()))
+	if (ShouldRecordNativeNRD(backend, ctx.gbufferDebugMode >= 0, useRasterFirst,
+		ctx.nrdEnabled, ctx.nrd.IsAvailable(), ctx.nativeNrdFallback))
 	{
 		RecordNRDAndCompose(cmd, ctx);
 		return true;
