@@ -41,7 +41,9 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordFrame(VkCommandBuffer c
 		outcome.failureReason = "active RR resources are unavailable";
 		return outcome;
 	}
+	const bool nrdRecorded = outcome.nrdRecorded;
 	outcome = RecordRR(cmd, ctx);
+	outcome.nrdRecorded = nrdRecorded;
 	if (!outcome.recorded)
 		return outcome;
 	RecordTonemapPass(cmd, ctx);
