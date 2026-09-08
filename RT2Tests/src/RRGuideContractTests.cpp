@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "RRGuideContract.h"
+#include "RRFeatureLifecycle.h"
 #include "RenderExtents.h"
 #include <fstream>
 #include <iterator>
@@ -95,6 +96,10 @@ TEST_CASE("RR guides: payload and allocation ceiling arithmetic is explicit")
 	CHECK(payload <= RR_GUIDE_MAX_RT2_BYTES);
 	CHECK(RR_GUIDE_DEDICATED_COUNT <= RR_GUIDE_MAX_IMAGES);
 	CHECK(RR_GUIDE_DEDICATED_COUNT <= RR_GUIDE_MAX_ALLOCATIONS);
+	CHECK(ValidateRRGuideResourceBudget(6, 6, 224ull * 1024ull * 1024ull));
+	CHECK_FALSE(ValidateRRGuideResourceBudget(7, 6, 224ull * 1024ull * 1024ull));
+	CHECK_FALSE(ValidateRRGuideResourceBudget(6, 9, 224ull * 1024ull * 1024ull));
+	CHECK_FALSE(ValidateRRGuideResourceBudget(6, 6, 224ull * 1024ull * 1024ull + 1ull));
 }
 
 TEST_CASE("RR guides: render extent is the only source extent")
@@ -319,4 +324,14 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	CHECK(cli.find("--rr-guide-scenario") != std::string::npos);
 	CHECK(host.find("ComputeRRGuideFixtureIdentity") != std::string::npos);
 	CHECK(host.find("IsRRGuideControlledFixture") != std::string::npos);
+}
+
+TEST_CASE("W4 production RR authority executes normalized policy and lifecycle contracts")
+{
+	CHECK(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true, true, false));
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, true, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, true, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true, false, false));
+	CHECK(ShouldCommitHeadlessOutput(true, true, true, true, false));
+	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, true, true, true));
 }

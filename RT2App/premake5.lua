@@ -68,6 +68,7 @@ project "RT2App"
         "shaders/shadow.rahit",
         "shaders/compose.comp",
         "shaders/tonemap.comp",
+        "shaders/tonemap_rr.comp",
         "shaders/restir_temporal.comp",
         "shaders/restir_spatial.comp",
         "shaders/restir_gi_temporal.comp",
@@ -163,6 +164,11 @@ project "RT2App"
         buildmessage "Compiling tonemap.comp"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/tonemap.comp -o " .. shaderDir .. "/tonemap.spv" }
         buildoutputs { shaderDir .. "/tonemap.spv" }
+
+    filter {"files:shaders/tonemap_rr.comp"}
+        buildmessage "Compiling tonemap_rr.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/tonemap_rr.comp -o " .. shaderDir .. "/tonemap_rr.spv" }
+        buildoutputs { shaderDir .. "/tonemap_rr.spv" }
 
     filter {"files:shaders/restir_temporal.comp"}
         buildmessage "Compiling restir_temporal.comp"
@@ -281,6 +287,7 @@ project "RT2App"
             "copy /Y \"$(ProjectDir)shaders\\shadowhit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\compose.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\tonemap.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\tonemap_rr.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\restir_temporal.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\restir_spatial.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\restir_gi_temporal.spv\" \"%{cfg.targetdir}\"",

@@ -4,15 +4,30 @@
 #include <cmath>
 #include <cstdlib>
 
-void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
+FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 {
+	RecordedFrameOutcome outcome;
 	RT_LOG("[Frame] RecordFrame begin");
+	if (!ctx.tonemapPass.IsAvailable())
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = true;
+		outcome.failureReason = "required tonemap shader/pipeline is unavailable";
+		return outcome;
+	}
+	if (ctx.rrLifecycle && ctx.rrLifecycle->Backend() == RRBackend::ActiveRR &&
+		!ctx.tonemapPass.IsRRTonemapAvailable())
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = true;
+		outcome.failureReason = "required RR tonemap shader/pipeline is unavailable";
+		return outcome;
+	}
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 	RecordTopBarrier(cmd, ctx);
 	RecordASBarrier(cmd, ctx);
 	RecordUBOUpdates(cmd, ctx);
-
 	// Advance prev transform buffers to current after a scene edit so
 	// motion vectors go to zero on subsequent frames (NRD finding #3).
 	if (ctx.scene.NeedsTransformAdvance())
@@ -30,13 +45,30 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 	RT_LOG("[Frame] ReSTIR done");
 	RecordReSTIRGIPass(cmd, ctx);
 	RT_LOG("[Frame] ReSTIR GI done");
-	RecordPathTraceOrDebug(cmd, ctx);
+	outcome.nrdRecorded = RecordPathTraceOrDebug(cmd, ctx);
 	RT_LOG("[Frame] pathtrace/debug done");
+	if (ctx.rrLifecycle && ctx.rrLifecycle->Backend() == RRBackend::ActiveRR &&
+		(!ctx.rrOutputImage || !ctx.rrOutputImage->IsValid() ||
+			!ctx.rrGuides.IsValid()))
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = true;
+		outcome.failureReason = "active RR resources are unavailable";
+		return outcome;
+	}
+	const bool nrdRecorded = outcome.nrdRecorded;
+	outcome = RecordRR(cmd, ctx);
+	outcome.nrdRecorded = nrdRecorded;
+	if (!outcome.recorded)
+		return outcome;
 	RecordTonemapPass(cmd, ctx);
 	RecordOutputTransition(cmd, ctx);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 	RT_LOG("[Frame] RecordFrame end");
+	outcome.hdrSource = ctx.rrOutputImage && outcome.rrEvaluated ?
+		ctx.rrOutputImage->view : ctx.outputImage.view;
+	return outcome;
 }
 
 void FrameRenderer::RecordTopBarrier(VkCommandBuffer cmd, Context& ctx)
@@ -98,7 +130,9 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 
 	// NRD UBO: nrdEnabled, lobeDither, restirGIEnabled, restirGIReservoirIndex.
 	// The spare fields are repurposed for GI control without growing the UBO.
-	// When NRD is off, force lobe dither to 0 (white noise) — Bayer/IGN dithering
+	// ctx.nrdEnabled is the EFFECTIVE state (authored or automatic fallback),
+	// so fallback frames produce the NRD-branch packed radiance the denoiser
+	// consumes. When NRD is off, force lobe dither to 0 (white noise) — Bayer/IGN dithering
 	// is only needed for NRD's hit-distance reconstruction of skipped lobes.
 	uint32_t effectiveLobeDither = ctx.nrdEnabled ? (uint32_t)ctx.lobeDither : 0u;
 	SINRDUniformData nrdData = {
@@ -576,7 +610,7 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 	                     0, nullptr, 1, &historyPostBarrier, 0, nullptr);
 }
 
-void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
+bool FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 {
     if (ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugMode < 19 &&
         ctx.gbufferDebugPass.IsAvailable())
@@ -584,10 +618,15 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 		ctx.gbufferDebugPass.Record(cmd, ctx.renderExtent,
 		                          ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 		                          (uint32_t)ctx.gbufferDebugMode);
-		return;
+		return false;
 	}
 
-	bool useRasterFirst = ctx.rasterFirst && (ctx.camera.m_Aperture <= 0.0f);
+	bool useRasterFirst = ctx.rasterFirst &&
+		(ctx.camera.m_Aperture <= 0.0f || ctx.nativeNrdFallback);
+	// Dispatch: the approved automatic fallback (ActiveNativeNRD +
+	// nativeNrdFallback) bypasses raster-first gating inside
+	// ShouldRecordNativeNRD, so pure-path fallback still denoises natively
+	// on the pure path. Switch-off NativeNRD routing stays gated as before.
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
 	ctx.pathTracePass.Record(cmd, ctx.renderExtent, ctx.gbufferSet, useRasterFirst);
@@ -683,11 +722,143 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 		ctx.gbufferDebugPass.Record(cmd, ctx.renderExtent,
 		                            ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 		                            (uint32_t)ctx.gbufferDebugMode);
-		return;
+		return false;
 	}
 
-	if (ctx.nrdEnabled && ctx.nrd.IsAvailable() && useRasterFirst)
+	const RRBackend backend = ctx.rrLifecycle ? ctx.rrLifecycle->Backend() : RRBackend::NativeNRD;
+	if (ShouldRecordNativeNRD(backend, ctx.gbufferDebugMode >= 0, useRasterFirst,
+		ctx.nrdEnabled, ctx.nrd.IsAvailable(), ctx.nativeNrdFallback))
+	{
 		RecordNRDAndCompose(cmd, ctx);
+		return true;
+	}
+	return false;
+}
+
+FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordRR(VkCommandBuffer cmd, Context& ctx)
+{
+	RecordedFrameOutcome outcome;
+	if (!ctx.rrLifecycle || ctx.rrLifecycle->Backend() != RRBackend::ActiveRR ||
+		!ctx.ngxRuntime || !ctx.rrOutputImage || !ctx.rrOutputImage->IsValid() ||
+		!ctx.rasterFirst || ctx.camera.m_Aperture > 0.0f ||
+		!ctx.rrGuidePass.IsAvailable() || !ctx.rrGuides.IsValid())
+	{
+		return outcome;
+	}
+	const RRFrameDecision began = ctx.rrLifecycle->BeginEvaluation();
+	if (!began.useRR)
+	{
+		outcome.failureReason = began.reason;
+		return outcome;
+	}
+	const auto image = [](const GpuImage& source) {
+		RRFeatureImage result;
+		result.view = source.view;
+		result.image = source.image;
+		result.format = source.format;
+		result.width = source.width;
+		result.height = source.height;
+		return result;
+	};
+	RRFeatureEvaluation evaluation;
+	evaluation.noisyColor = image(ctx.rrGuides.Get(RRGuideKind::NoisyHdr));
+	evaluation.diffuseAlbedo = image(ctx.rrGuides.Get(RRGuideKind::DiffuseAlbedo));
+	evaluation.specularAlbedo = image(ctx.rrGuides.Get(RRGuideKind::SpecularAlbedo));
+	evaluation.normalRoughness = image(ctx.rrGuides.Get(RRGuideKind::NormalRoughness));
+	evaluation.depth = image(ctx.gbuffer.GetColor(GBufferTarget::VIEWZ));
+	evaluation.motion = image(ctx.gbuffer.GetColor(GBufferTarget::MOTION));
+	evaluation.specularHitDistance = image(ctx.rrGuides.Get(RRGuideKind::SpecularHitDistance));
+	evaluation.output = image(*ctx.rrOutputImage);
+	// A0 contract: NGX reads all inputs in SHADER_READ_ONLY_OPTIMAL and writes
+	// only the dedicated output in GENERAL.  The explicit fields are captured
+	// alongside the handles so the runtime cannot silently accept a wrong layout.
+	RRFeatureImage* ngxInputs[] = { &evaluation.noisyColor, &evaluation.diffuseAlbedo,
+		&evaluation.specularAlbedo, &evaluation.normalRoughness, &evaluation.depth,
+		&evaluation.motion, &evaluation.specularHitDistance };
+	for (RRFeatureImage* input : ngxInputs)
+		input->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	evaluation.output.layout = VK_IMAGE_LAYOUT_GENERAL;
+	evaluation.jitterX = 0.0f;
+	evaluation.jitterY = 0.0f;
+	evaluation.reset = ctx.rrLifecycle->ResetPending() ? 1 : 0;
+	evaluation.mvScaleX = 1.0f;
+	evaluation.mvScaleY = 1.0f;
+	glm::mat4 currentView = ctx.camera.GetView();
+	glm::mat4 currentProjection = ctx.camera.GetProjection();
+	evaluation.worldToView = glm::value_ptr(currentView);
+	evaluation.viewToClip = glm::value_ptr(currentProjection);
+	VkImageMemoryBarrier toNgx[7] = {};
+	const RRFeatureImage* inputImages[] = {
+		&evaluation.noisyColor, &evaluation.diffuseAlbedo, &evaluation.specularAlbedo,
+		&evaluation.normalRoughness, &evaluation.depth, &evaluation.motion,
+		&evaluation.specularHitDistance };
+	for (uint32_t i = 0; i < 7; ++i)
+	{
+		toNgx[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toNgx[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		toNgx[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		toNgx[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toNgx[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		toNgx[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toNgx[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toNgx[i].image = inputImages[i]->image;
+		toNgx[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		toNgx[i].subresourceRange.levelCount = 1;
+		toNgx[i].subresourceRange.layerCount = 1;
+	}
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+		0, nullptr, 0, nullptr, 7, toNgx);
+	std::string reason;
+	int32_t resultCode = 0;
+	const bool success = ctx.ngxRuntime->EvaluateRRFeature(cmd, evaluation, reason, &resultCode);
+	const RRFrameDecision completed = ctx.rrLifecycle->CompleteEvaluation(success, reason, resultCode,
+		RRFeatureHooks{ {}, {}, {}, {}, {}, [&ctx] { ctx.nrdNeedsReset = true; } });
+	if (!success)
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = completed.preserveDisplay;
+		outcome.failureReason = completed.reason;
+		return outcome;
+	}
+	// A0's opaque NGX consumer requires every input in read-only layout. The
+	// producer stream returns them to GENERAL before later raster/RT frames.
+	VkImageMemoryBarrier inputBarriers[7] = {};
+	for (uint32_t i = 0; i < 7; ++i)
+	{
+		inputBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		inputBarriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		inputBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		inputBarriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		inputBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		inputBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		inputBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		inputBarriers[i].image = inputImages[i]->image;
+		inputBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		inputBarriers[i].subresourceRange.levelCount = 1;
+		inputBarriers[i].subresourceRange.layerCount = 1;
+	}
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		0, 0, nullptr, 0, nullptr, 7, inputBarriers);
+	VkImageMemoryBarrier outputBarrier{};
+	outputBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	outputBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	outputBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	outputBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	outputBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	outputBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	outputBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	outputBarrier.image = ctx.rrOutputImage->image;
+	outputBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	outputBarrier.subresourceRange.levelCount = 1;
+	outputBarrier.subresourceRange.layerCount = 1;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &outputBarrier);
+	outcome.rrEvaluated = true;
+	outcome.hdrSource = ctx.rrOutputImage->view;
+	return outcome;
 }
 
 void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
@@ -836,7 +1007,9 @@ void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
 	linearReady.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	linearReady.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	linearReady.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	linearReady.image = ctx.outputImage.image;
+	const bool useRR = ctx.rrLifecycle && ctx.rrLifecycle->State().rrOutputValid &&
+		ctx.rrOutputImage && ctx.rrOutputImage->IsValid();
+	linearReady.image = useRR ? ctx.rrOutputImage->image : ctx.outputImage.image;
 	linearReady.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	linearReady.subresourceRange.levelCount = 1;
 	linearReady.subresourceRange.layerCount = 1;
@@ -847,7 +1020,9 @@ void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
 		0, nullptr, 0, nullptr, 1, &linearReady);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	ctx.tonemapPass.Record(cmd, ctx.outputExtent);
+	ctx.tonemapPass.UpdateDescriptorSet(ctx.device,
+		useRR ? ctx.rrOutputImage->view : ctx.outputImage.view, ctx.displayImage.view);
+	ctx.tonemapPass.Record(cmd, ctx.outputExtent, useRR);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 }

@@ -690,6 +690,7 @@ public:
 		{
 			if (m_RendererGPU.Init())
 			{
+				m_RendererGPU.SetNgxRuntime(m_Ngx.get(), g_CLI.devRRStatic);
 				m_Settings = m_RendererGPU.GetSettings();
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
@@ -2597,6 +2598,7 @@ public:
 		// otherwise run after Walnut has destroyed that device.
 		if (m_Ngx)
 		{
+			m_RendererGPU.ReleaseRRFeature();
 			const bool shutdownOk = m_Ngx->Shutdown();
 			(void)shutdownOk;
 			const std::string report = m_Ngx->Snapshot().Format();
@@ -3030,6 +3032,7 @@ private:
 		{
 			if (m_RendererGPU.Init())
 			{
+				m_RendererGPU.SetNgxRuntime(m_Ngx.get(), g_CLI.devRRStatic);
 				m_Settings = m_RendererGPU.GetSettings();
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
@@ -3270,6 +3273,17 @@ private:
 		};
 
 		std::vector<GpuTimestampProfiler::Timings> benchmarkTimings;
+		RendererGPU::RenderOutcome lastRenderOutcome;
+		bool renderFailure = false;
+		bool outputPersistenceFailure = false;
+		auto discardOutput = [&](const std::string& path) {
+			if (path.empty()) return;
+			std::error_code removeError;
+			if (std::filesystem::remove(path, removeError))
+				RT_LOG("[Headless] discarded stale output: %s", path.c_str());
+			else if (removeError)
+				RT_LOG("[Headless] unable to discard output %s: %s", path.c_str(), removeError.message().c_str());
+		};
 		glm::mat4 expectedCurrentViewToClip(1.0f), expectedCurrentWorldToView(1.0f);
 		glm::mat4 expectedPreviousViewToClip(1.0f), expectedPreviousWorldToView(1.0f);
 		bool haveExpectedCameraSample = false;
@@ -3336,14 +3350,38 @@ private:
 			haveExpectedCameraSample = true;
 			Timer timer;
 			if (m_RendererGPU.IsAvailable())
-				m_RendererGPU.Render(m_Cam);
+			{
+				lastRenderOutcome = m_RendererGPU.Render(m_Cam);
+				if (lastRenderOutcome.failure || !lastRenderOutcome.submitted ||
+					!lastRenderOutcome.captureAllowed)
+				{
+					renderFailure = true;
+					RT_LOG("[Headless] frame %d discarded: %s", i + 1,
+						lastRenderOutcome.failureReason.empty() ? "no capture source" :
+						lastRenderOutcome.failureReason.c_str());
+				}
+			}
+			else
+			{
+				// Required renderer stages (including RR guides and the base
+				// tonemap pipeline) are part of the checked headless outcome.
+				// Do not let a missing shader turn into a zero exit/done marker.
+				renderFailure = true;
+				lastRenderOutcome.failure = true;
+				lastRenderOutcome.failureReason = "required renderer stage is unavailable";
+				RT_LOG("[Headless] frame %d discarded: %s", i + 1,
+					lastRenderOutcome.failureReason.c_str());
+			}
 			collectBenchmarkTiming();
 			float ms = timer.ElapsedMillis();
 			if (g_CLI.verbose || i == g_CLI.frames - 1)
 				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
 			fflush(stdout);
 
-			if (g_CLI.captureEvery > 0 && m_RendererGPU.IsAvailable())
+			if (g_CLI.captureEvery > 0 && ShouldCommitHeadlessOutput(
+				!g_CLI.outputPath.empty() || !g_CLI.outputHDRPath.empty(),
+				m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
+				lastRenderOutcome.captureAllowed, renderFailure))
 			{
 				bool stillFrame = g_CLI.cameraSweepWarmup > 0 && i == g_CLI.cameraSweepWarmup - 1;
 				bool periodicFrame = i >= g_CLI.cameraSweepWarmup &&
@@ -3352,14 +3390,18 @@ private:
 				                       i - g_CLI.cameraSweepWarmup >= g_CLI.cameraSweepCycles * g_CLI.cameraSweepPeriod;
 				if (stillFrame)
 				{
-					if (!g_CLI.outputPath.empty()) saveOutput(sequencePath(g_CLI.outputPath, "still", -1));
-					if (!g_CLI.outputHDRPath.empty()) saveHDROutput(sequencePath(g_CLI.outputHDRPath, "still", -1));
+					if (!g_CLI.outputPath.empty()) outputPersistenceFailure =
+						!saveOutput(sequencePath(g_CLI.outputPath, "still", -1)) || outputPersistenceFailure;
+					if (!g_CLI.outputHDRPath.empty()) outputPersistenceFailure =
+						!saveHDROutput(sequencePath(g_CLI.outputHDRPath, "still", -1)) || outputPersistenceFailure;
 				}
 				else if (periodicFrame)
 				{
 					const char* tag = holdFrame ? "hold" : "move";
-					if (!g_CLI.outputPath.empty()) saveOutput(sequencePath(g_CLI.outputPath, tag, i + 1));
-					if (!g_CLI.outputHDRPath.empty()) saveHDROutput(sequencePath(g_CLI.outputHDRPath, tag, i + 1));
+					if (!g_CLI.outputPath.empty()) outputPersistenceFailure =
+						!saveOutput(sequencePath(g_CLI.outputPath, tag, i + 1)) || outputPersistenceFailure;
+					if (!g_CLI.outputHDRPath.empty()) outputPersistenceFailure =
+						!saveHDROutput(sequencePath(g_CLI.outputHDRPath, tag, i + 1)) || outputPersistenceFailure;
 				}
 			}
 		}
@@ -3404,10 +3446,18 @@ private:
 			fflush(stdout);
 		}
 
-		if (!g_CLI.outputPath.empty() && m_RendererGPU.IsAvailable())
-			saveOutput(g_CLI.outputPath);
-		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable())
-			saveHDROutput(g_CLI.outputHDRPath);
+		if (ShouldCommitHeadlessOutput(!g_CLI.outputPath.empty(),
+			m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
+			lastRenderOutcome.captureAllowed, renderFailure))
+			outputPersistenceFailure = !saveOutput(g_CLI.outputPath) || outputPersistenceFailure;
+		else if (renderFailure)
+			discardOutput(g_CLI.outputPath);
+		if (ShouldCommitHeadlessOutput(!g_CLI.outputHDRPath.empty(),
+			m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
+			lastRenderOutcome.captureAllowed, renderFailure))
+			outputPersistenceFailure = !saveHDROutput(g_CLI.outputHDRPath) || outputPersistenceFailure;
+		else if (renderFailure)
+			discardOutput(g_CLI.outputHDRPath);
 		if (!g_CLI.rrGuidePair.empty() && g_CLI.rrGuideReport.empty())
 		{
 			std::vector<float> pairPixels;
@@ -3508,12 +3558,26 @@ private:
 		}
 		rrGuideReportFailure = rrGuideReportFailure || rrGuidePairFailure;
 
+		if (renderFailure)
+		{
+			printf("[Headless] render FAILED; no output committed\n");
+			fflush(stdout);
+			Walnut::Application::Get().Close();
+			std::exit(EXIT_FAILURE);
+		}
 		if (rrGuideReportFailure)
 		{
 			// A requested report is a checked artifact, not best-effort logging.
 			// Do not print the success marker when any semantic or durable-write
 			// check failed; automation must receive a nonzero status.
 			printf("[Headless] RR guide report FAILED\n");
+			fflush(stdout);
+			Walnut::Application::Get().Close();
+			std::exit(EXIT_FAILURE);
+		}
+		if (outputPersistenceFailure)
+		{
+			printf("[Headless] output persistence FAILED; no done marker\n");
 			fflush(stdout);
 			Walnut::Application::Get().Close();
 			std::exit(EXIT_FAILURE);

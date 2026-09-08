@@ -29,6 +29,7 @@
 #include "GpuTimestampProfiler.h"
 #include "RenderInstanceMap.h"
 #include "GpuPickingPass.h"
+#include "NgxRuntime.h"
 #include "RenderExtents.h"
 #include <array>
 #include <memory>
@@ -38,21 +39,44 @@
 class RendererGPU
 {
 public:
+	struct FullResolutionHdrSource
+	{
+		VkImage image = VK_NULL_HANDLE;
+		VkImageView view = VK_NULL_HANDLE;
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		OutputExtent extent;
+		const char* name = "none";
+		bool valid = false;
+	};
+	struct RenderOutcome
+	{
+		bool submitted = false;
+		bool captureAllowed = false;
+		bool rrEvaluated = false;
+		bool nrdRecorded = false;
+		bool failure = false;
+		std::string failureReason;
+		FullResolutionHdrSource hdrSource;
+	};
 	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 	RendererGPU() = default;
 	~RendererGPU() { Destroy(); }
 
 	void Destroy();
 
-	bool IsAvailable() const { return m_Initialized && !m_RRGuideInitFailed; }
+	bool IsAvailable() const { return m_Initialized && !m_RRGuideInitFailed && m_TonemapPass.IsAvailable(); }
 
 	void OnResize(const OutputExtent& outputExtent);
 	void OnResize(uint32_t width, uint32_t height)
 	{
 		if (const auto extent = OutputExtent::TryCreate(width, height)) OnResize(*extent);
 	}
-	void Render(const Camera& camera);
+	RenderOutcome Render(const Camera& camera);
 	void SetRRGuideReportMode(bool enabled) { m_RRGuideReportMode = enabled; }
+	void SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR);
+	void ReleaseRRFeature();
+	const RRFeatureState& GetRRState() const { return m_RR.State(); }
 	void SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
 	// Diagnostic: dump every material's metallic/roughness factors and texture
 	// indices to the log, flagging fully-metallic materials that have no
@@ -96,6 +120,8 @@ public:
 	bool HasOutput() const { return m_OutputImage.IsValid() && m_DisplayImage.IsValid(); }
 	OutputExtent GetOutputExtent() const { return m_OutputExtent; }
 	RenderExtent GetRenderExtent() const { return m_RenderExtent; }
+	const FullResolutionHdrSource& GetHdrSource() const { return m_HdrSource; }
+	const RenderOutcome& GetLastRenderOutcome() const { return m_LastRenderOutcome; }
 
 	struct PickResult
 	{
@@ -177,8 +203,12 @@ public:
 private:
 	void CreateOutputImage();
 	void DestroyOutputImage();
+	void CreateRROutputImage();
+	void DestroyRROutputImage();
 	void UpdateCameraUBO(const Camera& camera);
 	void UpdatePathTraceDescriptorSet();
+	bool ReadbackHdrSource(std::vector<float>& outPixelsRGBA32F,
+		uint32_t& outWidth, uint32_t& outHeight);
 
 	// G-buffer images + descriptor set
 	void CreateGBufferImages();
@@ -187,6 +217,9 @@ private:
 	void UpdateGBufferDescriptorSet();
 
 	void CreateFallbackTexture();
+	void UpdateRREligibility(const Camera& camera);
+	RRFeatureHooks MakeRRHooks();
+	bool PrepareRRFeature();
 
 	bool m_Initialized = false;
 
@@ -196,6 +229,7 @@ private:
 	RenderExtent m_RenderExtent;
 
 	GpuImage m_OutputImage;  // RGBA32F linear beauty + accumulation history
+	GpuImage m_RROutputImage; // RGBA16F full-resolution DLSS-RR output
 	GpuImage m_DisplayImage; // RGBA8 Reinhard-tonemapped viewport image
 	GpuImage m_FallbackTexture; // 1x1 white, used for missing texture views
 	VkSampler m_Sampler = VK_NULL_HANDLE;
@@ -270,6 +304,17 @@ private:
 	RRGuidePass m_RRGuidePass;
 	bool m_RRGuideInitFailed = false;
 	bool m_RRGuideReportMode = false;
+	NgxRuntime* m_NgxRuntime = nullptr; // non-owning; NgxRuntime owns SDK state
+	bool m_DevStaticRR = false;
+	bool m_AutomaticNativeNrdFallback = false;
+	bool m_ForceNativeRebuild = false;
+	bool m_RRModeEligible = false;
+	RREligibility m_RRModeEligibility = RREligibility::DeveloperDisabled;
+	bool m_RRDiagnosticBypass = false;
+	std::string m_RRModeReason = "RR developer mode is disabled";
+	RRFeatureLifecycle m_RR;
+	FullResolutionHdrSource m_HdrSource;
+	RenderOutcome m_LastRenderOutcome;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

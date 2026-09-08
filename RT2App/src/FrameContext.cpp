@@ -61,3 +61,20 @@ void FrameContext::Submit(VkQueue queue)
 	VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, renderFence));
 	fenceSignaled = true;
 }
+
+void FrameContext::AbortAndSubmitEmpty(VkDevice device, VkQueue queue)
+{
+	VK_CHECK(vkEndCommandBuffer(commandBuffer));
+	VK_CHECK(vkResetCommandPool(device, commandPool, 0));
+	VkCommandBufferBeginInfo beginInfo{};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+	VK_CHECK(vkEndCommandBuffer(commandBuffer));
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffer;
+	VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, renderFence));
+	fenceSignaled = true;
+}

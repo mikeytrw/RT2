@@ -60,6 +60,11 @@ constexpr uint32_t RR_GUIDE_MAX_IMAGES = 6;
 constexpr uint32_t RR_GUIDE_MAX_ALLOCATIONS = 8;
 constexpr uint64_t RR_GUIDE_MAX_RT2_BYTES = 224ull * 1024ull * 1024ull;
 
+// Combined W3 guide + W4 RR-output budget.  NGX-private allocations are not
+// observable through the pinned SDK and are intentionally excluded here.
+bool ValidateRRGuideResourceBudget(uint32_t imageCount, uint32_t allocationCount,
+	uint64_t rt2OwnedBytes);
+
 const RRGuideContract& GetRRGuideContract(RRGuideKind kind);
 const std::array<RRGuideContract, static_cast<size_t>(RRGuideKind::Count)>& GetRRGuideContracts();
 uint32_t RRGuideBytesPerPixel(RRGuideFormat format);

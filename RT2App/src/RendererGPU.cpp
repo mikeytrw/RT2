@@ -1,4 +1,4 @@
-﻿#include "RendererGPU.h"
+#include "RendererGPU.h"
 #include "ColorTransfer.h"
 #include "ShaderManager.h"
 #include "RTLog.h"
@@ -15,6 +15,48 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 #include <cstring>
+#include <cmath>
+
+namespace
+{
+const char* RRBackendName(RRBackend backend)
+{
+	switch (backend)
+	{
+	case RRBackend::NativeNRD: return "native-nrd";
+	case RRBackend::RequestedRR: return "requested-rr";
+	case RRBackend::ActiveRR: return "active-rr";
+	case RRBackend::FallbackPending: return "fallback-pending";
+	case RRBackend::ActiveNativeNRD: return "active-native-nrd";
+	case RRBackend::NativeDiagnosticBypass: return "native-diagnostic-bypass";
+	}
+	return "unknown";
+}
+
+float HalfToFloat(uint16_t h)
+{
+	const uint32_t sign = (uint32_t(h & 0x8000u) << 16);
+	uint32_t exp = (h >> 10) & 0x1Fu;
+	uint32_t mant = h & 0x3FFu;
+	uint32_t bits;
+	if (exp == 0)
+	{
+		if (!mant) bits = sign;
+		else
+		{
+			exp = 1;
+			while ((mant & 0x400u) == 0) { mant <<= 1; --exp; }
+			mant &= 0x3FFu;
+			bits = sign | ((exp + 112u) << 23) | (mant << 13);
+		}
+	}
+	else if (exp == 31) bits = sign | 0x7F800000u | (mant << 13);
+	else bits = sign | ((exp + 112u) << 23) | (mant << 13);
+	float value;
+	std::memcpy(&value, &bits, sizeof(value));
+	return value;
+}
+}
 
 bool RendererGPU::Init()
 {
@@ -77,10 +119,134 @@ bool RendererGPU::Init()
 	return true;
 }
 
+void RendererGPU::SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR)
+{
+	m_NgxRuntime = runtime;
+	m_DevStaticRR = devStaticRR;
+	m_AutomaticNativeNrdFallback = false;
+	m_RR.SetRequested(devStaticRR);
+	if (!devStaticRR && m_RROutputImage.IsValid())
+	{
+		DestroyRROutputImage();
+		m_RR.SetRequested(false);
+	}
+	m_RRModeEligible = false;
+	m_RRModeEligibility = devStaticRR ? RREligibility::Uninitialized : RREligibility::DeveloperDisabled;
+	m_RRDiagnosticBypass = false;
+	m_RRModeReason = devStaticRR ? "RR eligibility has not been evaluated" :
+		"RR developer mode is disabled";
+}
+
+RRFeatureHooks RendererGPU::MakeRRHooks()
+{
+	RRFeatureHooks hooks;
+	if (!m_NgxRuntime) return hooks;
+	hooks.queryOptimalSettings = [runtime = m_NgxRuntime](OutputExtent output,
+		RRQualityMode, RROptimalSettings& settings, std::string& reason) {
+		return runtime->QueryRROptimalSettings(output, settings, reason);
+	};
+	hooks.waitIdle = [runtime = m_NgxRuntime](std::string& reason) {
+		return runtime->WaitForRRDeviceIdle(reason);
+	};
+	hooks.release = [runtime = m_NgxRuntime](std::string& reason) {
+		return runtime->ReleaseRRFeature(reason);
+	};
+	hooks.resetHistory = [this] { m_NRDNeedsReset = true; };
+	return hooks;
+}
+
+void RendererGPU::UpdateRREligibility(const Camera& camera)
+{
+	const bool ngxSupported = m_NgxRuntime && m_NgxRuntime->Snapshot().IsSupported();
+	const bool projectionValid = std::isfinite(camera.GetVerticalFOV()) && camera.GetVerticalFOV() > 0.0f;
+	const RREligibilityDecision decision = ClassifyRREligibility(m_DevStaticRR, ngxSupported,
+		m_Settings.rasterFirst, m_Settings.gbufferDebugMode >= 0, camera.m_Aperture, projectionValid);
+	const bool eligible = decision.IsEligible();
+	const bool diagnosticBypass = decision.IsDiagnosticBypass();
+	std::string reason = decision.Reason();
+	if (decision.kind == RREligibility::NgxUnavailable && m_NgxRuntime &&
+		!m_NgxRuntime->Snapshot().reason.empty())
+	{
+		// Preserve the lifecycle authority's exact SDK/requirement diagnosis;
+		// the typed policy still owns the eligibility comparison.
+		reason = m_NgxRuntime->Snapshot().reason;
+	}
+	// Compare the normalized typed policy, never a raw empty-vs-literal reason
+	// sentinel. Stable eligibility therefore cannot force a rebuild each frame.
+	if (decision.kind != m_RRModeEligibility || eligible != m_RRModeEligible ||
+		diagnosticBypass != m_RRDiagnosticBypass || reason != m_RRModeReason)
+	{
+		m_RRModeEligible = eligible;
+		m_RRModeEligibility = decision.kind;
+		m_RRDiagnosticBypass = diagnosticBypass;
+		m_RRModeReason = reason;
+		m_ForceNativeRebuild = true;
+		RT_LOG("[RR] eligibility=%s reason=%s", eligible ? "eligible" :
+			diagnosticBypass ? "native-diagnostic-bypass" : "native-nrd",
+			m_RRModeReason.c_str());
+	}
+}
+
+bool RendererGPU::PrepareRRFeature()
+{
+	if (!m_RRModeEligible || !m_NgxRuntime ||
+		m_RR.Backend() != RRBackend::RequestedRR)
+		return true;
+	if (!m_RR.SelectedTuple() || !m_RROutputImage.IsValid() || !m_RRGuides.IsValid())
+	{
+		m_RRModeEligible = false;
+		m_RRModeReason = "RR resources are unavailable after Quality selection";
+		RRFeatureHooks hooks = MakeRRHooks();
+		// Approved automatic fallback owns pure-path/DOF requests too: only
+		// the diagnostic bypass is excluded. Raster-first gating lives in
+		// the dispatch policy, not in fallback eligibility.
+		m_AutomaticNativeNrdFallback = !m_RRDiagnosticBypass;
+		const RRIneligibleMode mode = m_AutomaticNativeNrdFallback ?
+			RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD;
+		m_RR.SetIneligible(m_OutputExtent, m_RRModeReason, hooks, mode);
+		m_ForceNativeRebuild = true;
+		RT_LOG("[RR] eligibility=native-nrd reason=%s", m_RRModeReason.c_str());
+		return true;
+	}
+	RRFeatureHooks hooks = MakeRRHooks();
+	hooks.create = [this](const RRQualityTuple& tuple, std::string& reason) {
+		bool created = false;
+		CommandUtils::ImmediateSubmit(m_Device, [this, &tuple, &reason, &created](VkCommandBuffer command) {
+			created = m_NgxRuntime->CreateRRFeature(command, tuple, reason);
+		});
+		return created;
+	};
+	return m_RR.Activate(hooks);
+}
+
+void RendererGPU::ReleaseRRFeature()
+{
+	if (!m_NgxRuntime) return;
+	if (m_RR.State().featureOwned)
+	{
+		RRFeatureHooks hooks = MakeRRHooks();
+		if (!m_RR.InvalidateResources(hooks))
+		{
+			RT_LOG("[RR] feature release failed: %s", m_RR.FallbackReason().c_str());
+			return;
+		}
+		return;
+	}
+	std::string reason;
+	if ((!m_NgxRuntime->WaitForRRDeviceIdle(reason) || !m_NgxRuntime->ReleaseRRFeature(reason)) && !reason.empty())
+		RT_LOG("[RR] feature release failed: %s", reason.c_str());
+}
+
 void RendererGPU::Destroy()
 {
 	VkDevice device = m_Device.device;
 	vkDeviceWaitIdle(device);
+	if (m_NgxRuntime && m_NgxRuntime->HasRRFeature())
+	{
+		std::string reason;
+		(void)m_NgxRuntime->WaitForRRDeviceIdle(reason);
+		(void)m_NgxRuntime->ReleaseRRFeature(reason);
+	}
 	m_GpuProfiler.Destroy(device);
 	m_PickingPass.Destroy();
 
@@ -191,6 +357,7 @@ void RendererGPU::CreateOutputImage()
 void RendererGPU::DestroyOutputImage()
 {
 	VkDevice device = m_Device.device;
+	DestroyRROutputImage();
 
 	// Free the ImGui descriptor set before destroying the image view/sampler
 	// it references â€” otherwise the GPU may sample a destroyed resource.
@@ -211,6 +378,47 @@ void RendererGPU::DestroyOutputImage()
 	m_OutputImage.image = VK_NULL_HANDLE;
 	m_OutputImage.memory = VK_NULL_HANDLE;
 	m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	m_HdrSource = {};
+}
+
+void RendererGPU::CreateRROutputImage()
+{
+	if (!m_DevStaticRR || !m_RRModeEligible || !m_RR.SelectedTuple() ||
+		(m_RR.Backend() != RRBackend::RequestedRR && m_RR.Backend() != RRBackend::ActiveRR) ||
+		!m_RenderExtent.IsValid() || !m_NgxRuntime ||
+		!m_NgxRuntime->Snapshot().IsSupported())
+		return;
+	GpuResources::CreateImage(m_Device, m_OutputExtent.Width(), m_OutputExtent.Height(),
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+		VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_RROutputImage);
+	if (!m_RROutputImage.IsValid())
+	{
+		RT_LOG("[RR] failed to allocate dedicated output image; native NRD remains active");
+		return;
+	}
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = m_RROutputImage.image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	});
+}
+
+void RendererGPU::DestroyRROutputImage()
+{
+	if (m_RROutputImage.IsValid())
+		GpuResources::DestroyImage(m_Device, m_RROutputImage);
 }
 
 void RendererGPU::CreateFallbackTexture()
@@ -277,11 +485,22 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	const uint32_t width = outputExtent.Width();
 	const uint32_t height = outputExtent.Height();
 
-	if (m_OutputExtent == outputExtent && m_OutputImage.image != VK_NULL_HANDLE)
+	if (!m_ForceNativeRebuild && m_OutputExtent == outputExtent && m_OutputImage.image != VK_NULL_HANDLE)
 		return;
 
 	VkDevice device = m_Device.device;
-	vkDeviceWaitIdle(device);
+	RRFeatureHooks releaseHooks = MakeRRHooks();
+	if (m_NgxRuntime && m_RR.State().featureOwned)
+	{
+		if (!m_RR.InvalidateResources(releaseHooks))
+		{
+			RT_LOG("[RR] resize blocked: feature release failed: %s",
+				m_RR.FallbackReason().c_str());
+			return;
+		}
+	}
+	else
+		vkDeviceWaitIdle(device);
 
 	// Free old descriptor set before allocating a new one
 	m_PathTracePass.FreeDescriptorSet();
@@ -290,8 +509,50 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 
 	m_OutputExtent = outputExtent;
 	m_RenderExtent = outputExtent.ToRenderNative();
+	if (m_RR.State().failureLatched)
+	{
+		// The failed feature has already latched its exact reason. This rebuild is
+		// the sole safe edge that makes native NRD authoritative; never retry NGX.
+		// Fallback eligibility excludes only the diagnostic bypass: pure-path
+		// and DOF requests stay owned by the fallback, not the normal path.
+		m_RR.SetFallbackRecovered();
+		m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass;
+		RT_LOG("[RR] fallback recovered backend=%s reason=%s", RRBackendName(m_RR.Backend()),
+			m_RR.FallbackReason().c_str());
+	}
+	else if (m_RRModeEligible && m_NgxRuntime)
+	{
+		m_AutomaticNativeNrdFallback = false;
+		RRFeatureHooks hooks = MakeRRHooks();
+		if (m_RR.SelectTuple(outputExtent, hooks))
+		{
+			if (const RRQualityTuple* tuple = m_RR.SelectedTuple())
+				m_RenderExtent = tuple->render;
+		}
+		else
+		{
+			RT_LOG("[RR] Quality extent unavailable (%s); native resolution is retained",
+				m_RR.FallbackReason().c_str());
+			m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass;
+			m_RR.SetFallbackRecovered();
+		}
+	}
+	else if (m_DevStaticRR)
+	{
+		RRFeatureHooks hooks = MakeRRHooks();
+		// Requested-but-ineligible RR (unavailable NGX, pure-path, DOF,
+		// unsupported camera) settles on native NRD. Only the G-buffer
+		// diagnostic bypass is excluded; switch-off behavior is untouched
+		// because this branch requires the developer switch.
+		m_AutomaticNativeNrdFallback = !m_RRDiagnosticBypass;
+		const RRIneligibleMode mode = m_RRDiagnosticBypass ? RRIneligibleMode::NativeDiagnosticBypass :
+			(m_AutomaticNativeNrdFallback ? RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD);
+		if (!m_RR.SetIneligible(outputExtent, m_RRModeReason, hooks, mode))
+			RT_LOG("[RR] eligibility fallback release failed: %s", m_RR.FallbackReason().c_str());
+	}
 
 	CreateOutputImage();
+	CreateRROutputImage();
 	m_TonemapPass.UpdateDescriptorSet(m_Device, m_OutputImage.view, m_DisplayImage.view);
 	CreateGBufferImages();
 	m_Reservoirs.Create(m_Device, m_RenderExtent);
@@ -305,8 +566,8 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	m_PathTracePass.CreateDescriptorSet(m_Device, texCount > 0 ? texCount : 1);
 	UpdateGBufferDescriptorSet();
 
-	// Initialize NRD if enabled
-	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable())
+	// Initialize NRD for the authored path or for the explicit RR fallback.
+	if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) && !m_NRD.IsAvailable())
 	{
 		m_NRD.Init(m_Device.instance,
 		           m_Device.physicalDevice,
@@ -315,7 +576,13 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		           m_Device.queueFamily,
 		           m_RenderExtent);
 	}
-	else if (m_Settings.nrdEnabled && m_NRD.IsAvailable())
+	if (m_RR.Backend() == RRBackend::ActiveNativeNRD && !m_NRD.IsAvailable())
+	{
+		m_RR.SetNativeNrdUnavailable();
+		RT_LOG("[RR] native NRD unavailable; backend=%s reason=%s",
+			RRBackendName(m_RR.Backend()), m_RR.FallbackReason().c_str());
+	}
+	else if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) && m_NRD.IsAvailable())
 	{
 		m_NRD.OnResize(m_RenderExtent);
 	}
@@ -328,6 +595,7 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
 	CancelPicks();
+	m_ForceNativeRebuild = false;
 }
 
 void RendererGPU::CancelPicks()
@@ -492,6 +760,7 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData, const Rend
 	m_ComposeDescriptorSetCached = false;
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
+	m_RR.RequestHistoryReset(MakeRRHooks());
 
 	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild() && !m_Scene.IsTextureUploadPending())
 	{
@@ -558,6 +827,7 @@ void RendererGPU::SetScene(GPUSceneData& sceneData, const RenderInstanceMap& ins
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_RR.RequestHistoryReset(MakeRRHooks());
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
 
@@ -656,6 +926,9 @@ void RendererGPU::ResetAccumulation()
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	// Scene setters request first; this second request coalesces while one
+	// is already pending, so each host transition is exactly one RR edge.
+	m_RR.RequestHistoryReset(MakeRRHooks());
 	// Keep the previous camera matrices across accumulation resets.  A camera
 	// cut resets beauty history, but motion remains a current->previous render
 	// pixel signal for the frame that follows; clearing these here would make
@@ -782,6 +1055,11 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
 {
+	// Effective NRD drives every per-frame signal decision: authored NRD or
+	// the approved automatic native-NRD fallback (R1). The fallback's packed
+	// radiance/NRD inputs must match what NRD/compose will consume.
+	const bool effectiveNrd = EffectiveNrdEnabled(m_Settings.nrdEnabled,
+		m_AutomaticNativeNrdFallback);
 	// Detect camera movement and reset accumulation when NRD is off and
 	// accumulation is enabled. Without this, temporal accumulation blends
 	// 1/N of each frame, leaving the old noise pattern frozen in screen space.
@@ -789,7 +1067,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// so the RNG seed varies per frame for fresh Monte Carlo noise.
 	glm::vec3 camPos = camera.GetPosition();
 	glm::vec3 camFwd = camera.GetDirection();
-	if (!m_Settings.nrdEnabled && m_Settings.accumulate && m_HasPrevCamera)
+	if (!effectiveNrd && m_Settings.accumulate && m_HasPrevCamera)
 	{
 		float posDiff = glm::distance(camPos, m_PrevCameraPos);
 		float fwdDiff = glm::distance(camFwd, m_PrevCameraForward);
@@ -805,7 +1083,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// When accumulation is off, pass negative frameIndex so temporalAccumulate
 	// skips blending, while initRNG uses abs() for a per-frame-varying seed.
 	float frameIdxForShader = (float)m_FrameIndex;
-	if (!m_Settings.nrdEnabled && !m_Settings.accumulate)
+	if (!effectiveNrd && !m_Settings.accumulate)
 		frameIdxForShader = -(float)m_FrameIndex;
 	ubo.position = glm::vec4(camera.GetPosition(), frameIdxForShader);
 
@@ -816,7 +1094,9 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// subpixel sequence adds temporal instability to both reservoir and NRD
 	// histories. This also enforces the policy for CLI-created settings.
 	bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
-	if (m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled && !restirActive)
+	const bool staticRRNoJitter = ShouldForceStaticRRNoJitter(
+		m_DevStaticRR && m_RR.IsRequested(), m_Settings.restirEnabled, m_Settings.restirGIEnabled);
+	if (!staticRRNoJitter && effectiveNrd && m_Settings.nrdJitterEnabled && !restirActive)
 	{
 		// Halton sequence (base 2, base 3) for low-discrepancy jitter
 		auto halton = [](int index, int base) -> float {
@@ -869,15 +1149,39 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	m_PrevWorldToViewForFrame = prevWorldToView;
 }
 
-void RendererGPU::Render(const Camera& camera)
+RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 {
-	if (!IsAvailable() || m_OutputImage.image == VK_NULL_HANDLE) return;
+	RenderOutcome outcome;
+	// A source is valid only for the most recently submitted frame.  Clearing
+	// it before recording prevents a discarded frame from exposing a previous
+	// image to headless readback/report code while the editor keeps its prior
+	// presentation untouched.
+	m_HdrSource = {};
+	if (!IsAvailable() || m_OutputImage.image == VK_NULL_HANDLE)
+	{
+		outcome.failure = true;
+		outcome.failureReason = "renderer output is unavailable";
+		m_LastRenderOutcome = outcome;
+		return outcome;
+	}
 
 	// Check dirty flag — auto reset accumulation on settings change
 	if (m_Settings.dirty)
 	{
 		ResetAccumulation();
 		m_Settings.dirty = false;
+	}
+	UpdateRREligibility(camera);
+	if (!RequiredRenderStagesAvailable(IsAvailable(),
+		m_RR.Backend() == RRBackend::ActiveRR,
+		m_TonemapPass.IsAvailable(), m_TonemapPass.IsRRTonemapAvailable()))
+	{
+		outcome.failure = true;
+		outcome.failureReason = m_RR.Backend() == RRBackend::ActiveRR ?
+			"required RR tonemap shader/pipeline is unavailable" :
+			"required renderer stage is unavailable";
+		m_LastRenderOutcome = outcome;
+		return outcome;
 	}
 
 	RT_LOG("[Render] frame=%d needsASRebuild=%d", m_FrameIndex, m_Scene.NeedsASRebuild());
@@ -905,18 +1209,26 @@ void RendererGPU::Render(const Camera& camera)
 	// If an async AS rebuild is pending, skip rendering until it completes
 	// (the loading modal polls PollASRebuild each frame).
 	if (m_Scene.IsASRebuildPending())
-		return;
+	{
+		outcome.failureReason = "acceleration-structure rebuild is pending";
+		m_LastRenderOutcome = outcome;
+		return outcome;
+	}
 
 	if (!m_Scene.IsValid())
 	{
 		static bool warned = false;
 		if (!warned) { RT_LOG("[RT2] Render: TLAS not valid (no mesh loaded?)"); warned = true; }
-		return;
+		outcome.failureReason = "scene acceleration structure is unavailable";
+		m_LastRenderOutcome = outcome;
+		return outcome;
 	}
 
 	if (m_Scene.IsTextureUploadPending())
 	{
-		return;
+		outcome.failureReason = "scene texture upload is pending";
+		m_LastRenderOutcome = outcome;
+		return outcome;
 	}
 
 	if (const_cast<Camera&>(camera).checkHasMoved())
@@ -924,12 +1236,34 @@ void RendererGPU::Render(const Camera& camera)
 		// Only reset accumulation counter when temporal accumulation is active
 		// (non-NRD path with accumulate enabled). With accumulation off, keep
 		// m_FrameIndex incrementing so the RNG seed varies per frame.
-		if (m_Settings.accumulate && !m_Settings.nrdEnabled)
+		// Effective NRD (authored or automatic fallback) takes the NRD path.
+		if (m_Settings.accumulate && !EffectiveNrdEnabled(m_Settings.nrdEnabled,
+			m_AutomaticNativeNrdFallback))
 			m_FrameIndex = 1;
 	}
 
-	// Lazy-init NRD when toggled on
-	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable() && m_RenderExtent.IsValid())
+	VkDevice device = m_Device.device;
+
+	// The frame slot must be idle before a rebuild can destroy/recreate images.
+	// Finalize the native/RR extent first; UpdateCameraUBO below then records the
+	// same dimensions that every shader-visible descriptor and dispatch uses.
+	FrameContext& frame = m_Frames[m_CurrentFrame];
+	frame.WaitForFence(device);
+	if (m_ForceNativeRebuild && m_OutputExtent.IsValid())
+	{
+		OnResize(m_OutputExtent);
+		if (m_OutputImage.image == VK_NULL_HANDLE)
+		{
+			outcome.failure = true;
+			outcome.failureReason = "renderer resize did not produce an output image";
+			m_LastRenderOutcome = outcome;
+			return outcome;
+		}
+	}
+
+	// Lazy-init NRD when toggled on, including the automatic RR fallback.
+	if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) &&
+		!m_NRD.IsAvailable() && m_RenderExtent.IsValid())
 	{
 		RT_LOG("[Render] initializing NRD (%ux%u)", m_RenderExtent.Width(), m_RenderExtent.Height());
 		m_NRD.Init(m_Device.instance,
@@ -939,6 +1273,15 @@ void RendererGPU::Render(const Camera& camera)
 		           m_Device.queueFamily,
 		           m_RenderExtent);
 	}
+	if (m_AutomaticNativeNrdFallback && !m_NRD.IsAvailable())
+	{
+		outcome.failure = true;
+		outcome.failureReason = "automatic native NRD fallback is unavailable";
+		m_LastRenderOutcome = outcome;
+		return outcome;
+	}
+	if (m_RR.Backend() == RRBackend::ActiveNativeNRD && !m_NRD.IsAvailable())
+		m_RR.SetNativeNrdUnavailable();
 
 	UpdateCameraUBO(camera);
 
@@ -946,14 +1289,14 @@ void RendererGPU::Render(const Camera& camera)
 	{
 		RT_LOG("[RT2] Render: missing resource (pipe=%d ubo=%p mat=%p)",
 		       m_PathTracePass.IsAvailable(), (void*)m_CameraUBO, (void*)m_Scene.GetMaterialBuffer());
-		return;
+		outcome.failure = true;
+		outcome.failureReason = "renderer frame resources are unavailable";
+		m_LastRenderOutcome = outcome;
+		return outcome;
 	}
 
-	VkDevice device = m_Device.device;
-
-	// ---- Frames-in-flight ring: wait for this frame slot to be free ----
-	FrameContext& frame = m_Frames[m_CurrentFrame];
-	frame.WaitForFence(device);
+	// The frame slot has already been waited and any extent rebuild has already
+	// completed before the camera UBO was populated.
 	m_GpuProfiler.ReadCompletedSlot(device, m_CurrentFrame);
 	if (auto completed = m_PickingPass.ReadCompletedSlot(m_CurrentFrame))
 	{
@@ -976,6 +1319,20 @@ void RendererGPU::Render(const Camera& camera)
 	}
 	frame.Begin(device);
 	VkCommandBuffer cmd = frame.commandBuffer;
+	if (!PrepareRRFeature())
+	{
+		outcome.failure = true;
+		outcome.failureReason = m_RR.FallbackReason();
+		frame.AbortAndSubmitEmpty(device, m_Device.queue);
+		m_ForceNativeRebuild = true;
+		m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+		m_FrameIndex++;
+		m_NRDFrameIndex++;
+		m_ReSTIRFrameIndex++;
+		m_GIFrameIndex++;
+		m_LastRenderOutcome = outcome;
+		return outcome;
+	}
 	m_GpuProfiler.BeginFrame(cmd, m_CurrentFrame, m_FrameIndex);
 
 	// Clear ReSTIR history if invalidated (resize, scene change, enable toggle)
@@ -994,6 +1351,10 @@ void RendererGPU::Render(const Camera& camera)
 
 	// Build ReSTIR push constants from settings
 	SIReSTIRPushConstants restirPC = {};
+	// W4's static RR path owns temporal history while it is requested.  Keep
+	// spatial reuse available, but suppress DI/GI temporal reuse until the
+	// native fallback latch is reached.
+	const bool rrTemporalReuseDisabled = m_RR.Backend() == RRBackend::ActiveRR;
 	restirPC.freshCandidateCount = m_Settings.restirFreshCandidates;
 	restirPC.temporalMCap = m_Settings.restirTemporalMCap;
 	restirPC.spatialMCap = m_Settings.restirSpatialMCap;
@@ -1004,7 +1365,7 @@ void RendererGPU::Render(const Camera& camera)
 	restirPC.worldPosThreshold = m_Settings.restirWorldPosThreshold;
 	restirPC.maxTemporalAge = m_Settings.restirMaxTemporalAge;
 	restirPC.flags = 0;
-	if (m_Settings.restirTemporalReuse) restirPC.flags |= 1u;
+	if (m_Settings.restirTemporalReuse && !rrTemporalReuseDisabled) restirPC.flags |= 1u;
 	if (m_Settings.restirSpatialReuse)  restirPC.flags |= 2u;
 	restirPC.frameIndex = m_ReSTIRFrameIndex;
 	restirPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
@@ -1015,7 +1376,7 @@ void RendererGPU::Render(const Camera& camera)
 	giPC.temporalMCap = m_Settings.restirGITemporalMCap;
 	giPC.maxTemporalAge = m_Settings.restirGIMaxTemporalAge;
 	giPC.flags = 0;
-	if (m_Settings.restirGITemporalEnabled) giPC.flags |= 1u;
+	if (m_Settings.restirGITemporalEnabled && !rrTemporalReuseDisabled) giPC.flags |= 1u;
 	giPC.flags |= (uint32_t)(m_Settings.nrdLobeDither & 3u) << 1;  // bits 1-2: dither mode
 	giPC.depthThreshold = m_Settings.restirGIDepthThreshold;
 	giPC.normalThreshold = m_Settings.restirGINormalThreshold;
@@ -1023,7 +1384,13 @@ void RendererGPU::Render(const Camera& camera)
 	giPC.frameIndex = m_GIFrameIndex;
 	giPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
 
-	// Build the frame render context and delegate to FrameRenderer
+	// Build the frame render context and delegate to FrameRenderer.
+	// nrdEnabled here is the EFFECTIVE per-frame NRD state (authored or
+	// automatic fallback): it drives the shader UBO nrdEnabled bit and lobe
+	// production in RecordUBOUpdates, consistently with NRD dispatch.
+	// The authored setting itself is never mutated by the fallback.
+	const bool effectiveNrdEnabled = EffectiveNrdEnabled(m_Settings.nrdEnabled,
+		m_AutomaticNativeNrdFallback);
 	FrameRenderer::Context ctx = {
 		m_Device,
 		&m_GpuProfiler,
@@ -1041,6 +1408,9 @@ void RendererGPU::Render(const Camera& camera)
 		m_NRD,
 		m_OutputImage,
 		m_DisplayImage,
+		m_RROutputImage.IsValid() ? &m_RROutputImage : nullptr,
+		m_NgxRuntime,
+		m_DevStaticRR ? &m_RR : nullptr,
 		m_GBufferSet,
 		m_CameraUBO,
 		m_NRDUBO,
@@ -1049,7 +1419,8 @@ void RendererGPU::Render(const Camera& camera)
 		m_OutputExtent,
 		m_Settings.rasterFirst,
 		m_RRGuideReportMode,
-		m_Settings.nrdEnabled,
+		effectiveNrdEnabled,
+		m_AutomaticNativeNrdFallback,
 		m_Settings.nrdLobeDither,
 		m_Settings.restirEnabled,
 		restirPC,
@@ -1077,7 +1448,35 @@ void RendererGPU::Render(const Camera& camera)
 		m_GIFrameIndex & 1u
 	};
 
-	FrameRenderer::RecordFrame(cmd, ctx);
+	const FrameRenderer::RecordedFrameOutcome recorded = FrameRenderer::RecordFrame(cmd, ctx);
+	if (!recorded.recorded && recorded.preserveDisplay)
+	{
+		RT_LOG("[RR] evaluation failed; discarding partial command buffer: %s",
+			recorded.failureReason.c_str());
+		m_ForceNativeRebuild = true;
+		frame.AbortAndSubmitEmpty(device, m_Device.queue);
+		m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+		m_FrameIndex++;
+		m_NRDFrameIndex++;
+		m_ReSTIRFrameIndex++;
+		m_GIFrameIndex++;
+		outcome.failure = true;
+		outcome.failureReason = recorded.failureReason;
+		m_LastRenderOutcome = outcome;
+		return outcome;
+	}
+	RT_LOG("[RR] frame backend=%s requested=%d feature_owned=%d generation=%llu "
+		"history_reset=%llu result=%d output=%ux%u render=%ux%u hdr_source=%s "
+		"evaluate=%d fallback=%d reason=%s",
+		RRBackendName(m_RR.State().backend), m_RR.State().requested ? 1 : 0,
+		m_RR.State().featureOwned ? 1 : 0,
+		static_cast<unsigned long long>(m_RR.State().featureGeneration),
+		static_cast<unsigned long long>(m_RR.State().historyResetGeneration),
+		m_RR.State().lastResult,
+		m_OutputExtent.Width(), m_OutputExtent.Height(), m_RenderExtent.Width(),
+		m_RenderExtent.Height(), recorded.rrEvaluated ? "rr-output" : "native-output",
+		recorded.rrEvaluated ? 1 : 0, m_RR.State().failureLatched ? 1 : 0,
+		m_RR.State().fallbackReason.empty() ? "none" : m_RR.State().fallbackReason.c_str());
 	if (m_PendingPick && m_PickingPass.IsAvailable())
 	{
 		RT_LOG("[GpuPick] record serial=%llu frameSlot=%u map=%zu",
@@ -1094,9 +1493,25 @@ void RendererGPU::Render(const Camera& camera)
 
 	// ---- Submit this frame's work (async, no wait) ----
 	RT_LOG("[Render] submitting frame %d (NRD=%d composeCached=%d)",
-	       m_FrameIndex, m_Settings.nrdEnabled ? 1 : 0, m_ComposeDescriptorSetCached ? 1 : 0);
+		m_FrameIndex, recorded.nrdRecorded ? 1 : 0, m_ComposeDescriptorSetCached ? 1 : 0);
 	frame.Submit(m_Device.queue);
 	RT_LOG("[Render] submit ok, frame %d", m_FrameIndex);
+	m_RR.MarkEvaluationSubmitted(recorded.rrEvaluated);
+	const GpuImage& hdrImage = recorded.rrEvaluated ? m_RROutputImage : m_OutputImage;
+	FullResolutionHdrSource source;
+	source.image = hdrImage.image;
+	source.view = hdrImage.view;
+	source.format = hdrImage.format;
+	source.layout = VK_IMAGE_LAYOUT_GENERAL;
+	source.extent = m_OutputExtent;
+	source.name = recorded.rrEvaluated ? "rr-output" : "native-output";
+	source.valid = hdrImage.IsValid();
+	outcome.submitted = true;
+	outcome.captureAllowed = source.valid;
+	outcome.rrEvaluated = recorded.rrEvaluated;
+	outcome.nrdRecorded = recorded.nrdRecorded;
+	outcome.hdrSource = source;
+	m_HdrSource = source;
 
 	m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	m_FrameIndex++;
@@ -1105,19 +1520,25 @@ void RendererGPU::Render(const Camera& camera)
 	// GI frame index increments only after a submitted frame, driving the
 	// reservoir/receiver-history parity for the NEXT frame's dispatch.
 	m_GIFrameIndex++;
+	m_LastRenderOutcome = outcome;
+	return outcome;
 }
 
 bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight)
 {
-	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE || !m_OutputExtent.IsValid())
+	if (!m_Initialized || !m_HdrSource.valid || m_HdrSource.image == VK_NULL_HANDLE ||
+		!m_HdrSource.extent.IsValid())
 		return false;
+	const FullResolutionHdrSource source = m_HdrSource;
 
 	VkDevice device = m_Device.device;
 
 	// Create a host-visible staging buffer
 	VkBuffer stagingBuffer;
 	VkDeviceMemory stagingMemory;
-	VkDeviceSize imageSize = (VkDeviceSize)m_OutputExtent.Width() * m_OutputExtent.Height() * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
+	const bool halfSource = source.format == VK_FORMAT_R16G16B16A16_SFLOAT;
+	const VkDeviceSize imageSize = (VkDeviceSize)source.extent.Width() * source.extent.Height() *
+		(halfSource ? 8u : 16u);
 
 	GpuResources::CreateBuffer(m_Device, imageSize,
 	             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -1132,11 +1553,11 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 		toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		toTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-		toTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toTransfer.oldLayout = source.layout;
 		toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 		toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		toTransfer.image = m_OutputImage.image;
+		toTransfer.image = source.image;
 		toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		toTransfer.subresourceRange.levelCount = 1;
 		toTransfer.subresourceRange.layerCount = 1;
@@ -1152,15 +1573,15 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 		region.imageSubresource.baseArrayLayer = 0;
 		region.imageSubresource.layerCount = 1;
 		region.imageOffset = { 0, 0, 0 };
-		region.imageExtent = { m_OutputExtent.Width(), m_OutputExtent.Height(), 1 };
-		vkCmdCopyImageToBuffer(cmd, m_OutputImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
+		region.imageExtent = { source.extent.Width(), source.extent.Height(), 1 };
+		vkCmdCopyImageToBuffer(cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
 
 		// Transition back to GENERAL
 		VkImageMemoryBarrier toGeneral = toTransfer;
 		toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 		toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-		toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toGeneral.newLayout = source.layout;
 		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0,
 		                     0, nullptr, 0, nullptr, 1, &toGeneral);
 	});
@@ -1175,14 +1596,16 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 		return false;
 	}
 
-	const float* floatData = static_cast<const float*>(mapped);
-	outPixelsRGBA8.resize((size_t)m_OutputExtent.Width() * m_OutputExtent.Height() * 4);
-	for (size_t i = 0; i < (size_t)m_OutputExtent.Width() * m_OutputExtent.Height(); i++)
+	const uint8_t* rawData = static_cast<const uint8_t*>(mapped);
+	outPixelsRGBA8.resize((size_t)source.extent.Width() * source.extent.Height() * 4);
+	for (size_t i = 0; i < (size_t)source.extent.Width() * source.extent.Height(); i++)
 	{
-		float r = floatData[i * 4 + 0];
-		float g = floatData[i * 4 + 1];
-		float b = floatData[i * 4 + 2];
-		float a = floatData[i * 4 + 3];
+		const float* floatData = reinterpret_cast<const float*>(rawData);
+		const uint16_t* halfData = reinterpret_cast<const uint16_t*>(rawData);
+		float r = halfSource ? HalfToFloat(halfData[i * 4 + 0]) : floatData[i * 4 + 0];
+		float g = halfSource ? HalfToFloat(halfData[i * 4 + 1]) : floatData[i * 4 + 1];
+		float b = halfSource ? HalfToFloat(halfData[i * 4 + 2]) : floatData[i * 4 + 2];
+		float a = halfSource ? HalfToFloat(halfData[i * 4 + 3]) : floatData[i * 4 + 3];
 
 		// Keep the CPU readback reference identical to tonemap.comp:
 		// linear HDR -> Reinhard -> exact sRGB OETF -> RGBA8.
@@ -1200,22 +1623,27 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	vkUnmapMemory(device, stagingMemory);
 	GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 
-	outWidth = m_OutputExtent.Width();
-	outHeight = m_OutputExtent.Height();
-	RT_LOG("[Readback] captured %ux%u → %zu bytes", m_OutputExtent.Width(), m_OutputExtent.Height(), outPixelsRGBA8.size());
+	outWidth = source.extent.Width();
+	outHeight = source.extent.Height();
+	RT_LOG("[Readback] captured %ux%u from %s (%d) → %zu bytes", outWidth, outHeight,
+		source.name, (int)source.format, outPixelsRGBA8.size());
 	return true;
 }
 
 bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uint32_t& outWidth, uint32_t& outHeight)
 {
-	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE || !m_OutputExtent.IsValid())
+	if (!m_Initialized || !m_HdrSource.valid || m_HdrSource.image == VK_NULL_HANDLE ||
+		!m_HdrSource.extent.IsValid())
 		return false;
+	const FullResolutionHdrSource source = m_HdrSource;
 
 	VkDevice device = m_Device.device;
 
 	VkBuffer stagingBuffer;
 	VkDeviceMemory stagingMemory;
-	VkDeviceSize imageSize = (VkDeviceSize)m_OutputExtent.Width() * m_OutputExtent.Height() * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
+	const bool halfSource = source.format == VK_FORMAT_R16G16B16A16_SFLOAT;
+	const VkDeviceSize imageSize = (VkDeviceSize)source.extent.Width() * source.extent.Height() *
+		(halfSource ? 8u : 16u);
 
 	GpuResources::CreateBuffer(m_Device, imageSize,
 	             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -1229,11 +1657,11 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 		toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		toTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-		toTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toTransfer.oldLayout = source.layout;
 		toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 		toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		toTransfer.image = m_OutputImage.image;
+		toTransfer.image = source.image;
 		toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		toTransfer.subresourceRange.levelCount = 1;
 		toTransfer.subresourceRange.layerCount = 1;
@@ -1249,14 +1677,14 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 		region.imageSubresource.baseArrayLayer = 0;
 		region.imageSubresource.layerCount = 1;
 		region.imageOffset = { 0, 0, 0 };
-		region.imageExtent = { m_OutputExtent.Width(), m_OutputExtent.Height(), 1 };
-		vkCmdCopyImageToBuffer(cmd, m_OutputImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
+		region.imageExtent = { source.extent.Width(), source.extent.Height(), 1 };
+		vkCmdCopyImageToBuffer(cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
 
 		VkImageMemoryBarrier toGeneral = toTransfer;
 		toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 		toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-		toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toGeneral.newLayout = source.layout;
 		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0,
 		                     0, nullptr, 0, nullptr, 1, &toGeneral);
 	});
@@ -1270,17 +1698,25 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 		return false;
 	}
 
-	const float* floatData = static_cast<const float*>(mapped);
-	size_t pixelCount = (size_t)m_OutputExtent.Width() * m_OutputExtent.Height() * 4;
+	const uint8_t* rawData = static_cast<const uint8_t*>(mapped);
+	size_t pixelCount = (size_t)source.extent.Width() * source.extent.Height() * 4;
 	outPixelsRGBA32F.resize(pixelCount);
-	std::memcpy(outPixelsRGBA32F.data(), floatData, pixelCount * sizeof(float));
+	if (!halfSource)
+		std::memcpy(outPixelsRGBA32F.data(), rawData, pixelCount * sizeof(float));
+	else
+	{
+		const uint16_t* halfData = reinterpret_cast<const uint16_t*>(rawData);
+		for (size_t i = 0; i < pixelCount; ++i)
+			outPixelsRGBA32F[i] = HalfToFloat(halfData[i]);
+	}
 
 	vkUnmapMemory(device, stagingMemory);
 	GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 
-	outWidth = m_OutputExtent.Width();
-	outHeight = m_OutputExtent.Height();
-	RT_LOG("[ReadbackLinear] captured %ux%u → %zu floats", m_OutputExtent.Width(), m_OutputExtent.Height(), outPixelsRGBA32F.size());
+	outWidth = source.extent.Width();
+	outHeight = source.extent.Height();
+	RT_LOG("[ReadbackLinear] captured %ux%u from %s (%d) → %zu floats", outWidth, outHeight,
+		source.name, (int)source.format, outPixelsRGBA32F.size());
 	return true;
 }
 
@@ -1298,6 +1734,23 @@ void RendererGPU::CreateGBufferImages()
 	}
 	else
 		m_RRGuideInitFailed = false;
+	const uint32_t combinedImages = m_RRGuides.GetImageCount() +
+		(m_RROutputImage.IsValid() ? 1u : 0u);
+	const uint32_t combinedAllocations = m_RRGuides.GetAllocationCount() +
+		(m_RROutputImage.IsValid() ? 1u : 0u);
+	const uint64_t combinedBytes = m_RRGuides.GetAllocationBytes() +
+		(m_RROutputImage.IsValid() ? static_cast<uint64_t>(m_RROutputImage.allocationSize) : 0ull);
+	const bool combinedBudgetValid = ValidateRRGuideResourceBudget(combinedImages,
+		combinedAllocations, combinedBytes);
+	RT_LOG("[RR] combined W3+RR budget images=%u allocations=%u bytes=%llu/%llu ngx_private=unavailable",
+		combinedImages, combinedAllocations,
+		static_cast<unsigned long long>(combinedBytes),
+		static_cast<unsigned long long>(RR_GUIDE_MAX_RT2_BYTES));
+	if (!combinedBudgetValid)
+	{
+		RT_LOG("[RR] combined budget exceeded; RR output is not eligible");
+		m_RRGuideInitFailed = true;
+	}
 }
 
 bool RendererGPU::WriteRRGuideReport(const std::string& path,

@@ -151,6 +151,14 @@ uint32_t RRGuideBytesPerPixel(RRGuideFormat format)
 	return 0;
 }
 
+bool ValidateRRGuideResourceBudget(uint32_t imageCount, uint32_t allocationCount,
+	uint64_t rt2OwnedBytes)
+{
+	return imageCount <= RR_GUIDE_MAX_IMAGES &&
+		allocationCount <= RR_GUIDE_MAX_ALLOCATIONS &&
+		rt2OwnedBytes <= RR_GUIDE_MAX_RT2_BYTES;
+}
+
 RRGuideContractCheck ValidateRRGuideContract()
 {
 	uint32_t dedicated = 0;
