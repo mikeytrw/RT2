@@ -328,10 +328,10 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 
 TEST_CASE("W4 production RR authority executes normalized policy and lifecycle contracts")
 {
-	CHECK(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true));
-	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, true));
-	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, true));
-	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, false));
+	CHECK(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true, true, false));
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, true, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, true, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true, false, false));
 	CHECK(ShouldCommitHeadlessOutput(true, true, true, true, false));
 	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, true, true, true));
 }

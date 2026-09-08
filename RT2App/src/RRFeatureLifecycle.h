@@ -44,11 +44,20 @@ struct RREligibilityDecision
 // The state is deliberately separate from the requested setting: NativeNRD
 // means the normal renderer is selected, while ActiveNativeNRD means native
 // NRD is both requested and available for this frame.
-bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug,
-	bool nrdEnabled, bool nrdAvailable);
+// One production authority for authored NRD vs effective fallback NRD: the
+// automatic native-NRD fallback (requested W4 RR settled on native NRD)
+// enables NRD signal production even when authored nrdEnabled is false.
+// FrameRenderer's UBO/lobe policy and RendererGPU's jitter/accumulation
+// decisions must read this, never the authored flag alone.
+inline bool EffectiveNrdEnabled(bool authoredNrdEnabled, bool automaticFallback)
+{
+	return authoredNrdEnabled || automaticFallback;
+}
 // Production dispatch policy. `automaticFallback` is set only for a requested
 // W4 RR frame that has settled on native NRD; the ordinary switch-off path
-// remains gated by the authored NRD/raster-first settings.
+// remains gated by the authored NRD/raster-first settings. The approved
+// fallback additionally bypasses raster-first gating (pure-path/DOF requests
+// still denoise natively); switch-off NativeNRD routing is unchanged.
 bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirst,
 	bool nrdEnabled, bool nrdAvailable, bool automaticFallback);
 bool ShouldForceStaticRRNoJitter(bool staticRRRequested, bool restirDIEnabled,
@@ -190,7 +199,10 @@ public:
 	// Scene replacement/cut invalidates RR history without changing the
 	// selected tuple. The pending bit is consumed only by a successful RR
 	// submission, so repeated steady frames do not reset history.
-	void RequestHistoryReset(const RRFeatureHooks& hooks = {}) { ResetHistory(hooks); }
+	// Back-to-back host requests (scene setter plus ResetAccumulation, or
+	// full/material sync plus router reset) coalesce while a reset is
+	// already pending: one host transition owns exactly one generation edge.
+	void RequestHistoryReset(const RRFeatureHooks& hooks = {});
 	// A latched RR fault is one-way. After the safe idle/rebuild boundary the
 	// renderer records native NRD while retaining failureLatched/reason and
 	// never retrying NGX creation.

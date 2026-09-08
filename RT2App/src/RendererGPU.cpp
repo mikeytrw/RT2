@@ -197,7 +197,10 @@ bool RendererGPU::PrepareRRFeature()
 		m_RRModeEligible = false;
 		m_RRModeReason = "RR resources are unavailable after Quality selection";
 		RRFeatureHooks hooks = MakeRRHooks();
-		m_AutomaticNativeNrdFallback = !m_RRDiagnosticBypass && m_Settings.rasterFirst;
+		// Approved automatic fallback owns pure-path/DOF requests too: only
+		// the diagnostic bypass is excluded. Raster-first gating lives in
+		// the dispatch policy, not in fallback eligibility.
+		m_AutomaticNativeNrdFallback = !m_RRDiagnosticBypass;
 		const RRIneligibleMode mode = m_AutomaticNativeNrdFallback ?
 			RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD;
 		m_RR.SetIneligible(m_OutputExtent, m_RRModeReason, hooks, mode);
@@ -510,9 +513,10 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	{
 		// The failed feature has already latched its exact reason. This rebuild is
 		// the sole safe edge that makes native NRD authoritative; never retry NGX.
+		// Fallback eligibility excludes only the diagnostic bypass: pure-path
+		// and DOF requests stay owned by the fallback, not the normal path.
 		m_RR.SetFallbackRecovered();
-		m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass &&
-			m_Settings.rasterFirst;
+		m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass;
 		RT_LOG("[RR] fallback recovered backend=%s reason=%s", RRBackendName(m_RR.Backend()),
 			m_RR.FallbackReason().c_str());
 	}
@@ -529,15 +533,18 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		{
 			RT_LOG("[RR] Quality extent unavailable (%s); native resolution is retained",
 				m_RR.FallbackReason().c_str());
-			m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass &&
-				m_Settings.rasterFirst;
+			m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass;
 			m_RR.SetFallbackRecovered();
 		}
 	}
 	else if (m_DevStaticRR)
 	{
 		RRFeatureHooks hooks = MakeRRHooks();
-		m_AutomaticNativeNrdFallback = !m_RRDiagnosticBypass && m_Settings.rasterFirst;
+		// Requested-but-ineligible RR (unavailable NGX, pure-path, DOF,
+		// unsupported camera) settles on native NRD. Only the G-buffer
+		// diagnostic bypass is excluded; switch-off behavior is untouched
+		// because this branch requires the developer switch.
+		m_AutomaticNativeNrdFallback = !m_RRDiagnosticBypass;
 		const RRIneligibleMode mode = m_RRDiagnosticBypass ? RRIneligibleMode::NativeDiagnosticBypass :
 			(m_AutomaticNativeNrdFallback ? RRIneligibleMode::ActiveNativeNRD : RRIneligibleMode::NativeNRD);
 		if (!m_RR.SetIneligible(outputExtent, m_RRModeReason, hooks, mode))
@@ -919,6 +926,8 @@ void RendererGPU::ResetAccumulation()
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	// Scene setters request first; this second request coalesces while one
+	// is already pending, so each host transition is exactly one RR edge.
 	m_RR.RequestHistoryReset(MakeRRHooks());
 	// Keep the previous camera matrices across accumulation resets.  A camera
 	// cut resets beauty history, but motion remains a current->previous render
@@ -1046,6 +1055,11 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
 {
+	// Effective NRD drives every per-frame signal decision: authored NRD or
+	// the approved automatic native-NRD fallback (R1). The fallback's packed
+	// radiance/NRD inputs must match what NRD/compose will consume.
+	const bool effectiveNrd = EffectiveNrdEnabled(m_Settings.nrdEnabled,
+		m_AutomaticNativeNrdFallback);
 	// Detect camera movement and reset accumulation when NRD is off and
 	// accumulation is enabled. Without this, temporal accumulation blends
 	// 1/N of each frame, leaving the old noise pattern frozen in screen space.
@@ -1053,7 +1067,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// so the RNG seed varies per frame for fresh Monte Carlo noise.
 	glm::vec3 camPos = camera.GetPosition();
 	glm::vec3 camFwd = camera.GetDirection();
-	if (!m_Settings.nrdEnabled && m_Settings.accumulate && m_HasPrevCamera)
+	if (!effectiveNrd && m_Settings.accumulate && m_HasPrevCamera)
 	{
 		float posDiff = glm::distance(camPos, m_PrevCameraPos);
 		float fwdDiff = glm::distance(camFwd, m_PrevCameraForward);
@@ -1069,7 +1083,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// When accumulation is off, pass negative frameIndex so temporalAccumulate
 	// skips blending, while initRNG uses abs() for a per-frame-varying seed.
 	float frameIdxForShader = (float)m_FrameIndex;
-	if (!m_Settings.nrdEnabled && !m_Settings.accumulate)
+	if (!effectiveNrd && !m_Settings.accumulate)
 		frameIdxForShader = -(float)m_FrameIndex;
 	ubo.position = glm::vec4(camera.GetPosition(), frameIdxForShader);
 
@@ -1082,7 +1096,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
 	const bool staticRRNoJitter = ShouldForceStaticRRNoJitter(
 		m_DevStaticRR && m_RR.IsRequested(), m_Settings.restirEnabled, m_Settings.restirGIEnabled);
-	if (!staticRRNoJitter && m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled && !restirActive)
+	if (!staticRRNoJitter && effectiveNrd && m_Settings.nrdJitterEnabled && !restirActive)
 	{
 		// Halton sequence (base 2, base 3) for low-discrepancy jitter
 		auto halton = [](int index, int base) -> float {
@@ -1222,7 +1236,9 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		// Only reset accumulation counter when temporal accumulation is active
 		// (non-NRD path with accumulate enabled). With accumulation off, keep
 		// m_FrameIndex incrementing so the RNG seed varies per frame.
-		if (m_Settings.accumulate && !m_Settings.nrdEnabled)
+		// Effective NRD (authored or automatic fallback) takes the NRD path.
+		if (m_Settings.accumulate && !EffectiveNrdEnabled(m_Settings.nrdEnabled,
+			m_AutomaticNativeNrdFallback))
 			m_FrameIndex = 1;
 	}
 
@@ -1368,7 +1384,13 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	giPC.frameIndex = m_GIFrameIndex;
 	giPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
 
-	// Build the frame render context and delegate to FrameRenderer
+	// Build the frame render context and delegate to FrameRenderer.
+	// nrdEnabled here is the EFFECTIVE per-frame NRD state (authored or
+	// automatic fallback): it drives the shader UBO nrdEnabled bit and lobe
+	// production in RecordUBOUpdates, consistently with NRD dispatch.
+	// The authored setting itself is never mutated by the fallback.
+	const bool effectiveNrdEnabled = EffectiveNrdEnabled(m_Settings.nrdEnabled,
+		m_AutomaticNativeNrdFallback);
 	FrameRenderer::Context ctx = {
 		m_Device,
 		&m_GpuProfiler,
@@ -1397,7 +1419,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_OutputExtent,
 		m_Settings.rasterFirst,
 		m_RRGuideReportMode,
-		m_Settings.nrdEnabled,
+		effectiveNrdEnabled,
 		m_AutomaticNativeNrdFallback,
 		m_Settings.nrdLobeDither,
 		m_Settings.restirEnabled,

@@ -78,6 +78,10 @@ public:
 		// Render mode flags
 		bool rasterFirst;
 		bool rrGuideReportMode;
+		// EFFECTIVE per-frame NRD state: authored nrdEnabled or the approved
+		// automatic native-NRD fallback (see EffectiveNrdEnabled). Drives the
+		// shader UBO enable bit and lobe production, consistently with the
+		// dispatch policy below.
 		bool nrdEnabled;
 		// True only after a requested W4 RR path has settled on native NRD.
 		// This is deliberately separate from authored nrdEnabled so the

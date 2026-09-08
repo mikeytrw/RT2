@@ -130,7 +130,9 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 
 	// NRD UBO: nrdEnabled, lobeDither, restirGIEnabled, restirGIReservoirIndex.
 	// The spare fields are repurposed for GI control without growing the UBO.
-	// When NRD is off, force lobe dither to 0 (white noise) — Bayer/IGN dithering
+	// ctx.nrdEnabled is the EFFECTIVE state (authored or automatic fallback),
+	// so fallback frames produce the NRD-branch packed radiance the denoiser
+	// consumes. When NRD is off, force lobe dither to 0 (white noise) — Bayer/IGN dithering
 	// is only needed for NRD's hit-distance reconstruction of skipped lobes.
 	uint32_t effectiveLobeDither = ctx.nrdEnabled ? (uint32_t)ctx.lobeDither : 0u;
 	SINRDUniformData nrdData = {
@@ -621,6 +623,10 @@ bool FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 
 	bool useRasterFirst = ctx.rasterFirst &&
 		(ctx.camera.m_Aperture <= 0.0f || ctx.nativeNrdFallback);
+	// Dispatch: the approved automatic fallback (ActiveNativeNRD +
+	// nativeNrdFallback) bypasses raster-first gating inside
+	// ShouldRecordNativeNRD, so pure-path fallback still denoises natively
+	// on the pure path. Switch-off NativeNRD routing stays gated as before.
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
 	ctx.pathTracePass.Record(cmd, ctx.renderExtent, ctx.gbufferSet, useRasterFirst);

@@ -41,21 +41,18 @@ const char* RREligibilityDecision::Reason() const
 	return "RR eligibility is unknown";
 }
 
-bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug,
-	bool nrdEnabled, bool nrdAvailable)
-{
-	if (gbufferDebug || !nrdEnabled || !nrdAvailable)
-		return false;
-	return backend == RRBackend::NativeNRD || backend == RRBackend::ActiveNativeNRD;
-}
-
 bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirst,
 	bool nrdEnabled, bool nrdAvailable, bool automaticFallback)
 {
-	if (gbufferDebug || !rasterFirst || !nrdAvailable)
+	if (gbufferDebug || !nrdAvailable)
 		return false;
 	if (backend == RRBackend::ActiveNativeNRD)
+		// Approved automatic fallback: requested RR settled on native NRD.
+		// Bypasses raster-first gating so pure-path and DOF requests still
+		// denoise natively. The ordinary switch-off path below is unchanged.
 		return nrdEnabled || automaticFallback;
+	if (!rasterFirst)
+		return false;
 	return backend == RRBackend::NativeNRD && nrdEnabled;
 }
 
@@ -139,6 +136,18 @@ void RRFeatureLifecycle::ResetHistory(const RRFeatureHooks& hooks)
 	++m_State.historyResetGeneration;
 	m_State.rrResetPending = true;
 	if (hooks.resetHistory) hooks.resetHistory();
+}
+
+void RRFeatureLifecycle::RequestHistoryReset(const RRFeatureHooks& hooks)
+{
+	// Coalesce duplicate host ownership: SetScene/SetSceneKeepTextures run
+	// immediately before ResetAccumulation (WalnutApp scene-changed handler,
+	// EditorSyncRouter full/material sync plus router reset), and both request.
+	// Internal transitions (Activate, LatchFallback, SetIneligible) keep
+	// their own ResetHistory edges; only repeated scene/cut requests merge.
+	if (m_State.rrResetPending)
+		return;
+	ResetHistory(hooks);
 }
 
 bool RRFeatureLifecycle::ReleaseFeature(const RRFeatureHooks& hooks, std::string& reason)

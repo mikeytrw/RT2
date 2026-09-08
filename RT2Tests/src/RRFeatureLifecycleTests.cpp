@@ -214,12 +214,14 @@ TEST_CASE("W4 production lifecycle keeps one generation and settles fallback tru
 
 TEST_CASE("W4 production dispatch and headless persistence decisions are checked")
 {
-	CHECK(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true));
-	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, true));
-	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, false, true));
-	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, false));
-	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, true));
-	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, true, true, true));
+	// Production six-argument authority throughout (the old four-argument
+	// overload is removed; dispatch-only booleans missed R1).
+	CHECK(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true, true, false));
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, true, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, false, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, true, false, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, true, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, true, true, true, true, false));
 	CHECK(ShouldCommitHeadlessOutput(true, true, true, true, false));
 	CHECK_FALSE(ShouldCommitHeadlessOutput(false, true, true, true, false));
 	CHECK_FALSE(ShouldCommitHeadlessOutput(true, false, true, true, false));
@@ -232,7 +234,9 @@ TEST_CASE("W4 production dispatch and headless persistence decisions are checked
 	CHECK_FALSE(RequiredRenderStagesAvailable(true, false, false, true));
 	CHECK_FALSE(RequiredRenderStagesAvailable(true, true, true, false));
 	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, false, true, true));
-	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, false, false, true, true));
+	// R2: approved fallback bypasses raster-first gating, so a pure-path
+	// fallback (rasterFirst=false) still dispatches native NRD.
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, false, false, true, true));
 	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, false, true, true));
 	CHECK(ShouldForceStaticRRNoJitter(true, false, false));
 	CHECK(ShouldForceStaticRRNoJitter(false, true, false));
@@ -272,13 +276,61 @@ TEST_CASE("W4 production scene cuts request one RR history reset and steady fram
 		RRIneligibleMode::ActiveNativeNRD));
 	lifecycle.MarkEvaluationSubmitted(false);
 	const uint64_t before = lifecycle.State().historyResetGeneration;
-	lifecycle.RequestHistoryReset(hooks); // SetScene/SetSceneKeepTextures/ResetAccumulation seam
+	// Production host sequence: scene setter (SetScene/SetSceneKeepTextures)
+	// immediately followed by ResetAccumulation (WalnutApp scene-changed
+	// handler; EditorSyncRouter full/material sync plus router reset).
+	// Both request; the pair must own exactly one generation edge.
+	lifecycle.RequestHistoryReset(hooks);
+	lifecycle.RequestHistoryReset(hooks);
 	CHECK(lifecycle.State().historyResetGeneration == before + 1);
 	CHECK(resets == 1);
 	CHECK(lifecycle.ResetPending());
 	lifecycle.MarkEvaluationSubmitted(true);
 	CHECK_FALSE(lifecycle.ResetPending());
 	CHECK(lifecycle.State().historyResetGeneration == before + 1);
+	// A second host transition after consumption owns exactly one more edge.
+	lifecycle.RequestHistoryReset(hooks);
+	lifecycle.RequestHistoryReset(hooks);
+	CHECK(lifecycle.State().historyResetGeneration == before + 2);
+	CHECK(resets == 2);
+}
+
+TEST_CASE("W4 effective NRD authority drives fallback signal production")
+{
+	// R1: automatic fallback enables NRD inputs with authored NRD disabled.
+	CHECK(EffectiveNrdEnabled(false, true));
+	CHECK(EffectiveNrdEnabled(true, false));
+	CHECK(EffectiveNrdEnabled(true, true));
+	CHECK_FALSE(EffectiveNrdEnabled(false, false));
+	// Effective state, not authored state, is what dispatch must observe:
+	// authored-off fallback dispatches; authored-off switch-off does not.
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, false, true, true));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, false, true, false));
+}
+
+TEST_CASE("W4 automatic fallback dispatches native NRD for pure-path and DOF requests")
+{
+	// R2: pure-path fallback (rasterFirst=false, authored NRD off) denoises.
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, false, false, true, true));
+	// DOF/raster fallback (raster path, authored NRD off) denoises.
+	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, true, false, true, true));
+	// Unavailable denoiser still dispatches nothing, even on fallback.
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, false, false, false, true));
+	// Diagnostic bypass never dispatches, even with the fallback flag set.
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, false, true, true));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, false, true, false, true, true));
+}
+
+TEST_CASE("W4 switch-off pure-path/DOF routing stays undenoised without the developer switch")
+{
+	// Ordinary NativeNRD backend ignores the fallback flag: no developer
+	// request means no fallback, so pure-path stays raw.
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, false, true, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, false, true, true, true));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, false, false, true, true));
+	// Switch-off raster path is unchanged: authored NRD decides.
+	CHECK(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, true, true, false));
+	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeNRD, false, true, false, true, false));
 }
 
 TEST_CASE("W4 RR lifecycle rejects malformed optimal dimensions loudly")
