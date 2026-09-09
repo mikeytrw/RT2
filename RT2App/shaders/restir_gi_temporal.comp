@@ -153,11 +153,12 @@ void main()
 
     if (temporalEnabled)
     {
-        // Reproject current pixel using gMotion (non-jittered UV displacement):
-        // previous storage = current storage + motion + (prevJitter - curJitter).
+        // Reproject current pixel using gMotion (render-pixel displacement,
+        // already scaled at production): previous storage = current storage
+        // + motion + (jitterCur - jitterPrev); geometry shifts by -jitter.
         vec2 motion = imageLoad(gMotion, pixel).xy;
-        vec2 motionPixels = motion * vec2(width, height);
-        vec2 jitterDelta = pc.gi.jitter.zw - pc.gi.jitter.xy;
+        vec2 motionPixels = motion;
+        vec2 jitterDelta = pc.gi.jitter.xy - pc.gi.jitter.zw;
         vec2 prevPixelF = vec2(pixel) + motionPixels + jitterDelta + 0.5;
 
         if (prevPixelF.x >= 0.0 && prevPixelF.x < float(width) &&

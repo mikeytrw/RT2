@@ -192,12 +192,15 @@ void main()
     bool temporalEnabled = (pc.restir.flags & 1u) != 0u;
     if (temporalEnabled)
     {
-        // gMotion is non-jittered UV displacement. Convert to pixels and move from
-        // this frame's jittered storage coordinates to the previous frame's:
-        // previous storage = current storage + motion + (prevJitter - curJitter).
+        // gMotion is render-pixel displacement (already scaled by
+        // viewportSPP at production). Convert to pixels is NOT needed.
+        // Move from this frame's jittered storage coordinates to the
+        // previous frame's: geometry shifts by MINUS current jitter, so a
+        // scene point stored at p sat at unjittered p + j_cur, and its
+        // previous storage is p + motion + (j_cur - j_prev).
         vec2 motion = imageLoad(gMotion, pixel).xy;
-        vec2 motionPixels = motion * vec2(width, height);
-        vec2 jitterDelta = pc.restir.jitter.zw - pc.restir.jitter.xy;
+        vec2 motionPixels = motion;
+        vec2 jitterDelta = pc.restir.jitter.xy - pc.restir.jitter.zw;
         vec2 prevPixelF = vec2(pixel) + motionPixels + jitterDelta + 0.5;
 
         // Check if reprojected pixel is within viewport

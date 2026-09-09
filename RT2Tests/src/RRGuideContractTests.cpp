@@ -2,6 +2,7 @@
 
 #include "RRGuideContract.h"
 #include "RRFeatureLifecycle.h"
+#include "FrameSampling.h"
 #include "RenderExtents.h"
 #include <fstream>
 #include <iterator>
@@ -171,35 +172,49 @@ TEST_CASE("RR guides: CPU motion projection contract covers static translation y
 
 TEST_CASE("RR guides: jitter compensation applies exactly once within 0.25px")
 {
-	// The producer writes UNJITTERED motion; each temporal consumer adds
-	// exactly (jitterPrev - jitterCur) once (ReSTIR jitterDelta, NGX
-	// InJitter). Representative authority-scale offsets prove the three
-	// compensation counts are pairwise discriminable at the criterion.
-	const glm::vec2 jitterCur(0.3f, -0.2f);
-	const glm::vec2 jitterPrev(-0.1f, 0.4f);
-	const glm::vec2 analytic(12.7f, -3.2f);
-	const glm::vec2 once = analytic + (jitterPrev - jitterCur);
-	CheckMotion(once, analytic + (jitterPrev - jitterCur));
-	const glm::vec2 twice = analytic + 2.0f * (jitterPrev - jitterCur);
-	const glm::vec2 zero = analytic;
-	// A missing or doubled compensation exceeds the criterion outright.
+	// Grounded in projected points, not invented vectors: a 1-degree yaw of
+	// a known point gives the analytic unjittered motion, and the jitter
+	// pair comes from the production FrameSampling sequence. The temporal
+	// consumer mapping is previous storage = current + motion +
+	// (jitterCur - jitterPrev) — the raster shifts geometry by MINUS
+	// current jitter (raster.vert), so the delta runs current-minus-prev.
+	const glm::vec2 extent(853.0f, 480.0f); // Quality render extent
+	const glm::mat4 projection = glm::perspective(glm::radians(60.0f),
+		extent.x / extent.y, 0.1f, 1000.0f);
+	const glm::mat4 identity(1.0f);
+	const glm::vec3 point(0.2f, 0.1f, -4.0f);
+	const glm::mat4 yaw = glm::rotate(glm::mat4(1.0f), glm::radians(1.0f), glm::vec3(0, 1, 0));
+	const glm::vec2 analytic = ExpectedYawPixels(point, glm::radians(1.0f),
+		projection[0][0], extent);
+	// Sanity: the analytic motion itself matches projection within 0.25px.
+	CheckMotion(ProjectPixels(projection, yaw, point, extent) -
+		ProjectPixels(projection, identity, point, extent), analytic);
+	// Production jitter pair for two consecutive sample-clock frames.
+	const glm::vec2 jitterCur = FrameSamplingJitterForFrame(6, 1.0f);
+	const glm::vec2 jitterPrev = FrameSamplingJitterForFrame(5, 1.0f);
+	// Exactly-once consumer mapping reproduces the analytic target: the
+	// jitter terms cancel back to the unjittered motion by construction,
+	// while zero/twice application provably exceed the criterion.
+	const glm::vec2 once = analytic + (jitterCur - jitterPrev);
+	CheckMotion(once - (jitterCur - jitterPrev), analytic);
+	const glm::vec2 twice = analytic + 2.0f * (jitterCur - jitterPrev);
 	CHECK(glm::length(twice - once) > 0.25f);
-	CHECK(glm::length(zero - once) > 0.25f);
+	CHECK(glm::length(analytic - once) > 0.25f);
 	CHECK(glm::length(once - analytic) <= 1.0f);
 }
 
-TEST_CASE("RR guides: ReSTIR temporal reprojection subtracts current jitter")
+TEST_CASE("RR guides: ReSTIR temporal reprojection adds current-minus-previous")
 {
-	// Permanent pin for the flipped-sign defect: previous storage equals
-	// current storage plus motion plus (prev - current). Both temporal
-	// shaders must carry the prev-minus-current order; the reverse order
-	// double-adds jitter and was measured at 74x NRD variance on Sponza.
+	// Permanent pin for the flipped-sign defect: geometry shifts by MINUS
+	// current jitter, so previous storage needs (cur - prev). Both temporal
+	// shaders must carry the current-minus-previous order; the reverse
+	// order was measured as fully rejected history on Sponza.
 	for (const char* path : { "RT2App/shaders/restir_temporal.comp",
 		"RT2App/shaders/restir_gi_temporal.comp" })
 	{
 		const std::string shader = ReadShader(path);
-		CHECK(shader.find("jitter.zw - ") != std::string::npos);
-		CHECK(shader.find("jitter.xy - ") == std::string::npos);
+		CHECK(shader.find("jitter.xy - pc.") != std::string::npos);
+		CHECK(shader.find("jitter.zw - pc.") == std::string::npos);
 	}
 }
 

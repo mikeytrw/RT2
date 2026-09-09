@@ -9,8 +9,10 @@
 //
 // - raster projection and ray-generation subpixel sampling (UBO jitter),
 // - motion-vector interpretation (motion stays an UNJITTERED render-pixel
-//   UV delta per the W3 contract; consumers subtract this jitter exactly
-//   once: ReSTIR via its jitterDelta path, NGX via InJitterOffset),
+//   displacement per the W3 contract; temporal consumers add exactly
+//   (jitterCur - jitterPrev) once when mapping current storage to previous
+//   storage, because raster shifts geometry by MINUS current jitter:
+//   ReSTIR via its jitterDelta path, NGX via InJitterOffset),
 // - ReSTIR DI/GI reprojection (PC jitter pair),
 // - NRD camera jitter pair,
 // - NGX RR InJitterOffsetX/Y.
