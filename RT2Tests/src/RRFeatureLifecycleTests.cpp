@@ -347,6 +347,17 @@ TEST_CASE("W4 production policy gives diagnostic bypass precedence over unavaila
 		true, false, true, true));
 }
 
+TEST_CASE("RR jitter runs only for frames that will evaluate RR")
+{
+	CHECK(ShouldJitterSampling(true, RRBackend::ActiveRR));
+	CHECK_FALSE(ShouldJitterSampling(true, RRBackend::RequestedRR));
+	CHECK_FALSE(ShouldJitterSampling(true, RRBackend::ActiveNativeNRD));
+	CHECK_FALSE(ShouldJitterSampling(true, RRBackend::NativeNRD));
+	CHECK_FALSE(ShouldJitterSampling(true, RRBackend::FallbackPending));
+	CHECK_FALSE(ShouldJitterSampling(true, RRBackend::NativeDiagnosticBypass));
+	CHECK_FALSE(ShouldJitterSampling(false, RRBackend::ActiveRR));
+}
+
 TEST_CASE("W4 production scene cuts request one RR history reset and steady frames do not")
 {
 	RRFeatureLifecycle lifecycle;

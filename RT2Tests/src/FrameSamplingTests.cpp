@@ -83,3 +83,19 @@ TEST_CASE("FrameSampling: prev/current pairs stay within one subpixel step")
 		CHECK(std::abs(cur.y - prev.y) <= 1.0f);
 	}
 }
+
+TEST_CASE("FrameSampling: NRD boundary converts pixels to UV once")
+{
+	// REBLUR documents UV inputs (vendored NRDSettings.h:112-118). At
+	// 1280x720 a half-pixel jitter is 0.5/1280 UV; motion scale is the
+	// reciprocal extent. Zeros stay zero so unjittered modes are untouched.
+	const glm::vec2 extent(1280.0f, 720.0f);
+	const glm::vec2 uv = FrameSamplingJitterToUv(glm::vec2(0.5f, -0.25f), extent);
+	CHECK(uv.x == doctest::Approx(0.5f / 1280.0f));
+	CHECK(uv.y == doctest::Approx(-0.25f / 720.0f));
+	CHECK(FrameSamplingJitterToUv(glm::vec2(0.0f), extent) == glm::vec2(0.0f));
+	const glm::vec3 scale = FrameSamplingMotionScaleToUv(extent);
+	CHECK(scale.x == doctest::Approx(1.0f / 1280.0f));
+	CHECK(scale.y == doctest::Approx(1.0f / 720.0f));
+	CHECK(scale.z == doctest::Approx(0.0f));
+}

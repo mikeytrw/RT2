@@ -1,4 +1,5 @@
 #include "NRDIntegration.h"
+#include "FrameSampling.h"
 #include "RTLog.h"
 
 #include <algorithm>
@@ -189,13 +190,21 @@ void NRDWrapper::SetCommonSettings(const float* viewToClip, const float* viewToC
 	memcpy(common.viewToClipMatrixPrev, viewToClipPrev, sizeof(float) * 16);
 	memcpy(common.worldToViewMatrix, worldToView, sizeof(float) * 16);
 	memcpy(common.worldToViewMatrixPrev, worldToViewPrev, sizeof(float) * 16);
-	common.motionVectorScale[0] = 1.0f;
-	common.motionVectorScale[1] = 1.0f;
+	// REBLUR works in UV (0..1): pixelUvPrev = pixelUv + mv, sampleUv =
+	// pixelUv + cameraJitter. The engine's motion and jitter are render
+	// pixels, converted once via the shared sampling authority. Passing
+	// pixels as UV overstates them by the extent and destroys history.
+	const glm::vec2 extent((float)m_Extent.Width(), (float)m_Extent.Height());
+	const glm::vec2 jitterUv = FrameSamplingJitterToUv(glm::vec2(jitterX, jitterY), extent);
+	const glm::vec2 jitterPrevUv = FrameSamplingJitterToUv(glm::vec2(jitterXPrev, jitterYPrev), extent);
+	const glm::vec3 mvScale = FrameSamplingMotionScaleToUv(extent);
+	common.motionVectorScale[0] = mvScale.x;
+	common.motionVectorScale[1] = mvScale.y;
 	common.motionVectorScale[2] = 0.0f; // 2D screen-space motion
-	common.cameraJitter[0] = jitterX;
-	common.cameraJitter[1] = jitterY;
-	common.cameraJitterPrev[0] = jitterXPrev;
-	common.cameraJitterPrev[1] = jitterYPrev;
+	common.cameraJitter[0] = jitterUv.x;
+	common.cameraJitter[1] = jitterUv.y;
+	common.cameraJitterPrev[0] = jitterPrevUv.x;
+	common.cameraJitterPrev[1] = jitterPrevUv.y;
 	common.resourceSize[0] = (uint16_t)m_Extent.Width();
 	common.resourceSize[1] = (uint16_t)m_Extent.Height();
 	common.resourceSizePrev[0] = (uint16_t)m_Extent.Width();

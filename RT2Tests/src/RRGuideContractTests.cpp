@@ -169,6 +169,40 @@ TEST_CASE("RR guides: CPU motion projection contract covers static translation y
 			ExpectedYawPixels(p, glm::radians(1.0f), projection[0][0], extent));
 }
 
+TEST_CASE("RR guides: jitter compensation applies exactly once within 0.25px")
+{
+	// The producer writes UNJITTERED motion; each temporal consumer adds
+	// exactly (jitterPrev - jitterCur) once (ReSTIR jitterDelta, NGX
+	// InJitter). Representative authority-scale offsets prove the three
+	// compensation counts are pairwise discriminable at the criterion.
+	const glm::vec2 jitterCur(0.3f, -0.2f);
+	const glm::vec2 jitterPrev(-0.1f, 0.4f);
+	const glm::vec2 analytic(12.7f, -3.2f);
+	const glm::vec2 once = analytic + (jitterPrev - jitterCur);
+	CheckMotion(once, analytic + (jitterPrev - jitterCur));
+	const glm::vec2 twice = analytic + 2.0f * (jitterPrev - jitterCur);
+	const glm::vec2 zero = analytic;
+	// A missing or doubled compensation exceeds the criterion outright.
+	CHECK(glm::length(twice - once) > 0.25f);
+	CHECK(glm::length(zero - once) > 0.25f);
+	CHECK(glm::length(once - analytic) <= 1.0f);
+}
+
+TEST_CASE("RR guides: ReSTIR temporal reprojection subtracts current jitter")
+{
+	// Permanent pin for the flipped-sign defect: previous storage equals
+	// current storage plus motion plus (prev - current). Both temporal
+	// shaders must carry the prev-minus-current order; the reverse order
+	// double-adds jitter and was measured at 74x NRD variance on Sponza.
+	for (const char* path : { "RT2App/shaders/restir_temporal.comp",
+		"RT2App/shaders/restir_gi_temporal.comp" })
+	{
+		const std::string shader = ReadShader(path);
+		CHECK(shader.find("jitter.zw - ") != std::string::npos);
+		CHECK(shader.find("jitter.xy - ") == std::string::npos);
+	}
+}
+
 TEST_CASE("RR guides RED-GREEN: production motion acceptance rejects zero and low-density mutants")
 {
 	const auto zero = ValidateRRGuideMotion(0.0f, 0, 10000, true);

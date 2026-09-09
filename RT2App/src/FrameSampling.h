@@ -64,3 +64,19 @@ inline FrameSamplingState ComputeFrameSampling(uint32_t frameClock,
 	// carries it forward from the stored prior state, zeroing it on reset.
 	return state;
 }
+
+// NRD boundary conversions. REBLUR documents its inputs in UV (0..1):
+// "sampleUv = pixelUv + cameraJitter" and "pixelUvPrev = pixelUv + mv".
+// Every other consumer (raster/ray sampling, ReSTIR, NGX, motion) works in
+// render pixels, so the authority converts exactly once, here, at the NRD
+// seam. Passing pixel values as UV overstates them by the extent (1280x at
+// 720p) and destroys NRD history; the Sponza NRD case measured exactly that.
+inline glm::vec2 FrameSamplingJitterToUv(glm::vec2 jitterPixels, glm::vec2 extent)
+{
+	return glm::vec2(jitterPixels.x / extent.x, jitterPixels.y / extent.y);
+}
+
+inline glm::vec3 FrameSamplingMotionScaleToUv(glm::vec2 extent)
+{
+	return glm::vec3(1.0f / extent.x, 1.0f / extent.y, 0.0f);
+}

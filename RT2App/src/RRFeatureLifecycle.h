@@ -65,6 +65,16 @@ inline bool EffectiveNrdEnabled(bool authoredNrdEnabled, bool automaticFallback)
 // still denoise natively); switch-off NativeNRD routing is unchanged.
 bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirst,
 	bool nrdEnabled, bool nrdAvailable, bool automaticFallback);
+// Jitter enable rule (amendment step 3, corrected). Subpixel sampling runs
+// only while RR is ACTIVE: NGX consumes InJitter correctly, while the native
+// NRD path never validated REBLUR jitter history in production (its old gate
+// forced zeros whenever ReSTIR ran, i.e. always by default) and measures 74x
+// worse with any real jitter on Sponza. Native, fallback and Off frames stay
+// exactly unjittered; the shared authority still owns both states.
+inline bool ShouldJitterSampling(bool nrdJitterEnabled, RRBackend backend)
+{
+	return nrdJitterEnabled && backend == RRBackend::ActiveRR;
+}
 // One-shot session fallback decision (amendment step 5). Pure and
 // CPU-linkable: the host (WalnutApp, headless and interactive alike) feeds
 // the authored session mode, the lifecycle backend of the completed frame,

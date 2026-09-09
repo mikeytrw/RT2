@@ -1122,13 +1122,13 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 
 	// Shared sampling authority (amendment step 3): one Halton subpixel
 	// sequence for raster/ray sampling, ReSTIR reprojection, NRD and NGX.
-	// Jitter is active whenever a temporal consumer may run ÔÇö authored NRD,
-	// requested RR, or the automatic native fallback ÔÇö and the Off path
-	// stays exactly unjittered as before. Motion vectors remain unjittered
+	// Jitter runs only for frames that will evaluate RR (see
+	// ShouldJitterSampling); Off, native-NRD and fallback frames stay
+	// exactly unjittered as before. Motion vectors remain unjittered
 	// render-pixel deltas (W3 contract); each consumer compensates once.
 	const glm::vec2 prevJitter = m_SamplingReset ? glm::vec2(0.0f) : m_Sampling.jitter;
-	const bool jitterEnabled = m_Settings.nrdJitterEnabled &&
-		(effectiveNrd || IsRRModeRequested());
+	const bool jitterEnabled = ShouldJitterSampling(m_Settings.nrdJitterEnabled,
+		m_RR.Backend());
 	m_Sampling = ComputeFrameSampling(m_NRDFrameIndex, jitterEnabled,
 		m_Settings.nrdJitterScale, m_SamplingReset);
 	// A disabled frame carries no previous offset either; consumers must

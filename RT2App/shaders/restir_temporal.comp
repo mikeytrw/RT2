@@ -193,10 +193,11 @@ void main()
     if (temporalEnabled)
     {
         // gMotion is non-jittered UV displacement. Convert to pixels and move from
-        // this frame's jittered storage coordinates to the previous frame's.
+        // this frame's jittered storage coordinates to the previous frame's:
+        // previous storage = current storage + motion + (prevJitter - curJitter).
         vec2 motion = imageLoad(gMotion, pixel).xy;
         vec2 motionPixels = motion * vec2(width, height);
-        vec2 jitterDelta = pc.restir.jitter.xy - pc.restir.jitter.zw;
+        vec2 jitterDelta = pc.restir.jitter.zw - pc.restir.jitter.xy;
         vec2 prevPixelF = vec2(pixel) + motionPixels + jitterDelta + 0.5;
 
         // Check if reprojected pixel is within viewport
