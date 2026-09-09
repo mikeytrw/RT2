@@ -778,8 +778,11 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordRR(VkCommandBuffer cmd,
 	for (RRFeatureImage* input : ngxInputs)
 		input->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	evaluation.output.layout = VK_IMAGE_LAYOUT_GENERAL;
-	evaluation.jitterX = 0.0f;
-	evaluation.jitterY = 0.0f;
+	// Shared sampling authority: the same subpixel offset that raster and
+	// ray sampling used this frame. Motion stays unjittered (W3 contract);
+	// NGX applies this offset internally, exactly once.
+	evaluation.jitterX = ctx.samplingJitter.x;
+	evaluation.jitterY = ctx.samplingJitter.y;
 	evaluation.reset = ctx.rrLifecycle->ResetPending() ? 1 : 0;
 	evaluation.mvScaleX = 1.0f;
 	evaluation.mvScaleY = 1.0f;

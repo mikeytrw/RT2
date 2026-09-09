@@ -123,6 +123,11 @@ public:
 		SIGIPushConstants restirGIPC;
 		uint32_t giFrameIndex;        // drives reservoir/receiver-history parity
 		uint32_t giReservoirIndex;    // current region index read by raygen (frame parity)
+
+		// Shared sampling authority's current subpixel offset (render
+		// pixels). Fed to NGX InJitterOffset; motion vectors stay
+		// unjittered and each consumer compensates exactly once.
+		glm::vec2 samplingJitter;
 	};
 
 	// Record the full frame into the given command buffer.

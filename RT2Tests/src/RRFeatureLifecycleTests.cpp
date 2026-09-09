@@ -64,12 +64,12 @@ TEST_CASE("W4 RR lifecycle queries fixed Quality and creates one tuple")
 	CHECK(lifecycle.CompleteEvaluation(true, {}, 19, hooks).useRR);
 	CHECK(lifecycle.State().lastResult == 19);
 	CHECK(lifecycle.ResetPending());
-	lifecycle.MarkEvaluationSubmitted(true);
+	lifecycle.MarkEvaluationSubmitted();
 	CHECK_FALSE(lifecycle.ResetPending());
 	REQUIRE(lifecycle.BeginEvaluation().useRR);
 	CHECK(lifecycle.CompleteEvaluation(true, {}, 20, hooks).useRR);
 	CHECK_FALSE(lifecycle.ResetPending());
-	lifecycle.MarkEvaluationSubmitted(false);
+	lifecycle.MarkEvaluationSubmitted();
 	CHECK_FALSE(lifecycle.ResetPending());
 }
 
@@ -118,7 +118,7 @@ TEST_CASE("W4 RR reset is reasserted by resize and eligibility fallback")
 	hooks.release = [](std::string&) { return true; };
 	hooks.resetHistory = [&] { ++resets; };
 	REQUIRE(lifecycle.Reconcile(output, hooks));
-	lifecycle.MarkEvaluationSubmitted(true);
+	lifecycle.MarkEvaluationSubmitted();
 	CHECK_FALSE(lifecycle.ResetPending());
 	REQUIRE(lifecycle.SetIneligible(output, "unsupported camera projection", hooks));
 	CHECK(lifecycle.Backend() == RRBackend::NativeNRD);
@@ -194,7 +194,7 @@ TEST_CASE("W4 production lifecycle keeps one generation and settles fallback tru
 	CHECK(lifecycle.State().featureGeneration == 1);
 	REQUIRE(lifecycle.BeginEvaluation().useRR);
 	REQUIRE(lifecycle.CompleteEvaluation(true, {}, 0, hooks).useRR);
-	lifecycle.MarkEvaluationSubmitted(true);
+	lifecycle.MarkEvaluationSubmitted();
 	CHECK_FALSE(lifecycle.ResetPending());
 	REQUIRE(lifecycle.BeginEvaluation().useRR);
 	REQUIRE(lifecycle.CompleteEvaluation(false, "injected", 9, hooks).fallbackLatched);
@@ -238,9 +238,9 @@ TEST_CASE("W4 production dispatch and headless persistence decisions are checked
 	// fallback (rasterFirst=false) still dispatches native NRD.
 	CHECK(ShouldRecordNativeNRD(RRBackend::ActiveNativeNRD, false, false, false, true, true));
 	CHECK_FALSE(ShouldRecordNativeNRD(RRBackend::NativeDiagnosticBypass, true, true, false, true, true));
-	CHECK(ShouldForceStaticRRNoJitter(true, false, false));
-	CHECK(ShouldForceStaticRRNoJitter(false, true, false));
-	CHECK_FALSE(ShouldForceStaticRRNoJitter(false, false, false));
+	// The temporary W4 static no-jitter policy is retired: the shared
+	// FrameSampling authority (FrameSamplingTests) owns jitter on every
+	// backend, including requested RR.
 }
 
 TEST_CASE("W4 production policy gives diagnostic bypass precedence over unavailable NGX")
@@ -255,15 +255,6 @@ TEST_CASE("W4 production policy gives diagnostic bypass precedence over unavaila
 		true, false, true, true));
 }
 
-TEST_CASE("W4 zero-jitter policy reads the real non-ReSTIR production settings")
-{
-	RenderSettings settings;
-	settings.restirEnabled = false;
-	settings.restirGIEnabled = false;
-	CHECK(ShouldForceStaticRRNoJitter(true, settings.restirEnabled, settings.restirGIEnabled));
-	CHECK_FALSE(ShouldForceStaticRRNoJitter(false, settings.restirEnabled, settings.restirGIEnabled));
-}
-
 TEST_CASE("W4 production scene cuts request one RR history reset and steady frames do not")
 {
 	RRFeatureLifecycle lifecycle;
@@ -274,7 +265,7 @@ TEST_CASE("W4 production scene cuts request one RR history reset and steady fram
 	const auto output = *OutputExtent::TryCreate(1280, 720);
 	CHECK(lifecycle.SetIneligible(output, "native fallback", hooks,
 		RRIneligibleMode::ActiveNativeNRD));
-	lifecycle.MarkEvaluationSubmitted(false);
+	lifecycle.MarkEvaluationSubmitted();
 	const uint64_t before = lifecycle.State().historyResetGeneration;
 	// Production host sequence: scene setter (SetScene/SetSceneKeepTextures)
 	// immediately followed by ResetAccumulation (WalnutApp scene-changed
@@ -285,7 +276,7 @@ TEST_CASE("W4 production scene cuts request one RR history reset and steady fram
 	CHECK(lifecycle.State().historyResetGeneration == before + 1);
 	CHECK(resets == 1);
 	CHECK(lifecycle.ResetPending());
-	lifecycle.MarkEvaluationSubmitted(true);
+	lifecycle.MarkEvaluationSubmitted();
 	CHECK_FALSE(lifecycle.ResetPending());
 	CHECK(lifecycle.State().historyResetGeneration == before + 1);
 	// A second host transition after consumption owns exactly one more edge.

@@ -56,12 +56,6 @@ bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirs
 	return backend == RRBackend::NativeNRD && nrdEnabled;
 }
 
-bool ShouldForceStaticRRNoJitter(bool staticRRRequested, bool restirDIEnabled,
-	bool restirGIEnabled)
-{
-	return staticRRRequested || restirDIEnabled || restirGIEnabled;
-}
-
 bool ShouldCommitHeadlessOutput(bool requested, bool rendererAvailable,
 	bool submitted, bool captureAllowed, bool renderFailure)
 {

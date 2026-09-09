@@ -591,6 +591,7 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_SamplingReset = true;
 	m_ComposeDescriptorSetCached = false;
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
@@ -757,6 +758,7 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData, const Rend
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_SamplingReset = true;
 	m_ComposeDescriptorSetCached = false;
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
@@ -827,6 +829,7 @@ void RendererGPU::SetScene(GPUSceneData& sceneData, const RenderInstanceMap& ins
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_SamplingReset = true;
 	m_RR.RequestHistoryReset(MakeRRHooks());
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
@@ -926,6 +929,7 @@ void RendererGPU::ResetAccumulation()
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_SamplingReset = true;
 	// Scene setters request first; this second request coalesces while one
 	// is already pending, so each host transition is exactly one RR edge.
 	m_RR.RequestHistoryReset(MakeRRHooks());
@@ -1092,41 +1096,26 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 		frameIdxForShader = -(float)m_FrameIndex;
 	ubo.position = glm::vec4(camera.GetPosition(), frameIdxForShader);
 
-	// NRD camera jitter (Halton sequence, subpixel offset in [-0.5, 0.5])
-	m_NRDJitterPrev = m_NRDJitter;
-	// ReSTIR DI/GI history already performs its own reprojection. Keep raster
-	// sampling unjittered while either reservoir system is active; otherwise the
-	// subpixel sequence adds temporal instability to both reservoir and NRD
-	// histories. This also enforces the policy for CLI-created settings.
-	bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
-	const bool staticRRNoJitter = ShouldForceStaticRRNoJitter(
-		IsRRModeRequested() && m_RR.IsRequested(), m_Settings.restirEnabled, m_Settings.restirGIEnabled);
-	if (!staticRRNoJitter && effectiveNrd && m_Settings.nrdJitterEnabled && !restirActive)
-	{
-		// Halton sequence (base 2, base 3) for low-discrepancy jitter
-		auto halton = [](int index, int base) -> float {
-			float f = 1.0f, r = 0.0f;
-			int i = index;
-			while (i > 0) {
-				f /= base;
-				r += f * (i % base);
-				i /= base;
-			}
-			return r;
-		};
-		// Use m_NRDFrameIndex (continuously incrementing) for stable jitter sequence
-		int frame = (m_NRDFrameIndex - 1) % 16 + 1; // cycle through 16 offsets
-		m_NRDJitter = (glm::vec2(halton(frame, 2) - 0.5f, halton(frame, 3) - 0.5f)) * m_Settings.nrdJitterScale;
-	}
-	else
-	{
-		m_NRDJitter = glm::vec2(0.0f);
-	}
+	// Shared sampling authority (amendment step 3): one Halton subpixel
+	// sequence for raster/ray sampling, ReSTIR reprojection, NRD and NGX.
+	// Jitter is active whenever a temporal consumer may run ÔÇö authored NRD,
+	// requested RR, or the automatic native fallback ÔÇö and the Off path
+	// stays exactly unjittered as before. Motion vectors remain unjittered
+	// render-pixel deltas (W3 contract); each consumer compensates once.
+	const glm::vec2 prevJitter = m_SamplingReset ? glm::vec2(0.0f) : m_Sampling.jitter;
+	const bool jitterEnabled = m_Settings.nrdJitterEnabled &&
+		(effectiveNrd || IsRRModeRequested());
+	m_Sampling = ComputeFrameSampling(m_NRDFrameIndex, jitterEnabled,
+		m_Settings.nrdJitterScale, m_SamplingReset);
+	// A disabled frame carries no previous offset either; consumers must
+	// never see a stale subpixel delta after the switch is turned off.
+	m_Sampling.jitterPrev = m_Sampling.jitterActive ? prevJitter : glm::vec2(0.0f);
+	m_SamplingReset = false;
 
-	ubo.forward = glm::vec4(camera.GetDirection(), m_NRDJitter.x);
+	ubo.forward = glm::vec4(camera.GetDirection(), m_Sampling.jitter.x);
 	glm::vec3 right = glm::cross(camera.GetDirection(), glm::vec3(0, 1, 0));
 	glm::vec3 up = glm::cross(right, camera.GetDirection());
-	ubo.right = glm::vec4(right, m_NRDJitter.y);
+	ubo.right = glm::vec4(right, m_Sampling.jitter.y);
 	ubo.up = glm::vec4(up, m_Settings.restirEnabled ? 1.0f : 0.0f);
 	int maxBouncesClamped = m_Settings.maxBounces;
 	const int bounceLimit = (int)m_PathTracePass.GetMaxRecursionDepth() - 1;
@@ -1356,10 +1345,10 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 
 	// Build ReSTIR push constants from settings
 	SIReSTIRPushConstants restirPC = {};
-	// W4's static RR path owns temporal history while it is requested.  Keep
-	// spatial reuse available, but suppress DI/GI temporal reuse until the
-	// native fallback latch is reached.
-	const bool rrTemporalReuseDisabled = m_RR.Backend() == RRBackend::ActiveRR;
+	// ReSTIR DI/GI temporal reuse stays under settings control on every
+	// backend including active RR: all reservoirs reproject with the shared
+	// sampling authority's jitter pair, compensating exactly once via the
+	// existing jitterDelta path. There is no RR-specific suppression.
 	restirPC.freshCandidateCount = m_Settings.restirFreshCandidates;
 	restirPC.temporalMCap = m_Settings.restirTemporalMCap;
 	restirPC.spatialMCap = m_Settings.restirSpatialMCap;
@@ -1370,10 +1359,10 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	restirPC.worldPosThreshold = m_Settings.restirWorldPosThreshold;
 	restirPC.maxTemporalAge = m_Settings.restirMaxTemporalAge;
 	restirPC.flags = 0;
-	if (m_Settings.restirTemporalReuse && !rrTemporalReuseDisabled) restirPC.flags |= 1u;
+	if (m_Settings.restirTemporalReuse) restirPC.flags |= 1u;
 	if (m_Settings.restirSpatialReuse)  restirPC.flags |= 2u;
 	restirPC.frameIndex = m_ReSTIRFrameIndex;
-	restirPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
+	restirPC.jitter = glm::vec4(m_Sampling.jitter, m_Sampling.jitterPrev);
 
 	// Build ReSTIR GI push constants from settings
 	SIGIPushConstants giPC = {};
@@ -1381,13 +1370,13 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	giPC.temporalMCap = m_Settings.restirGITemporalMCap;
 	giPC.maxTemporalAge = m_Settings.restirGIMaxTemporalAge;
 	giPC.flags = 0;
-	if (m_Settings.restirGITemporalEnabled && !rrTemporalReuseDisabled) giPC.flags |= 1u;
+	if (m_Settings.restirGITemporalEnabled) giPC.flags |= 1u;
 	giPC.flags |= (uint32_t)(m_Settings.nrdLobeDither & 3u) << 1;  // bits 1-2: dither mode
 	giPC.depthThreshold = m_Settings.restirGIDepthThreshold;
 	giPC.normalThreshold = m_Settings.restirGINormalThreshold;
 	giPC.worldPosThreshold = m_Settings.restirGIWorldPosThreshold;
 	giPC.frameIndex = m_GIFrameIndex;
-	giPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
+	giPC.jitter = glm::vec4(m_Sampling.jitter, m_Sampling.jitterPrev);
 
 	// Build the frame render context and delegate to FrameRenderer.
 	// nrdEnabled here is the EFFECTIVE per-frame NRD state (authored or
@@ -1436,8 +1425,8 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_Settings.nrdResponsiveMinAccumFrames,
 		m_Settings.nrdAntiFirefly,
 		m_Settings.nrdSplitScreen,
-		m_NRDJitter,
-		m_NRDJitterPrev,
+		m_Sampling.jitter,
+		m_Sampling.jitterPrev,
 		m_NRDFrameIndex,
 		m_NRDNeedsReset,
 		m_HasPrevMatrices,
@@ -1450,7 +1439,8 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_Settings.restirGIEnabled,
 		giPC,
 		m_GIFrameIndex,
-		m_GIFrameIndex & 1u
+		m_GIFrameIndex & 1u,
+		m_Sampling.jitter
 	};
 
 	const FrameRenderer::RecordedFrameOutcome recorded = FrameRenderer::RecordFrame(cmd, ctx);
@@ -1513,7 +1503,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	m_LastCompleted.historyResetGeneration = m_RR.State().historyResetGeneration;
 	m_LastCompleted.historyResetThisFrame = m_RR.ResetPending();
 	m_LastCompleted.fallbackReason = m_RR.FallbackReason();
-	m_RR.MarkEvaluationSubmitted(recorded.rrEvaluated);
+	m_RR.MarkEvaluationSubmitted();
 	const GpuImage& hdrImage = recorded.rrEvaluated ? m_RROutputImage : m_OutputImage;
 	FullResolutionHdrSource source;
 	source.image = hdrImage.image;

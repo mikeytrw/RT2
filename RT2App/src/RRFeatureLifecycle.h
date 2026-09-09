@@ -64,8 +64,6 @@ inline bool EffectiveNrdEnabled(bool authoredNrdEnabled, bool automaticFallback)
 // still denoise natively); switch-off NativeNRD routing is unchanged.
 bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirst,
 	bool nrdEnabled, bool nrdAvailable, bool automaticFallback);
-bool ShouldForceStaticRRNoJitter(bool staticRRRequested, bool restirDIEnabled,
-	bool restirGIEnabled);
 bool ShouldCommitHeadlessOutput(bool requested, bool rendererAvailable,
 	bool submitted, bool captureAllowed, bool renderFailure);
 bool RequiredRenderStagesAvailable(bool rendererAvailable, bool rrActive,
@@ -196,13 +194,14 @@ public:
 	RRFrameDecision CompleteEvaluation(bool success, std::string reason = {},
 		int32_t result = 0, const RRFeatureHooks& hooks = {});
 	bool ResetPending() const { return m_State.rrResetPending; }
-	void MarkEvaluationSubmitted(bool rrEvaluation)
-	{
-		if (rrEvaluation) m_State.rrResetPending = false;
-	}
+	// Any submitted frame consumes a pending reset, RR or native: the
+	// setter-plus-reset pair inside one host transition arrives with no
+	// submitted frame between the two requests and coalesces to one edge,
+	// while a later transition finds pending clear and owns a new edge.
+	// Steady frames issue no requests, so generation stays constant.
+	void MarkEvaluationSubmitted() { m_State.rrResetPending = false; }
 	// Scene replacement/cut invalidates RR history without changing the
-	// selected tuple. The pending bit is consumed only by a successful RR
-	// submission, so repeated steady frames do not reset history.
+	// selected tuple.
 	// Back-to-back host requests (scene setter plus ResetAccumulation, or
 	// full/material sync plus router reset) coalesce while a reset is
 	// already pending: one host transition owns exactly one generation edge.

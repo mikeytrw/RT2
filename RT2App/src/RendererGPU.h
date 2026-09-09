@@ -29,6 +29,7 @@
 #include "GpuTimestampProfiler.h"
 #include "RenderInstanceMap.h"
 #include "GpuPickingPass.h"
+#include "FrameSampling.h"
 #include "NgxRuntime.h"
 #include "RRFeatureLifecycle.h"
 #include "RenderExtents.h"
@@ -195,10 +196,10 @@ public:
 	void SetEditorPresentation(bool editorPresentation);
 	bool GetEditorPresentation() const { return m_EditorPresentation; }
 
-	// Camera jitter for NRD temporal AA (Halton sequence) — internal,
-	// computed each frame from settings.nrdJitterEnabled + nrdJitterScale.
-	glm::vec2 GetNRDJitter() const { return m_NRDJitter; }
-	glm::vec2 GetNRDJitterPrev() const { return m_NRDJitterPrev; }
+	// Current-frame sampling state (shared subpixel jitter authority).
+	// NRD, ReSTIR DI/GI, raster/ray sampling and NGX RR all consume the
+	// same offsets; see FrameSampling.h.
+	const FrameSamplingState& GetFrameSampling() const { return m_Sampling; }
 	const GpuTimestampProfiler::Timings& GetGpuTimings() const { return m_GpuProfiler.GetLatest(); }
 	bool HasGpuTimings() const { return m_GpuProfiler.IsAvailable(); }
 
@@ -258,9 +259,12 @@ private:
 	// Render settings (user-tunable knobs)
 	RenderSettings m_Settings;
 
-	// NRD jitter state (computed each frame from m_Settings)
-	glm::vec2 m_NRDJitter = glm::vec2(0.0f);
-	glm::vec2 m_NRDJitterPrev = glm::vec2(0.0f);
+	// Shared per-frame sampling state (subpixel jitter authority - see
+	// FrameSampling.h). Replaces the former NRD-only jitter pair; every
+	// temporal consumer reads these offsets. m_SamplingReset requests a
+	// zeroed previous offset on the next UpdateCameraUBO (cut/resize/mode).
+	FrameSamplingState m_Sampling;
+	bool m_SamplingReset = true;
 
 	VkBuffer m_CameraUBO = VK_NULL_HANDLE;
 	VkDeviceMemory m_CameraUBOMemory = VK_NULL_HANDLE;
