@@ -358,6 +358,23 @@ TEST_CASE("RR jitter runs only for frames that will evaluate RR")
 	CHECK_FALSE(ShouldJitterSampling(false, RRBackend::ActiveRR));
 }
 
+TEST_CASE("R1 ordinary camera motion resets accumulation only on the Off path")
+{
+	using DM = DenoiserMode;
+	// Legacy Off path with motion: reset (the only behavior that changes).
+	CHECK(ShouldResetAccumulationOnCameraMove(DM::Off, false, true, true, true));
+	// NRD (authored or fallback), RR requested in any backend: never.
+	CHECK_FALSE(ShouldResetAccumulationOnCameraMove(DM::NRD, false, true, true, true));
+	CHECK_FALSE(ShouldResetAccumulationOnCameraMove(DM::Off, true, true, true, true));
+	CHECK_FALSE(ShouldResetAccumulationOnCameraMove(DM::RayReconstruction, false, true, true, true));
+	CHECK_FALSE(ShouldResetAccumulationOnCameraMove(DM::RayReconstruction, true, true, true, true));
+	CHECK_FALSE(ShouldResetAccumulationOnCameraMove(DM::NRD, true, true, true, true));
+	// Missing preconditions: never, on any mode.
+	CHECK_FALSE(ShouldResetAccumulationOnCameraMove(DM::Off, false, false, true, true));
+	CHECK_FALSE(ShouldResetAccumulationOnCameraMove(DM::Off, false, true, false, true));
+	CHECK_FALSE(ShouldResetAccumulationOnCameraMove(DM::Off, false, true, true, false));
+}
+
 TEST_CASE("W4 production scene cuts request one RR history reset and steady frames do not")
 {
 	RRFeatureLifecycle lifecycle;
@@ -439,4 +456,44 @@ TEST_CASE("W4 RR lifecycle rejects malformed optimal dimensions loudly")
 	CHECK(lifecycle.State().failureLatched);
 	CHECK(lifecycle.FallbackReason().find("zero extent") != std::string::npos);
 	CHECK_FALSE(lifecycle.State().featureOwned);
+}
+
+TEST_CASE("R4 session mirror keeps fallback dispatch, identity and reason")
+{
+	// Full first-frame -> host reaction -> next-frame sequence for a
+	// pure-path fallback (the settled W4 ineligible path). The host mirrors
+	// the session selector WITHOUT tearing down the renderer fallback; the
+	// second frame must still denoise with identity and reason intact.
+	// (A teardown-on-mirror mutant dispatches nothing on frame two.)
+	RRFeatureLifecycle fallback;
+	fallback.SetRequested(true);
+	RRFeatureHooks hooks;
+	int resets = 0;
+	hooks.resetHistory = [&] { ++resets; };
+	const auto output = *OutputExtent::TryCreate(1280, 720);
+	REQUIRE(fallback.SetIneligible(output, "RR requires raster-first mode", hooks,
+		RRIneligibleMode::ActiveNativeNRD));
+	// Frame one: authored RR + fallback dispatches native NRD (pure path:
+	// rasterFirst=false, authored NRD off).
+	const bool first = ShouldRecordNativeNRD(fallback.Backend(), false, false,
+		EffectiveNrdEnabled(DenoiserMode::RayReconstruction, true), true, true);
+	CHECK(first);
+	fallback.MarkEvaluationSubmitted();
+	// Host reaction: resolve + mirror (request state only, no teardown).
+	auto authored = ResolveSessionFallbackDenoiser(
+		DenoiserMode::RayReconstruction, fallback.Backend(), false);
+	REQUIRE(authored.has_value());
+	CHECK(*authored == DenoiserMode::NRD);
+	fallback.SetRequested(IsRRRequested(*authored));
+	const uint64_t afterMirror = fallback.State().historyResetGeneration;
+	CHECK(fallback.Backend() == RRBackend::ActiveNativeNRD);
+	// Frame two: authored NRD + retained fallback still dispatches, with
+	// the exact reason preserved and no extra edge from the mirror itself.
+	const bool second = ShouldRecordNativeNRD(fallback.Backend(), false, false,
+		EffectiveNrdEnabled(*authored, true), true, true);
+	CHECK(second);
+	CHECK(fallback.State().historyResetGeneration == afterMirror);
+	CHECK(fallback.FallbackReason() == "RR requires raster-first mode");
+	// Explicit leave (user deselects) is a different road and is covered by
+	// the renderer teardown path, not by mirroring.
 }

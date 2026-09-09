@@ -31,9 +31,10 @@ enum class DlssQualityMode : uint8_t
 	Performance,
 };
 
-// CompletedDenoiser — the backend used by the latest completed
-// (submitted) frame. Derived from the checked frame outcome, never from
-// the requested setting.
+// CompletedDenoiser — the backend used by a frame. Derived from the checked
+// frame outcome plus the lifecycle backend, never from the requested setting.
+// NativeDiagnosticBypass reports a G-buffer debug frame as itself (R7); it
+// must never display as Off.
 enum class CompletedDenoiser : uint8_t
 {
 	None,               // no completed frame yet
@@ -41,6 +42,7 @@ enum class CompletedDenoiser : uint8_t
 	NRD,                // completed frame recorded native NRD
 	RayReconstruction,  // completed frame evaluated RR successfully
 	NRDFallback,        // completed native NRD after requested RR fell back
+	NativeDiagnosticBypass, // G-buffer debug view; no denoiser ran
 };
 
 inline bool IsNrdAuthored(DenoiserMode mode) { return mode == DenoiserMode::NRD; }
@@ -57,21 +59,9 @@ inline bool EffectiveNrdEnabled(DenoiserMode authored, bool automaticFallback)
 	return IsNrdAuthored(authored) || automaticFallback;
 }
 
-// Resolve the completed-frame label from the checked outcome. rrEvaluated
-// and nrdRecorded must never both be true for one successful frame; that
-// combination resolves to None so a violated invariant cannot present as a
-// valid backend.
-inline CompletedDenoiser ResolveCompletedDenoiser(bool rrEvaluated,
-	bool nrdRecorded, bool rrFallbackLatched)
-{
-	if (rrEvaluated && nrdRecorded)
-		return CompletedDenoiser::None;
-	if (rrEvaluated)
-		return CompletedDenoiser::RayReconstruction;
-	if (nrdRecorded)
-		return rrFallbackLatched ? CompletedDenoiser::NRDFallback : CompletedDenoiser::NRD;
-	return CompletedDenoiser::Off;
-}
+// ResolveCompletedDenoiser lives with the lifecycle authority
+// (RRFeatureLifecycle.h): it needs the backend for the diagnostic-bypass
+// identity (R7).
 
 inline const char* DenoiserModeName(DenoiserMode mode)
 {
@@ -104,6 +94,7 @@ inline const char* CompletedDenoiserName(CompletedDenoiser denoiser)
 	case CompletedDenoiser::NRD: return "NRD";
 	case CompletedDenoiser::RayReconstruction: return "DLSS Ray Reconstruction";
 	case CompletedDenoiser::NRDFallback: return "NRD (RR fallback)";
+	case CompletedDenoiser::NativeDiagnosticBypass: return "Diagnostic bypass";
 	}
 	return "Unknown";
 }

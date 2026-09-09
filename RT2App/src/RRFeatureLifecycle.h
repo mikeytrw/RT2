@@ -65,7 +65,70 @@ inline bool EffectiveNrdEnabled(bool authoredNrdEnabled, bool automaticFallback)
 // still denoise natively); switch-off NativeNRD routing is unchanged.
 bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirst,
 	bool nrdEnabled, bool nrdAvailable, bool automaticFallback);
-// Jitter enable rule (amendment step 3, corrected). Subpixel sampling runs
+// Completed-frame denoiser snapshot payload. CPU-linkable (no Vulkan);
+// owned per frame-slot by the renderer and consumed by host UI.
+struct RRCompletedFrameSnapshot
+{
+	CompletedDenoiser denoiser = CompletedDenoiser::None;
+	RRBackend backend = RRBackend::NativeNRD;
+	DlssQualityMode quality = DlssQualityMode::Quality;
+	OutputExtent outputExtent;
+	RenderExtent renderExtent;
+	uint64_t featureGeneration = 0;
+	uint64_t historyResetGeneration = 0;
+	bool historyResetThisFrame = false;
+	std::string fallbackReason;
+};
+
+// Fence-gated completed-view tracker (R6). Submission stamps a per-slot
+// pending snapshot; only the slot's fence completion promotes it to the
+// view. Failed/discarded recordings submit nothing, so the last proven
+// completed frame stays visible instead of describing pending work.
+template <size_t SlotCount>
+class CompletedSnapshotTracker
+{
+public:
+	void Submit(size_t slot, const RRCompletedFrameSnapshot& snapshot)
+	{
+		const size_t s = slot % SlotCount;
+		m_Pending[s] = snapshot;
+		m_HasPending[s] = true;
+	}
+	// Returns the promoted snapshot when this slot carried pending work
+	// whose fence has now completed; nullopt otherwise (including a second
+	// reap of the same slot without an intervening submission).
+	std::optional<RRCompletedFrameSnapshot> ReapCompleted(size_t slot)
+	{
+		const size_t s = slot % SlotCount;
+		if (!m_HasPending[s])
+			return std::nullopt;
+		m_HasPending[s] = false;
+		return m_Pending[s];
+	}
+
+private:
+	RRCompletedFrameSnapshot m_Pending[SlotCount]{};
+	bool m_HasPending[SlotCount]{};
+};
+
+// Resolve the completed-frame label from the checked outcome plus the
+// lifecycle backend (R7: the diagnostic bypass reports itself instead of
+// masquerading as Off). rrEvaluated and nrdRecorded must never both be true
+// for one successful frame; that combination resolves to None so a violated
+// invariant cannot present as a valid backend.
+inline CompletedDenoiser ResolveCompletedDenoiser(bool rrEvaluated,
+	bool nrdRecorded, bool rrFallbackLatched, RRBackend backend)
+{
+	if (backend == RRBackend::NativeDiagnosticBypass)
+		return CompletedDenoiser::NativeDiagnosticBypass;
+	if (rrEvaluated && nrdRecorded)
+		return CompletedDenoiser::None;
+	if (rrEvaluated)
+		return CompletedDenoiser::RayReconstruction;
+	if (nrdRecorded)
+		return rrFallbackLatched ? CompletedDenoiser::NRDFallback : CompletedDenoiser::NRD;
+	return CompletedDenoiser::Off;
+}
 // only while RR is ACTIVE: NGX consumes InJitter correctly, while the native
 // NRD path never validated REBLUR jitter history in production (its old gate
 // forced zeros whenever ReSTIR ran, i.e. always by default) and measures 74x
@@ -74,6 +137,23 @@ bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirs
 inline bool ShouldJitterSampling(bool nrdJitterEnabled, RRBackend backend)
 {
 	return nrdJitterEnabled && backend == RRBackend::ActiveRR;
+}
+// Camera-motion vs cut rule (R1 fix). Ordinary motion resets accumulation
+// ONLY on the legacy Off path (no NRD, no RR request): Off temporal
+// accumulation blends 1/N and would freeze stale noise in screen space.
+// NRD and RR histories reproject across ordinary motion via motion vectors,
+// so motion must neither restart their clocks nor request history resets —
+// the pan sweep otherwise re-tests history rejection every frame. Cuts and
+// explicit transitions still call ResetAccumulation directly and own exactly
+// one edge through the coalesced request.
+inline bool ShouldResetAccumulationOnCameraMove(DenoiserMode mode,
+	bool effectiveFallback, bool accumulate, bool hasPrev, bool moved)
+{
+	if (!accumulate || !hasPrev || !moved)
+		return false;
+	if (EffectiveNrdEnabled(mode, effectiveFallback))
+		return false;
+	return !IsRRRequested(mode);
 }
 // One-shot session fallback decision (amendment step 5). Pure and
 // CPU-linkable: the host (WalnutApp, headless and interactive alike) feeds
