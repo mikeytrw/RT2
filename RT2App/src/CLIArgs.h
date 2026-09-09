@@ -8,6 +8,47 @@
 #include "RRGuideContract.h"
 #include "DenoiserMode.h"
 
+// Resolved denoiser selection: the single mapping from compatibility and
+// public CLI spellings onto the authored enum. Explicit --denoiser-mode
+// always wins (including Off over a stale developer switch); otherwise the
+// compat --dev-rr-static selects RR+Quality and --nrd selects NRD; default
+// stays NRD. Invalid spellings report through the valid flags and keep
+// defaults so a typo can be loud without changing rendering.
+struct ResolvedDenoiserSelection
+{
+	DenoiserMode mode = DenoiserMode::NRD;
+	DlssQualityMode quality = DlssQualityMode::Quality;
+	bool modeValid = true;
+	bool qualityValid = true;
+};
+
+inline ResolvedDenoiserSelection ResolveDenoiserSelectionFromCLI(bool devRRStatic,
+	bool nrd, const std::string& modeText, const std::string& qualityText)
+{
+	ResolvedDenoiserSelection out;
+	if (!modeText.empty())
+	{
+		if (const auto parsed = ParseDenoiserMode(modeText))
+			out.mode = *parsed;
+		else
+			out.modeValid = false;
+	}
+	else if (devRRStatic)
+		out.mode = DenoiserMode::RayReconstruction;
+	else if (nrd)
+		out.mode = DenoiserMode::NRD;
+	if (!qualityText.empty())
+	{
+		if (const auto quality = ParseDlssQuality(qualityText))
+			out.quality = *quality;
+		else
+			out.qualityValid = false;
+	}
+	else if (devRRStatic)
+		out.quality = DlssQualityMode::Quality;
+	return out;
+}
+
 struct CLIArgs
 {
 	std::string scenePath;

@@ -690,7 +690,7 @@ public:
 		{
 			if (m_RendererGPU.Init())
 			{
-				m_RendererGPU.SetNgxRuntime(m_Ngx.get(), g_CLI.devRRStatic);
+				m_RendererGPU.SetNgxRuntime(m_Ngx.get());
 				m_Settings = m_RendererGPU.GetSettings();
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
@@ -918,24 +918,61 @@ public:
 		m_RendererGPU.ApplySettings(m_Settings);
 
 	bool nrdAvailable = m_Settings.rasterFirst;
-	if (!nrdAvailable && m_Settings.denoiserMode == DenoiserMode::NRD)
+	if (!nrdAvailable && m_Settings.denoiserMode == DenoiserMode::NRD &&
+		!m_RendererGPU.IsFallbackRetained())
 	{
 		m_Settings.denoiserMode = DenoiserMode::Off;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	// One exclusive denoiser selector (amendment step 5). No independent
 	// NRD/RR flags exist: the combo writes the single authored mode.
+	// The RR item is disabled (not hidden) while the runtime cannot
+	// support it; Off/NRD stay selectable and the reason stays visible.
+	const bool rrSupported = m_Ngx && m_Ngx->Snapshot().IsSupported();
 	{
 		const char* denoiserOptions[] = { "Off", "NRD", "DLSS Ray Reconstruction" };
 		int denoiserIndex = m_Settings.denoiserMode == DenoiserMode::NRD ? 1 :
 			(m_Settings.denoiserMode == DenoiserMode::RayReconstruction ? 2 : 0);
-		if (ImGui::Combo("Denoiser", &denoiserIndex, denoiserOptions, 3))
+		if (ImGui::BeginCombo("Denoiser", denoiserOptions[denoiserIndex]))
 		{
-			m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
-				(denoiserIndex == 2 ? DenoiserMode::RayReconstruction : DenoiserMode::Off);
-			if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
-				m_RRFallbackApplied = false; // explicit (re)selection may retry
-			m_RendererGPU.ApplySettings(m_Settings);
+			for (int i = 0; i < 3; ++i)
+			{
+				const bool isRR = (i == 2);
+				const bool disabled = isRR && !rrSupported;
+				const bool selected = (denoiserIndex == i);
+				if (disabled)
+					ImGui::BeginDisabled(true);
+				if (ImGui::Selectable(denoiserOptions[i], selected,
+					disabled ? ImGuiSelectableFlags_Disabled : 0) && !disabled)
+				{
+					denoiserIndex = i;
+					const DenoiserMode previous = m_Settings.denoiserMode;
+					m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
+						(denoiserIndex == 2 ? DenoiserMode::RayReconstruction : DenoiserMode::Off);
+					if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
+						m_RRFallbackApplied = false; // explicit (re)selection may retry
+					else
+					{
+						// Explicit leave of RR: drop retained fallback provenance
+						// (R4) and retire the session notice; the following rebuild
+						// owns the single transition edge via coalescing.
+						if (previous == DenoiserMode::RayReconstruction)
+							m_RendererGPU.ClearRetainedFallback();
+						m_RRFallbackApplied = false;
+						m_RRFallbackReason.clear();
+					}
+					m_RendererGPU.ApplySettings(m_Settings);
+				}
+				if (disabled)
+					ImGui::EndDisabled();
+			}
+			ImGui::EndCombo();
+		}
+		if (!rrSupported)
+		{
+			const std::string reason = m_Ngx ? m_Ngx->Snapshot().reason :
+				"NGX runtime is not initialized";
+			ImGui::TextWrapped("RR unavailable: %s", reason.c_str());
 		}
 	}
 	if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
@@ -944,12 +981,14 @@ public:
 		const char* qualityOptions[] = { "Quality", "Balanced", "Performance" };
 		int qualityIndex = m_Settings.dlssQuality == DlssQualityMode::Balanced ? 1 :
 			(m_Settings.dlssQuality == DlssQualityMode::Performance ? 2 : 0);
+		ImGui::BeginDisabled(!rrSupported);
 		if (ImGui::Combo("RR Preset", &qualityIndex, qualityOptions, 3))
 		{
 			m_Settings.dlssQuality = qualityIndex == 1 ? DlssQualityMode::Balanced :
 				(qualityIndex == 2 ? DlssQualityMode::Performance : DlssQualityMode::Quality);
 			m_RendererGPU.ApplySettings(m_Settings);
 		}
+		ImGui::EndDisabled();
 		if (m_RendererGPU.HasOutput())
 		{
 			const auto render = m_RendererGPU.GetRenderExtent();
@@ -957,8 +996,6 @@ public:
 			ImGui::TextDisabled("Internal %u x %u -> Output %u x %u",
 				render.Width(), render.Height(), output.Width(), output.Height());
 		}
-		if (m_Ngx && !m_Ngx->Snapshot().IsSupported())
-			ImGui::TextWrapped("RR unsupported: %s", m_Ngx->Snapshot().reason.c_str());
 		ImGui::Unindent();
 	}
 	if (m_RRFallbackApplied && !m_RRFallbackReason.empty())
@@ -3062,32 +3099,20 @@ private:
 			g_CLI.Print();
 
 		// One authority resolving CLI denoiser selection onto the settings:
-		// explicit --denoiser-mode wins, then compat --dev-rr-static
-		// (RR + Quality) and --nrd (NRD); default stays NRD. Used at both
-		// pre-init and post-init application sites below.
+		// ResolveDenoiserSelectionFromCLI maps explicit and compat flags
+		// onto the single authored enum (explicit --denoiser-mode wins).
+		// Used at both pre-init and post-init application sites below.
 		auto ApplyCLIDenoiserSelection = [](RenderSettings& settings) {
-			if (!g_CLI.denoiserMode.empty())
-			{
-				if (const auto parsed = ParseDenoiserMode(g_CLI.denoiserMode))
-					settings.denoiserMode = *parsed;
-				else
-					fprintf(stderr, "[CLI] Unknown --denoiser-mode '%s' (want off|nrd|rr)\n",
-						g_CLI.denoiserMode.c_str());
-			}
-			else if (g_CLI.devRRStatic)
-				settings.denoiserMode = DenoiserMode::RayReconstruction;
-			else if (g_CLI.nrd)
-				settings.denoiserMode = DenoiserMode::NRD;
-			if (!g_CLI.rrQuality.empty())
-			{
-				if (const auto quality = ParseDlssQuality(g_CLI.rrQuality))
-					settings.dlssQuality = *quality;
-				else
-					fprintf(stderr, "[CLI] Unknown --rr-quality '%s' (want quality|balanced|performance)\n",
-						g_CLI.rrQuality.c_str());
-			}
-			else if (g_CLI.devRRStatic)
-				settings.dlssQuality = DlssQualityMode::Quality;
+			const ResolvedDenoiserSelection resolved = ResolveDenoiserSelectionFromCLI(
+				g_CLI.devRRStatic, g_CLI.nrd, g_CLI.denoiserMode, g_CLI.rrQuality);
+			if (!resolved.modeValid)
+				fprintf(stderr, "[CLI] Unknown --denoiser-mode '%s' (want off|nrd|rr)\n",
+					g_CLI.denoiserMode.c_str());
+			if (!resolved.qualityValid)
+				fprintf(stderr, "[CLI] Unknown --rr-quality '%s' (want quality|balanced|performance)\n",
+					g_CLI.rrQuality.c_str());
+			settings.denoiserMode = resolved.mode;
+			settings.dlssQuality = resolved.quality;
 		};
 
 		if (g_CLI.listScenes)
@@ -3123,7 +3148,7 @@ private:
 		{
 			if (m_RendererGPU.Init())
 			{
-				m_RendererGPU.SetNgxRuntime(m_Ngx.get(), g_CLI.devRRStatic);
+				m_RendererGPU.SetNgxRuntime(m_Ngx.get());
 				m_Settings = m_RendererGPU.GetSettings();
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
@@ -3192,6 +3217,7 @@ private:
 		if (outcome.nativeNrdUnavailable &&
 			m_Settings.denoiserMode != DenoiserMode::Off)
 		{
+			m_RendererGPU.ClearRetainedFallback();
 			m_Settings.denoiserMode = DenoiserMode::Off;
 			m_RRFallbackApplied = true;
 			m_RRFallbackReason = outcome.failureReason;
@@ -3203,14 +3229,16 @@ private:
 			fflush(stdout);
 			return;
 		}
-		const auto& completed = m_RendererGPU.GetLastCompleted();
+		const auto& completed = m_RendererGPU.GetLastSubmitted();
 		if (const auto mapped = ResolveSessionFallbackDenoiser(
 			m_Settings.denoiserMode, completed.backend, m_RRFallbackApplied))
 		{
 			m_Settings.denoiserMode = *mapped;
 			m_RRFallbackApplied = true;
 			m_RRFallbackReason = completed.fallbackReason;
-			m_RendererGPU.ApplySettings(m_Settings);
+			// Mirror, don't rebuild: the renderer keeps the retained
+			// fallback backend, flag and reason (R4).
+			m_RendererGPU.MirrorSessionFallback(*mapped);
 			RT_LOG("[Denoiser] RR fell back; session selector set to %s: %s",
 				DenoiserModeName(*mapped), completed.fallbackReason.c_str());
 		}

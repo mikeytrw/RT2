@@ -66,21 +66,12 @@ public:
 		FullResolutionHdrSource hdrSource;
 	};
 	// Completed-frame denoiser snapshot (amendment 2026-09-09, step 2). The
-	// immutable record of what the latest SUBMITTED frame actually used.
-	// Performance UI and session-fallback logic read this, never the authored
-	// setting. Failed/discarded frames never overwrite it.
-	struct CompletedFrameSnapshot
-	{
-		CompletedDenoiser denoiser = CompletedDenoiser::None;
-		RRBackend backend = RRBackend::NativeNRD;
-		DlssQualityMode quality = DlssQualityMode::Quality;
-		OutputExtent outputExtent;
-		RenderExtent renderExtent;
-		uint64_t featureGeneration = 0;
-		uint64_t historyResetGeneration = 0;
-		bool historyResetThisFrame = false;
-		std::string fallbackReason;
-	};
+	// immutable record of what a frame actually used. Two views exist (R6):
+	// submitted (prompt, stamped at vkQueueSubmit for host session logic)
+	// and completed (promoted only when that slot's fence proves GPU
+	// completion, for the Performance display). Failed/discarded frames
+	// submit nothing and preserve both views.
+	using CompletedFrameSnapshot = RRCompletedFrameSnapshot;
 	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 	RendererGPU() = default;
 	~RendererGPU() { Destroy(); }
@@ -96,9 +87,22 @@ public:
 	}
 	RenderOutcome Render(const Camera& camera);
 	void SetRRGuideReportMode(bool enabled) { m_RRGuideReportMode = enabled; }
-	void SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR);
+	void SetNgxRuntime(NgxRuntime* runtime);
 	void ReleaseRRFeature();
-	const RRFeatureState& GetRRState() const { return m_RR.State(); }
+	// Session-fallback mirror (R4): record the mirrored session mode and
+	// update lifecycle request state WITHOUT tearing down the retained
+	// ActiveNativeNRD backend, its flag, or its reason, and WITHOUT forcing
+	// a rebuild. Dispatch, identity and reason persist; the transition
+	// already counted its one edge. Called only by the host fallback
+	// reaction, never by explicit user selection.
+	void MirrorSessionFallback(DenoiserMode mode);
+	// Explicit leave of RR (R4): drop retained fallback provenance (flag,
+	// backend, reason) so a later rebuild selects plain native rendering.
+	// Adds no reset edge itself (no active feature here); the following
+	// rebuild's teardown owns the single edge via coalescing. Called only
+	// by explicit user/host deselection, never by fallback mirroring.
+	void ClearRetainedFallback();
+	bool IsFallbackRetained() const { return m_AutomaticNativeNrdFallback; }	const RRFeatureState& GetRRState() const { return m_RR.State(); }
 	void SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
 	// Diagnostic: dump every material's metallic/roughness factors and texture
 	// indices to the log, flagging fully-metallic materials that have no
@@ -144,6 +148,10 @@ public:
 	RenderExtent GetRenderExtent() const { return m_RenderExtent; }
 	const FullResolutionHdrSource& GetHdrSource() const { return m_HdrSource; }
 	const RenderOutcome& GetLastRenderOutcome() const { return m_LastRenderOutcome; }
+	// Prompt submitted view: latest vkQueueSubmit snapshot, for host session
+	// reaction. Fence-gated completed view: latest fence-proven frame, for
+	// the Performance display (R6).
+	const CompletedFrameSnapshot& GetLastSubmitted() const { return m_LastSubmitted; }
 	const CompletedFrameSnapshot& GetLastCompleted() const { return m_LastCompleted; }
 
 	struct PickResult
@@ -331,14 +339,13 @@ private:
 	bool m_RRGuideInitFailed = false;
 	bool m_RRGuideReportMode = false;
 	NgxRuntime* m_NgxRuntime = nullptr; // non-owning; NgxRuntime owns SDK state
-	bool m_DevStaticRR = false;
-	// Single request authority: the compat developer switch OR the authored
-	// denoiser mode. Every RR-requested read below uses this, never the
-	// members individually. (Step 5 removes the switch; the CLI maps it onto
-	// the mode.)
+	// Single request authority: the authored denoiser mode only. The legacy
+	// developer switch is translated once into the mode at the CLI boundary
+	// (ResolveDenoiserSelectionFromCLI) and has no renderer-side existence,
+	// so explicit Off/NRD always win and no second flag can re-request RR.
 	bool IsRRModeRequested() const
 	{
-		return m_DevStaticRR || IsRRRequested(m_Settings.denoiserMode);
+		return IsRRRequested(m_Settings.denoiserMode);
 	}
 	bool m_AutomaticNativeNrdFallback = false;
 	bool m_ForceNativeRebuild = false;
@@ -349,6 +356,8 @@ private:
 	RRFeatureLifecycle m_RR;
 	FullResolutionHdrSource m_HdrSource;
 	RenderOutcome m_LastRenderOutcome;
+	CompletedSnapshotTracker<MAX_FRAMES_IN_FLIGHT> m_SnapshotTracker;
+	CompletedFrameSnapshot m_LastSubmitted;
 	CompletedFrameSnapshot m_LastCompleted;
 
 	// NRD integration wrapper

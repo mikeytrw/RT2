@@ -119,22 +119,33 @@ bool RendererGPU::Init()
 	return true;
 }
 
-void RendererGPU::SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR)
+void RendererGPU::SetNgxRuntime(NgxRuntime* runtime)
 {
 	m_NgxRuntime = runtime;
-	m_DevStaticRR = devStaticRR;
 	m_AutomaticNativeNrdFallback = false;
-	m_RR.SetRequested(devStaticRR);
-	if (!devStaticRR && m_RROutputImage.IsValid())
-	{
-		DestroyRROutputImage();
-		m_RR.SetRequested(false);
-	}
 	m_RRModeEligible = false;
-	m_RRModeEligibility = devStaticRR ? RREligibility::Uninitialized : RREligibility::DeveloperDisabled;
+	m_RRModeEligibility = RREligibility::DeveloperDisabled;
 	m_RRDiagnosticBypass = false;
-	m_RRModeReason = devStaticRR ? "RR eligibility has not been evaluated" :
-		"RR developer mode is disabled";
+	m_RRModeReason = "RR developer mode is disabled";
+}
+
+void RendererGPU::MirrorSessionFallback(DenoiserMode mode)
+{
+	// Session record only; lifecycle request follows so later eligibility
+	// reads stay truthful. Everything else — ActiveNativeNRD backend,
+	// automatic flag, exact reason, resources — is deliberately untouched.
+	m_Settings.denoiserMode = mode;
+	m_RR.SetRequested(IsRRModeRequested());
+}
+
+void RendererGPU::ClearRetainedFallback()
+{
+	if (!m_AutomaticNativeNrdFallback && m_RR.Backend() != RRBackend::ActiveNativeNRD)
+		return;
+	m_AutomaticNativeNrdFallback = false;
+	RRFeatureHooks hooks = MakeRRHooks();
+	m_RR.SetIneligible(m_OutputExtent, "RR deselected by explicit session choice",
+		hooks, RRIneligibleMode::NativeNRD);
 }
 
 RRFeatureHooks RendererGPU::MakeRRHooks()
@@ -180,7 +191,11 @@ void RendererGPU::UpdateRREligibility(const Camera& camera)
 		m_RRModeEligibility = decision.kind;
 		m_RRDiagnosticBypass = diagnosticBypass;
 		m_RRModeReason = reason;
-		m_ForceNativeRebuild = true;
+		// A mirrored session fallback is bookkeeping, not a resource
+		// transition: the native fallback resources are already live, so no
+		// rebuild and no extra history edge (R4).
+		if (!(!IsRRModeRequested() && m_AutomaticNativeNrdFallback))
+			m_ForceNativeRebuild = true;
 		RT_LOG("[RR] eligibility=%s reason=%s", eligible ? "eligible" :
 			diagnosticBypass ? "native-diagnostic-bypass" : "native-nrd",
 			m_RRModeReason.c_str());
@@ -511,13 +526,23 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	m_RenderExtent = outputExtent.ToRenderNative();
 	if (!IsRRModeRequested())
 	{
-		// Denoiser left RR (or never requested it): the fallback flag must
-		// not survive the transition, and the lifecycle returns to plain
-		// native rendering with one history edge for the mode change.
-		m_AutomaticNativeNrdFallback = false;
-		RRFeatureHooks hooks = MakeRRHooks();
-		m_RR.SelectTuple(outputExtent, hooks);
-		m_RR.RequestHistoryReset(hooks);
+		if (m_AutomaticNativeNrdFallback)
+		{
+			// Retained fallback after session mirroring (R4): keep the
+			// ActiveNativeNRD backend, its flag and its exact reason.
+			// Resources rebuild normally around them below; the transition
+			// already counted its one edge, so no teardown and no request
+			// here — only a resize owns an edge, via the reset below.
+			m_RR.RequestHistoryReset(MakeRRHooks());
+		}
+		else
+		{
+			// Plain native state (explicit leave or never requested): ensure
+			// teardown with one history edge for the transition.
+			RRFeatureHooks hooks = MakeRRHooks();
+			m_RR.SelectTuple(outputExtent, hooks);
+			m_RR.RequestHistoryReset(hooks);
+		}
 	}
 	else if (m_RR.State().failureLatched)
 	{
@@ -1093,20 +1118,21 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// radiance/NRD inputs must match what NRD/compose will consume.
 	const bool effectiveNrd = EffectiveNrdEnabled(m_Settings.denoiserMode,
 		m_AutomaticNativeNrdFallback);
-	// Detect camera movement and reset accumulation when NRD is off and
-	// accumulation is enabled. Without this, temporal accumulation blends
-	// 1/N of each frame, leaving the old noise pattern frozen in screen space.
+	// Detect camera movement: ordinary motion resets accumulation ONLY on
+	// the legacy Off path (see ShouldResetAccumulationOnCameraMove). Without
+	// this, Off temporal accumulation blends 1/N of each frame, leaving the
+	// old noise pattern frozen in screen space. NRD/RR histories reproject
+	// instead, so motion must not restart their clocks or history.
 	// When accumulation is off, don't reset — keep m_FrameIndex incrementing
 	// so the RNG seed varies per frame for fresh Monte Carlo noise.
 	glm::vec3 camPos = camera.GetPosition();
 	glm::vec3 camFwd = camera.GetDirection();
-	if (!effectiveNrd && m_Settings.accumulate && m_HasPrevCamera)
-	{
-		float posDiff = glm::distance(camPos, m_PrevCameraPos);
-		float fwdDiff = glm::distance(camFwd, m_PrevCameraForward);
-		if (posDiff > 1e-5f || fwdDiff > 1e-5f)
-			ResetAccumulation();
-	}
+	float posDiff = glm::distance(camPos, m_PrevCameraPos);
+	float fwdDiff = glm::distance(camFwd, m_PrevCameraForward);
+	const bool cameraMoved = posDiff > 1e-5f || fwdDiff > 1e-5f;
+	if (ShouldResetAccumulationOnCameraMove(m_Settings.denoiserMode,
+		m_AutomaticNativeNrdFallback, m_Settings.accumulate, m_HasPrevCamera, cameraMoved))
+		ResetAccumulation();
 	m_PrevCameraPos = camPos;
 	m_PrevCameraForward = camFwd;
 	m_HasPrevCamera = true;
@@ -1251,12 +1277,11 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 
 	if (const_cast<Camera&>(camera).checkHasMoved())
 	{
-		// Only reset accumulation counter when temporal accumulation is active
-		// (non-NRD path with accumulate enabled). With accumulation off, keep
+		// Only reset the accumulation counter on the legacy Off path (see
+		// ShouldResetAccumulationOnCameraMove). With accumulation off, keep
 		// m_FrameIndex incrementing so the RNG seed varies per frame.
-		// Effective NRD (authored or automatic fallback) takes the NRD path.
-		if (m_Settings.accumulate && !EffectiveNrdEnabled(m_Settings.denoiserMode,
-			m_AutomaticNativeNrdFallback))
+		if (ShouldResetAccumulationOnCameraMove(m_Settings.denoiserMode,
+			m_AutomaticNativeNrdFallback, m_Settings.accumulate, m_HasPrevCamera, true))
 			m_FrameIndex = 1;
 	}
 
@@ -1267,6 +1292,12 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	// same dimensions that every shader-visible descriptor and dispatch uses.
 	FrameContext& frame = m_Frames[m_CurrentFrame];
 	frame.WaitForFence(device);
+	// R6: this slot's fence just proved its submitted frame complete, so
+	// promote its pending snapshot to the completed view the Performance
+	// display reads. Until the first promotion the view stays None rather
+	// than describing pending work.
+	if (const auto completed = m_SnapshotTracker.ReapCompleted(m_CurrentFrame))
+		m_LastCompleted = *completed;
 	if (m_ForceNativeRebuild && m_OutputExtent.IsValid())
 	{
 		OnResize(m_OutputExtent);
@@ -1516,19 +1547,28 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_FrameIndex, recorded.nrdRecorded ? 1 : 0, m_ComposeDescriptorSetCached ? 1 : 0);
 	frame.Submit(m_Device.queue);
 	RT_LOG("[Render] submit ok, frame %d", m_FrameIndex);
-	// Stamp the immutable completed-frame snapshot BEFORE consumption clears
-	// any pending state. Only submitted frames update it; failed/discarded
-	// frames leave the last completed record intact for the Performance UI.
-	m_LastCompleted.denoiser = ResolveCompletedDenoiser(recorded.rrEvaluated,
-		recorded.nrdRecorded, m_RR.State().failureLatched);
-	m_LastCompleted.backend = m_RR.Backend();
-	m_LastCompleted.quality = m_RR.State().quality;
-	m_LastCompleted.outputExtent = m_OutputExtent;
-	m_LastCompleted.renderExtent = m_RenderExtent;
-	m_LastCompleted.featureGeneration = m_RR.State().featureGeneration;
-	m_LastCompleted.historyResetGeneration = m_RR.State().historyResetGeneration;
-	m_LastCompleted.historyResetThisFrame = m_RR.ResetPending();
-	m_LastCompleted.fallbackReason = m_RR.FallbackReason();
+	// Stamp the immutable SUBMITTED snapshot BEFORE consumption clears any
+	// pending state, and file it under this frame slot (R6). Only submitted
+	// frames touch it; failed/discarded frames preserve every view. The
+	// fence-gated completed view is promoted when this slot is reaped.
+	CompletedFrameSnapshot submitted;
+	submitted.denoiser = ResolveCompletedDenoiser(recorded.rrEvaluated,
+		recorded.nrdRecorded, m_RR.State().failureLatched, m_RR.Backend());
+	submitted.backend = m_RR.Backend();
+	submitted.quality = m_RR.State().quality;
+	submitted.outputExtent = m_OutputExtent;
+	submitted.renderExtent = m_RenderExtent;
+	submitted.featureGeneration = m_RR.State().featureGeneration;
+	submitted.historyResetGeneration = m_RR.State().historyResetGeneration;
+	submitted.historyResetThisFrame = m_RR.ResetPending();
+	submitted.fallbackReason = m_RR.FallbackReason();
+	m_SnapshotTracker.Submit(m_CurrentFrame, submitted);
+	m_LastSubmitted = submitted;
+	// Submitted-denoiser identity for per-frame log evidence (R7): what this
+	// submitted frame used, including the diagnostic bypass which never
+	// claims a denoiser ran. The fence-gated completed view follows at reap.
+	RT_LOG("[Denoiser] submitted=%s backend=%s", CompletedDenoiserName(submitted.denoiser),
+		RRBackendName(submitted.backend));
 	m_RR.MarkEvaluationSubmitted();
 	const GpuImage& hdrImage = recorded.rrEvaluated ? m_RROutputImage : m_OutputImage;
 	FullResolutionHdrSource source;
