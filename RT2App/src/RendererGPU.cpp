@@ -1079,6 +1079,11 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	// histories all follow the new tuple together.
 	if (wasModeOrQualityChanged)
 		m_ForceNativeRebuild = true;
+	// An explicit fresh RR request (off-to-RR or a preset change while RR is
+	// selected) clears a stale failure latch so the new tuple is attempted
+	// once. Unrelated edits never touch the latch: no per-frame retry.
+	if (wasModeOrQualityChanged && IsRRModeRequested())
+		m_RR.ClearFailureLatch();
 }
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
@@ -1289,6 +1294,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	if (m_AutomaticNativeNrdFallback && !m_NRD.IsAvailable())
 	{
 		outcome.failure = true;
+		outcome.nativeNrdUnavailable = true;
 		outcome.failureReason = "automatic native NRD fallback is unavailable";
 		m_LastRenderOutcome = outcome;
 		return outcome;
@@ -1515,6 +1521,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	// frames leave the last completed record intact for the Performance UI.
 	m_LastCompleted.denoiser = ResolveCompletedDenoiser(recorded.rrEvaluated,
 		recorded.nrdRecorded, m_RR.State().failureLatched);
+	m_LastCompleted.backend = m_RR.Backend();
 	m_LastCompleted.quality = m_RR.State().quality;
 	m_LastCompleted.outputExtent = m_OutputExtent;
 	m_LastCompleted.renderExtent = m_RenderExtent;

@@ -58,6 +58,10 @@ public:
 		bool rrEvaluated = false;
 		bool nrdRecorded = false;
 		bool failure = false;
+		// Typed NRD-unavailable signal: requested RR fell back but native
+		// NRD itself is unavailable, so the session must go Off loudly.
+		// The host keys off this bit, never off reason-string matching.
+		bool nativeNrdUnavailable = false;
 		std::string failureReason;
 		FullResolutionHdrSource hdrSource;
 	};
@@ -68,6 +72,7 @@ public:
 	struct CompletedFrameSnapshot
 	{
 		CompletedDenoiser denoiser = CompletedDenoiser::None;
+		RRBackend backend = RRBackend::NativeNRD;
 		DlssQualityMode quality = DlssQualityMode::Quality;
 		OutputExtent outputExtent;
 		RenderExtent renderExtent;

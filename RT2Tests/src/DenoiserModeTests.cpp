@@ -109,3 +109,28 @@ TEST_CASE("DenoiserMode: Off mode with no fallback never dispatches NRD")
 					debug, rasterFirst, false, nrdAvailable, false));
 			}
 }
+
+TEST_CASE("DenoiserMode: session fallback reacts once and stays session-local")
+{
+	using DM = DenoiserMode;
+	using RB = RRBackend;
+	// Requested-but-native covers every fallback road (latched fault,
+	// ineligible mode, unavailable runtime): the session flips to NRD once.
+	CHECK(ResolveSessionFallbackDenoiser(DM::RayReconstruction, RB::ActiveNativeNRD, false) == DM::NRD);
+	// Second sighting: already applied, hold.
+	CHECK_FALSE(ResolveSessionFallbackDenoiser(DM::RayReconstruction, RB::ActiveNativeNRD, true).has_value());
+	// Anything else holds: successful RR, plain native after moving on,
+	// diagnostic bypass, intermediate states.
+	CHECK_FALSE(ResolveSessionFallbackDenoiser(DM::RayReconstruction, RB::ActiveRR, false).has_value());
+	CHECK_FALSE(ResolveSessionFallbackDenoiser(DM::RayReconstruction, RB::NativeNRD, false).has_value());
+	CHECK_FALSE(ResolveSessionFallbackDenoiser(DM::RayReconstruction, RB::NativeDiagnosticBypass, false).has_value());
+	CHECK_FALSE(ResolveSessionFallbackDenoiser(DM::RayReconstruction, RB::RequestedRR, false).has_value());
+	CHECK_FALSE(ResolveSessionFallbackDenoiser(DM::RayReconstruction, RB::FallbackPending, false).has_value());
+	// Non-RR authorship never maps: NRD and Off sessions are untouched.
+	CHECK_FALSE(ResolveSessionFallbackDenoiser(DM::NRD, RB::ActiveNativeNRD, false).has_value());
+	CHECK_FALSE(ResolveSessionFallbackDenoiser(DM::Off, RB::ActiveNativeNRD, false).has_value());
+	// The decision is pure: inputs are unchanged, only the mapped mode comes out.
+	DM authored = DM::RayReconstruction;
+	CHECK(ResolveSessionFallbackDenoiser(authored, RB::ActiveNativeNRD, false) == DM::NRD);
+	CHECK(authored == DM::RayReconstruction);
+}

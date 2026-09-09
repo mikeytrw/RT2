@@ -780,6 +780,31 @@ public:
 	}
 	ImGui::Text("Last Render: %.3fms", m_SmoothedFrameTime);
 	ImGui::Text("FPS: %.1f", m_SmoothedFPS);
+	// Completed-frame denoiser truth (amendment step 5): derived from the
+	// renderer's immutable snapshot of the latest submitted frame, never
+	// from the authored session setting.
+	if (m_RendererGPU.IsAvailable())
+	{
+		const auto& completed = m_RendererGPU.GetLastCompleted();
+		ImGui::Text("Denoiser: %s", CompletedDenoiserName(completed.denoiser));
+		if (!completed.fallbackReason.empty() &&
+			(completed.denoiser == CompletedDenoiser::NRDFallback ||
+				completed.backend == RRBackend::ActiveNativeNRD))
+			ImGui::TextWrapped("Fallback reason: %s", completed.fallbackReason.c_str());
+		if (m_PerfDetailLevel >= kPerfLevelEverything)
+		{
+			ImGui::Text("  Internal: %u x %u", completed.renderExtent.Width(),
+				completed.renderExtent.Height());
+			ImGui::Text("  Output: %u x %u", completed.outputExtent.Width(),
+				completed.outputExtent.Height());
+			if (completed.denoiser == CompletedDenoiser::RayReconstruction)
+				ImGui::Text("  RR preset: %s (feature gen %llu)",
+					DlssQualityModeName(completed.quality),
+					static_cast<unsigned long long>(completed.featureGeneration));
+			ImGui::Text("  History reset this frame: %s",
+				completed.historyResetThisFrame ? "yes" : "no");
+		}
+	}
 	if (m_PerfDetailLevel >= kPerfLevelPasses && m_RendererGPU.HasGpuTimings())
 	{
 		const auto& timings = m_RendererGPU.GetGpuTimings();
@@ -898,7 +923,8 @@ public:
 		m_Settings.denoiserMode = DenoiserMode::Off;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
-	ImGui::BeginDisabled(!nrdAvailable);
+	// One exclusive denoiser selector (amendment step 5). No independent
+	// NRD/RR flags exist: the combo writes the single authored mode.
 	{
 		const char* denoiserOptions[] = { "Off", "NRD", "DLSS Ray Reconstruction" };
 		int denoiserIndex = m_Settings.denoiserMode == DenoiserMode::NRD ? 1 :
@@ -907,11 +933,39 @@ public:
 		{
 			m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
 				(denoiserIndex == 2 ? DenoiserMode::RayReconstruction : DenoiserMode::Off);
+			if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
+				m_RRFallbackApplied = false; // explicit (re)selection may retry
 			m_RendererGPU.ApplySettings(m_Settings);
 		}
 	}
+	if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
+	{
+		ImGui::Indent();
+		const char* qualityOptions[] = { "Quality", "Balanced", "Performance" };
+		int qualityIndex = m_Settings.dlssQuality == DlssQualityMode::Balanced ? 1 :
+			(m_Settings.dlssQuality == DlssQualityMode::Performance ? 2 : 0);
+		if (ImGui::Combo("RR Preset", &qualityIndex, qualityOptions, 3))
+		{
+			m_Settings.dlssQuality = qualityIndex == 1 ? DlssQualityMode::Balanced :
+				(qualityIndex == 2 ? DlssQualityMode::Performance : DlssQualityMode::Quality);
+			m_RendererGPU.ApplySettings(m_Settings);
+		}
+		if (m_RendererGPU.HasOutput())
+		{
+			const auto render = m_RendererGPU.GetRenderExtent();
+			const auto output = m_RendererGPU.GetOutputExtent();
+			ImGui::TextDisabled("Internal %u x %u -> Output %u x %u",
+				render.Width(), render.Height(), output.Width(), output.Height());
+		}
+		if (m_Ngx && !m_Ngx->Snapshot().IsSupported())
+			ImGui::TextWrapped("RR unsupported: %s", m_Ngx->Snapshot().reason.c_str());
+		ImGui::Unindent();
+	}
+	if (m_RRFallbackApplied && !m_RRFallbackReason.empty())
+		ImGui::TextWrapped("RR fell back to NRD: %s", m_RRFallbackReason.c_str());
 	if (m_Settings.denoiserMode == DenoiserMode::NRD)
 	{
+	ImGui::BeginDisabled(!nrdAvailable);
 		ImGui::Indent();
 		bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
 		ImGui::BeginDisabled(restirActive);
@@ -939,8 +993,8 @@ public:
 		ImGui::SliderFloat("Split Screen", &m_Settings.nrdSplitScreen, 0.0f, 1.0f, "%.2f");
 		ImGui::Unindent();
 		m_RendererGPU.ApplySettings(m_Settings);
+		ImGui::EndDisabled();
 	}
-	ImGui::EndDisabled();
 	ImGui::Separator();
 
 	bool restirAvailable = m_Settings.rasterFirst;
@@ -3128,6 +3182,40 @@ private:
 			RunHeadless();
 	}
 
+	// One-shot session fallback reaction (amendment step 5), shared by the
+	// headless loop and the interactive frame below. The typed outcome bit
+	// selects NRD, the completed snapshot selects the reason; the pure
+	// ResolveSessionFallbackDenoiser decision keeps UI and renderer from
+	// disagreeing. Session-only: nothing here writes a durable file.
+	void ReactToRendererDenoiserFallback(const RendererGPU::RenderOutcome& outcome)
+	{
+		if (outcome.nativeNrdUnavailable &&
+			m_Settings.denoiserMode != DenoiserMode::Off)
+		{
+			m_Settings.denoiserMode = DenoiserMode::Off;
+			m_RRFallbackApplied = true;
+			m_RRFallbackReason = outcome.failureReason;
+			m_RendererGPU.ApplySettings(m_Settings);
+			RT_LOG("[Denoiser] native NRD unavailable; session selector set to Off: %s",
+				outcome.failureReason.c_str());
+			printf("[Denoiser] native NRD unavailable; session selector set to Off: %s\n",
+				outcome.failureReason.c_str());
+			fflush(stdout);
+			return;
+		}
+		const auto& completed = m_RendererGPU.GetLastCompleted();
+		if (const auto mapped = ResolveSessionFallbackDenoiser(
+			m_Settings.denoiserMode, completed.backend, m_RRFallbackApplied))
+		{
+			m_Settings.denoiserMode = *mapped;
+			m_RRFallbackApplied = true;
+			m_RRFallbackReason = completed.fallbackReason;
+			m_RendererGPU.ApplySettings(m_Settings);
+			RT_LOG("[Denoiser] RR fell back; session selector set to %s: %s",
+				DenoiserModeName(*mapped), completed.fallbackReason.c_str());
+		}
+	}
+
 	void RunHeadless()
 	{
 		printf("[Headless] starting: %d frames at %dx%d\n", g_CLI.frames, g_CLI.width, g_CLI.height);
@@ -3389,6 +3477,7 @@ private:
 			if (m_RendererGPU.IsAvailable())
 			{
 				lastRenderOutcome = m_RendererGPU.Render(m_Cam);
+				ReactToRendererDenoiserFallback(lastRenderOutcome);
 				if (lastRenderOutcome.failure || !lastRenderOutcome.submitted ||
 					!lastRenderOutcome.captureAllowed)
 				{
@@ -3632,7 +3721,8 @@ private:
 			// idempotent, and there is no way to enter or leave Play without
 			// passing through here, so it cannot go stale.
 			m_RendererGPU.SetEditorPresentation(IsEditorPresentation());
-			m_RendererGPU.Render(m_RuntimeCamActive ? m_RuntimeCam : m_Cam);
+			const auto outcome = m_RendererGPU.Render(m_RuntimeCamActive ? m_RuntimeCam : m_Cam);
+			ReactToRendererDenoiserFallback(outcome);
 		}
 
 		m_LastRenderTime = timer.ElapsedMillis();
@@ -4724,6 +4814,12 @@ public:
 	bool m_ShowContentBrowserWindow = false;
 	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
 	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
+	// One-shot session fallback latch (amendment step 5): set when the
+	// renderer settles requested RR onto another backend and the session
+	// selection is mirrored once. Cleared whenever RR is (re)selected.
+	// Session-only; there is no settings persistence to rewrite.
+	bool m_RRFallbackApplied = false;
+	std::string m_RRFallbackReason;
 	bool m_InputCaptureActive = false;
 	bool m_InputCaptureSkipFrame = false;
 	bool m_InputCaptureIsAxis = false;

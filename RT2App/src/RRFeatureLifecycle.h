@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 
 // W4's temporary static RR mode is deliberately represented by a small,
@@ -64,6 +65,25 @@ inline bool EffectiveNrdEnabled(bool authoredNrdEnabled, bool automaticFallback)
 // still denoise natively); switch-off NativeNRD routing is unchanged.
 bool ShouldRecordNativeNRD(RRBackend backend, bool gbufferDebug, bool rasterFirst,
 	bool nrdEnabled, bool nrdAvailable, bool automaticFallback);
+// One-shot session fallback decision (amendment step 5). Pure and
+// CPU-linkable: the host (WalnutApp, headless and interactive alike) feeds
+// the authored session mode, the lifecycle backend of the completed frame,
+// and whether this session already reacted. Requested-but-native
+// (ActiveNativeNRD) covers every fallback road — latched faults, ineligible
+// modes, unavailable runtime — while plain NativeNRD means the session
+// already moved on and NativeDiagnosticBypass stays diagnostic. A returned
+// mode replaces the SESSION selection only — there is no settings
+// persistence layer, so a fallback can never rewrite a durable file.
+// Returning nullopt means hold.
+inline std::optional<DenoiserMode> ResolveSessionFallbackDenoiser(
+	DenoiserMode authored, RRBackend completedBackend, bool alreadyApplied)
+{
+	if (alreadyApplied || authored != DenoiserMode::RayReconstruction)
+		return std::nullopt;
+	if (completedBackend == RRBackend::ActiveNativeNRD)
+		return DenoiserMode::NRD;
+	return std::nullopt;
+}
 bool ShouldCommitHeadlessOutput(bool requested, bool rendererAvailable,
 	bool submitted, bool captureAllowed, bool renderFailure);
 bool RequiredRenderStagesAvailable(bool rendererAvailable, bool rrActive,
