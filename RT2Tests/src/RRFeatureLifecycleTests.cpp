@@ -15,6 +15,20 @@ RROptimalSettings QualitySettings(uint32_t w, uint32_t h)
 	settings.maximum = *RenderExtent::TryCreate(w, h);
 	return settings;
 }
+// Smaller render fractions stand in for Balanced/Performance optimal
+// settings: the lifecycle must treat each preset as a distinct tuple.
+RROptimalSettings PresetSettings(uint32_t w, uint32_t h, DlssQualityMode quality)
+{
+	RROptimalSettings settings;
+	const uint32_t rw = quality == DlssQualityMode::Performance ? w / 2 :
+		(quality == DlssQualityMode::Balanced ? w * 3 / 5 : w * 2 / 3);
+	const uint32_t rh = quality == DlssQualityMode::Performance ? h / 2 :
+		(quality == DlssQualityMode::Balanced ? h * 3 / 5 : h * 2 / 3);
+	settings.render = *RenderExtent::TryCreate(rw, rh);
+	settings.minimum = *RenderExtent::TryCreate(w / 2, h / 2);
+	settings.maximum = *RenderExtent::TryCreate(w, h);
+	return settings;
+}
 }
 
 TEST_CASE("W4 RR lifecycle keeps default NRD completely NGX-free")
@@ -22,7 +36,7 @@ TEST_CASE("W4 RR lifecycle keeps default NRD completely NGX-free")
 	RRFeatureLifecycle lifecycle;
 	int queries = 0;
 	RRFeatureHooks hooks;
-	hooks.queryOptimalSettings = [&](OutputExtent, RRQualityMode, RROptimalSettings&, std::string&) { ++queries; return true; };
+	hooks.queryOptimalSettings = [&](OutputExtent, DlssQualityMode, RROptimalSettings&, std::string&) { ++queries; return true; };
 	const auto output = *OutputExtent::TryCreate(1920, 1080);
 	CHECK(lifecycle.Reconcile(output, hooks));
 	CHECK(lifecycle.Backend() == RRBackend::NativeNRD);
@@ -38,8 +52,8 @@ TEST_CASE("W4 RR lifecycle queries fixed Quality and creates one tuple")
 	int queries = 0, creates = 0, releases = 0, idles = 0, resets = 0;
 	RRQualityTuple created;
 	RRFeatureHooks hooks;
-	hooks.queryOptimalSettings = [&](OutputExtent extent, RRQualityMode quality, RROptimalSettings& out, std::string&) {
-		CHECK(quality == RRQualityMode::Quality);
+	hooks.queryOptimalSettings = [&](OutputExtent extent, DlssQualityMode quality, RROptimalSettings& out, std::string&) {
+		CHECK(quality == DlssQualityMode::Quality);
 		CHECK(extent == output);
 		++queries; out = QualitySettings(extent.Width(), extent.Height()); return true;
 	};
@@ -73,6 +87,84 @@ TEST_CASE("W4 RR lifecycle queries fixed Quality and creates one tuple")
 	CHECK_FALSE(lifecycle.ResetPending());
 }
 
+TEST_CASE("RR presets select distinct tuples and recreate exactly once")
+{
+	RRFeatureLifecycle lifecycle;
+	lifecycle.SetRequested(true);
+	CHECK(lifecycle.RequestedQuality() == DlssQualityMode::Quality);
+	const auto output = *OutputExtent::TryCreate(1920, 1080);
+	int queries = 0, creates = 0, releases = 0, idles = 0, resets = 0;
+	DlssQualityMode queried = DlssQualityMode::Quality;
+	RRFeatureHooks hooks;
+	hooks.queryOptimalSettings = [&](OutputExtent e, DlssQualityMode quality,
+		RROptimalSettings& out, std::string&) {
+		++queries; queried = quality;
+		out = PresetSettings(e.Width(), e.Height(), quality);
+		return true;
+	};
+	hooks.create = [&](const RRQualityTuple&, std::string&) { ++creates; return true; };
+	hooks.waitIdle = [&](std::string&) { ++idles; return true; };
+	hooks.release = [&](std::string&) { ++releases; return true; };
+	hooks.resetHistory = [&] { ++resets; };
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	CHECK(queried == DlssQualityMode::Quality);
+	CHECK(lifecycle.State().quality == DlssQualityMode::Quality);
+	lifecycle.MarkEvaluationSubmitted();
+	// Same output, same preset: no new query, no recreate.
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	CHECK(queries == 1);
+	CHECK(creates == 1);
+	// Preset change: one new query, one idle/release/recreate, one reset.
+	lifecycle.SetRequestedQuality(DlssQualityMode::Balanced);
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	CHECK(queried == DlssQualityMode::Balanced);
+	CHECK(lifecycle.State().quality == DlssQualityMode::Balanced);
+	CHECK(queries == 2);
+	CHECK(creates == 2);
+	CHECK(releases == 1);
+	CHECK(idles == 1);
+	CHECK(resets == 2);
+	CHECK(lifecycle.State().featureGeneration == 2);
+	CHECK(lifecycle.Backend() == RRBackend::ActiveRR);
+	lifecycle.MarkEvaluationSubmitted();
+	// Steady on the new preset: nothing moves.
+	REQUIRE(lifecycle.Reconcile(output, hooks));
+	CHECK(queries == 2);
+	CHECK(creates == 2);
+	CHECK(releases == 1);
+	CHECK(resets == 2);
+}
+
+TEST_CASE("RR preset query failure latches fallback without retry")
+{
+	RRFeatureLifecycle lifecycle;
+	lifecycle.SetRequested(true);
+	lifecycle.SetRequestedQuality(DlssQualityMode::Performance);
+	const auto output = *OutputExtent::TryCreate(1920, 1080);
+	int queries = 0, creates = 0;
+	RRFeatureHooks hooks;
+	hooks.queryOptimalSettings = [&](OutputExtent, DlssQualityMode quality,
+		RROptimalSettings&, std::string& detail) {
+		++queries;
+		if (quality == DlssQualityMode::Performance)
+		{
+			detail = "Performance unsupported by this runtime";
+			return false;
+		}
+		return true;
+	};
+	hooks.create = [&](const RRQualityTuple&, std::string&) { ++creates; return true; };
+	hooks.waitIdle = [](std::string&) { return true; };
+	hooks.release = [](std::string&) { return true; };
+	CHECK_FALSE(lifecycle.Reconcile(output, hooks));
+	CHECK(lifecycle.State().failureLatched);
+	CHECK(lifecycle.FallbackReason().find("Performance unsupported") != std::string::npos);
+	CHECK(creates == 0);
+	CHECK_FALSE(lifecycle.Reconcile(output, hooks));
+	CHECK(queries == 1); // no per-frame retry
+	CHECK(lifecycle.Backend() == RRBackend::ActiveNativeNRD);
+}
+
 TEST_CASE("W4 RR lifecycle evaluates atomically and latches one fallback")
 {
 	RRFeatureLifecycle lifecycle;
@@ -80,7 +172,7 @@ TEST_CASE("W4 RR lifecycle evaluates atomically and latches one fallback")
 	const auto output = *OutputExtent::TryCreate(1280, 720);
 	int resets = 0, releaseCount = 0;
 	RRFeatureHooks hooks;
-	hooks.queryOptimalSettings = [](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) {
+	hooks.queryOptimalSettings = [](OutputExtent e, DlssQualityMode, RROptimalSettings& out, std::string&) {
 		out = QualitySettings(e.Width(), e.Height()); return true;
 	};
 	hooks.create = [](const RRQualityTuple&, std::string&) { return true; };
@@ -110,7 +202,7 @@ TEST_CASE("W4 RR reset is reasserted by resize and eligibility fallback")
 	const auto output = *OutputExtent::TryCreate(1280, 720);
 	RRFeatureHooks hooks;
 	int resets = 0;
-	hooks.queryOptimalSettings = [](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) {
+	hooks.queryOptimalSettings = [](OutputExtent e, DlssQualityMode, RROptimalSettings& out, std::string&) {
 		out = QualitySettings(e.Width(), e.Height()); return true;
 	};
 	hooks.create = [](const RRQualityTuple&, std::string&) { return true; };
@@ -137,7 +229,7 @@ TEST_CASE("W4 RR lifecycle releases at idle before one resize recreate")
 	size_t at = 0;
 	int creates = 0, releases = 0, idles = 0;
 	RRFeatureHooks hooks;
-	hooks.queryOptimalSettings = [](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) { out = QualitySettings(e.Width(), e.Height()); return true; };
+	hooks.queryOptimalSettings = [](OutputExtent e, DlssQualityMode, RROptimalSettings& out, std::string&) { out = QualitySettings(e.Width(), e.Height()); return true; };
 	hooks.create = [&](const RRQualityTuple&, std::string&) { ++creates; if (at < order.size()) order[at++] = "create"; return true; };
 	hooks.waitIdle = [&](std::string&) { ++idles; if (at < order.size()) order[at++] = "idle"; return true; };
 	hooks.release = [&](std::string&) { ++releases; if (at < order.size()) order[at++] = "release"; return true; };
@@ -178,7 +270,7 @@ TEST_CASE("W4 production lifecycle keeps one generation and settles fallback tru
 	const auto output = *OutputExtent::TryCreate(1920, 1080);
 	int queries = 0, creates = 0, resets = 0;
 	RRFeatureHooks hooks;
-	hooks.queryOptimalSettings = [&](OutputExtent e, RRQualityMode, RROptimalSettings& out, std::string&) {
+	hooks.queryOptimalSettings = [&](OutputExtent e, DlssQualityMode, RROptimalSettings& out, std::string&) {
 		++queries; out = QualitySettings(e.Width(), e.Height()); return true;
 	};
 	hooks.create = [&](const RRQualityTuple&, std::string&) { ++creates; return true; };
@@ -329,7 +421,7 @@ TEST_CASE("W4 RR lifecycle rejects malformed optimal dimensions loudly")
 	RRFeatureLifecycle lifecycle;
 	lifecycle.SetRequested(true);
 	RRFeatureHooks hooks;
-	hooks.queryOptimalSettings = [](OutputExtent, RRQualityMode, RROptimalSettings& out, std::string&) { out = {}; return true; };
+	hooks.queryOptimalSettings = [](OutputExtent, DlssQualityMode, RROptimalSettings& out, std::string&) { out = {}; return true; };
 	hooks.create = [](const RRQualityTuple&, std::string&) { return true; };
 	const auto output = *OutputExtent::TryCreate(1280, 720);
 	CHECK_FALSE(lifecycle.Reconcile(output, hooks));

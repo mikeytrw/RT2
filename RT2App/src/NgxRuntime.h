@@ -67,8 +67,9 @@ public:
 
 	// Direct Vulkan RR seam.  The NGX parameter map and feature handle remain
 	// owned here, alongside initialization/teardown; RendererGPU only supplies
-	// its command buffer and validated W3 images.
-	bool QueryRROptimalSettings(const OutputExtent& output,
+	// its command buffer and validated W3 images. Each accepted preset is
+	// queried/created independently; NGX is authoritative for its extents.
+	bool QueryRROptimalSettings(const OutputExtent& output, DlssQualityMode quality,
 		RROptimalSettings& settings, std::string& reason) const;
 	bool CreateRRFeature(VkCommandBuffer command, const RRQualityTuple& tuple,
 		std::string& reason);

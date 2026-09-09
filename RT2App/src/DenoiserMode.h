@@ -20,11 +20,10 @@ enum class DenoiserMode : uint8_t
 	RayReconstruction, // NGX RR plus DLSS upscaling
 };
 
-// DlssQualityMode — the authored RR upscaling preset. NGX remains
-// authoritative for each preset's recommended render extent; the setting
-// only selects which preset is queried. (RRQualityMode in
-// RRFeatureLifecycle.h is the tuple/lifecycle counterpart and is unified
-// with this enum when the quality-aware lifecycle lands.)
+// DlssQualityMode — the authored RR upscaling preset, shared with the
+// RR feature lifecycle (tuple identity, optimal-settings query, feature
+// creation). NGX remains authoritative for each preset's recommended
+// render extent; the setting only selects which preset is queried.
 enum class DlssQualityMode : uint8_t
 {
 	Quality,

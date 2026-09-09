@@ -68,7 +68,7 @@ public:
 	struct CompletedFrameSnapshot
 	{
 		CompletedDenoiser denoiser = CompletedDenoiser::None;
-		RRQualityMode quality = RRQualityMode::Quality;
+		DlssQualityMode quality = DlssQualityMode::Quality;
 		OutputExtent outputExtent;
 		RenderExtent renderExtent;
 		uint64_t featureGeneration = 0;

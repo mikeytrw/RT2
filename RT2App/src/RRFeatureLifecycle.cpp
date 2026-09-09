@@ -208,7 +208,7 @@ bool RRFeatureLifecycle::SelectTuple(const OutputExtent& output, const RRFeature
 		m_State.backend = RRBackend::ActiveNativeNRD;
 		return false;
 	}
-	if (m_HasTuple && m_Tuple.output == output &&
+	if (m_HasTuple && m_Tuple.output == output && m_Tuple.quality == m_RequestedQuality &&
 		(m_State.backend == RRBackend::RequestedRR || m_State.backend == RRBackend::ActiveRR))
 		return true;
 	if (!hooks.queryOptimalSettings)
@@ -219,13 +219,13 @@ bool RRFeatureLifecycle::SelectTuple(const OutputExtent& output, const RRFeature
 
 	RROptimalSettings optimal;
 	std::string detail;
-	if (!hooks.queryOptimalSettings(output, RRQualityMode::Quality, optimal, detail) ||
+	if (!hooks.queryOptimalSettings(output, m_RequestedQuality, optimal, detail) ||
 		!ValidateOptimal(output, optimal, detail))
 	{
 		LatchFallback(Failure(RRFeatureOperation::OptimalSettings, detail), 0, hooks);
 		return false;
 	}
-	const RRQualityTuple tuple{RRQualityMode::Quality, output, optimal.render};
+	const RRQualityTuple tuple{m_RequestedQuality, output, optimal.render};
 	if (m_HasTuple && tuple == m_Tuple && m_State.featureOwned)
 	{
 		m_State.backend = RRBackend::ActiveRR;

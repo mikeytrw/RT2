@@ -55,12 +55,19 @@ std::string NgxResultText(NVSDK_NGX_Result result);
 }
 
 bool NgxRuntime::QueryRROptimalSettings(const OutputExtent& output,
-	RROptimalSettings& settings, std::string& reason) const
+	DlssQualityMode quality, RROptimalSettings& settings, std::string& reason) const
 {
 	if (!m_Snapshot.IsSupported() || !m_Parameters)
 	{
 		reason = "NGX runtime is not initialized and supported";
 		return false;
+	}
+	NVSDK_NGX_PerfQuality_Value perfValue = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+	switch (quality)
+	{
+	case DlssQualityMode::Quality: perfValue = NVSDK_NGX_PerfQuality_Value_MaxQuality; break;
+	case DlssQualityMode::Balanced: perfValue = NVSDK_NGX_PerfQuality_Value_Balanced; break;
+	case DlssQualityMode::Performance: perfValue = NVSDK_NGX_PerfQuality_Value_MaxPerf; break;
 	}
 	unsigned int renderWidth = 0, renderHeight = 0;
 	unsigned int maxWidth = 0, maxHeight = 0;
@@ -68,7 +75,7 @@ bool NgxRuntime::QueryRROptimalSettings(const OutputExtent& output,
 	float sharpness = 0.0f;
 	const NVSDK_NGX_Result result = NGX_DLSSD_GET_OPTIMAL_SETTINGS(
 		m_Parameters, output.Width(), output.Height(),
-		NVSDK_NGX_PerfQuality_Value_MaxQuality, &renderWidth, &renderHeight,
+		perfValue, &renderWidth, &renderHeight,
 		&maxWidth, &maxHeight, &minWidth, &minHeight, &sharpness);
 	if (NVSDK_NGX_FAILED(result))
 	{
@@ -113,11 +120,26 @@ bool NgxRuntime::CreateRRFeature(VkCommandBuffer command,
 	create.InHeight = tuple.render.Height();
 	create.InTargetWidth = tuple.output.Width();
 	create.InTargetHeight = tuple.output.Height();
+	// The feature identity is (output, render, quality): the perf value and
+	// the matching per-preset render hint must agree with the queried tuple.
+	const char* presetKey = NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality;
 	create.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+	switch (tuple.quality)
+	{
+	case DlssQualityMode::Quality:
+		break;
+	case DlssQualityMode::Balanced:
+		create.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_Balanced;
+		presetKey = NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced;
+		break;
+	case DlssQualityMode::Performance:
+		create.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_MaxPerf;
+		presetKey = NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance;
+		break;
+	}
 	create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
 		NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
-	m_Parameters->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality,
-		NVSDK_NGX_DLSS_Hint_Render_Preset_Default);
+	m_Parameters->Set(presetKey, NVSDK_NGX_DLSS_Hint_Render_Preset_Default);
 	create.InEnableOutputSubrects = false;
 	create.InRoughnessMode = NVSDK_NGX_DLSS_Roughness_Mode_Packed;
 	create.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_Linear;

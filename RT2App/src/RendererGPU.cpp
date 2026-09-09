@@ -142,8 +142,8 @@ RRFeatureHooks RendererGPU::MakeRRHooks()
 	RRFeatureHooks hooks;
 	if (!m_NgxRuntime) return hooks;
 	hooks.queryOptimalSettings = [runtime = m_NgxRuntime](OutputExtent output,
-		RRQualityMode, RROptimalSettings& settings, std::string& reason) {
-		return runtime->QueryRROptimalSettings(output, settings, reason);
+		DlssQualityMode quality, RROptimalSettings& settings, std::string& reason) {
+		return runtime->QueryRROptimalSettings(output, quality, settings, reason);
 	};
 	hooks.waitIdle = [runtime = m_NgxRuntime](std::string& reason) {
 		return runtime->WaitForRRDeviceIdle(reason);
@@ -509,7 +509,17 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 
 	m_OutputExtent = outputExtent;
 	m_RenderExtent = outputExtent.ToRenderNative();
-	if (m_RR.State().failureLatched)
+	if (!IsRRModeRequested())
+	{
+		// Denoiser left RR (or never requested it): the fallback flag must
+		// not survive the transition, and the lifecycle returns to plain
+		// native rendering with one history edge for the mode change.
+		m_AutomaticNativeNrdFallback = false;
+		RRFeatureHooks hooks = MakeRRHooks();
+		m_RR.SelectTuple(outputExtent, hooks);
+		m_RR.RequestHistoryReset(hooks);
+	}
+	else if (m_RR.State().failureLatched)
 	{
 		// The failed feature has already latched its exact reason. This rebuild is
 		// the sole safe edge that makes native NRD authoritative; never retry NGX.
@@ -970,6 +980,9 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 {
 	bool wasRestirEnabled = m_Settings.restirEnabled;
 	bool wasGIEnabled = m_Settings.restirGIEnabled;
+	const bool wasModeOrQualityChanged =
+		m_Settings.denoiserMode != newSettings.denoiserMode ||
+		m_Settings.dlssQuality != newSettings.dlssQuality;
 	bool restirJitterPolicyChanged = m_Settings.nrdJitterEnabled != newSettings.nrdJitterEnabled ||
 	                                m_Settings.nrdJitterScale != newSettings.nrdJitterScale;
 	bool restirPolicyChanged = m_Settings.restirFreshCandidates != newSettings.restirFreshCandidates ||
@@ -1060,6 +1073,12 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	// (developer switch or authored denoiser mode). SetRequested only stores
 	// the flag; safe idle-boundary transitions happen in Reconcile/OnResize.
 	m_RR.SetRequested(IsRRModeRequested());
+	m_RR.SetRequestedQuality(m_Settings.dlssQuality);
+	// A denoiser-mode or preset change rebuilds resources once at the safe
+	// boundary below: the RR output image, render extents, NRD state and
+	// histories all follow the new tuple together.
+	if (wasModeOrQualityChanged)
+		m_ForceNativeRebuild = true;
 }
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)

@@ -81,14 +81,9 @@ enum class RRIneligibleMode
 	NativeDiagnosticBypass,
 };
 
-enum class RRQualityMode
-{
-	Quality,
-};
-
 struct RRQualityTuple
 {
-	RRQualityMode quality = RRQualityMode::Quality;
+	DlssQualityMode quality = DlssQualityMode::Quality;
 	OutputExtent output;
 	RenderExtent render;
 
@@ -121,7 +116,7 @@ struct RRFeatureHooks
 {
 	// All hooks are called on the render thread.  Failure text must identify
 	// the exact SDK/Vulkan operation; the authority preserves it verbatim.
-	std::function<bool(OutputExtent, RRQualityMode, RROptimalSettings&, std::string&)> queryOptimalSettings;
+	std::function<bool(OutputExtent, DlssQualityMode, RROptimalSettings&, std::string&)> queryOptimalSettings;
 	std::function<bool(const RRQualityTuple&, std::string&)> create;
 	std::function<bool(std::string&)> evaluate;
 	std::function<bool(std::string&)> waitIdle;
@@ -132,7 +127,7 @@ struct RRFeatureHooks
 struct RRFeatureState
 {
 	RRBackend backend = RRBackend::NativeNRD;
-	RRQualityMode quality = RRQualityMode::Quality;
+	DlssQualityMode quality = DlssQualityMode::Quality;
 	OutputExtent output;
 	RenderExtent render;
 	bool requested = false;
@@ -166,17 +161,22 @@ public:
 	// command buffer; Reconcile performs the safe idle-boundary transition.
 	void SetRequested(bool requested) { m_State.requested = requested; }
 	bool IsRequested() const { return m_State.requested; }
+	// Requested upscaling preset. Stored separately like the request flag;
+	// SelectTuple reads it when choosing the next tuple, so a preset change
+	// flows through the same safe release/recreate boundary as a resize.
+	void SetRequestedQuality(DlssQualityMode quality) { m_RequestedQuality = quality; }
+	DlssQualityMode RequestedQuality() const { return m_RequestedQuality; }
 
 	// Explicit user/developer retry boundary.  Evaluation failure itself is
 	// one-way and cannot cause a per-frame retry.
 	void ClearFailureLatch();
 
-	// Query Quality dimensions, validate the SDK result and create/recreate a
-	// feature exactly once for the current tuple.  Disabled/default mode never
-	// calls an NGX hook.
+	// Query the requested preset's dimensions, validate the SDK result and
+	// create/recreate a feature exactly once for the current tuple.
+	// Disabled/default mode never calls an NGX hook.
 	bool Reconcile(const OutputExtent& output, const RRFeatureHooks& hooks);
 	// Production uses the two phases explicitly: select and validate the one
-	// Quality tuple before allocating images, then activate it only after those
+	// preset tuple before allocating images, then activate it only after those
 	// images exist on a separately submitted graphics command buffer.
 	bool SelectTuple(const OutputExtent& output, const RRFeatureHooks& hooks);
 	bool Activate(const RRFeatureHooks& hooks);
@@ -234,6 +234,7 @@ private:
 
 	RRFeatureState m_State;
 	RRQualityTuple m_Tuple;
+	DlssQualityMode m_RequestedQuality = DlssQualityMode::Quality;
 	bool m_HasTuple = false;
 };
 
