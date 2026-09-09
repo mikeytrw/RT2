@@ -660,7 +660,7 @@ public:
 			{
 				m_Settings.showBackground = true;
 				m_Settings.rasterFirst = true;
-				m_Settings.nrdEnabled = true;
+				m_Settings.denoiserMode = DenoiserMode::NRD;
 				m_Cam.m_Aperture = 0.0f;
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
@@ -864,7 +864,7 @@ public:
 		}
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
-	ImGui::BeginDisabled(m_Settings.nrdEnabled);
+	ImGui::BeginDisabled(m_Settings.denoiserMode != DenoiserMode::Off);
 	if (ImGui::Checkbox("Accumulate", &m_Settings.accumulate))
 	{
 		if (!m_Settings.accumulate)
@@ -893,15 +893,24 @@ public:
 		m_RendererGPU.ApplySettings(m_Settings);
 
 	bool nrdAvailable = m_Settings.rasterFirst;
-	if (!nrdAvailable && m_Settings.nrdEnabled)
+	if (!nrdAvailable && m_Settings.denoiserMode == DenoiserMode::NRD)
 	{
-		m_Settings.nrdEnabled = false;
+		m_Settings.denoiserMode = DenoiserMode::Off;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	ImGui::BeginDisabled(!nrdAvailable);
-	if (ImGui::Checkbox("NRD Denoiser", &m_Settings.nrdEnabled))
-		m_RendererGPU.ApplySettings(m_Settings);
-	if (m_Settings.nrdEnabled)
+	{
+		const char* denoiserOptions[] = { "Off", "NRD", "DLSS Ray Reconstruction" };
+		int denoiserIndex = m_Settings.denoiserMode == DenoiserMode::NRD ? 1 :
+			(m_Settings.denoiserMode == DenoiserMode::RayReconstruction ? 2 : 0);
+		if (ImGui::Combo("Denoiser", &denoiserIndex, denoiserOptions, 3))
+		{
+			m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
+				(denoiserIndex == 2 ? DenoiserMode::RayReconstruction : DenoiserMode::Off);
+			m_RendererGPU.ApplySettings(m_Settings);
+		}
+	}
+	if (m_Settings.denoiserMode == DenoiserMode::NRD)
 	{
 		ImGui::Indent();
 		bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
@@ -2998,6 +3007,35 @@ private:
 		if (g_CLI.verbose)
 			g_CLI.Print();
 
+		// One authority resolving CLI denoiser selection onto the settings:
+		// explicit --denoiser-mode wins, then compat --dev-rr-static
+		// (RR + Quality) and --nrd (NRD); default stays NRD. Used at both
+		// pre-init and post-init application sites below.
+		auto ApplyCLIDenoiserSelection = [](RenderSettings& settings) {
+			if (!g_CLI.denoiserMode.empty())
+			{
+				if (const auto parsed = ParseDenoiserMode(g_CLI.denoiserMode))
+					settings.denoiserMode = *parsed;
+				else
+					fprintf(stderr, "[CLI] Unknown --denoiser-mode '%s' (want off|nrd|rr)\n",
+						g_CLI.denoiserMode.c_str());
+			}
+			else if (g_CLI.devRRStatic)
+				settings.denoiserMode = DenoiserMode::RayReconstruction;
+			else if (g_CLI.nrd)
+				settings.denoiserMode = DenoiserMode::NRD;
+			if (!g_CLI.rrQuality.empty())
+			{
+				if (const auto quality = ParseDlssQuality(g_CLI.rrQuality))
+					settings.dlssQuality = *quality;
+				else
+					fprintf(stderr, "[CLI] Unknown --rr-quality '%s' (want quality|balanced|performance)\n",
+						g_CLI.rrQuality.c_str());
+			}
+			else if (g_CLI.devRRStatic)
+				settings.dlssQuality = DlssQualityMode::Quality;
+		};
+
 		if (g_CLI.listScenes)
 		{
 			printf("[CLI] --list mode: would load project='%s' scene='%s' env='%s'\n",
@@ -3011,8 +3049,7 @@ private:
 			m_Settings.spp = g_CLI.spp;
 		if (g_CLI.bounces > 0)
 			m_Settings.maxBounces = g_CLI.bounces;
-		if (g_CLI.nrd)
-			m_Settings.nrdEnabled = true;
+		ApplyCLIDenoiserSelection(m_Settings);
 		if (g_CLI.nrdMaxAccumFrames > 0)
 			m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
 		if (g_CLI.nrdResponsiveRoughness >= 0.0f)
@@ -3036,7 +3073,7 @@ private:
 				m_Settings = m_RendererGPU.GetSettings();
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
-				if (g_CLI.nrd) m_Settings.nrdEnabled = true;
+				ApplyCLIDenoiserSelection(m_Settings);
 				if (g_CLI.nrdMaxAccumFrames > 0) m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
 				if (g_CLI.nrdResponsiveRoughness >= 0.0f) m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;
 				if (g_CLI.nrdResponsiveMinFrames >= 0) m_Settings.nrdResponsiveMinAccumFrames = g_CLI.nrdResponsiveMinFrames;
@@ -3502,7 +3539,7 @@ private:
 				metadata.cameraMode = g_CLI.cameraSweepAmplitude == 0.0f ? "static" :
 					(g_CLI.cameraSweepMode == 2 ? "yaw" : (g_CLI.cameraSweepMode == 1 ? "forward" : "lateral"));
 				metadata.commandLine = g_CLI.commandLine;
-				metadata.nrdEnabled = g_CLI.nrd;
+				metadata.nrdEnabled = m_Settings.denoiserMode == DenoiserMode::NRD;
 				metadata.frameCount = g_CLI.frames;
 				metadata.cameraSweepAmplitude = g_CLI.cameraSweepAmplitude;
 				metadata.cameraSweepWarmup = g_CLI.cameraSweepWarmup;

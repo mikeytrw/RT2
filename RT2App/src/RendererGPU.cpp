@@ -159,7 +159,7 @@ void RendererGPU::UpdateRREligibility(const Camera& camera)
 {
 	const bool ngxSupported = m_NgxRuntime && m_NgxRuntime->Snapshot().IsSupported();
 	const bool projectionValid = std::isfinite(camera.GetVerticalFOV()) && camera.GetVerticalFOV() > 0.0f;
-	const RREligibilityDecision decision = ClassifyRREligibility(m_DevStaticRR, ngxSupported,
+	const RREligibilityDecision decision = ClassifyRREligibility(IsRRModeRequested(), ngxSupported,
 		m_Settings.rasterFirst, m_Settings.gbufferDebugMode >= 0, camera.m_Aperture, projectionValid);
 	const bool eligible = decision.IsEligible();
 	const bool diagnosticBypass = decision.IsDiagnosticBypass();
@@ -383,7 +383,7 @@ void RendererGPU::DestroyOutputImage()
 
 void RendererGPU::CreateRROutputImage()
 {
-	if (!m_DevStaticRR || !m_RRModeEligible || !m_RR.SelectedTuple() ||
+	if (!IsRRModeRequested() || !m_RRModeEligible || !m_RR.SelectedTuple() ||
 		(m_RR.Backend() != RRBackend::RequestedRR && m_RR.Backend() != RRBackend::ActiveRR) ||
 		!m_RenderExtent.IsValid() || !m_NgxRuntime ||
 		!m_NgxRuntime->Snapshot().IsSupported())
@@ -516,7 +516,7 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		// Fallback eligibility excludes only the diagnostic bypass: pure-path
 		// and DOF requests stay owned by the fallback, not the normal path.
 		m_RR.SetFallbackRecovered();
-		m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass;
+		m_AutomaticNativeNrdFallback = IsRRModeRequested() && !m_RRDiagnosticBypass;
 		RT_LOG("[RR] fallback recovered backend=%s reason=%s", RRBackendName(m_RR.Backend()),
 			m_RR.FallbackReason().c_str());
 	}
@@ -533,11 +533,11 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		{
 			RT_LOG("[RR] Quality extent unavailable (%s); native resolution is retained",
 				m_RR.FallbackReason().c_str());
-			m_AutomaticNativeNrdFallback = m_DevStaticRR && !m_RRDiagnosticBypass;
+			m_AutomaticNativeNrdFallback = IsRRModeRequested() && !m_RRDiagnosticBypass;
 			m_RR.SetFallbackRecovered();
 		}
 	}
-	else if (m_DevStaticRR)
+	else if (IsRRModeRequested())
 	{
 		RRFeatureHooks hooks = MakeRRHooks();
 		// Requested-but-ineligible RR (unavailable NGX, pure-path, DOF,
@@ -567,7 +567,7 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	UpdateGBufferDescriptorSet();
 
 	// Initialize NRD for the authored path or for the explicit RR fallback.
-	if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) && !m_NRD.IsAvailable())
+	if ((IsNrdAuthored(m_Settings.denoiserMode) || m_AutomaticNativeNrdFallback) && !m_NRD.IsAvailable())
 	{
 		m_NRD.Init(m_Device.instance,
 		           m_Device.physicalDevice,
@@ -582,7 +582,7 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 		RT_LOG("[RR] native NRD unavailable; backend=%s reason=%s",
 			RRBackendName(m_RR.Backend()), m_RR.FallbackReason().c_str());
 	}
-	else if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) && m_NRD.IsAvailable())
+	else if ((IsNrdAuthored(m_Settings.denoiserMode) || m_AutomaticNativeNrdFallback) && m_NRD.IsAvailable())
 	{
 		m_NRD.OnResize(m_RenderExtent);
 	}
@@ -917,8 +917,8 @@ void RendererGPU::DumpNEEBuffers() const
 	m_Scene.DumpNEEBuffers();
 	RT_LOG("  m_FrameIndex=%d m_NRDFrameIndex=%d m_NRDNeedsReset=%d m_HasPrevMatrices=%d",
 	       m_FrameIndex, m_NRDFrameIndex, m_NRDNeedsReset, m_HasPrevMatrices);
-	RT_LOG("  rasterFirst=%d nrdEnabled=%d",
-	       m_Settings.rasterFirst, m_Settings.nrdEnabled);
+	RT_LOG("  rasterFirst=%d denoiserMode=%d",
+	       m_Settings.rasterFirst, static_cast<int>(m_Settings.denoiserMode));
 }
 
 void RendererGPU::ResetAccumulation()
@@ -994,7 +994,8 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.envIntensity != newSettings.envIntensity ||
 	    m_Settings.rasterFirst != newSettings.rasterFirst ||
 	    m_Settings.accumulate != newSettings.accumulate ||
-	    m_Settings.nrdEnabled != newSettings.nrdEnabled ||
+	    m_Settings.denoiserMode != newSettings.denoiserMode ||
+	    m_Settings.dlssQuality != newSettings.dlssQuality ||
 	    m_Settings.nrdLobeDither != newSettings.nrdLobeDither ||
 	    m_Settings.nrdMaxBlurRadius != newSettings.nrdMaxBlurRadius ||
 	    m_Settings.nrdMaxAccumFrames != newSettings.nrdMaxAccumFrames ||
@@ -1051,6 +1052,10 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	{
 		InvalidateGIHistory();
 	}
+	// Keep the lifecycle request aligned with the single request authority
+	// (developer switch or authored denoiser mode). SetRequested only stores
+	// the flag; safe idle-boundary transitions happen in Reconcile/OnResize.
+	m_RR.SetRequested(IsRRModeRequested());
 }
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
@@ -1058,7 +1063,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// Effective NRD drives every per-frame signal decision: authored NRD or
 	// the approved automatic native-NRD fallback (R1). The fallback's packed
 	// radiance/NRD inputs must match what NRD/compose will consume.
-	const bool effectiveNrd = EffectiveNrdEnabled(m_Settings.nrdEnabled,
+	const bool effectiveNrd = EffectiveNrdEnabled(m_Settings.denoiserMode,
 		m_AutomaticNativeNrdFallback);
 	// Detect camera movement and reset accumulation when NRD is off and
 	// accumulation is enabled. Without this, temporal accumulation blends
@@ -1095,7 +1100,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	// histories. This also enforces the policy for CLI-created settings.
 	bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
 	const bool staticRRNoJitter = ShouldForceStaticRRNoJitter(
-		m_DevStaticRR && m_RR.IsRequested(), m_Settings.restirEnabled, m_Settings.restirGIEnabled);
+		IsRRModeRequested() && m_RR.IsRequested(), m_Settings.restirEnabled, m_Settings.restirGIEnabled);
 	if (!staticRRNoJitter && effectiveNrd && m_Settings.nrdJitterEnabled && !restirActive)
 	{
 		// Halton sequence (base 2, base 3) for low-discrepancy jitter
@@ -1237,7 +1242,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		// (non-NRD path with accumulate enabled). With accumulation off, keep
 		// m_FrameIndex incrementing so the RNG seed varies per frame.
 		// Effective NRD (authored or automatic fallback) takes the NRD path.
-		if (m_Settings.accumulate && !EffectiveNrdEnabled(m_Settings.nrdEnabled,
+		if (m_Settings.accumulate && !EffectiveNrdEnabled(m_Settings.denoiserMode,
 			m_AutomaticNativeNrdFallback))
 			m_FrameIndex = 1;
 	}
@@ -1262,7 +1267,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	}
 
 	// Lazy-init NRD when toggled on, including the automatic RR fallback.
-	if ((m_Settings.nrdEnabled || m_AutomaticNativeNrdFallback) &&
+	if ((IsNrdAuthored(m_Settings.denoiserMode) || m_AutomaticNativeNrdFallback) &&
 		!m_NRD.IsAvailable() && m_RenderExtent.IsValid())
 	{
 		RT_LOG("[Render] initializing NRD (%ux%u)", m_RenderExtent.Width(), m_RenderExtent.Height());
@@ -1389,7 +1394,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	// automatic fallback): it drives the shader UBO nrdEnabled bit and lobe
 	// production in RecordUBOUpdates, consistently with NRD dispatch.
 	// The authored setting itself is never mutated by the fallback.
-	const bool effectiveNrdEnabled = EffectiveNrdEnabled(m_Settings.nrdEnabled,
+	const bool effectiveNrdEnabled = EffectiveNrdEnabled(m_Settings.denoiserMode,
 		m_AutomaticNativeNrdFallback);
 	FrameRenderer::Context ctx = {
 		m_Device,
@@ -1410,7 +1415,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_DisplayImage,
 		m_RROutputImage.IsValid() ? &m_RROutputImage : nullptr,
 		m_NgxRuntime,
-		m_DevStaticRR ? &m_RR : nullptr,
+		IsRRModeRequested() ? &m_RR : nullptr,
 		m_GBufferSet,
 		m_CameraUBO,
 		m_NRDUBO,
@@ -1496,6 +1501,18 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_FrameIndex, recorded.nrdRecorded ? 1 : 0, m_ComposeDescriptorSetCached ? 1 : 0);
 	frame.Submit(m_Device.queue);
 	RT_LOG("[Render] submit ok, frame %d", m_FrameIndex);
+	// Stamp the immutable completed-frame snapshot BEFORE consumption clears
+	// any pending state. Only submitted frames update it; failed/discarded
+	// frames leave the last completed record intact for the Performance UI.
+	m_LastCompleted.denoiser = ResolveCompletedDenoiser(recorded.rrEvaluated,
+		recorded.nrdRecorded, m_RR.State().failureLatched);
+	m_LastCompleted.quality = m_RR.State().quality;
+	m_LastCompleted.outputExtent = m_OutputExtent;
+	m_LastCompleted.renderExtent = m_RenderExtent;
+	m_LastCompleted.featureGeneration = m_RR.State().featureGeneration;
+	m_LastCompleted.historyResetGeneration = m_RR.State().historyResetGeneration;
+	m_LastCompleted.historyResetThisFrame = m_RR.ResetPending();
+	m_LastCompleted.fallbackReason = m_RR.FallbackReason();
 	m_RR.MarkEvaluationSubmitted(recorded.rrEvaluated);
 	const GpuImage& hdrImage = recorded.rrEvaluated ? m_RROutputImage : m_OutputImage;
 	FullResolutionHdrSource source;

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include "RRGuideContract.h"
+#include "DenoiserMode.h"
 
 struct CLIArgs
 {
@@ -24,7 +25,9 @@ struct CLIArgs
 	int height = 720;             // viewport height for headless mode
 	int spp = 0;                  // SPP override (0 = use default)
 	int bounces = 0;              // bounces override (0 = use default)
-	bool nrd = false;             // enable NRD
+	bool nrd = false;             // enable NRD (compat: maps onto --denoiser-mode nrd)
+	std::string denoiserMode;     // public selector: off|nrd|rr (empty = default NRD)
+	std::string rrQuality;        // RR preset: quality|balanced|performance (empty = quality)
 	int nrdMaxAccumFrames = 0;    // NRD history override (0 = default)
 	float nrdResponsiveRoughness = -1.0f; // responsive threshold override (<0 = default)
 	int nrdResponsiveMinFrames = -1;      // responsive minimum history override (<0 = default)
@@ -265,10 +268,18 @@ struct CLIArgs
 			{
 				if (const char* v = next()) args.ngxFeaturePath = v;
 			}
-			else if (strcmp(a, "--dev-rr-static") == 0)
-			{
-				args.devRRStatic = true;
-			}
+		else if (strcmp(a, "--dev-rr-static") == 0)
+		{
+			args.devRRStatic = true;
+		}
+		else if (strcmp(a, "--denoiser-mode") == 0)
+		{
+			if (const char* v = next()) args.denoiserMode = v;
+		}
+		else if (strcmp(a, "--rr-quality") == 0)
+		{
+			if (const char* v = next()) args.rrQuality = v;
+		}
 			else if (strcmp(a, "--list") == 0 || strcmp(a, "--dry-run") == 0)
 			{
 				args.listScenes = true;
@@ -292,6 +303,8 @@ struct CLIArgs
 				printf("  --spp <N>            Samples per pixel override\n");
 				printf("  --bounces <N>        Max bounces override\n");
 				printf("  --nrd                Enable NRD denoiser\n");
+			printf("  --denoiser-mode <off|nrd|rr>  Select the denoiser path (default nrd)\n");
+			printf("  --rr-quality <quality|balanced|performance>  RR upscaling preset (default quality)\n");
 				printf("  --nrd-accum-frames <N>  Override REBLUR maximum history\n");
 				printf("  --nrd-responsive-roughness <R>  Override responsive-history roughness threshold\n");
 				printf("  --nrd-responsive-min-frames <N>  Override responsive minimum history\n");

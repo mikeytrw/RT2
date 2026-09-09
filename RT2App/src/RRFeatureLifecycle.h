@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DenoiserMode.h"
 #include "RenderExtents.h"
 
 #include <cstdint>
@@ -45,14 +46,17 @@ struct RREligibilityDecision
 // means the normal renderer is selected, while ActiveNativeNRD means native
 // NRD is both requested and available for this frame.
 // One production authority for authored NRD vs effective fallback NRD: the
-// automatic native-NRD fallback (requested W4 RR settled on native NRD)
-// enables NRD signal production even when authored nrdEnabled is false.
-// FrameRenderer's UBO/lobe policy and RendererGPU's jitter/accumulation
-// decisions must read this, never the authored flag alone.
+// automatic native-NRD fallback (requested RR settled on native NRD)
+// enables NRD signal production even when the authored denoiser mode is not
+// NRD. FrameRenderer's UBO/lobe policy and RendererGPU's jitter/accumulation
+// decisions must read this, never the authored mode alone. The bool overload
+// is the legacy spelling and delegates to the mode authority.
 inline bool EffectiveNrdEnabled(bool authoredNrdEnabled, bool automaticFallback)
 {
 	return authoredNrdEnabled || automaticFallback;
 }
+// The DenoiserMode overload lives with the mode authority itself
+// (DenoiserMode.h, included above) so bool and mode spellings cannot drift.
 // Production dispatch policy. `automaticFallback` is set only for a requested
 // W4 RR frame that has settled on native NRD; the ordinary switch-off path
 // remains gated by the authored NRD/raster-first settings. The approved

@@ -30,6 +30,7 @@
 #include "RenderInstanceMap.h"
 #include "GpuPickingPass.h"
 #include "NgxRuntime.h"
+#include "RRFeatureLifecycle.h"
 #include "RenderExtents.h"
 #include <array>
 #include <memory>
@@ -58,6 +59,21 @@ public:
 		bool failure = false;
 		std::string failureReason;
 		FullResolutionHdrSource hdrSource;
+	};
+	// Completed-frame denoiser snapshot (amendment 2026-09-09, step 2). The
+	// immutable record of what the latest SUBMITTED frame actually used.
+	// Performance UI and session-fallback logic read this, never the authored
+	// setting. Failed/discarded frames never overwrite it.
+	struct CompletedFrameSnapshot
+	{
+		CompletedDenoiser denoiser = CompletedDenoiser::None;
+		RRQualityMode quality = RRQualityMode::Quality;
+		OutputExtent outputExtent;
+		RenderExtent renderExtent;
+		uint64_t featureGeneration = 0;
+		uint64_t historyResetGeneration = 0;
+		bool historyResetThisFrame = false;
+		std::string fallbackReason;
 	};
 	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 	RendererGPU() = default;
@@ -122,6 +138,7 @@ public:
 	RenderExtent GetRenderExtent() const { return m_RenderExtent; }
 	const FullResolutionHdrSource& GetHdrSource() const { return m_HdrSource; }
 	const RenderOutcome& GetLastRenderOutcome() const { return m_LastRenderOutcome; }
+	const CompletedFrameSnapshot& GetLastCompleted() const { return m_LastCompleted; }
 
 	struct PickResult
 	{
@@ -306,6 +323,14 @@ private:
 	bool m_RRGuideReportMode = false;
 	NgxRuntime* m_NgxRuntime = nullptr; // non-owning; NgxRuntime owns SDK state
 	bool m_DevStaticRR = false;
+	// Single request authority: the compat developer switch OR the authored
+	// denoiser mode. Every RR-requested read below uses this, never the
+	// members individually. (Step 5 removes the switch; the CLI maps it onto
+	// the mode.)
+	bool IsRRModeRequested() const
+	{
+		return m_DevStaticRR || IsRRRequested(m_Settings.denoiserMode);
+	}
 	bool m_AutomaticNativeNrdFallback = false;
 	bool m_ForceNativeRebuild = false;
 	bool m_RRModeEligible = false;
@@ -315,6 +340,7 @@ private:
 	RRFeatureLifecycle m_RR;
 	FullResolutionHdrSource m_HdrSource;
 	RenderOutcome m_LastRenderOutcome;
+	CompletedFrameSnapshot m_LastCompleted;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

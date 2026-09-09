@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "DenoiserMode.h"
+
 // RenderSettings — all user-tunable rendering knobs in one POD struct.
 //
 // WalnutApp writes to these fields via the RendererGPU::GetSettings() /
@@ -61,8 +63,13 @@ struct RenderSettings
 	float    restirGINormalThreshold  = 0.90f; // normal dot product for validation
 	float    restirGIWorldPosThreshold = 0.10f; // world-position distance for temporal validation
 
-	// NRD denoiser
-	bool  nrdEnabled        = false;
+	// Denoiser selection — exactly one of Off / NRD / RayReconstruction.
+	// This is the sole authored denoiser state; there is no independent NRD
+	// boolean. Default startup remains NRD.
+	DenoiserMode denoiserMode = DenoiserMode::NRD;
+	// Authored RR upscaling preset. NGX is authoritative for each preset's
+	// render extent; the read-only extent summary is derived per frame.
+	DlssQualityMode dlssQuality = DlssQualityMode::Quality;
 	// 0 = off (white noise), 1 = Bayer 4x4, 2 = Interleaved Gradient Noise
 	int   nrdLobeDither     = 1;
 	float nrdMaxBlurRadius = 30.0f;

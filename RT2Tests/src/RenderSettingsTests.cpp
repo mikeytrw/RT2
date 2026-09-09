@@ -22,7 +22,8 @@ TEST_CASE("RenderSettings: default values")
 	CHECK(s.emissiveBoost == 1.0f);
 	CHECK(s.envIntensity == 1.0f);
 	CHECK(s.rasterFirst == true);
-	CHECK(s.nrdEnabled == false);
+	CHECK(s.denoiserMode == DenoiserMode::NRD);
+	CHECK(s.dlssQuality == DlssQualityMode::Quality);
 	CHECK(s.nrdMaxBlurRadius == 30.0f);
 	CHECK(s.nrdMaxAccumFrames == 63);
 	CHECK(s.restirEnabled == true);
@@ -48,7 +49,8 @@ TEST_CASE("RenderSettings: copy preserves all fields")
 	s.maxBounces = 16;
 	s.envIntensity = 2.5f;
 	s.rasterFirst = true;
-	s.nrdEnabled = true;
+	s.denoiserMode = DenoiserMode::RayReconstruction;
+	s.dlssQuality = DlssQualityMode::Balanced;
 	s.gbufferDebugMode = 3;
 
 	RenderSettings copy = s;
@@ -56,7 +58,8 @@ TEST_CASE("RenderSettings: copy preserves all fields")
 	CHECK(copy.maxBounces == 16);
 	CHECK(copy.envIntensity == 2.5f);
 	CHECK(copy.rasterFirst == true);
-	CHECK(copy.nrdEnabled == true);
+	CHECK(copy.denoiserMode == DenoiserMode::RayReconstruction);
+	CHECK(copy.dlssQuality == DlssQualityMode::Balanced);
 	CHECK(copy.gbufferDebugMode == 3);
 }
 
