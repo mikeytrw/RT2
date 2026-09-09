@@ -3,6 +3,17 @@
 #include "DenoiserMode.h"
 #include "RRFeatureLifecycle.h"
 #include "CLIArgs.h"
+#include <fstream>
+#include <iterator>
+
+namespace
+{
+std::string ReadSource(const char* path)
+{
+	std::ifstream in(path, std::ios::binary);
+	return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+}
 
 // ============================================================================
 // Typed denoiser authority (amendment 2026-09-09, step 2).
@@ -133,4 +144,27 @@ TEST_CASE("DenoiserMode: session fallback reacts once and stays session-local")
 	DM authored = DM::RayReconstruction;
 	CHECK(ResolveSessionFallbackDenoiser(authored, RB::ActiveNativeNRD, false) == DM::NRD);
 	CHECK(authored == DM::RayReconstruction);
+}
+
+TEST_CASE("DenoiserMode: session fallback cannot rewrite a durable file")
+{
+	// There is no render-settings persistence layer: the durable documents
+	// (editor settings, project file) carry no denoiser state, and
+	// RenderSettings itself has no save/load entry points. A fallback that
+	// only writes the session struct therefore cannot reach disk.
+	for (const char* path : { "RT2App/src/EditorSettings.h",
+		"RT2App/src/Project.h" })
+	{
+		const std::string source = ReadSource(path);
+		REQUIRE(!source.empty());
+		CHECK(source.find("DenoiserMode") == std::string::npos);
+		CHECK(source.find("RenderSettings") == std::string::npos);
+		CHECK(source.find("nrdEnabled") == std::string::npos);
+	}
+	const std::string settings = ReadSource("RT2App/src/RenderSettings.h");
+	REQUIRE(!settings.empty());
+	CHECK(settings.find("Save") == std::string::npos);
+	CHECK(settings.find("Load") == std::string::npos);
+	CHECK(settings.find("serialize") == std::string::npos);
+	CHECK(settings.find("to_json") == std::string::npos);
 }
