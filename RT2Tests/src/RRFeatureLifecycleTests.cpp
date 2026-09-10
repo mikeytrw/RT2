@@ -497,3 +497,35 @@ TEST_CASE("R4 session mirror keeps fallback dispatch, identity and reason")
 	// Explicit leave (user deselects) is a different road and is covered by
 	// the renderer teardown path, not by mirroring.
 }
+
+TEST_CASE("R4a frame context carries the lifecycle for retained fallback")
+{
+	using RB = RRBackend;
+	// Requested RR always carries it (all backends reachable while asked).
+	CHECK(ShouldProvideRRLifecycle(true, RB::RequestedRR));
+	CHECK(ShouldProvideRRLifecycle(true, RB::ActiveRR));
+	CHECK(ShouldProvideRRLifecycle(true, RB::ActiveNativeNRD));
+	// Mirrored session (request withdrawn, fallback retained) still carries
+	// it: without the pointer the dispatcher substitutes plain NativeNRD
+	// and pure-path gating kills the second frame. Request-only gating
+	// returns false here and is exactly the reported bug.
+	CHECK(ShouldProvideRRLifecycle(false, RB::ActiveNativeNRD));
+	// Plain native and diagnostic states carry nothing.
+	CHECK_FALSE(ShouldProvideRRLifecycle(false, RB::NativeNRD));
+	CHECK_FALSE(ShouldProvideRRLifecycle(false, RB::NativeDiagnosticBypass));
+	CHECK_FALSE(ShouldProvideRRLifecycle(false, RB::RequestedRR));
+	CHECK_FALSE(ShouldProvideRRLifecycle(false, RB::FallbackPending));
+}
+
+TEST_CASE("R4b explicit leave clears retained provenance on any non-RR pick")
+{
+	using DM = DenoiserMode;
+	// NRD->Off after a mirror (previous already NRD) must clear: the old
+	// previous==RR rule skipped cleanup and left authored Off running NRD.
+	CHECK(ShouldClearRetainedFallback(DM::Off, true));
+	CHECK(ShouldClearRetainedFallback(DM::NRD, true));
+	// RR picks never clear; nothing retained clears nothing.
+	CHECK_FALSE(ShouldClearRetainedFallback(DM::RayReconstruction, true));
+	CHECK_FALSE(ShouldClearRetainedFallback(DM::Off, false));
+	CHECK_FALSE(ShouldClearRetainedFallback(DM::NRD, false));
+}

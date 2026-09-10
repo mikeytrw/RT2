@@ -113,11 +113,14 @@ private:
 
 // Resolve the completed-frame label from the checked outcome plus the
 // lifecycle backend (R7: the diagnostic bypass reports itself instead of
-// masquerading as Off). rrEvaluated and nrdRecorded must never both be true
-// for one successful frame; that combination resolves to None so a violated
-// invariant cannot present as a valid backend.
+// masquerading as Off; R4: fallback identity derives from retained/active
+// fallback provenance, not exclusively a failed-SDK-evaluation latch, so
+// unavailable/ineligible fallbacks label correctly too). rrEvaluated and
+// nrdRecorded must never both be true for one successful frame; that
+// combination resolves to None so a violated invariant cannot present as a
+// valid backend.
 inline CompletedDenoiser ResolveCompletedDenoiser(bool rrEvaluated,
-	bool nrdRecorded, bool rrFallbackLatched, RRBackend backend)
+	bool nrdRecorded, RRBackend backend)
 {
 	if (backend == RRBackend::NativeDiagnosticBypass)
 		return CompletedDenoiser::NativeDiagnosticBypass;
@@ -126,7 +129,8 @@ inline CompletedDenoiser ResolveCompletedDenoiser(bool rrEvaluated,
 	if (rrEvaluated)
 		return CompletedDenoiser::RayReconstruction;
 	if (nrdRecorded)
-		return rrFallbackLatched ? CompletedDenoiser::NRDFallback : CompletedDenoiser::NRD;
+		return backend == RRBackend::ActiveNativeNRD ?
+			CompletedDenoiser::NRDFallback : CompletedDenoiser::NRD;
 	return CompletedDenoiser::Off;
 }
 // only while RR is ACTIVE: NGX consumes InJitter correctly, while the native
@@ -154,6 +158,24 @@ inline bool ShouldResetAccumulationOnCameraMove(DenoiserMode mode,
 	if (EffectiveNrdEnabled(mode, effectiveFallback))
 		return false;
 	return !IsRRRequested(mode);
+}
+// R4a: frame-context lifecycle rule. The context carries the lifecycle
+// whenever RR was requested OR a native fallback is retained (a mirrored
+// session runs plain authored NRD while ActiveNativeNRD still owns
+// dispatch). Gating on the authored request alone starves mirrored
+// pure-path fallback frames of their backend (dispatch rejects null as
+// plain NativeNRD, which pure-path gating then kills).
+inline bool ShouldProvideRRLifecycle(bool rrRequested, RRBackend backend)
+{
+	return rrRequested || backend == RRBackend::ActiveNativeNRD;
+}
+// R4b: explicit-leave rule. Retained fallback provenance clears on ANY
+// non-RR selection while retained — including NRD->Off after a mirror,
+// where the previous selector is already NRD. Keying on previous==RR
+// leaves authored Off running NRD inputs through the retained flag.
+inline bool ShouldClearRetainedFallback(DenoiserMode next, bool fallbackRetained)
+{
+	return fallbackRetained && next != DenoiserMode::RayReconstruction;
 }
 // One-shot session fallback decision (amendment step 5). Pure and
 // CPU-linkable: the host (WalnutApp, headless and interactive alike) feeds

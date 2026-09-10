@@ -1460,7 +1460,11 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_DisplayImage,
 		m_RROutputImage.IsValid() ? &m_RROutputImage : nullptr,
 		m_NgxRuntime,
-		IsRRModeRequested() ? &m_RR : nullptr,
+		// R4a: carry the lifecycle whenever RR was requested OR a native
+		// fallback is retained (mirrored sessions run authored NRD while
+		// ActiveNativeNRD still owns dispatch). Request-only gating starves
+		// mirrored pure-path frames of their backend.
+		ShouldProvideRRLifecycle(IsRRModeRequested(), m_RR.Backend()) ? &m_RR : nullptr,
 		m_GBufferSet,
 		m_CameraUBO,
 		m_NRDUBO,
@@ -1553,7 +1557,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	// fence-gated completed view is promoted when this slot is reaped.
 	CompletedFrameSnapshot submitted;
 	submitted.denoiser = ResolveCompletedDenoiser(recorded.rrEvaluated,
-		recorded.nrdRecorded, m_RR.State().failureLatched, m_RR.Backend());
+		recorded.nrdRecorded, m_RR.Backend());
 	submitted.backend = m_RR.Backend();
 	submitted.quality = m_RR.State().quality;
 	submitted.outputExtent = m_OutputExtent;

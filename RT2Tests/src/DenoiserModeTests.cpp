@@ -76,19 +76,19 @@ TEST_CASE("DenoiserMode: authored predicates and effective rule")
 TEST_CASE("DenoiserMode: completed label derives from the frame outcome")
 {
 	using RB = RRBackend;
-	CHECK(ResolveCompletedDenoiser(false, false, false, RB::NativeNRD) == CompletedDenoiser::Off);
-	CHECK(ResolveCompletedDenoiser(false, true, false, RB::NativeNRD) == CompletedDenoiser::NRD);
-	CHECK(ResolveCompletedDenoiser(false, true, true, RB::ActiveNativeNRD) == CompletedDenoiser::NRDFallback);
-	CHECK(ResolveCompletedDenoiser(true, false, false, RB::ActiveRR) == CompletedDenoiser::RayReconstruction);
+	CHECK(ResolveCompletedDenoiser(false, false, RB::NativeNRD) == CompletedDenoiser::Off);
+	CHECK(ResolveCompletedDenoiser(false, true, RB::NativeNRD) == CompletedDenoiser::NRD);
+	CHECK(ResolveCompletedDenoiser(false, true, RB::ActiveNativeNRD) == CompletedDenoiser::NRDFallback);
+	CHECK(ResolveCompletedDenoiser(true, false, RB::ActiveRR) == CompletedDenoiser::RayReconstruction);
 	// RR+NRD overlap on one successful frame is not a valid backend: the
 	// resolver refuses to present it rather than picking one.
-	CHECK(ResolveCompletedDenoiser(true, true, false, RB::ActiveRR) == CompletedDenoiser::None);
-	CHECK(ResolveCompletedDenoiser(true, true, true, RB::ActiveNativeNRD) == CompletedDenoiser::None);
+	CHECK(ResolveCompletedDenoiser(true, true, RB::ActiveRR) == CompletedDenoiser::None);
+	CHECK(ResolveCompletedDenoiser(true, true, RB::ActiveNativeNRD) == CompletedDenoiser::None);
 	// R7: a debug frame reports the diagnostic bypass itself, never Off —
 	// even though it records neither NRD nor RR.
-	CHECK(ResolveCompletedDenoiser(false, false, false, RB::NativeDiagnosticBypass) ==
+	CHECK(ResolveCompletedDenoiser(false, false, RB::NativeDiagnosticBypass) ==
 		CompletedDenoiser::NativeDiagnosticBypass);
-	CHECK(ResolveCompletedDenoiser(false, false, true, RB::NativeDiagnosticBypass) ==
+	CHECK(ResolveCompletedDenoiser(false, false, RB::NativeDiagnosticBypass) ==
 		CompletedDenoiser::NativeDiagnosticBypass);
 	CHECK(std::string(CompletedDenoiserName(CompletedDenoiser::NRDFallback)) ==
 		"NRD (RR fallback)");
@@ -205,32 +205,50 @@ TEST_CASE("DenoiserMode: session fallback cannot rewrite a durable file")
 
 TEST_CASE("DenoiserMode: CLI resolution maps once onto the authored enum")
 {
-	// Bare compat switch requests RR+Quality through the mode only.
-	const auto legacy = ResolveDenoiserSelectionFromCLI(true, false, "", "");
+	// Bare compat switch requests RR+Quality through the mode only; without
+	// the experimental opt-in the gated RR admission is invalid (loud
+	// rejection, rendering defaults kept).
+	const auto legacy = ResolveDenoiserSelectionFromCLI(true, false, "", "", false);
 	CHECK(legacy.mode == DenoiserMode::RayReconstruction);
 	CHECK(legacy.quality == DlssQualityMode::Quality);
-	CHECK(legacy.modeValid);
+	CHECK_FALSE(legacy.modeValid);
 	CHECK(legacy.qualityValid);
+	CHECK(!legacy.rejection.empty());
 	// R3 killer: explicit Off wins over a stale developer switch, so
 	// selecting Off always stops RR — no renderer-side override remains.
-	const auto explicitOff = ResolveDenoiserSelectionFromCLI(true, false, "off", "");
+	// Off needs no opt-in.
+	const auto explicitOff = ResolveDenoiserSelectionFromCLI(true, false, "off", "", false);
 	CHECK(explicitOff.mode == DenoiserMode::Off);
 	CHECK(explicitOff.modeValid);
 	// Explicit NRD likewise wins; the incompatible input combination cannot
 	// be reintroduced by the switch.
-	const auto explicitNrd = ResolveDenoiserSelectionFromCLI(true, true, "nrd", "");
+	const auto explicitNrd = ResolveDenoiserSelectionFromCLI(true, true, "nrd", "", false);
 	CHECK(explicitNrd.mode == DenoiserMode::NRD);
+	CHECK(explicitNrd.modeValid);
 	// Compat --nrd alone maps to NRD; nothing maps to RR implicitly.
-	const auto compatNrd = ResolveDenoiserSelectionFromCLI(false, true, "", "");
+	const auto compatNrd = ResolveDenoiserSelectionFromCLI(false, true, "", "", false);
 	CHECK(compatNrd.mode == DenoiserMode::NRD);
-	// Explicit preset travels with explicit mode.
-	const auto preset = ResolveDenoiserSelectionFromCLI(false, false, "rr", "performance");
+	CHECK(compatNrd.modeValid);
+	// Explicit preset travels with explicit mode but stays gated.
+	const auto preset = ResolveDenoiserSelectionFromCLI(false, false, "rr", "performance", false);
 	CHECK(preset.mode == DenoiserMode::RayReconstruction);
 	CHECK(preset.quality == DlssQualityMode::Performance);
+	CHECK_FALSE(preset.modeValid);
+	CHECK_FALSE(preset.qualityValid);
+	// Opt-in admits RR and non-Quality presets for experimental use.
+	const auto admitted = ResolveDenoiserSelectionFromCLI(false, false, "rr", "balanced", true);
+	CHECK(admitted.mode == DenoiserMode::RayReconstruction);
+	CHECK(admitted.quality == DlssQualityMode::Balanced);
+	CHECK(admitted.modeValid);
+	CHECK(admitted.qualityValid);
+	const auto admittedLegacy = ResolveDenoiserSelectionFromCLI(true, false, "", "", true);
+	CHECK(admittedLegacy.mode == DenoiserMode::RayReconstruction);
+	CHECK(admittedLegacy.modeValid);
 	// Typos stay loud and keep rendering defaults.
-	const auto bad = ResolveDenoiserSelectionFromCLI(false, false, "turbo", "ultra");
+	const auto bad = ResolveDenoiserSelectionFromCLI(false, false, "turbo", "ultra", false);
 	CHECK_FALSE(bad.modeValid);
 	CHECK_FALSE(bad.qualityValid);
 	CHECK(bad.mode == DenoiserMode::NRD);
 	CHECK(bad.quality == DlssQualityMode::Quality);
+	CHECK(bad.rejection.empty());
 }

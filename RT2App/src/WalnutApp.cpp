@@ -927,8 +927,11 @@ public:
 	// One exclusive denoiser selector (amendment step 5). No independent
 	// NRD/RR flags exist: the combo writes the single authored mode.
 	// The RR item is disabled (not hidden) while the runtime cannot
-	// support it; Off/NRD stay selectable and the reason stays visible.
+	// support it OR while temporal acceptance gates it: public admission
+	// requires --experimental-rr (CLI-only, deliberate friction), and
+	// Off/NRD stay selectable with the exact reason visible.
 	const bool rrSupported = m_Ngx && m_Ngx->Snapshot().IsSupported();
+	const bool rrAdmitted = rrSupported && g_CLI.experimentalRR;
 	{
 		const char* denoiserOptions[] = { "Off", "NRD", "DLSS Ray Reconstruction" };
 		int denoiserIndex = m_Settings.denoiserMode == DenoiserMode::NRD ? 1 :
@@ -938,7 +941,7 @@ public:
 			for (int i = 0; i < 3; ++i)
 			{
 				const bool isRR = (i == 2);
-				const bool disabled = isRR && !rrSupported;
+				const bool disabled = isRR && !rrAdmitted;
 				const bool selected = (denoiserIndex == i);
 				if (disabled)
 					ImGui::BeginDisabled(true);
@@ -946,7 +949,6 @@ public:
 					disabled ? ImGuiSelectableFlags_Disabled : 0) && !disabled)
 				{
 					denoiserIndex = i;
-					const DenoiserMode previous = m_Settings.denoiserMode;
 					m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
 						(denoiserIndex == 2 ? DenoiserMode::RayReconstruction : DenoiserMode::Off);
 					if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
@@ -954,9 +956,11 @@ public:
 					else
 					{
 						// Explicit leave of RR: drop retained fallback provenance
-						// (R4) and retire the session notice; the following rebuild
-						// owns the single transition edge via coalescing.
-						if (previous == DenoiserMode::RayReconstruction)
+						// on ANY non-RR pick while retained (R4b) — including
+						// NRD->Off after a mirror, where previous is already
+						// NRD. The following rebuild owns the single edge.
+						if (ShouldClearRetainedFallback(m_Settings.denoiserMode,
+							m_RendererGPU.IsFallbackRetained()))
 							m_RendererGPU.ClearRetainedFallback();
 						m_RRFallbackApplied = false;
 						m_RRFallbackReason.clear();
@@ -973,6 +977,11 @@ public:
 			const std::string reason = m_Ngx ? m_Ngx->Snapshot().reason :
 				"NGX runtime is not initialized";
 			ImGui::TextWrapped("RR unavailable: %s", reason.c_str());
+		}
+		else if (!g_CLI.experimentalRR)
+		{
+			ImGui::TextWrapped("RR requires --experimental-rr: no RR preset "
+				"meets temporal acceptance (see evidence); Off/NRD unaffected.");
 		}
 	}
 	if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
@@ -3126,19 +3135,28 @@ private:
 		// Used at both pre-init and post-init application sites below.
 		auto ApplyCLIDenoiserSelection = [](RenderSettings& settings) {
 			const ResolvedDenoiserSelection resolved = ResolveDenoiserSelectionFromCLI(
-				g_CLI.devRRStatic, g_CLI.nrd, g_CLI.denoiserMode, g_CLI.rrQuality);
-			if (!resolved.modeValid)
-				fprintf(stderr, "[CLI] Unknown --denoiser-mode '%s' (want off|nrd|rr)\n",
-					g_CLI.denoiserMode.c_str());
-			if (!resolved.qualityValid)
-				fprintf(stderr, "[CLI] Unknown --rr-quality '%s' (want quality|balanced|performance)\n",
-					g_CLI.rrQuality.c_str());
+				g_CLI.devRRStatic, g_CLI.nrd, g_CLI.denoiserMode, g_CLI.rrQuality,
+				g_CLI.experimentalRR);
+			if (!resolved.modeValid || !resolved.qualityValid)
+			{
+				if (!resolved.rejection.empty())
+					fprintf(stderr, "[CLI] rejected: %s\n", resolved.rejection.c_str());
+				else
+				{
+					if (!g_CLI.denoiserMode.empty())
+						fprintf(stderr, "[CLI] Unknown --denoiser-mode '%s' (want off|nrd|rr)\n",
+							g_CLI.denoiserMode.c_str());
+					if (!g_CLI.rrQuality.empty())
+						fprintf(stderr, "[CLI] Unknown --rr-quality '%s' (want quality|balanced|performance)\n",
+							g_CLI.rrQuality.c_str());
+				}
+				fflush(stderr);
+				std::exit(EXIT_FAILURE);
+			}
 			settings.denoiserMode = resolved.mode;
 			settings.dlssQuality = resolved.quality;
-			if (resolved.quality != DlssQualityMode::Quality)
-				fprintf(stderr, "[CLI] note: the '%s' RR preset is not temporal-"
-					"acceptance-gated (UI offers Quality only); running it anyway\n",
-					g_CLI.rrQuality.c_str());
+			if (g_CLI.experimentalRR)
+				fprintf(stderr, "[CLI] note: experimental RR enabled\n");
 		};
 
 		if (g_CLI.listScenes)
