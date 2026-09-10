@@ -42,7 +42,11 @@ struct GIReservoir
 // regions, and SINRDUniformData::restirGIReservoirIndex read by raygen.
 // The same convention is mirrored in C++ (RendererGPU::m_GIFrameIndex).
 uint giCurrentRegion(uint frameIndex)  { return frameIndex & 1u; }
-uint giPreviousRegion(uint frameIndex) { return frameIndex ^ 1u; }
+// Previous region is the OTHER slot: mask after the flip, otherwise frame
+// indices >= 2 address regions 2..5 outside the two allocated slots and
+// temporal reuse reads garbage (sanitized invalid), silently disabling GI
+// history after the first two frames.
+uint giPreviousRegion(uint frameIndex) { return (frameIndex ^ 1u) & 1u; }
 
 // ---- Field accessors --------------------------------------------------------
 vec3 giDirection(GIReservoir r)

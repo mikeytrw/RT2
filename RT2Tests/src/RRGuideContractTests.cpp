@@ -216,6 +216,12 @@ TEST_CASE("RR guides: ReSTIR temporal reprojection adds current-minus-previous")
 		CHECK(shader.find("jitter.xy - pc.") != std::string::npos);
 		CHECK(shader.find("jitter.zw - pc.") == std::string::npos);
 	}
+	// Permanent pin for the GI region-parity defect: the previous slot is
+	// the OTHER allocated slot (0/1). The unmasked xor addressed regions
+	// 2..5 from frame 2 on, so GI history silently never engaged.
+	const std::string giShared = ReadShader("RT2App/shaders/restir_gi_shared.glsl");
+	CHECK(giShared.find("(frameIndex ^ 1u) & 1u") != std::string::npos);
+	CHECK(giShared.find("return frameIndex ^ 1u;") == std::string::npos);
 }
 
 TEST_CASE("RR guides RED-GREEN: production motion acceptance rejects zero and low-density mutants")
