@@ -128,7 +128,11 @@ void main()
         {
             imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
             imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
-            imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+            // Miss sky follows the shared infinite-sky rotation-only
+            // convention (same as raster-first writeNRDSkyDefaults); static
+            // cameras still record exactly zero. Emissive pixels keep zero.
+            vec2 missMotion = (payload.e.w == 0.0) ? skyMotionPixels(pixel) : vec2(0.0);
+            imageStore(gMotion, pixel, vec4(missMotion, 0.0, 0.0));
         }
         else
         {

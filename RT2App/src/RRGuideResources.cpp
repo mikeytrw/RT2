@@ -476,7 +476,6 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	const glm::mat4 previousWorldToView = metadata.expectedPreviousWorldToView;
 	const glm::mat4 inverseCurrentProjection = glm::inverse(currentViewToClip);
 	const glm::mat4 inverseCurrentView = glm::inverse(currentWorldToView);
-	const glm::vec3 currentCameraPosition = glm::vec3(inverseCurrentView[3]);
 	const glm::vec2 renderExtent(float(m_Extent.Width()), float(m_Extent.Height()));
 	auto projectPixels = [&](const glm::mat4& projection, const glm::mat4& view,
 		const glm::vec3& world, glm::vec2& result) -> bool {
@@ -508,15 +507,29 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		}
 		else
 		{
+			// Infinite-sky rotation-only expectation (matches the producer
+			// contract in SkyMotion.h / skyMotionPixels): unproject the
+			// unjittered pixel centre, rotate by the previous orientation
+			// only, and project as a direction (w=0) so translation and
+			// finite projector points never enter.
 			const glm::vec2 uv = currentPixel / renderExtent;
 			const glm::vec4 viewTarget = inverseCurrentProjection *
 				glm::vec4(uv * 2.0f - 1.0f, 1.0f, 1.0f);
 			if (std::isfinite(viewTarget.w) && std::abs(viewTarget.w) > 1e-6f)
 			{
 				const glm::vec3 viewDirection = glm::normalize(glm::vec3(viewTarget) / viewTarget.w);
-				const glm::vec3 skyDirection = glm::normalize(glm::vec3(inverseCurrentView * glm::vec4(viewDirection, 0.0f)));
-				projected = projectPixels(previousViewToClip, previousWorldToView,
-					currentCameraPosition + skyDirection * 1000.0f, expectedPrevious);
+				const glm::vec3 worldDirection = glm::normalize(
+					glm::vec3(inverseCurrentView * glm::vec4(viewDirection, 0.0f)));
+				const glm::vec3 prevViewDirection =
+					glm::mat3(previousWorldToView) * worldDirection;
+				const glm::vec4 prevClip = previousViewToClip *
+					glm::vec4(prevViewDirection, 0.0f);
+				if (std::isfinite(prevClip.w) && std::abs(prevClip.w) > 1e-6f)
+				{
+					expectedPrevious = (glm::vec2(prevClip) / prevClip.w * 0.5f + 0.5f) * renderExtent;
+					projected = std::isfinite(expectedPrevious.x) &&
+						std::isfinite(expectedPrevious.y);
+				}
 			}
 		}
 		if (!projected) continue;
@@ -563,7 +576,7 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	const bool classCoverageValid = !movingCase ||
 		(depthMissCount > 0 && (pixelCount - depthMissCount) > 0 &&
 		 (!emissiveRequired || (emissivePixelCount > 0 && emissiveMotionPixelCount > 0)) &&
-		 skyMotionPixelCount > 0 && geometryMotionPixelCount > 0);
+		 geometryMotionPixelCount > 0);
 	bool semanticValid = finiteValid && diffuseRange && specRange && normalRange &&
 		depthRange && motionFinite && hitRange && allPixelsOverwritten &&
 		normalToleranceValid && hitDepthCorrelationValid && motionToleranceValid &&

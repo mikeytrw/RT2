@@ -15,7 +15,8 @@
 //   ReSTIR via its jitterDelta path, NGX via InJitterOffset),
 // - ReSTIR DI/GI reprojection (PC jitter pair),
 // - NRD camera jitter pair,
-// - NGX RR InJitterOffsetX/Y.
+// - NGX RR InJitterOffsetX/Y (as the NEGATED projection shift — see
+//  FrameRenderer::RecordRR; the raster shifts geometry by minus offset).
 //
 // Units are render pixels throughout. When sampling is not jittered (Off
 // mode, jitter switch disabled), both offsets are exactly zero.

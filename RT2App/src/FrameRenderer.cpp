@@ -778,11 +778,15 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordRR(VkCommandBuffer cmd,
 	for (RRFeatureImage* input : ngxInputs)
 		input->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	evaluation.output.layout = VK_IMAGE_LAYOUT_GENERAL;
-	// Shared sampling authority: the same subpixel offset that raster and
-	// ray sampling used this frame. Motion stays unjittered (W3 contract);
-	// NGX applies this offset internally, exactly once.
-	evaluation.jitterX = ctx.samplingJitter.x;
-	evaluation.jitterY = ctx.samplingJitter.y;
+	// NGX InJitterOffset convention: the jitter baked into the projection,
+	// i.e. the clip-space image shift. RT2 shifts GEOMETRY by minus the
+	// sampling offset (raster.vert) with an unjittered projection, so the
+	// effective projection jitter is the NEGATED sampling offset. Passing
+	// +jitter misaligns NGX history by 2j and visibly swims static detail
+	// (measured: negated offset is sharper and more stable; zero is
+	// neutral). Motion stays unjittered; NGX applies this offset once.
+	evaluation.jitterX = -ctx.samplingJitter.x;
+	evaluation.jitterY = -ctx.samplingJitter.y;
 	evaluation.reset = ctx.rrLifecycle->ResetPending() ? 1 : 0;
 	evaluation.mvScaleX = 1.0f;
 	evaluation.mvScaleY = 1.0f;

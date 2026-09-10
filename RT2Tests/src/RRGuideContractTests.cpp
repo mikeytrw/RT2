@@ -133,14 +133,14 @@ TEST_CASE("RR guides RED-GREEN: bindings and shared BRDF remain production-visib
 	CHECK(raster.find("(prevUv - currUv) * camera.viewportSPP.xy") != std::string::npos);
 	CHECK(raster.find("nrdJitter") == std::string::npos);
 	CHECK(ReadShader("RT2App/shaders/pathtracer_shared.glsl").find("camera-derived sky motion") != std::string::npos);
-	CHECK(secondary.find("writeNRDSkyDefaults(pixel, skyRadiance, dir)") != std::string::npos);
+	CHECK(secondary.find("writeNRDSkyDefaults(pixel, skyRadiance)") != std::string::npos);
 	const std::string skyHelper = ReadShader("RT2App/shaders/pathtracer_shared.glsl");
 	const size_t skyStart = skyHelper.find("void writeNRDSkyDefaults");
 	const size_t skyEnd = skyHelper.find("// NRD hit distance", skyStart);
 	REQUIRE(skyStart != std::string::npos);
 	REQUIRE(skyEnd != std::string::npos);
 	CHECK(skyHelper.substr(skyStart, skyEnd - skyStart).find("imageStore(outputImage") == std::string::npos);
-	CHECK(secondary.find("writeNRDSkyDefaults(pixel, skyRadiance, dir);\n        if (nrdMode)\n            imageStore(outputImage") != std::string::npos);
+	CHECK(secondary.find("writeNRDSkyDefaults(pixel, skyRadiance);\n        if (nrdMode)\n            imageStore(outputImage") != std::string::npos);
 }
 
 TEST_CASE("RR guides: CPU motion projection contract covers static translation yaw rigid emissive sky")

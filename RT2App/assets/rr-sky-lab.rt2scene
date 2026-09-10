@@ -1,0 +1,26 @@
+{
+  "version": 5,
+  "metadata": { "name": "rr-sky-lab" },
+  "entities": [
+    {
+      "uuid": "00000000-0000-4000-8000-000000000201",
+      "name": "Pebble",
+      "transform": { "translation": [0.0, -10.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0] },
+      "visible": true,
+      "primitive": { "kind": "cube", "size": 0.1, "segments": 4, "rings": 2 },
+      "meshRef": { "materialIndex": 0 }
+    },
+    {
+      "uuid": "00000000-0000-4000-8000-000000000202",
+      "name": "Camera",
+      "transform": { "translation": [0.0, 1.5, 8.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0] },
+      "visible": true,
+      "camera": { "fov": 55.0, "nearPlane": 0.1, "farPlane": 1000.0, "position": [0.0, 1.5, 8.0], "forward": [0.0, 0.5, -0.8660254] }
+    }
+  ],
+  "materials": [
+    { "type": 0, "baseColor": [0.8, 0.2, 0.1], "baseAlpha": 1.0, "metallic": 0.0, "roughness": 0.45, "emissiveColor": [0.0, 0.0, 0.0], "emissiveIntensity": 0.0, "alphaMode": "OPAQUE", "alphaCutoff": 0.5, "transmission": 0.0, "ior": 1.5, "baseColorTex": -1, "metallicRoughTex": -1, "normalTex": -1, "emissiveTex": -1 }
+  ],
+  "textures": [],
+  "envMap": { "kind": "environment", "path": "", "sourceKey": "", "width": 0, "height": 0, "importSettings": { "generateNormals": false, "mergeMegaMesh": true, "triangulate": true } }
+}

@@ -63,7 +63,7 @@ void main()
 
         vec3 skyRadiance = payload.b.xyz;
 
-        writeNRDSkyDefaults(pixel, skyRadiance, dir);
+        writeNRDSkyDefaults(pixel, skyRadiance);
         if (nrdMode)
             imageStore(outputImage, pixel, vec4(skyRadiance, 1.0));
         else

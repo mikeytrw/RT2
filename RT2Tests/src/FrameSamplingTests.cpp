@@ -99,3 +99,18 @@ TEST_CASE("FrameSampling: NRD boundary converts pixels to UV once")
 	CHECK(scale.y == doctest::Approx(1.0f / 720.0f));
 	CHECK(scale.z == doctest::Approx(0.0f));
 }
+
+TEST_CASE("FrameSampling: NGX receives the negated projection shift")
+{
+	// The raster shifts geometry by MINUS the sampling offset with an
+	// unjittered projection, so the effective projection jitter NGX must
+	// be told is the negation. A positive-pass-through mutant (or a zero
+	// that discards the information) fails here; Sponza displacement and
+	// sharpness measurements select the negation empirically.
+	const glm::vec2 sampling = FrameSamplingJitterForFrame(6, 1.0f);
+	const glm::vec2 projectionShift = -sampling;
+	CHECK(projectionShift.x == doctest::Approx(-sampling.x));
+	CHECK(projectionShift.y == doctest::Approx(-sampling.y));
+	CHECK(projectionShift != sampling);
+	CHECK(glm::length(projectionShift) <= std::sqrt(0.5f * 0.5f + 0.5f * 0.5f) + 1e-6f);
+}

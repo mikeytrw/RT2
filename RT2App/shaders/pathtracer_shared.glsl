@@ -945,13 +945,53 @@ vec3 temporalAccumulate(ivec2 pixel, vec3 color, float frameIndex)
     return color;
 }
 
+// Infinite-sky rotation-only motion in render pixels (shared contract, see
+// SkyMotion.h): the sky has no parallax, so only camera orientation maps the
+// current sky direction to the previous frame. Translation, sampling jitter
+// and finite projector points never enter — NGX receives jitter separately,
+// and a finite point reintroduces translational parallax. Identical current
+// and previous matrices yield exactly zero (no float path on that branch).
+vec2 skyMotionPixels(ivec2 pixel)
+{
+    vec2 currUv = (vec2(pixel) + vec2(0.5)) / camera.viewportSPP.xy;
+    // Bit-exact static/translation-only zero: compare rotation columns and
+    // projection exactly (translation lives outside the 3x3 blocks, so it
+    // can never move the sky). No float work happens on this branch.
+    bool sameOrientation =
+        all(equal(camera.worldToView[0].xyz, camera.worldToViewPrev[0].xyz)) &&
+        all(equal(camera.worldToView[1].xyz, camera.worldToViewPrev[1].xyz)) &&
+        all(equal(camera.worldToView[2].xyz, camera.worldToViewPrev[2].xyz));
+    bool sameProjection =
+        all(equal(camera.viewToClip[0], camera.viewToClipPrev[0])) &&
+        all(equal(camera.viewToClip[1], camera.viewToClipPrev[1])) &&
+        all(equal(camera.viewToClip[2], camera.viewToClipPrev[2])) &&
+        all(equal(camera.viewToClip[3], camera.viewToClipPrev[3]));
+    if (sameOrientation && sameProjection)
+        return vec2(0.0);
+    vec2 ndc = currUv * 2.0 - 1.0;
+    vec4 viewTarget = camera.inverseProjection * vec4(ndc, 1.0, 1.0);
+    if (abs(viewTarget.w) <= 1e-6)
+        return vec2(0.0);
+    vec3 viewDirection = normalize(vec3(viewTarget) / viewTarget.w);
+    vec3 worldDirection = normalize((camera.inverseView * vec4(viewDirection, 0.0)).xyz);
+    vec3 prevViewDirection = mat3(camera.worldToViewPrev) * worldDirection;
+    vec4 prevClip = camera.viewToClipPrev * vec4(prevViewDirection, 0.0);
+    if (abs(prevClip.w) <= 1e-6)
+        return vec2(0.0);
+    vec2 prevUv = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
+    vec2 motion = (prevUv - currUv) * camera.viewportSPP.xy;
+    bvec2 finite = bvec2(!isinf(motion.x) && !isnan(motion.x),
+                         !isinf(motion.y) && !isnan(motion.y));
+    return (finite.x && finite.y) ? motion : vec2(0.0);
+}
+
 // camera-derived sky motion is part of the neutral guide contract. Write
 // sky-pixel guide/G-buffer defaults: oct-packed up normal, roughness=1,
 // viewZ=1e6, white albedo/F0, zero diff/spec radiance, and camera-derived sky
 // motion.  This helper deliberately does not touch outputImage: non-NRD
 // temporalAccumulate must read the previous canonical history before the
 // current sky sample is stored.
-void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance, vec3 skyDirection)
+void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance)
 {
     vec3 skyOct = nrdEncodeNormalRoughness(vec3(0.0, 0.0, 1.0), 1.0);
     imageStore(gNormalRoughness, pixel, vec4(skyOct, 0.0));
@@ -960,13 +1000,7 @@ void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance, vec3 skyDirection)
     imageStore(gDirectEmission, pixel, vec4(skyRadiance, 0.0));
     imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
     imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
-    vec2 currUv = (vec2(pixel) + vec2(0.5)) / camera.viewportSPP.xy;
-    // Project a finite point along the sky ray so clip.w is valid. Motion is
-    // current->previous in render pixels; camera jitter is intentionally absent.
-    vec3 skyPoint = camera.position.xyz + normalize(skyDirection) * 1000.0;
-    vec4 previousClip = camera.viewToClipPrev * camera.worldToViewPrev * vec4(skyPoint, 1.0);
-    vec2 previousUv = (previousClip.xy / previousClip.w) * 0.5 + 0.5;
-    imageStore(gMotion, pixel, vec4((previousUv - currUv) * camera.viewportSPP.xy, 0.0, 0.0));
+    imageStore(gMotion, pixel, vec4(skyMotionPixels(pixel), 0.0, 0.0));
     imageStore(rrNoisyHdr, pixel, vec4(skyRadiance, 1.0));
     imageStore(rrHitDistance, pixel, vec4(0.0));
 }
