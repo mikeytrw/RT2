@@ -345,7 +345,8 @@ struct CLIArgs
 				printf("  --bounces <N>        Max bounces override\n");
 				printf("  --nrd                Enable NRD denoiser\n");
 			printf("  --denoiser-mode <off|nrd|rr>  Select the denoiser path (default nrd)\n");
-			printf("  --rr-quality <quality|balanced|performance>  RR upscaling preset (default quality)\n");
+			printf("  --rr-quality <quality|balanced|performance>  RR upscaling preset (default quality;\n");
+			printf("      balanced/performance run but are not temporal-acceptance-gated: UI offers Quality only)\n");
 				printf("  --nrd-accum-frames <N>  Override REBLUR maximum history\n");
 				printf("  --nrd-responsive-roughness <R>  Override responsive-history roughness threshold\n");
 				printf("  --nrd-responsive-min-frames <N>  Override responsive minimum history\n");

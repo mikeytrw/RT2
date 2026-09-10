@@ -978,17 +978,39 @@ public:
 	if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
 	{
 		ImGui::Indent();
+		// R5: only the acceptance-gated Quality preset is selectable.
+		// Balanced/Performance are visibly disabled with exact status;
+		// re-enabling them is a UI-only revert once amended acceptance
+		// exists (lifecycle, NGX mappings and CLI parsing already support
+		// all three and stay tested).
 		const char* qualityOptions[] = { "Quality", "Balanced", "Performance" };
 		int qualityIndex = m_Settings.dlssQuality == DlssQualityMode::Balanced ? 1 :
 			(m_Settings.dlssQuality == DlssQualityMode::Performance ? 2 : 0);
 		ImGui::BeginDisabled(!rrSupported);
-		if (ImGui::Combo("RR Preset", &qualityIndex, qualityOptions, 3))
+		if (ImGui::BeginCombo("RR Preset", qualityOptions[qualityIndex]))
 		{
-			m_Settings.dlssQuality = qualityIndex == 1 ? DlssQualityMode::Balanced :
-				(qualityIndex == 2 ? DlssQualityMode::Performance : DlssQualityMode::Quality);
-			m_RendererGPU.ApplySettings(m_Settings);
+			for (int i = 0; i < 3; ++i)
+			{
+				const bool gated = (i != 0);
+				const bool selected = (qualityIndex == i);
+				if (gated)
+					ImGui::BeginDisabled(true);
+				if (ImGui::Selectable(qualityOptions[i], selected,
+					gated ? ImGuiSelectableFlags_Disabled : 0) && !gated)
+				{
+					qualityIndex = i;
+					m_Settings.dlssQuality = qualityIndex == 1 ? DlssQualityMode::Balanced :
+						(qualityIndex == 2 ? DlssQualityMode::Performance : DlssQualityMode::Quality);
+					m_RendererGPU.ApplySettings(m_Settings);
+				}
+				if (gated)
+					ImGui::EndDisabled();
+			}
+			ImGui::EndCombo();
 		}
 		ImGui::EndDisabled();
+		ImGui::TextWrapped("Balanced/Performance are disabled: bright-region temporal "
+			"acceptance not met (Quality gate T2); see temporal-stability evidence.");
 		if (m_RendererGPU.HasOutput())
 		{
 			const auto render = m_RendererGPU.GetRenderExtent();
@@ -3113,6 +3135,10 @@ private:
 					g_CLI.rrQuality.c_str());
 			settings.denoiserMode = resolved.mode;
 			settings.dlssQuality = resolved.quality;
+			if (resolved.quality != DlssQualityMode::Quality)
+				fprintf(stderr, "[CLI] note: the '%s' RR preset is not temporal-"
+					"acceptance-gated (UI offers Quality only); running it anyway\n",
+					g_CLI.rrQuality.c_str());
 		};
 
 		if (g_CLI.listScenes)
