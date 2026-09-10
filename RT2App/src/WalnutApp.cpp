@@ -690,8 +690,12 @@ public:
 			{
 				m_Settings.showBackground = true;
 				m_Settings.rasterFirst = true;
-				m_Settings.denoiserMode = DenoiserMode::NRD;
 				m_Cam.m_Aperture = 0.0f;
+				// Explicit CLI selection wins through the single authority
+				// (empty text keeps the historical interactive NRD default).
+				// The previous unconditional NRD overwrite silently discarded
+				// explicit --denoiser-mode flags on interactive launches.
+				ApplyCLIDenoiserSelection(m_Settings);
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
 		}

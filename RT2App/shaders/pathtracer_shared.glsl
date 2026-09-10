@@ -280,7 +280,10 @@ struct RayPayload
     vec4 e; // NRD primary-hit info (written by closesthit at depth 0 only):
             // x = uintBitsToFloat(packUnorm4x8(vec4(demodAlbedo, lobeType)))
             // y = uintBitsToFloat(packUnorm2x16(vec2(F0, roughness)))
-            // z = viewZ (view-space Z at primary hit)
+            // z = terminal marker: 0 = untouched (true miss when w == 0),
+            //     1.0 = emissive terminal recorded (primary emissive when
+            //     w == 0, first-bounce emissive with w = hitT),
+            //     >= 2.0 = 2.0 + emissive MIS weight
             // w = primary hitT (0 = primary ray missed or hit an emitter)
 };
 

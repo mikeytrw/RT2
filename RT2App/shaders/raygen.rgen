@@ -63,8 +63,9 @@ void main()
         // d.w = bsdfPdf (solid-angle): -1.0 = camera ray (delta, full emission),
         // >= 0 = a diffuse-capable continuation (MIS-weighted emission).
         // e = NRD primary-hit info, filled by closesthit at depth 0;
-        //     e.w == 0 after the trace means the primary ray missed (or hit an
-        //     emitter, which returns before the G-buffer capture).
+        //     e.w == 0 after the trace means the primary ray missed or hit a
+        //     primary emitter (which returns before the G-buffer capture);
+        //     e.z == 1.0 marks the primary-emitter case, e.z == 0 a true miss.
         payload.a = vec4(vec3(1.0), uintBitsToFloat(rngState));   // throughput = 1, rngState in .w (bit-cast to preserve uint bits)
         payload.b = vec4(vec3(0.0), 0);           // radiance = 0, depth = 0
         payload.c = vec4(rayOrigin, 0.0);          // ray origin, done = 0
@@ -128,10 +129,12 @@ void main()
         {
             imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
             imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
-            // Miss sky follows the shared infinite-sky rotation-only
-            // convention (same as raster-first writeNRDSkyDefaults); static
-            // cameras still record exactly zero. Emissive pixels keep zero.
-            vec2 missMotion = (payload.e.w == 0.0) ? skyMotionPixels(pixel) : vec2(0.0);
+            // True miss (e.w == 0, e.z == 0) follows the shared infinite-sky
+            // rotation-only convention (same as raster-first
+            // writeNRDSkyDefaults); static cameras still record exactly zero.
+            // A primary emissive terminal (e.w == 0, e.z == 1.0, marked by
+            // closesthit) is not sky and keeps zero motion.
+            vec2 missMotion = (payload.e.w == 0.0 && payload.e.z < 0.5) ? skyMotionPixels(pixel) : vec2(0.0);
             imageStore(gMotion, pixel, vec4(missMotion, 0.0, 0.0));
         }
         else

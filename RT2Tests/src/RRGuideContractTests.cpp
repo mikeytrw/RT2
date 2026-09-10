@@ -390,3 +390,28 @@ TEST_CASE("W4 production RR authority executes normalized policy and lifecycle c
 	CHECK(ShouldCommitHeadlessOutput(true, true, true, true, false));
 	CHECK_FALSE(ShouldCommitHeadlessOutput(true, true, true, true, true));
 }
+
+TEST_CASE("RR guides: pure-RT miss motion excludes primary emissive terminals")
+{
+	// Sol review (range 558913c..15d290f, major 2): the raygen miss predicate
+	// keyed on e.w == 0 alone, which also covers primary emissive hits, so
+	// emissive geometry received sky motion under rotation. The contract is
+	// now unambiguous: closesthit marks a primary emissive terminal with
+	// e.z == 1.0 (true miss leaves e.z == 0.0) and raygen grants sky motion
+	// only to unmarked misses. Emissive keeps zero motion.
+	const std::string raygen = ReadShader("RT2App/shaders/raygen.rgen");
+	const std::string closesthit = ReadShader("RT2App/shaders/closesthit.rchit");
+	const std::string shared = ReadShader("RT2App/shaders/pathtracer_shared.glsl");
+	REQUIRE(!raygen.empty());
+	REQUIRE(!closesthit.empty());
+	REQUIRE(!shared.empty());
+	// Discriminating predicate present; the old bare e.w-only predicate gone.
+	CHECK(raygen.find("(payload.e.w == 0.0 && payload.e.z < 0.5) ? skyMotionPixels(pixel)") != std::string::npos);
+	CHECK(raygen.find("(payload.e.w == 0.0) ? skyMotionPixels(pixel)") == std::string::npos);
+	// Primary marker present and scoped to the depth-zero camera ray.
+	const size_t marker = closesthit.find("else if (uint(payload.b.w) == 0u)");
+	REQUIRE(marker != std::string::npos);
+	CHECK(closesthit.find("payload.e.z = 1.0;", marker) != std::string::npos);
+	// Contract vocabulary documented at the payload declaration.
+	CHECK(shared.find("1.0 = emissive terminal recorded") != std::string::npos);
+}

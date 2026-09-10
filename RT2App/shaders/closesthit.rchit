@@ -187,6 +187,15 @@ void main()
             payload.e.z = 1.0;
             payload.e.w = gl_HitTEXT;
         }
+        else if (uint(payload.b.w) == 0u)
+        {
+            // Primary emissive terminal marker: a primary emissive hit
+            // reads (e.w == 0, e.z == 1.0), distinct from a true miss
+            // (e.w == 0, e.z == 0.0). Uses the established "emissive
+            // terminal recorded" value; raygen routes marked pixels to
+            // zero motion instead of sky motion.
+            payload.e.z = 1.0;
+        }
         float boost = camera.apertureFocal.w;
         float bsdfPdf = payload.d.w;
         float weight = 1.0;  // default: full emission (camera/specular)

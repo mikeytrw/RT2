@@ -274,6 +274,40 @@ TEST_CASE("DenoiserMode: every renderer-init path applies the CLI selection")
 		++pos;
 	}
 	CHECK(inits == 2);
-	CHECK(applies == 3);
+	CHECK(applies == 4);
 	CHECK(applies > inits);
+}
+
+TEST_CASE("DenoiserMode: no unconditional NRD overwrite of explicit CLI")
+{
+	// Sol review (range 558913c..15d290f, major 1): the interactive
+	// first-frame fixup unconditionally reset denoiserMode to NRD after
+	// ProcessCLIArgs, silently discarding explicit --denoiser-mode. The
+	// overwrite statement must stay gone; the fixup routes through the
+	// single ApplyCLIDenoiserSelection authority instead.
+	const std::string host = ReadSource("RT2App/src/WalnutApp.cpp");
+	REQUIRE(!host.empty());
+	CHECK(host.find("m_Settings.denoiserMode = DenoiserMode::NRD;") == std::string::npos);
+	const std::string gate = "if (!g_CLI.headless && m_RendererGPU.IsAvailable())";
+	const size_t at = host.find(gate);
+	REQUIRE(at != std::string::npos);
+	const size_t applied = host.find("m_RendererGPU.ApplySettings(m_Settings);", at);
+	REQUIRE(applied != std::string::npos);
+	const std::string fixup = host.substr(at, applied - at);
+	CHECK(fixup.find("ApplyCLIDenoiserSelection(m_Settings)") != std::string::npos);
+}
+
+TEST_CASE("DenoiserMode: empty CLI keeps the interactive NRD default")
+{
+	// No-flag launches must keep rendering exactly as before the overwrite
+	// removal: default NRD, valid, Quality.
+	const auto def = ResolveDenoiserSelectionFromCLI(false, false, "", "", false);
+	CHECK(def.mode == DenoiserMode::NRD);
+	CHECK(def.quality == DlssQualityMode::Quality);
+	CHECK(def.modeValid);
+	CHECK(def.qualityValid);
+	// Explicit Off still wins over the default (interactive-explicit case).
+	const auto off = ResolveDenoiserSelectionFromCLI(false, false, "off", "", false);
+	CHECK(off.mode == DenoiserMode::Off);
+	CHECK(off.modeValid);
 }
