@@ -205,52 +205,76 @@ TEST_CASE("DenoiserMode: session fallback cannot rewrite a durable file")
 
 TEST_CASE("DenoiserMode: CLI resolution maps once onto the authored enum")
 {
-	// Bare compat switch requests RR+Quality through the mode only; without
-	// the experimental opt-in the gated RR admission is invalid (loud
-	// rejection, rendering defaults kept).
-	const auto legacy = ResolveDenoiserSelectionFromCLI(true, false, "", "", false);
+	// Default promotion (2026-09-10): RR and all presets are ordinary
+	// selections; no experimental opt-in exists. Bare compat switch
+	// requests RR+Quality through the mode only.
+	const auto legacy = ResolveDenoiserSelectionFromCLI(true, false, "", "");
 	CHECK(legacy.mode == DenoiserMode::RayReconstruction);
 	CHECK(legacy.quality == DlssQualityMode::Quality);
-	CHECK_FALSE(legacy.modeValid);
+	CHECK(legacy.modeValid);
 	CHECK(legacy.qualityValid);
-	CHECK(!legacy.rejection.empty());
+	CHECK(legacy.rejection.empty());
 	// R3 killer: explicit Off wins over a stale developer switch, so
 	// selecting Off always stops RR — no renderer-side override remains.
-	// Off needs no opt-in.
-	const auto explicitOff = ResolveDenoiserSelectionFromCLI(true, false, "off", "", false);
+	const auto explicitOff = ResolveDenoiserSelectionFromCLI(true, false, "off", "");
 	CHECK(explicitOff.mode == DenoiserMode::Off);
 	CHECK(explicitOff.modeValid);
 	// Explicit NRD likewise wins; the incompatible input combination cannot
 	// be reintroduced by the switch.
-	const auto explicitNrd = ResolveDenoiserSelectionFromCLI(true, true, "nrd", "", false);
+	const auto explicitNrd = ResolveDenoiserSelectionFromCLI(true, true, "nrd", "");
 	CHECK(explicitNrd.mode == DenoiserMode::NRD);
 	CHECK(explicitNrd.modeValid);
-	// Compat --nrd alone maps to NRD; nothing maps to RR implicitly.
-	const auto compatNrd = ResolveDenoiserSelectionFromCLI(false, true, "", "", false);
+	// Compat --nrd alone maps to NRD; the CLI default stays NRD here (the
+	// implicit RR default resolves later, once NGX support is known).
+	const auto compatNrd = ResolveDenoiserSelectionFromCLI(false, true, "", "");
 	CHECK(compatNrd.mode == DenoiserMode::NRD);
 	CHECK(compatNrd.modeValid);
-	// Explicit preset travels with explicit mode but stays gated.
-	const auto preset = ResolveDenoiserSelectionFromCLI(false, false, "rr", "performance", false);
+	// Explicit RR with a non-Quality preset is admitted as stated.
+	const auto preset = ResolveDenoiserSelectionFromCLI(false, false, "rr", "performance");
 	CHECK(preset.mode == DenoiserMode::RayReconstruction);
 	CHECK(preset.quality == DlssQualityMode::Performance);
-	CHECK_FALSE(preset.modeValid);
-	CHECK_FALSE(preset.qualityValid);
-	// Opt-in admits RR and non-Quality presets for experimental use.
-	const auto admitted = ResolveDenoiserSelectionFromCLI(false, false, "rr", "balanced", true);
-	CHECK(admitted.mode == DenoiserMode::RayReconstruction);
-	CHECK(admitted.quality == DlssQualityMode::Balanced);
-	CHECK(admitted.modeValid);
-	CHECK(admitted.qualityValid);
-	const auto admittedLegacy = ResolveDenoiserSelectionFromCLI(true, false, "", "", true);
-	CHECK(admittedLegacy.mode == DenoiserMode::RayReconstruction);
-	CHECK(admittedLegacy.modeValid);
+	CHECK(preset.modeValid);
+	CHECK(preset.qualityValid);
+	const auto balanced = ResolveDenoiserSelectionFromCLI(false, false, "rr", "balanced");
+	CHECK(balanced.mode == DenoiserMode::RayReconstruction);
+	CHECK(balanced.quality == DlssQualityMode::Balanced);
+	CHECK(balanced.modeValid);
+	CHECK(balanced.qualityValid);
 	// Typos stay loud and keep rendering defaults.
-	const auto bad = ResolveDenoiserSelectionFromCLI(false, false, "turbo", "ultra", false);
+	const auto bad = ResolveDenoiserSelectionFromCLI(false, false, "turbo", "ultra");
 	CHECK_FALSE(bad.modeValid);
 	CHECK_FALSE(bad.qualityValid);
 	CHECK(bad.mode == DenoiserMode::NRD);
 	CHECK(bad.quality == DlssQualityMode::Quality);
 	CHECK(bad.rejection.empty());
+}
+
+TEST_CASE("DenoiserMode: implicit startup default promotes RR once supported")
+{
+	// No explicit selection + supported/eligible => RR Quality.
+	const auto def = ResolveImplicitStartupDenoiser(false, false, true, true, true);
+	REQUIRE(def.has_value());
+	CHECK(def->mode == DenoiserMode::RayReconstruction);
+	CHECK(def->quality == DlssQualityMode::Quality);
+	// Unsupported or ineligible => NRD.
+	const auto unsup = ResolveImplicitStartupDenoiser(false, false, false, true, true);
+	REQUIRE(unsup.has_value());
+	CHECK(unsup->mode == DenoiserMode::NRD);
+	const auto inelig = ResolveImplicitStartupDenoiser(false, false, true, false, true);
+	REQUIRE(inelig.has_value());
+	CHECK(inelig->mode == DenoiserMode::NRD);
+	// NRD unavailable => loud Off (reason carried for the session log).
+	const auto off = ResolveImplicitStartupDenoiser(false, false, false, true, false);
+	REQUIRE(off.has_value());
+	CHECK(off->mode == DenoiserMode::Off);
+	CHECK(std::string(off->reason).size() > 0);
+	const auto offInelig = ResolveImplicitStartupDenoiser(false, false, true, false, false);
+	REQUIRE(offInelig.has_value());
+	CHECK(offInelig->mode == DenoiserMode::Off);
+	// Explicit CLI or UI owns the session: resolver holds (nullopt).
+	CHECK_FALSE(ResolveImplicitStartupDenoiser(true, false, true, true, true).has_value());
+	CHECK_FALSE(ResolveImplicitStartupDenoiser(false, true, true, true, true).has_value());
+	CHECK_FALSE(ResolveImplicitStartupDenoiser(false, true, false, true, true).has_value());
 }
 
 TEST_CASE("DenoiserMode: every renderer-init path applies the CLI selection")
@@ -301,13 +325,40 @@ TEST_CASE("DenoiserMode: empty CLI keeps the interactive NRD default")
 {
 	// No-flag launches must keep rendering exactly as before the overwrite
 	// removal: default NRD, valid, Quality.
-	const auto def = ResolveDenoiserSelectionFromCLI(false, false, "", "", false);
+	const auto def = ResolveDenoiserSelectionFromCLI(false, false, "", "");
 	CHECK(def.mode == DenoiserMode::NRD);
 	CHECK(def.quality == DlssQualityMode::Quality);
 	CHECK(def.modeValid);
 	CHECK(def.qualityValid);
 	// Explicit Off still wins over the default (interactive-explicit case).
-	const auto off = ResolveDenoiserSelectionFromCLI(false, false, "off", "", false);
+	const auto off = ResolveDenoiserSelectionFromCLI(false, false, "off", "");
 	CHECK(off.mode == DenoiserMode::Off);
 	CHECK(off.modeValid);
+}
+
+TEST_CASE("DenoiserMode: UI admits RR on support alone, all presets selectable")
+{
+	// Default promotion: the combo gates RR only on runtime support (no
+	// experimental opt-in) and no preset is force-disabled. The old gated
+	// statements must stay gone.
+	const std::string host = ReadSource("RT2App/src/WalnutApp.cpp");
+	REQUIRE(!host.empty());
+	CHECK(host.find("const bool rrAdmitted = rrSupported;") != std::string::npos);
+	CHECK(host.find("rrAdmitted = rrSupported && g_CLI.experimentalRR") == std::string::npos);
+	CHECK(host.find("const bool gated = (i != 0);") == std::string::npos);
+	CHECK(host.find("Balanced/Performance are disabled") == std::string::npos);
+	CHECK(host.find("RR requires --experimental-rr") == std::string::npos);
+}
+
+TEST_CASE("DenoiserMode: completed frame never reports RR and NRD together")
+{
+	// Exclusive completed-frame backend presentation is preserved by the
+	// promotion: a violated rr+nrd invariant resolves to None, never to a
+	// valid backend.
+	CHECK(ResolveCompletedDenoiser(true, true, RRBackend::ActiveRR) == CompletedDenoiser::None);
+	CHECK(ResolveCompletedDenoiser(true, true, RRBackend::NativeNRD) == CompletedDenoiser::None);
+	CHECK(ResolveCompletedDenoiser(true, false, RRBackend::ActiveRR) == CompletedDenoiser::RayReconstruction);
+	CHECK(ResolveCompletedDenoiser(false, true, RRBackend::ActiveNativeNRD) == CompletedDenoiser::NRDFallback);
+	CHECK(ResolveCompletedDenoiser(false, true, RRBackend::NativeNRD) == CompletedDenoiser::NRD);
+	CHECK(ResolveCompletedDenoiser(false, false, RRBackend::NativeNRD) == CompletedDenoiser::Off);
 }

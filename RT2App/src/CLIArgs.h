@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include "RRGuideContract.h"
 #include "DenoiserMode.h"
 
@@ -12,11 +13,11 @@
 // public CLI spellings onto the authored enum. Explicit --denoiser-mode
 // always wins (including Off over a stale developer switch); otherwise the
 // compat --dev-rr-static selects RR+Quality and --nrd selects NRD; default
-// stays NRD. RR admission (any mode request, any non-Quality preset) is
-// gated behind allowExperimental: without it the selection is invalid with
-// an exact reason, because no RR preset currently meets temporal
-// acceptance. Invalid spellings likewise report and keep defaults so a
-// typo can be loud without changing rendering.
+// stays NRD here — the implicit RR default is resolved later, once NGX
+// support is known (ResolveImplicitStartupDenoiser). RR and all three
+// presets are ordinary selections since the 2026-09-10 default promotion;
+// --experimental-rr is a deprecated compatibility no-op. Invalid spellings
+// report and keep defaults so a typo can be loud without changing rendering.
 struct ResolvedDenoiserSelection
 {
 	DenoiserMode mode = DenoiserMode::NRD;
@@ -27,8 +28,7 @@ struct ResolvedDenoiserSelection
 };
 
 inline ResolvedDenoiserSelection ResolveDenoiserSelectionFromCLI(bool devRRStatic,
-	bool nrd, const std::string& modeText, const std::string& qualityText,
-	bool allowExperimental)
+	bool nrd, const std::string& modeText, const std::string& qualityText)
 {
 	ResolvedDenoiserSelection out;
 	if (!modeText.empty())
@@ -51,18 +51,38 @@ inline ResolvedDenoiserSelection ResolveDenoiserSelectionFromCLI(bool devRRStati
 	}
 	else if (devRRStatic)
 		out.quality = DlssQualityMode::Quality;
-	if (out.mode == DenoiserMode::RayReconstruction && !allowExperimental)
-	{
-		out.modeValid = false;
-		out.rejection = "RR selection requires --experimental-rr: no RR preset meets temporal acceptance (see evidence)";
-	}
-	if (out.quality != DlssQualityMode::Quality && !allowExperimental)
-	{
-		out.qualityValid = false;
-		if (out.rejection.empty())
-			out.rejection = "Balanced/Performance presets require --experimental-rr: not temporal-acceptance-gated";
-	}
 	return out;
+}
+
+// Implicit startup default (2026-09-10 RR default promotion). Resolved once
+// NGX support is known; explicit CLI or UI selections own the session and
+// yield nullopt (leave them alone). Otherwise: supported and eligible starts
+// RR Quality; unsupported or ineligible starts NRD; when native NRD is
+// unavailable the session starts Off loudly. The caller applies mode/quality
+// and logs the reason; runtime fallback machinery is untouched.
+struct ImplicitStartupDenoiser
+{
+	DenoiserMode mode = DenoiserMode::NRD;
+	DlssQualityMode quality = DlssQualityMode::Quality;
+	const char* reason = "";
+};
+
+inline std::optional<ImplicitStartupDenoiser> ResolveImplicitStartupDenoiser(
+	bool cliExplicit, bool uiExplicit, bool ngxSupported, bool eligible,
+	bool nrdAvailable)
+{
+	if (cliExplicit || uiExplicit)
+		return std::nullopt;
+	if (!ngxSupported || !eligible)
+	{
+		if (!nrdAvailable)
+			return ImplicitStartupDenoiser{ DenoiserMode::Off, DlssQualityMode::Quality,
+				"RR default unavailable (NGX unsupported or ineligible) and native NRD unavailable; starting Off" };
+		return ImplicitStartupDenoiser{ DenoiserMode::NRD, DlssQualityMode::Quality,
+			"RR default unavailable (NGX unsupported or ineligible); starting NRD" };
+	}
+	return ImplicitStartupDenoiser{ DenoiserMode::RayReconstruction, DlssQualityMode::Quality,
+		"implicit default: NGX supported and eligible; starting RR Quality" };
 }
 
 struct CLIArgs
@@ -96,7 +116,7 @@ struct CLIArgs
 	bool syncValidate = false;    // enable synchronization validation
 	bool ngxReport = false;       // print the read-only NGX support snapshot
 	bool devRRStatic = false;     // hidden developer-only fixed Quality RR path
-	bool experimentalRR = false;  // explicit opt-in for non-acceptance-gated RR use
+	bool experimentalRR = false;  // deprecated compatibility no-op (accepted, ignored)
 	std::string ngxProjectId;     // optional override; empty is a deliberate invalid-ID test
 	std::string ngxFeaturePath;   // optional isolated NGX runtime search path
 	bool benchmarkTimings = false; // emit one JSON timing record per completed GPU frame
@@ -365,12 +385,11 @@ struct CLIArgs
 				printf("  --spp <N>            Samples per pixel override\n");
 				printf("  --bounces <N>        Max bounces override\n");
 				printf("  --nrd                Enable NRD denoiser\n");
-			printf("  --denoiser-mode <off|nrd|rr>  Select the denoiser path (default nrd;\n");
-			printf("      rr requires --experimental-rr: no RR preset meets temporal acceptance)\n");
-			printf("  --rr-quality <quality|balanced|performance>  RR upscaling preset (default quality;\n");
-			printf("      non-Quality presets require --experimental-rr)\n");
-			printf("  --experimental-rr      Opt in to non-acceptance-gated RR use (any RR\n");
-			printf("      request or non-Quality preset; no preset meets temporal acceptance)\n");
+		printf("  --denoiser-mode <off|nrd|rr>  Select the denoiser path (default: RR Quality on\n");
+		printf("      supported RTX, NRD otherwise; an explicit choice always wins)\n");
+		printf("  --rr-quality <quality|balanced|performance>  RR upscaling preset (default quality)\n");
+		printf("  --experimental-rr      Deprecated compatibility no-op: accepted so existing\n");
+		printf("      scripts keep working; RR is a standard preset and needs no opt-in\n");
 				printf("  --nrd-accum-frames <N>  Override REBLUR maximum history\n");
 				printf("  --nrd-responsive-roughness <R>  Override responsive-history roughness threshold\n");
 				printf("  --nrd-responsive-min-frames <N>  Override responsive minimum history\n");

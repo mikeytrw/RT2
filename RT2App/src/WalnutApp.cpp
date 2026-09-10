@@ -243,8 +243,7 @@ static CLIArgs g_CLI;
 static void ApplyCLIDenoiserSelection(RenderSettings& settings)
 {
 	const ResolvedDenoiserSelection resolved = ResolveDenoiserSelectionFromCLI(
-		g_CLI.devRRStatic, g_CLI.nrd, g_CLI.denoiserMode, g_CLI.rrQuality,
-		g_CLI.experimentalRR);
+		g_CLI.devRRStatic, g_CLI.nrd, g_CLI.denoiserMode, g_CLI.rrQuality);
 	if (!resolved.modeValid || !resolved.qualityValid)
 	{
 		if (!resolved.rejection.empty())
@@ -264,7 +263,7 @@ static void ApplyCLIDenoiserSelection(RenderSettings& settings)
 	settings.denoiserMode = resolved.mode;
 	settings.dlssQuality = resolved.quality;
 	if (g_CLI.experimentalRR)
-		fprintf(stderr, "[CLI] note: experimental RR enabled\n");
+		fprintf(stderr, "[CLI] note: --experimental-rr is deprecated and has no effect (RR is a standard preset)\n");
 }
 
 class RT2Layer : public Walnut::Layer
@@ -698,6 +697,9 @@ public:
 				ApplyCLIDenoiserSelection(m_Settings);
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
+			// Implicit default owns the session only when nothing explicit
+			// was chosen; re-asserts after the ApplySettings above.
+			ResolveImplicitStartupDefault();
 		}
 
 	// Modal popups are always rendered (not gated by window visibility).
@@ -731,6 +733,9 @@ public:
 				// exactly like the headless post-init path below.
 				ApplyCLIDenoiserSelection(m_Settings);
 				m_RendererGPU.ApplySettings(m_Settings);
+				// Late init clobbers any implicit default resolved earlier;
+				// re-assert it (no-op once explicit/fallback owns it).
+				ResolveImplicitStartupDefault();
 			}
 		}
 	}
@@ -964,12 +969,11 @@ public:
 	}
 	// One exclusive denoiser selector (amendment step 5). No independent
 	// NRD/RR flags exist: the combo writes the single authored mode.
-	// The RR item is disabled (not hidden) while the runtime cannot
-	// support it OR while temporal acceptance gates it: public admission
-	// requires --experimental-rr (CLI-only, deliberate friction), and
+	// The RR item is disabled (not hidden) only while the runtime cannot
+	// support it; RR is a standard preset since the default promotion, and
 	// Off/NRD stay selectable with the exact reason visible.
 	const bool rrSupported = m_Ngx && m_Ngx->Snapshot().IsSupported();
-	const bool rrAdmitted = rrSupported && g_CLI.experimentalRR;
+	const bool rrAdmitted = rrSupported;
 	{
 		const char* denoiserOptions[] = { "Off", "NRD", "DLSS Ray Reconstruction" };
 		int denoiserIndex = m_Settings.denoiserMode == DenoiserMode::NRD ? 1 :
@@ -983,11 +987,12 @@ public:
 				const bool selected = (denoiserIndex == i);
 				if (disabled)
 					ImGui::BeginDisabled(true);
-				if (ImGui::Selectable(denoiserOptions[i], selected,
-					disabled ? ImGuiSelectableFlags_Disabled : 0) && !disabled)
-				{
-					denoiserIndex = i;
-					m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
+			if (ImGui::Selectable(denoiserOptions[i], selected,
+				disabled ? ImGuiSelectableFlags_Disabled : 0) && !disabled)
+			{
+				denoiserIndex = i;
+				m_DenoiserUIExplicit = true; // explicit UI choice owns the session
+				m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
 						(denoiserIndex == 2 ? DenoiserMode::RayReconstruction : DenoiserMode::Off);
 					if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
 						m_RRFallbackApplied = false; // explicit (re)selection may retry
@@ -1016,20 +1021,13 @@ public:
 				"NGX runtime is not initialized";
 			ImGui::TextWrapped("RR unavailable: %s", reason.c_str());
 		}
-		else if (!g_CLI.experimentalRR)
-		{
-			ImGui::TextWrapped("RR requires --experimental-rr: no RR preset "
-				"meets temporal acceptance (see evidence); Off/NRD unaffected.");
-		}
 	}
 	if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
 	{
 		ImGui::Indent();
-		// R5: only the acceptance-gated Quality preset is selectable.
-		// Balanced/Performance are visibly disabled with exact status;
-		// re-enabling them is a UI-only revert once amended acceptance
-		// exists (lifecycle, NGX mappings and CLI parsing already support
-		// all three and stay tested).
+		// Quality, Balanced and Performance are ordinary selectable RR
+		// presets since the default promotion; the combo stays disabled
+		// only while the runtime cannot support RR at all.
 		const char* qualityOptions[] = { "Quality", "Balanced", "Performance" };
 		int qualityIndex = m_Settings.dlssQuality == DlssQualityMode::Balanced ? 1 :
 			(m_Settings.dlssQuality == DlssQualityMode::Performance ? 2 : 0);
@@ -1038,26 +1036,19 @@ public:
 		{
 			for (int i = 0; i < 3; ++i)
 			{
-				const bool gated = (i != 0);
 				const bool selected = (qualityIndex == i);
-				if (gated)
-					ImGui::BeginDisabled(true);
-				if (ImGui::Selectable(qualityOptions[i], selected,
-					gated ? ImGuiSelectableFlags_Disabled : 0) && !gated)
+				if (ImGui::Selectable(qualityOptions[i], selected))
 				{
 					qualityIndex = i;
 					m_Settings.dlssQuality = qualityIndex == 1 ? DlssQualityMode::Balanced :
 						(qualityIndex == 2 ? DlssQualityMode::Performance : DlssQualityMode::Quality);
+					m_DenoiserUIExplicit = true; // explicit UI choice owns the session
 					m_RendererGPU.ApplySettings(m_Settings);
 				}
-				if (gated)
-					ImGui::EndDisabled();
 			}
 			ImGui::EndCombo();
 		}
 		ImGui::EndDisabled();
-		ImGui::TextWrapped("Balanced/Performance are disabled: bright-region temporal "
-			"acceptance not met (Quality gate T2); see temporal-stability evidence.");
 		if (m_RendererGPU.HasOutput())
 		{
 			const auto render = m_RendererGPU.GetRenderExtent();
@@ -3162,6 +3153,51 @@ private:
 	}
 
 
+	// Implicit startup default (RR default promotion): no-explicit CLI/UI
+	// starts RR Quality once NGX support is known and the mode is eligible,
+	// NRD (or loud Off when NRD is unavailable) otherwise. Idempotent:
+	// re-asserts the stored default after renderer-init GetSettings
+	// clobbers, and disarms permanently once explicit selection or session
+	// fallback owns the session. Runtime fallback machinery is untouched.
+	void ResolveImplicitStartupDefault()
+	{
+		const bool cliExplicit = !g_CLI.denoiserMode.empty() ||
+			g_CLI.devRRStatic || g_CLI.nrd;
+		if (cliExplicit || m_DenoiserUIExplicit || m_RRFallbackApplied)
+		{
+			m_ImplicitDefault.reset();
+			return;
+		}
+		if (!m_ImplicitDefault.has_value())
+		{
+			if (!m_Ngx || m_Ngx->Snapshot().state == NgxSupportState::NotProbed)
+				return; // support not known yet; retry on a later frame
+			const bool supported = m_Ngx->Snapshot().IsSupported();
+			const float fov = m_Cam.GetVerticalFOV();
+			const bool eligible = ClassifyRREligibility(true, supported,
+				m_Settings.rasterFirst, m_Settings.gbufferDebugMode >= 0,
+				m_Cam.m_Aperture, std::isfinite(fov) && fov > 0.0f).IsEligible();
+			auto resolved = ResolveImplicitStartupDenoiser(false, false,
+				supported, eligible, m_Settings.rasterFirst);
+			if (!resolved)
+				return;
+			m_ImplicitDefault = *resolved;
+			RT_LOG("[Denoiser] %s", m_ImplicitDefault->reason);
+			printf("[Denoiser] %s\n", m_ImplicitDefault->reason);
+			fflush(stdout);
+		}
+		// Apply only on change: a redundant ApplySettings can reset
+		// histories the explicit path never disturbs (found as 2e-05-mean
+		// drift vs explicit NRD). Already-matching settings need no repair.
+		const bool implicitChanged =
+			(m_Settings.denoiserMode != m_ImplicitDefault->mode ||
+			m_Settings.dlssQuality != m_ImplicitDefault->quality);
+		m_Settings.denoiserMode = m_ImplicitDefault->mode;
+		m_Settings.dlssQuality = m_ImplicitDefault->quality;
+		if (m_RendererGPU.IsAvailable() && implicitChanged)
+			m_RendererGPU.ApplySettings(m_Settings);
+	}
+
 	void ProcessCLIArgs()
 	{
 		if (g_CLI.verbose)
@@ -3225,6 +3261,7 @@ private:
 				RT_LOG("[CLI] GPU renderer init failed");
 			}
 		}
+		ResolveImplicitStartupDefault();
 
 		if (g_CLI.hasProject())
 			OpenProjectInternal(g_CLI.projectPath, g_CLI.scenePath, true);
@@ -4107,6 +4144,15 @@ private:
 	bool m_PendingFullSync = false;
 	Camera m_Cam;
 	bool m_CLIProcessed = false;
+	// Explicit UI denoiser ownership: set by the Denoiser combo handler.
+	// While false (and with no explicit CLI text) the implicit startup
+	// default owns the session until the session fallback reacts.
+	bool m_DenoiserUIExplicit = false;
+	// Stored implicit startup default (RR default promotion): resolved once
+	// NGX support is known, re-asserted after renderer-init GetSettings
+	// clobbers. Disarmed permanently once explicit selection or session
+	// fallback owns the session.
+	std::optional<ImplicitStartupDenoiser> m_ImplicitDefault;
 	bool m_ImGuiIniConfigured = false;
 	std::string m_ImGuiIniPath;
 
