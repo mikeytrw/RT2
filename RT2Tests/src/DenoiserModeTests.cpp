@@ -252,3 +252,28 @@ TEST_CASE("DenoiserMode: CLI resolution maps once onto the authored enum")
 	CHECK(bad.quality == DlssQualityMode::Quality);
 	CHECK(bad.rejection.empty());
 }
+
+TEST_CASE("DenoiserMode: every renderer-init path applies the CLI selection")
+{
+	// Silent-failure repair: the public selector must reach the renderer
+	// whether it initializes headless (pre/post-parse) or interactively.
+	// Count application sites against runtime-init sites; a removed call
+	// silently renders native while the setting claims RR.
+	const std::string host = ReadSource("RT2App/src/WalnutApp.cpp");
+	REQUIRE(!host.empty());
+	size_t applies = 0, inits = 0, pos = 0;
+	while ((pos = host.find("ApplyCLIDenoiserSelection(m_Settings)", pos)) != std::string::npos)
+	{
+		++applies;
+		++pos;
+	}
+	pos = 0;
+	while ((pos = host.find("m_RendererGPU.SetNgxRuntime(m_Ngx.get())", pos)) != std::string::npos)
+	{
+		++inits;
+		++pos;
+	}
+	CHECK(inits == 2);
+	CHECK(applies == 3);
+	CHECK(applies > inits);
+}

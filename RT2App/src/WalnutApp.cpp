@@ -237,6 +237,36 @@ std::optional<rt2::core::ActionBinding> CapturePressedDesktopBinding()
 
 static CLIArgs g_CLI;
 
+// One authority applying CLI denoiser selection onto settings, shared by
+// every renderer-init path (headless pre/post-init and interactive init).
+// An invalid selection exits loudly rather than silently rendering native.
+static void ApplyCLIDenoiserSelection(RenderSettings& settings)
+{
+	const ResolvedDenoiserSelection resolved = ResolveDenoiserSelectionFromCLI(
+		g_CLI.devRRStatic, g_CLI.nrd, g_CLI.denoiserMode, g_CLI.rrQuality,
+		g_CLI.experimentalRR);
+	if (!resolved.modeValid || !resolved.qualityValid)
+	{
+		if (!resolved.rejection.empty())
+			fprintf(stderr, "[CLI] rejected: %s\n", resolved.rejection.c_str());
+		else
+		{
+			if (!g_CLI.denoiserMode.empty())
+				fprintf(stderr, "[CLI] Unknown --denoiser-mode '%s' (want off|nrd|rr)\n",
+					g_CLI.denoiserMode.c_str());
+			if (!g_CLI.rrQuality.empty())
+				fprintf(stderr, "[CLI] Unknown --rr-quality '%s' (want quality|balanced|performance)\n",
+					g_CLI.rrQuality.c_str());
+		}
+		fflush(stderr);
+		std::exit(EXIT_FAILURE);
+	}
+	settings.denoiserMode = resolved.mode;
+	settings.dlssQuality = resolved.quality;
+	if (g_CLI.experimentalRR)
+		fprintf(stderr, "[CLI] note: experimental RR enabled\n");
+}
+
 class RT2Layer : public Walnut::Layer
 {
 public:
@@ -692,6 +722,10 @@ public:
 			{
 				m_RendererGPU.SetNgxRuntime(m_Ngx.get());
 				m_Settings = m_RendererGPU.GetSettings();
+				// Interactive launches parse CLI too: apply the public
+				// selector after GetSettings overwrites host settings,
+				// exactly like the headless post-init path below.
+				ApplyCLIDenoiserSelection(m_Settings);
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
 		}
@@ -3128,36 +3162,6 @@ private:
 	{
 		if (g_CLI.verbose)
 			g_CLI.Print();
-
-		// One authority resolving CLI denoiser selection onto the settings:
-		// ResolveDenoiserSelectionFromCLI maps explicit and compat flags
-		// onto the single authored enum (explicit --denoiser-mode wins).
-		// Used at both pre-init and post-init application sites below.
-		auto ApplyCLIDenoiserSelection = [](RenderSettings& settings) {
-			const ResolvedDenoiserSelection resolved = ResolveDenoiserSelectionFromCLI(
-				g_CLI.devRRStatic, g_CLI.nrd, g_CLI.denoiserMode, g_CLI.rrQuality,
-				g_CLI.experimentalRR);
-			if (!resolved.modeValid || !resolved.qualityValid)
-			{
-				if (!resolved.rejection.empty())
-					fprintf(stderr, "[CLI] rejected: %s\n", resolved.rejection.c_str());
-				else
-				{
-					if (!g_CLI.denoiserMode.empty())
-						fprintf(stderr, "[CLI] Unknown --denoiser-mode '%s' (want off|nrd|rr)\n",
-							g_CLI.denoiserMode.c_str());
-					if (!g_CLI.rrQuality.empty())
-						fprintf(stderr, "[CLI] Unknown --rr-quality '%s' (want quality|balanced|performance)\n",
-							g_CLI.rrQuality.c_str());
-				}
-				fflush(stderr);
-				std::exit(EXIT_FAILURE);
-			}
-			settings.denoiserMode = resolved.mode;
-			settings.dlssQuality = resolved.quality;
-			if (g_CLI.experimentalRR)
-				fprintf(stderr, "[CLI] note: experimental RR enabled\n");
-		};
 
 		if (g_CLI.listScenes)
 		{
