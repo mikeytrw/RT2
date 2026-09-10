@@ -727,11 +727,27 @@ public:
 			if (m_RendererGPU.Init())
 			{
 				m_RendererGPU.SetNgxRuntime(m_Ngx.get());
+				// Preserve an explicit UI denoiser choice across the
+				// GetSettings refresh: late init otherwise discards it for
+				// the empty CLI mapping. UI ownership is the latest
+				// expression of intent, so it also suppresses re-applying
+				// CLI text here (already applied at parse when present).
+				const bool keepUI = m_DenoiserUIExplicit;
+				const DenoiserMode keepMode = m_Settings.denoiserMode;
+				const DlssQualityMode keepQuality = m_Settings.dlssQuality;
 				m_Settings = m_RendererGPU.GetSettings();
-				// Interactive launches parse CLI too: apply the public
-				// selector after GetSettings overwrites host settings,
-				// exactly like the headless post-init path below.
-				ApplyCLIDenoiserSelection(m_Settings);
+				if (keepUI)
+				{
+					m_Settings.denoiserMode = keepMode;
+					m_Settings.dlssQuality = keepQuality;
+				}
+				else
+				{
+					// Interactive launches parse CLI too: apply the public
+					// selector after GetSettings overwrites host settings,
+					// exactly like the headless post-init path below.
+					ApplyCLIDenoiserSelection(m_Settings);
+				}
 				m_RendererGPU.ApplySettings(m_Settings);
 				// Late init clobbers any implicit default resolved earlier;
 				// re-assert it (no-op once explicit/fallback owns it).
@@ -3155,14 +3171,17 @@ private:
 
 	// Implicit startup default (RR default promotion): no-explicit CLI/UI
 	// starts RR Quality once NGX support is known and the mode is eligible,
-	// NRD (or loud Off when NRD is unavailable) otherwise. Idempotent:
+	// NRD (or loud Off when the native NRD path is unavailable) otherwise.
+	// Explicit means any denoiser-related flag (mode text, compat switches,
+	// or a preset choice: a lone --rr-quality owns the session and is left
+	// to the CLI mapping, never silently reset to Quality). Idempotent:
 	// re-asserts the stored default after renderer-init GetSettings
 	// clobbers, and disarms permanently once explicit selection or session
 	// fallback owns the session. Runtime fallback machinery is untouched.
 	void ResolveImplicitStartupDefault()
 	{
 		const bool cliExplicit = !g_CLI.denoiserMode.empty() ||
-			g_CLI.devRRStatic || g_CLI.nrd;
+			g_CLI.devRRStatic || g_CLI.nrd || !g_CLI.rrQuality.empty();
 		if (cliExplicit || m_DenoiserUIExplicit || m_RRFallbackApplied)
 		{
 			m_ImplicitDefault.reset();
@@ -3177,6 +3196,11 @@ private:
 			const bool eligible = ClassifyRREligibility(true, supported,
 				m_Settings.rasterFirst, m_Settings.gbufferDebugMode >= 0,
 				m_Cam.m_Aperture, std::isfinite(fov) && fov > 0.0f).IsEligible();
+			// nrdAvailable reuses the session's established NRD-availability
+			// rule (native NRD requires the raster-first path; the settings
+			// UI forces authored NRD to Off without it). Lazy NRD init
+			// failures stay owned by the existing fallback/outcome machinery,
+			// unchanged by this default.
 			auto resolved = ResolveImplicitStartupDenoiser(false, false,
 				supported, eligible, m_Settings.rasterFirst);
 			if (!resolved)

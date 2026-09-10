@@ -321,10 +321,11 @@ TEST_CASE("DenoiserMode: no unconditional NRD overwrite of explicit CLI")
 	CHECK(fixup.find("ApplyCLIDenoiserSelection(m_Settings)") != std::string::npos);
 }
 
-TEST_CASE("DenoiserMode: empty CLI keeps the interactive NRD default")
+TEST_CASE("DenoiserMode: empty CLI maps to NRD at the CLI layer")
 {
-	// No-flag launches must keep rendering exactly as before the overwrite
-	// removal: default NRD, valid, Quality.
+	// This pins the intermediate CLI mapping only: empty text resolves to
+	// the NRD default here, and the implicit RR session default is resolved
+	// later, once NGX support is known (ResolveImplicitStartupDenoiser).
 	const auto def = ResolveDenoiserSelectionFromCLI(false, false, "", "");
 	CHECK(def.mode == DenoiserMode::NRD);
 	CHECK(def.quality == DlssQualityMode::Quality);
@@ -361,4 +362,22 @@ TEST_CASE("DenoiserMode: completed frame never reports RR and NRD together")
 	CHECK(ResolveCompletedDenoiser(false, true, RRBackend::ActiveNativeNRD) == CompletedDenoiser::NRDFallback);
 	CHECK(ResolveCompletedDenoiser(false, true, RRBackend::NativeNRD) == CompletedDenoiser::NRD);
 	CHECK(ResolveCompletedDenoiser(false, false, RRBackend::NativeNRD) == CompletedDenoiser::Off);
+}
+
+TEST_CASE("DenoiserMode: implicit default precedence is wired, not just mapped")
+{
+	// Re-review findings on the promotion delta, pinned in source:
+	// (1) a lone --rr-quality is explicit CLI ownership (never silently
+	// reset to Quality by the resolver); (2) nrdAvailable deliberately
+	// reuses the session's raster-first NRD rule (lazy init failures stay
+	// with the fallback machinery); (3) late renderer init preserves an
+	// explicit UI choice across the GetSettings refresh.
+	const std::string host = ReadSource("RT2App/src/WalnutApp.cpp");
+	REQUIRE(!host.empty());
+	CHECK(host.find("g_CLI.devRRStatic || g_CLI.nrd || !g_CLI.rrQuality.empty()") != std::string::npos);
+	const size_t resolve = host.find("ResolveImplicitStartupDenoiser(false, false,");
+	REQUIRE(resolve != std::string::npos);
+	CHECK(host.find("m_Settings.rasterFirst);", resolve) != std::string::npos);
+	CHECK(host.find("const bool keepUI = m_DenoiserUIExplicit;") != std::string::npos);
+	CHECK(host.find("m_Settings.denoiserMode = keepMode;") != std::string::npos);
 }
