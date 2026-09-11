@@ -30,7 +30,22 @@ FetchContent_Declare(
     GIT_TAG 2c204c49e56ed15ec5fcfa71d199ab6d6570b3f5 # tag 3.25
     GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(bullet)
+
+# Do not add Bullet's top-level project: even with its demos disabled it adds
+# unrelated libraries (soft body, inverse dynamics, Bullet3Common) to the
+# default build. Populate the pinned source, then expose only the three
+# mature rigid-body modules used by this probe.
+FetchContent_GetProperties(bullet)
+if(NOT bullet_POPULATED)
+    cmake_policy(SET CMP0169 OLD)
+    FetchContent_Populate(bullet)
+endif()
+set(BULLET_PHYSICS_SOURCE_DIR "${bullet_SOURCE_DIR}")
+set(BULLET_VERSION 3.25)
+set(CMAKE_DEBUG_POSTFIX "_Debug")
+add_subdirectory("${bullet_SOURCE_DIR}/src/LinearMath" "${bullet_BINARY_DIR}/src/LinearMath")
+add_subdirectory("${bullet_SOURCE_DIR}/src/BulletCollision" "${bullet_BINARY_DIR}/src/BulletCollision")
+add_subdirectory("${bullet_SOURCE_DIR}/src/BulletDynamics" "${bullet_BINARY_DIR}/src/BulletDynamics")
 
 add_executable(RT2BulletPinballProbe main.cpp)
 target_include_directories(RT2BulletPinballProbe PRIVATE "${bullet_SOURCE_DIR}/src")
