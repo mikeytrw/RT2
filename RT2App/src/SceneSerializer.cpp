@@ -148,6 +148,78 @@ SceneMaterial JsonToMaterial(const json& j)
 
 // -- Camera serialization --
 
+// Deterministic write of the camera-owned display look: always both
+// fields, canonical EV (-0.0f becomes +0.0f) so the same logical scene
+// never writes different bytes.
+void CameraPresentationToJson(json& j, const CameraPresentation& presentation)
+{
+    const CameraPresentation canonical = CanonicalCameraPresentation(presentation);
+    j["toneMap"]    = ToneMapOperatorName(canonical.toneMap);
+    j["exposureEV"] = canonical.exposureEV;
+}
+
+// Shared transactional parser for the global SceneCamera and the
+// entity/prefab CameraComponent decoders. Both fields absent migrates to
+// AgX/0; present-but-invalid input (unknown/non-string operator,
+// non-numeric/non-finite/out-of-range EV) fails loudly with Error::Parse
+// and leaves `out` untouched, so callers cannot partially adopt one valid
+// sibling field when the other is explicitly invalid.
+bool TryParseCameraPresentation(const json& j, const std::string& path,
+                                CameraPresentation& out, Error& err)
+{
+    const bool hasToneMap  = j.contains("toneMap");
+    const bool hasExposure = j.contains("exposureEV");
+    if (!hasToneMap && !hasExposure)
+    {
+        out = DefaultCameraPresentation();
+        return true;
+    }
+    CameraPresentation parsed = DefaultCameraPresentation();
+    if (hasToneMap)
+    {
+        const auto& token = j["toneMap"];
+        if (!token.is_string())
+        {
+            err.code = Error::Parse;
+            err.path = path;
+            err.detail = "camera toneMap must be one of agx, aces, reinhard";
+            return false;
+        }
+        const std::string name = token.get<std::string>();
+        ToneMapOperator op = ToneMapOperator::AgX;
+        if (!TryParseToneMapOperator(name.c_str(), op))
+        {
+            err.code = Error::Parse;
+            err.path = path;
+            err.detail = "camera toneMap must be one of agx, aces, reinhard";
+            return false;
+        }
+        parsed.toneMap = op;
+    }
+    if (hasExposure)
+    {
+        const auto& ev = j["exposureEV"];
+        if (!ev.is_number())
+        {
+            err.code = Error::Parse;
+            err.path = path;
+            err.detail = "camera exposureEV must be a number";
+            return false;
+        }
+        const float evValue = ev.get<float>();
+        if (!IsValidExposureEV(evValue))
+        {
+            err.code = Error::Parse;
+            err.path = path;
+            err.detail = "camera exposureEV out of range [-8,+8] or non-finite";
+            return false;
+        }
+        parsed.exposureEV = evValue;
+    }
+    out = CanonicalCameraPresentation(parsed);
+    return true;
+}
+
 json CameraToJson(const SceneCamera& c)
 {
     json j;
@@ -156,10 +228,11 @@ json CameraToJson(const SceneCamera& c)
     j["fov"]        = c.verticalFOV;
     j["aperture"]   = c.aperture;
     j["focusDist"]  = c.focusDistance;
+    CameraPresentationToJson(j, c.presentation);
     return j;
 }
 
-SceneCamera JsonToCamera(const json& j)
+bool JsonToCamera(const json& j, const std::string& path, SceneCamera& out, Error& err)
 {
     SceneCamera c;
     if (j.contains("position"))  c.position          = JsonToVec3(j["position"]);
@@ -167,7 +240,10 @@ SceneCamera JsonToCamera(const json& j)
     if (j.contains("fov"))       c.verticalFOV       = j["fov"].get<float>();
     if (j.contains("aperture"))  c.aperture          = j["aperture"].get<float>();
     if (j.contains("focusDist")) c.focusDistance     = j["focusDist"].get<float>();
-    return c;
+    if (!TryParseCameraPresentation(j, path, c.presentation, err))
+        return false;
+    out = c;
+    return true;
 }
 
 // -- Entity serialization --
@@ -752,6 +828,7 @@ std::optional<json> EntityRecordToJson(
         c["aperture"]    = r.camera.aperture;
         c["focusDist"]   = r.camera.focusDistance;
         c["forward"]     = Vec3ToJson(r.camera.forwardDirection);
+        CameraPresentationToJson(c, r.camera.presentation);
         j["camera"] = c;
     }
 
@@ -987,6 +1064,15 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         if (c.contains("aperture"))  r.camera.aperture        = c["aperture"].get<float>();
         if (c.contains("focusDist")) r.camera.focusDistance   = c["focusDist"].get<float>();
         if (c.contains("forward"))   r.camera.forwardDirection= JsonToVec3(c["forward"]);
+        // Shared presentation parser: absent fields migrate to AgX/0 while
+        // an explicitly invalid sibling fails the record before adoption.
+        // r.camera starts at AgX/0 and is assigned only on success, so no
+        // partial adoption is possible.
+        if (!TryParseCameraPresentation(c, r.uuid.ToString(), r.camera.presentation, err))
+        {
+            err.path = r.uuid.ToString();
+            return r;
+        }
     }
 
     if (j.contains("motion"))
@@ -2251,10 +2337,14 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
             materials.push_back(JsonToMaterial(mj));
     }
 
-    // Parse camera.
+    // Parse camera. An explicitly invalid presentation fails the whole
+    // load before adoption; the live scene remains unchanged.
     SceneCamera camera;
     if (root.contains("camera"))
-        camera = JsonToCamera(root["camera"]);
+    {
+        if (!JsonToCamera(root["camera"], path.string(), camera, err))
+            return false;
+    }
 
     // Parse environment (AssetReference + decoded dimensions; pixels are not
     // serialized). Phase 7 W3 step 4 remediation: the env block is parsed

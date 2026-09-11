@@ -76,7 +76,9 @@ bool CameraEqual(const CameraComponent& a, const CameraComponent& b)
 	return FloatEq(a.verticalFOV, b.verticalFOV) &&
 	       FloatEq(a.aperture, b.aperture) &&
 	       FloatEq(a.focusDistance, b.focusDistance) &&
-	       Vec3Equal(a.forwardDirection, b.forwardDirection);
+	       Vec3Equal(a.forwardDirection, b.forwardDirection) &&
+	       a.presentation.toneMap == b.presentation.toneMap &&
+	       FloatEq(a.presentation.exposureEV, b.presentation.exposureEV);
 }
 
 // Canonical per-wire equality mirroring the composite's S5 canonicalization
@@ -97,8 +99,11 @@ bool CanonicalCameraEqual(const CameraComponent& a, const CameraComponent& b)
 	glm::vec3 forwardB = b.forwardDirection;
 	if (glm::dot(forwardA, forwardA) > 1e-8f) forwardA = glm::normalize(forwardA);
 	if (glm::dot(forwardB, forwardB) > 1e-8f) forwardB = glm::normalize(forwardB);
+	const CameraPresentation presentationA = CanonicalCameraPresentation(a.presentation);
+	const CameraPresentation presentationB = CanonicalCameraPresentation(b.presentation);
 	return a.verticalFOV == b.verticalFOV && a.aperture == b.aperture
-		&& a.focusDistance == b.focusDistance && forwardA == forwardB;
+		&& a.focusDistance == b.focusDistance && forwardA == forwardB
+		&& presentationA == presentationB;
 }
 
 bool MotionEqual(const MotionComponent& a, const MotionComponent& b)

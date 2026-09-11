@@ -2525,6 +2525,8 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 		if (std::fabs(live.aperture - record.camera.aperture) > eps) return false;
 		if (std::fabs(live.focusDistance - record.camera.focusDistance) > eps) return false;
 		if (glm::length(live.forwardDirection - record.camera.forwardDirection) > eps) return false;
+		if (live.presentation.toneMap != record.camera.presentation.toneMap) return false;
+		if (std::fabs(live.presentation.exposureEV - record.camera.presentation.exposureEV) > eps) return false;
 	}
 
 	if (reg.all_of<MotionComponent>(e) != record.hasMotion) return false;
@@ -5893,7 +5895,8 @@ bool S5EqualCamera(const CameraComponent& a, const CameraComponent& b)
 {
 	return a.verticalFOV == b.verticalFOV && a.aperture == b.aperture
 		&& a.focusDistance == b.focusDistance
-		&& S5EqualVec3(a.forwardDirection, b.forwardDirection);
+		&& S5EqualVec3(a.forwardDirection, b.forwardDirection)
+		&& a.presentation == b.presentation;
 }
 
 bool S5EqualMaterial(const SceneMaterial& a, const SceneMaterial& b)
@@ -6002,7 +6005,8 @@ bool S5ValidCamera(const CameraComponent& value)
 {
 	return std::isfinite(value.verticalFOV) && std::isfinite(value.aperture)
 		&& std::isfinite(value.focusDistance)
-		&& S5FiniteVec3(value.forwardDirection);
+		&& S5FiniteVec3(value.forwardDirection)
+		&& IsValidCameraPresentation(value.presentation);
 }
 
 glm::quat S5CanonicalRotation(glm::quat value)
@@ -6014,6 +6018,7 @@ CameraComponent S5CanonicalCamera(CameraComponent value)
 {
 	if (glm::dot(value.forwardDirection, value.forwardDirection) > 1e-8f)
 		value.forwardDirection = glm::normalize(value.forwardDirection);
+	value.presentation = CanonicalCameraPresentation(value.presentation);
 	return value;
 }
 } // namespace

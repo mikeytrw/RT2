@@ -1794,6 +1794,40 @@ entt::entity SceneLoader::ImportIntoECS(
             name.name = node.name;
         }
 
+        // Handle camera nodes. Mirrors LoadIntoECS lens handling so the
+        // two entry points agree (glossary: Import vs Load). Import is
+        // additive, so the pre-existing scene-global camera is preserved;
+        // only the node entity gains a CameraComponent. glTF carries no
+        // presentation channel, so imported cameras are AgX/0 by struct
+        // default (deferred per plan; no bypass parser here).
+        if (node.camera >= 0 && node.camera < (int)model.cameras.size())
+        {
+            const tinygltf::Camera& gcam = model.cameras[node.camera];
+            CameraComponent camComp;
+            camComp.verticalFOV = glm::degrees((float)gcam.perspective.yfov);
+
+            if (gcam.extras.Has("forward") && gcam.extras.Get("forward").IsArray())
+            {
+                const tinygltf::Value& fwdArr = gcam.extras.Get("forward");
+                if (fwdArr.ArrayLen() >= 3)
+                {
+                    camComp.forwardDirection = {
+                        (float)fwdArr.Get(0).GetNumberAsDouble(),
+                        (float)fwdArr.Get(1).GetNumberAsDouble(),
+                        (float)fwdArr.Get(2).GetNumberAsDouble()
+                    };
+                }
+            }
+            if (gcam.extras.Has("aperture"))
+                camComp.aperture = (float)gcam.extras.Get("aperture").GetNumberAsDouble();
+            if (gcam.extras.Has("focusDistance"))
+                camComp.focusDistance = (float)gcam.extras.Get("focusDistance").GetNumberAsDouble();
+            if (gcam.extras.Has("verticalFOV"))
+                camComp.verticalFOV = (float)gcam.extras.Get("verticalFOV").GetNumberAsDouble();
+
+            reg.emplace<CameraComponent>(entity, camComp);
+        }
+
         if (node.mesh >= 0 && node.mesh < (int)model.meshes.size())
         {
             const tinygltf::Mesh& gmesh = model.meshes[node.mesh];

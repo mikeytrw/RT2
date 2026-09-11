@@ -147,11 +147,13 @@ inline bool PrefabCanonicalComponentEqual(const LightComponent& a,
          a.type == b.type; }
 
 inline bool PrefabCanonicalComponentEqual(const CameraComponent& a,
-                                          const CameraComponent& b) noexcept
+                                           const CameraComponent& b) noexcept
 { return PrefabCanonicalFloatEqual(a.verticalFOV, b.verticalFOV) &&
          PrefabCanonicalFloatEqual(a.aperture, b.aperture) &&
          PrefabCanonicalFloatEqual(a.focusDistance, b.focusDistance) &&
-         PrefabCanonicalVec3Equal(a.forwardDirection, b.forwardDirection); }
+         PrefabCanonicalVec3Equal(a.forwardDirection, b.forwardDirection) &&
+         a.presentation.toneMap == b.presentation.toneMap &&
+         PrefabCanonicalFloatEqual(a.presentation.exposureEV, b.presentation.exposureEV); }
 
 inline bool PrefabCanonicalComponentEqual(const MotionComponent& a,
                                           const MotionComponent& b) noexcept
