@@ -37,7 +37,14 @@ bool TonemapPass::Init(const GpuDevice& dev)
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layoutInfo.setLayoutCount = 1;
     layoutInfo.pSetLayouts = &m_SetLayout;
+    VkPushConstantRange pushRange = {};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(TonemapPushConstants);
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushRange;
     VK_CHECK(vkCreatePipelineLayout(dev.device, &layoutInfo, nullptr, &m_PipelineLayout));
+    m_PushConstantBytes = pushRange.size;
 
     VkComputePipelineCreateInfo pipelineInfo = {};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -102,6 +109,7 @@ void TonemapPass::Destroy()
     m_BoundInputView = VK_NULL_HANDLE;
     m_BoundOutputView = VK_NULL_HANDLE;
     m_Device = VK_NULL_HANDLE;
+    m_PushConstantBytes = 0;
 }
 
 void TonemapPass::UpdateDescriptorSet(const GpuDevice& dev, VkImageView inputView, VkImageView outputView)
@@ -129,14 +137,33 @@ void TonemapPass::UpdateDescriptorSet(const GpuDevice& dev, VkImageView inputVie
     m_BoundOutputView = outputView;
 }
 
-void TonemapPass::Record(VkCommandBuffer cmd, const OutputExtent& extent, bool useRR) const
+bool TonemapPass::Record(VkCommandBuffer cmd, const OutputExtent& extent,
+                         const TonemapPushConstants& pc, bool useRR) const
 {
     const VkPipeline pipeline = useRR ? m_RRPipeline : m_Pipeline;
-    if (!pipeline || !m_DescriptorSet) return;
+    if (!pipeline)
+    {
+        RT_LOG("[TonemapPass] Record failed: %s pipeline is missing",
+               useRR ? "RR" : "native");
+        return false;
+    }
+    if (!m_PipelineLayout || !m_DescriptorSet)
+    {
+        RT_LOG("[TonemapPass] Record failed: layout/descriptor state is missing");
+        return false;
+    }
+    if (!HasPushConstants() || !extent.IsValid())
+    {
+        RT_LOG("[TonemapPass] Record failed: push-constant range or extent is invalid");
+        return false;
+    }
     const uint32_t width = extent.Width();
     const uint32_t height = extent.Height();
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout,
                             0, 1, &m_DescriptorSet, 0, nullptr);
+    vkCmdPushConstants(cmd, m_PipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(TonemapPushConstants), &pc);
     vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
+    return true;
 }

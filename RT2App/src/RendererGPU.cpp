@@ -1,5 +1,6 @@
 #include "RendererGPU.h"
 #include "ColorTransfer.h"
+#include "ToneMapMath.h"
 #include "ShaderManager.h"
 #include "RTLog.h"
 #include "VulkanUtils.h"
@@ -394,6 +395,12 @@ void RendererGPU::DestroyOutputImage()
 	m_OutputImage.memory = VK_NULL_HANDLE;
 	m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	m_HdrSource = {};
+	// The images backing every pending and completed capture are gone: drop
+	// the pending slots and the completed pair so a later frame can never
+	// promote or read back a destroyed source with a stale look.
+	m_CaptureTracker.Reset();
+	m_LastCompletedCapture = {};
+	m_HasCompletedCapture = false;
 }
 
 void RendererGPU::CreateRROutputImage()
@@ -1298,6 +1305,13 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	// than describing pending work.
 	if (const auto completed = m_SnapshotTracker.ReapCompleted(m_CurrentFrame))
 		m_LastCompleted = *completed;
+	// Same fence gate for the capture pair: only a proven frame may replace
+	// the HDR source + presentation readback converts.
+	if (const auto capture = m_CaptureTracker.ReapCompleted(m_CurrentFrame))
+	{
+		m_LastCompletedCapture = *capture;
+		m_HasCompletedCapture = m_LastCompletedCapture.valid;
+	}
 	if (m_ForceNativeRebuild && m_OutputExtent.IsValid())
 	{
 		OnResize(m_OutputExtent);
@@ -1434,6 +1448,21 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	giPC.frameIndex = m_GIFrameIndex;
 	giPC.jitter = glm::vec4(m_Sampling.jitter, m_Sampling.jitterPrev);
 
+	// Resolve the active camera's immutable display look once per frame.
+	// The tone-map stage records exactly this value and the submitted
+	// capture snapshot pairs it with the HDR source actually submitted, so
+	// a setting changed while a frame is in flight takes effect on the next
+	// frame. An invalid presentation cannot arise through the validated
+	// setters; fall back to AgX/0 loudly rather than submitting speculation.
+	CameraPresentation framePresentation = camera.GetPresentation();
+	if (!TryCanonicalizeCameraPresentation(framePresentation))
+	{
+		RT_LOG("[Render] invalid camera presentation; falling back to AgX at 0 EV");
+		framePresentation = DefaultCameraPresentation();
+	}
+	RT_LOG("[Render] presentation op=%s ev=%.2f", ToneMapOperatorName(framePresentation.toneMap),
+		(double)framePresentation.exposureEV);
+
 	// Build the frame render context and delegate to FrameRenderer.
 	// nrdEnabled here is the EFFECTIVE per-frame NRD state (authored or
 	// automatic fallback): it drives the shader UBO nrdEnabled bit and lobe
@@ -1494,6 +1523,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_PrevWorldToViewForFrame,
 		m_ComposeDescriptorSetCached,
 		camera,
+		framePresentation,
 		m_ReSTIRGIPass,
 		m_GIReservoirs,
 		m_Settings.restirGIEnabled,
@@ -1583,6 +1613,20 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	source.extent = m_OutputExtent;
 	source.name = recorded.rrEvaluated ? "rr-output" : "native-output";
 	source.valid = hdrImage.IsValid();
+	// File the immutable capture pair under this frame slot beside the
+	// denoiser snapshot: the HDR source actually submitted plus the exact
+	// presentation recorded into its tone-map push constants. Only
+	// successful submissions reach here; failed/discarded frames return
+	// earlier and preserve every capture view.
+	SubmittedCaptureSnapshot capture;
+	capture.hdrSource = source;
+	capture.presentation = framePresentation;
+	capture.diagnosticView = IsTonemapDiagnosticView(m_Settings.gbufferDebugMode);
+	capture.frame = submitted;
+	capture.submitSequence = ++m_CaptureSequence;
+	capture.valid = source.valid;
+	if (capture.valid)
+		m_CaptureTracker.Submit(m_CurrentFrame, capture);
 	outcome.submitted = true;
 	outcome.captureAllowed = source.valid;
 	outcome.rrEvaluated = recorded.rrEvaluated;
@@ -1601,14 +1645,48 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	return outcome;
 }
 
+bool RendererGPU::PromoteCompletedCaptures()
+{
+	// The wait proved every in-flight fence, so drain to the newest proven
+	// pair. Older pending slots are consumed, never promoted later.
+	if (auto capture = m_CaptureTracker.ReapNewest())
+	{
+		m_LastCompletedCapture = *capture;
+		m_HasCompletedCapture = m_LastCompletedCapture.valid;
+	}
+	return m_HasCompletedCapture;
+}
+
 bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight)
 {
-	if (!m_Initialized || !m_HdrSource.valid || m_HdrSource.image == VK_NULL_HANDLE ||
-		!m_HdrSource.extent.IsValid())
+	if (!m_Initialized)
 		return false;
-	const FullResolutionHdrSource source = m_HdrSource;
-
 	VkDevice device = m_Device.device;
+
+	// Wait for all in-flight frames, then promote the newest proven pair.
+	// With frames in flight the viewport may already show a newer look while
+	// this capture still represents the preceding one; after the wait the
+	// source and settings below are one immutable pair by construction.
+	vkDeviceWaitIdle(device);
+	if (!PromoteCompletedCaptures())
+	{
+		RT_LOG("[Readback] no completed capture available");
+		return false;
+	}
+	const FullResolutionHdrSource source = m_LastCompletedCapture.hdrSource;
+	if (!source.valid || source.image == VK_NULL_HANDLE || !source.extent.IsValid())
+		return false;
+	// Resolve the completed frame's captured look through the same builder
+	// the record path used: diagnostic captures convert with the legacy
+	// mapping even though the camera owns a different look.
+	TonemapPushConstants pc;
+	if (!TryBuildTonemapPushConstants(m_LastCompletedCapture.presentation,
+	                                  m_LastCompletedCapture.diagnosticView, pc))
+	{
+		RT_LOG("[Readback] captured presentation is invalid; capture rejected");
+		return false;
+	}
+	const float exposureMult = pc.exposureMultiplier;
 
 	// Create a host-visible staging buffer
 	VkBuffer stagingBuffer;
@@ -1622,9 +1700,8 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             stagingBuffer, stagingMemory);
 
-	// Wait for all in-flight frames, then use ImmediateSubmit for the copy
-	vkDeviceWaitIdle(device);
-
+	// The wait above already proved every in-flight frame; use
+	// ImmediateSubmit for the copy.
 	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
 		VkImageMemoryBarrier toTransfer = {};
 		toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1663,7 +1740,8 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 		                     0, nullptr, 0, nullptr, 1, &toGeneral);
 	});
 
-	// Map and convert R32G32B32A32 float â†’ RGBA8 (tonemap + sRGB)
+	// Map and convert the completed scene-linear source to RGBA8 through
+	// its captured presentation (operator + exposure, then sRGB encode).
 	void* mapped = nullptr;
 	VkResult err = vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped);
 	if (err != VK_SUCCESS || !mapped)
@@ -1679,22 +1757,29 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	{
 		const float* floatData = reinterpret_cast<const float*>(rawData);
 		const uint16_t* halfData = reinterpret_cast<const uint16_t*>(rawData);
-		float r = halfSource ? HalfToFloat(halfData[i * 4 + 0]) : floatData[i * 4 + 0];
-		float g = halfSource ? HalfToFloat(halfData[i * 4 + 1]) : floatData[i * 4 + 1];
-		float b = halfSource ? HalfToFloat(halfData[i * 4 + 2]) : floatData[i * 4 + 2];
-		float a = halfSource ? HalfToFloat(halfData[i * 4 + 3]) : floatData[i * 4 + 3];
+		const float r = halfSource ? HalfToFloat(halfData[i * 4 + 0]) : floatData[i * 4 + 0];
+		const float g = halfSource ? HalfToFloat(halfData[i * 4 + 1]) : floatData[i * 4 + 1];
+		const float b = halfSource ? HalfToFloat(halfData[i * 4 + 2]) : floatData[i * 4 + 2];
+		const float a = halfSource ? HalfToFloat(halfData[i * 4 + 3]) : floatData[i * 4 + 3];
 
-		// Keep the CPU readback reference identical to tonemap.comp:
-		// linear HDR -> Reinhard -> exact sRGB OETF -> RGBA8.
-		r = ColorTransfer::Reinhard(r);
-		g = ColorTransfer::Reinhard(g);
-		b = ColorTransfer::Reinhard(b);
-		a = (a > 1.0f) ? 1.0f : (a < 0.0f ? 0.0f : a);
-
-		outPixelsRGBA8[i * 4 + 0] = ColorTransfer::LinearToSRGB8(r);
-		outPixelsRGBA8[i * 4 + 1] = ColorTransfer::LinearToSRGB8(g);
-		outPixelsRGBA8[i * 4 + 2] = ColorTransfer::LinearToSRGB8(b);
-		outPixelsRGBA8[i * 4 + 3] = (uint8_t)(a * 255.0f + 0.5f);
+		// Convert through the completed frame's captured presentation via
+		// the shared CPU reference (identical constants and order to the
+		// tone-map shader). A nonfinite scene-linear sample fails the
+		// capture loudly instead of exporting a silently wrong PNG; raw
+		// EXR/PFM output below is untouched and keeps the upstream value.
+		uint8_t rgba8[4] = {};
+		if (!ToneMapMath::ConvertHdrPixelToDisplay8(r, g, b, a,
+			static_cast<ToneMapOperator>(pc.toneOperator), exposureMult, rgba8))
+		{
+			RT_LOG("[Readback] nonfinite scene-linear sample; capture rejected");
+			vkUnmapMemory(device, stagingMemory);
+			GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
+			return false;
+		}
+		outPixelsRGBA8[i * 4 + 0] = rgba8[0];
+		outPixelsRGBA8[i * 4 + 1] = rgba8[1];
+		outPixelsRGBA8[i * 4 + 2] = rgba8[2];
+		outPixelsRGBA8[i * 4 + 3] = rgba8[3];
 	}
 
 	vkUnmapMemory(device, stagingMemory);
@@ -1702,19 +1787,30 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 
 	outWidth = source.extent.Width();
 	outHeight = source.extent.Height();
-	RT_LOG("[Readback] captured %ux%u from %s (%d) → %zu bytes", outWidth, outHeight,
-		source.name, (int)source.format, outPixelsRGBA8.size());
+	RT_LOG("[Readback] captured %ux%u from %s (%d) op=%d mult=%.3f diagnostic=%d → %zu bytes", outWidth, outHeight,
+		source.name, (int)source.format, (int)pc.toneOperator, (double)pc.exposureMultiplier,
+		m_LastCompletedCapture.diagnosticView ? 1 : 0, outPixelsRGBA8.size());
 	return true;
 }
 
 bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uint32_t& outWidth, uint32_t& outHeight)
 {
-	if (!m_Initialized || !m_HdrSource.valid || m_HdrSource.image == VK_NULL_HANDLE ||
-		!m_HdrSource.extent.IsValid())
+	if (!m_Initialized)
 		return false;
-	const FullResolutionHdrSource source = m_HdrSource;
-
 	VkDevice device = m_Device.device;
+
+	// Same fence-gated source as the display path, but deliberately without
+	// any display exposure or tone mapping: raw scene-linear HDR for
+	// analysis. With no completed capture, fail loudly.
+	vkDeviceWaitIdle(device);
+	if (!PromoteCompletedCaptures())
+	{
+		RT_LOG("[ReadbackLinear] no completed capture available");
+		return false;
+	}
+	const FullResolutionHdrSource source = m_LastCompletedCapture.hdrSource;
+	if (!source.valid || source.image == VK_NULL_HANDLE || !source.extent.IsValid())
+		return false;
 
 	VkBuffer stagingBuffer;
 	VkDeviceMemory stagingMemory;
@@ -1727,8 +1823,8 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             stagingBuffer, stagingMemory);
 
-	vkDeviceWaitIdle(device);
-
+	// The wait above already proved every in-flight frame; use
+	// ImmediateSubmit for the copy.
 	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
 		VkImageMemoryBarrier toTransfer = {};
 		toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

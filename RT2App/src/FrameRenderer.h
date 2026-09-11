@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vulkan/vulkan.h"
+#include "CameraPresentation.h"
 #include "GpuDevice.h"
 #include "GBufferTarget.h"
 #include "SceneResources.h"
@@ -115,6 +116,11 @@ public:
 		// Camera (for NRD matrix settings)
 		const Camera& camera;
 
+		// Immutable camera-owned display look resolved by the host before
+		// recording. The tone-map stage records exactly these push constants;
+		// readback pairs the completed HDR source with this same value.
+		CameraPresentation presentation;
+
 		// ReSTIR GI (one-bounce diffuse GI, temporal reuse, raster-first only).
 		// Independent of DI — requires raster-first G-buffer but not DI enabled.
 		ReSTIRGIPass& restirGIPass;
@@ -147,6 +153,6 @@ private:
 	static bool RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx);
 	static RecordedFrameOutcome RecordRR(VkCommandBuffer cmd, Context& ctx);
 	static void RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx);
-	static void RecordTonemapPass(VkCommandBuffer cmd, Context& ctx);
+	static bool RecordTonemapPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordOutputTransition(VkCommandBuffer cmd, Context& ctx);
 };

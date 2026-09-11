@@ -5343,10 +5343,23 @@ public:
 
 			m_RendererGPU.ResetAccumulation();
 
-			// Adopt the scene camera.
+			// Adopt the scene camera. Position/forward adoption is the existing
+			// behavior; presentation (tone operator + exposure) is adopted through
+			// the non-transport setter so a newly opened scene cannot retain the
+			// previous scene's look and no temporal history is reset. Lens
+			// adoption (FOV/aperture/focus) and the remaining View Through /
+			// Align / bookmark / Play / CLI sites belong to camera-controls work.
 			const auto& cam = m_SceneMgr.GetECS().camera;
 			m_Cam.SetPosition(cam.position);
 			m_Cam.SetForwardDirection(cam.forwardDirection);
+			if (!m_Cam.SetPresentation(cam.presentation))
+			{
+				RT_LOG("[Scene] opened scene has an invalid camera presentation; kept the editor look");
+				printf("[Scene] WARNING: opened scene has an invalid camera presentation; kept the editor look\n");
+			}
+			printf("[Scene] adopted camera presentation op=%s ev=%.2f\n",
+				ToneMapOperatorName(m_Cam.GetPresentation().toneMap),
+				(double)m_Cam.GetPresentation().exposureEV);
 
 			// Update recents.
 			if (m_Settings2)

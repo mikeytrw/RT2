@@ -83,12 +83,14 @@ struct RRCompletedFrameSnapshot
 // Fence-gated completed-view tracker (R6). Submission stamps a per-slot
 // pending snapshot; only the slot's fence completion promotes it to the
 // view. Failed/discarded recordings submit nothing, so the last proven
-// completed frame stays visible instead of describing pending work.
-template <size_t SlotCount>
-class CompletedSnapshotTracker
+// completed frame stays visible instead of describing pending work. Reset
+// drops every pending slot (resize paths must call it so a destroyed
+// image can never be promoted later).
+template <typename Snapshot, size_t SlotCount>
+class SnapshotTracker
 {
 public:
-	void Submit(size_t slot, const RRCompletedFrameSnapshot& snapshot)
+	void Submit(size_t slot, const Snapshot& snapshot)
 	{
 		const size_t s = slot % SlotCount;
 		m_Pending[s] = snapshot;
@@ -97,7 +99,7 @@ public:
 	// Returns the promoted snapshot when this slot carried pending work
 	// whose fence has now completed; nullopt otherwise (including a second
 	// reap of the same slot without an intervening submission).
-	std::optional<RRCompletedFrameSnapshot> ReapCompleted(size_t slot)
+	std::optional<Snapshot> ReapCompleted(size_t slot)
 	{
 		const size_t s = slot % SlotCount;
 		if (!m_HasPending[s])
@@ -105,11 +107,36 @@ public:
 		m_HasPending[s] = false;
 		return m_Pending[s];
 	}
+	// Drain every pending slot, returning the most recently submitted
+	// snapshot. Requires Snapshot::submitSequence. Used after waits that
+	// prove all fences complete (capture readback): the newest proven pair
+	// wins and every older pending slot is consumed, never promoted later.
+	std::optional<Snapshot> ReapNewest()
+	{
+		std::optional<Snapshot> newest;
+		for (size_t s = 0; s < SlotCount; ++s)
+		{
+			if (auto snapshot = ReapCompleted(s))
+			{
+				if (!newest || snapshot->submitSequence > newest->submitSequence)
+					newest = std::move(snapshot);
+			}
+		}
+		return newest;
+	}
+	void Reset()
+	{
+		for (size_t s = 0; s < SlotCount; ++s)
+			m_HasPending[s] = false;
+	}
 
 private:
-	RRCompletedFrameSnapshot m_Pending[SlotCount]{};
+	Snapshot m_Pending[SlotCount]{};
 	bool m_HasPending[SlotCount]{};
 };
+
+template <size_t SlotCount>
+using CompletedSnapshotTracker = SnapshotTracker<RRCompletedFrameSnapshot, SlotCount>;
 
 // Resolve the completed-frame label from the checked outcome plus the
 // lifecycle backend (R7: the diagnostic bypass reports itself instead of

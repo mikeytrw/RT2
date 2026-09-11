@@ -61,7 +61,13 @@ FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordFrame(VkCommandBuffer c
 	outcome.nrdRecorded = nrdRecorded;
 	if (!outcome.recorded)
 		return outcome;
-	RecordTonemapPass(cmd, ctx);
+	if (!RecordTonemapPass(cmd, ctx))
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = true;
+		outcome.failureReason = "tone-map stage failed (presentation or pipeline state)";
+		return outcome;
+	}
 	RecordOutputTransition(cmd, ctx);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -1002,9 +1008,21 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 	RT_LOG("[NRD] RecordNRDAndCompose end");
 }
 
-void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
+bool FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
 {
-	if (!ctx.tonemapPass.IsAvailable()) return;
+	if (!ctx.tonemapPass.IsAvailable())
+	{
+		RT_LOG("[Frame] tone-map stage is unavailable");
+		return false;
+	}
+
+	TonemapPushConstants pc;
+	if (!TryBuildTonemapPushConstants(ctx.presentation,
+	                                  IsTonemapDiagnosticView(ctx.gbufferDebugMode), pc))
+	{
+		RT_LOG("[Frame] invalid camera presentation; tone-map stage rejected");
+		return false;
+	}
 
 	VkImageMemoryBarrier linearReady = {};
 	linearReady.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1029,9 +1047,15 @@ void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.tonemapPass.UpdateDescriptorSet(ctx.device,
 		useRR ? ctx.rrOutputImage->view : ctx.outputImage.view, ctx.displayImage.view);
-	ctx.tonemapPass.Record(cmd, ctx.outputExtent, useRR);
+	if (!ctx.tonemapPass.Record(cmd, ctx.outputExtent, pc, useRR))
+	{
+		if (ctx.gpuProfiler)
+			ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		return false;
+	}
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	return true;
 }
 
 void FrameRenderer::RecordOutputTransition(VkCommandBuffer cmd, Context& ctx)

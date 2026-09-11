@@ -348,6 +348,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\TextureAssetPipeline.h" />
     <ClInclude Include="src\TonemapPass.h" />
     <ClInclude Include="src\ToneMapMath.h" />
+    <ClInclude Include="src\TonemapPushConstants.h" />
     <ClInclude Include="src\TransformEditing.h" />
     <ClInclude Include="src\TransformGizmoHostLifecycle.h" />
     <ClInclude Include="src\UnsavedChangesCoordinator.h" />
@@ -1210,6 +1211,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <None Include="shaders\restir_gi_shared.glsl" />
     <None Include="shaders\scatter_shared.glsl" />
     <None Include="shaders\surface_history_shared.glsl" />
+    <None Include="shaders\tonemap_shared.glsl" />
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="shaders\anyhit.rahit">
@@ -1335,12 +1337,14 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/tonemap.comp -o $(ProjectDir)shaders/tonemap.spv</Command>
       <Outputs>$(ProjectDir)shaders/tonemap.spv</Outputs>
       <Message>Compiling tonemap.comp</Message>
+      <AdditionalInputs>shaders/tonemap_shared.glsl</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\tonemap_rr.comp">
       <FileType>Document</FileType>
       <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/tonemap_rr.comp -o $(ProjectDir)shaders/tonemap_rr.spv</Command>
       <Outputs>$(ProjectDir)shaders/tonemap_rr.spv</Outputs>
       <Message>Compiling tonemap_rr.comp</Message>
+      <AdditionalInputs>shaders/tonemap_shared.glsl</AdditionalInputs>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>

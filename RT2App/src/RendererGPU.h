@@ -6,6 +6,8 @@
 #include "vulkan/vulkan.h"
 #include "AccelerationStructure.h"
 #include "Camera.h"
+#include "CameraPresentation.h"
+#include "TonemapPushConstants.h"
 #include "GPUSceneData.h"
 #include "GpuDevice.h"
 #include "ComposePass.h"
@@ -72,6 +74,25 @@ public:
 	// completion, for the Performance display). Failed/discarded frames
 	// submit nothing and preserve both views.
 	using CompletedFrameSnapshot = RRCompletedFrameSnapshot;
+	// Fence-completed capture snapshot (camera-owned filmic tone mapping).
+	// The immutable pair of what a frame submitted: the HDR source actually
+	// submitted plus the normalized presentation recorded into its tone-map
+	// push constants, with the existing denoiser/backend/generation
+	// evidence. Promoted only when the frame slot's fence is reaped; failed,
+	// discarded, resized or rebuilt frames never submit or replace it, so
+	// readback can never pair one frame's source with another's look.
+	struct SubmittedCaptureSnapshot
+	{
+		FullResolutionHdrSource hdrSource;
+		CameraPresentation presentation = DefaultCameraPresentation();
+		// True when this frame rendered a data-oriented debug view: both
+		// the GPU tone-map stage and the CPU PNG conversion use the legacy
+		// Reinhard-at-0EV diagnostic mapping instead of the camera look.
+		bool diagnosticView = false;
+		CompletedFrameSnapshot frame;
+		uint64_t submitSequence = 0;
+		bool valid = false;
+	};
 	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 	RendererGPU() = default;
 	~RendererGPU() { Destroy(); }
@@ -153,6 +174,12 @@ public:
 	// the Performance display (R6).
 	const CompletedFrameSnapshot& GetLastSubmitted() const { return m_LastSubmitted; }
 	const CompletedFrameSnapshot& GetLastCompleted() const { return m_LastCompleted; }
+	// Fence-gated capture view: the HDR source plus the presentation it was
+	// submitted with. PNG readback converts this pair; linear readback uses
+	// the source and ignores the presentation. Invalid until the first
+	// fence-proven capture.
+	const SubmittedCaptureSnapshot& GetLastCompletedCapture() const { return m_LastCompletedCapture; }
+	bool HasCompletedCapture() const { return m_HasCompletedCapture; }
 
 	struct PickResult
 	{
@@ -240,6 +267,11 @@ private:
 	void UpdatePathTraceDescriptorSet();
 	bool ReadbackHdrSource(std::vector<float>& outPixelsRGBA32F,
 		uint32_t& outWidth, uint32_t& outHeight);
+	// Reap every pending capture slot and keep the newest submitted pair.
+	// Called after waits that prove GPU completion (readback); the per-frame
+	// loop reaps one slot at a time instead. Returns true when a completed
+	// capture is available.
+	bool PromoteCompletedCaptures();
 
 	// G-buffer images + descriptor set
 	void CreateGBufferImages();
@@ -261,7 +293,7 @@ private:
 
 	GpuImage m_OutputImage;  // RGBA32F linear beauty + accumulation history
 	GpuImage m_RROutputImage; // RGBA16F full-resolution DLSS-RR output
-	GpuImage m_DisplayImage; // RGBA8 Reinhard-tonemapped viewport image
+	GpuImage m_DisplayImage; // RGBA8 presentation-tonemapped viewport image
 	GpuImage m_FallbackTexture; // 1x1 white, used for missing texture views
 	VkSampler m_Sampler = VK_NULL_HANDLE;
 	VkDescriptorSet m_ImGuiDescriptorSet = VK_NULL_HANDLE;
@@ -359,6 +391,13 @@ private:
 	CompletedSnapshotTracker<MAX_FRAMES_IN_FLIGHT> m_SnapshotTracker;
 	CompletedFrameSnapshot m_LastSubmitted;
 	CompletedFrameSnapshot m_LastCompleted;
+	// Capture ring: per-slot pending snapshots plus the fence-proven pair.
+	// Only successful submissions file; resize clears every view so a
+	// destroyed image can never be promoted or read back.
+	SnapshotTracker<SubmittedCaptureSnapshot, MAX_FRAMES_IN_FLIGHT> m_CaptureTracker;
+	SubmittedCaptureSnapshot m_LastCompletedCapture;
+	bool m_HasCompletedCapture = false;
+	uint64_t m_CaptureSequence = 0;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;
