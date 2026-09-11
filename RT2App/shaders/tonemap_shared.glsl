@@ -10,14 +10,12 @@
 //   - AgX: "Minimal AgX Implementation" by Benjamin Wrensch (Missing
 //     Deadlines), MIT License (c) 2024, values from Troy Sobotka's AgX.
 //     Neutral look only (ASC-CDL identity); 6th-order default contrast
-//     approximation. Verified 2026-09-11 against the live post: matrices,
-//     EV bounds, sigmoid coefficients, 2.2 EOTF and MSE identical to the
-//     initializers below. Small negative sigmoid residues are clamped
-//     before pow() (the reference can feed pow() a negative base). The
-//     post is a dated blog page with no versioned revision; the pin is
-//     the URL plus the verification record in ToneMapMath.h (author, MIT
-//     license, AGX_LOOK 0, MSE 3.6705141e-06, changelog as observed
-//     2026-09-11).
+//     approximation. Immutable local snapshot:
+//     docs/agx-minimal-wrensch-source.glsl (UTF-8, LF, 3431 bytes, SHA256
+//     3387fd2cdb4dd38318fdf9e28e6647a9e296f186ef6197f23cc98ed09255b01b);
+//     every pinned constant below was verified present verbatim in it.
+//     Small negative sigmoid residues are clamped before pow() (the
+//     reference can feed pow() a negative base).
 //   - ACES Fitted: Stephen Hill's BakingLab ACES.hlsl, MIT License.
 //     Immutable pin: upstream commit 0f66f50398a372ea27ba0e4d95379d32c83d2e8a
 //     (2016-10-10), git blob SHA 0f8476af81988408484528ec36e44f39447cb985

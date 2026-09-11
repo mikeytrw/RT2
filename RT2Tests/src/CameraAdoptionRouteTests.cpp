@@ -358,3 +358,93 @@ TEST_CASE("R2 seed axes are independent and invalid seeds hold")
     CHECK(held.presentation == base.presentation);
     CHECK(badEv.hasExposureEV);
 }
+
+TEST_CASE("R2 startup seed decision table covers every terminal route")
+{
+    using Event = StartupSeedEvent;
+    using Decision = StartupSeedDecision;
+    const Event events[] = {
+        Event::StartupBlock, Event::AdoptionSucceeded, Event::AdoptionInvalid,
+        Event::LoadFailed, Event::EnvSucceeded, Event::EnvFailed,
+    };
+    // Nothing pending: every event holds, on every outstanding state.
+    for (Event event : events)
+    {
+        CHECK(DecideStartupSeed(false, false, false, event) == Decision::Hold);
+        CHECK(DecideStartupSeed(false, true, false, event) == Decision::Hold);
+        CHECK(DecideStartupSeed(false, false, true, event) == Decision::Hold);
+    }
+    // Pending seed with an outstanding initial scene adoption: only the
+    // adoption terminal applies; startup and env routes hold, and no
+    // unrelated worker state exists in this decision at all.
+    CHECK(DecideStartupSeed(true, true, false, Event::StartupBlock) == Decision::Hold);
+    CHECK(DecideStartupSeed(true, true, false, Event::AdoptionSucceeded) == Decision::ApplyNow);
+    CHECK(DecideStartupSeed(true, true, false, Event::AdoptionInvalid) == Decision::SettleAndConsume);
+    CHECK(DecideStartupSeed(true, true, false, Event::LoadFailed) == Decision::SettleAndConsume);
+    CHECK(DecideStartupSeed(true, true, false, Event::EnvSucceeded) == Decision::Hold);
+    CHECK(DecideStartupSeed(true, true, false, Event::EnvFailed) == Decision::Hold);
+    // With no tracked startup request, the startup block applies; unrelated
+    // later scene/env terminal events cannot steal or discard the seed.
+    CHECK(DecideStartupSeed(true, false, false, Event::StartupBlock) == Decision::ApplyNow);
+    CHECK(DecideStartupSeed(true, false, false, Event::AdoptionSucceeded) == Decision::Hold);
+    CHECK(DecideStartupSeed(true, false, false, Event::AdoptionInvalid) == Decision::Hold);
+    CHECK(DecideStartupSeed(true, false, false, Event::LoadFailed) == Decision::Hold);
+    CHECK(DecideStartupSeed(true, false, false, Event::EnvSucceeded) == Decision::Hold);
+    CHECK(DecideStartupSeed(true, false, false, Event::EnvFailed) == Decision::Hold);
+
+    // An explicitly tracked startup environment owns its own terminal.
+    CHECK(DecideStartupSeed(true, false, true, Event::StartupBlock) == Decision::Hold);
+    CHECK(DecideStartupSeed(true, false, true, Event::EnvSucceeded) == Decision::ApplyNow);
+    CHECK(DecideStartupSeed(true, false, true, Event::EnvFailed) == Decision::SettleAndConsume);
+}
+
+TEST_CASE("R2 env-only startup applies the seed at terminal completion")
+{
+    // No scene requested: the explicitly tracked startup environment holds
+    // the seed until its callback, then the successful terminal applies it.
+    CHECK(DecideStartupSeed(true, false, true, StartupSeedEvent::StartupBlock) ==
+          StartupSeedDecision::Hold);
+    CHECK(DecideStartupSeed(true, false, true, StartupSeedEvent::EnvSucceeded) ==
+          StartupSeedDecision::ApplyNow);
+
+    EditorCameraPose pose = MakePose();
+    CLICameraSeed seed;
+    seed.hasToneMap = true;
+    seed.toneMap = ToneMapOperator::Reinhard;
+    REQUIRE(TryApplyCameraSeed(pose, seed));
+    CHECK(pose.presentation.toneMap == ToneMapOperator::Reinhard);
+    CHECK_FALSE(HasPendingCameraSeed(seed));
+
+    CHECK(DecideStartupSeed(false, false, false, StartupSeedEvent::EnvSucceeded) ==
+          StartupSeedDecision::Hold);
+}
+
+TEST_CASE("R2 failed initial load settles the seed before the second scene")
+{
+    // Interactive --scene <bad> with overrides: startup holds, the load
+    // fails, the seed is discarded with a report instead of leaking.
+    CHECK(DecideStartupSeed(true, true, false, StartupSeedEvent::StartupBlock) ==
+          StartupSeedDecision::Hold);
+    CHECK(DecideStartupSeed(true, true, false, StartupSeedEvent::LoadFailed) ==
+          StartupSeedDecision::SettleAndConsume);
+
+    // The host consumes the flags on that terminal; model the consumption
+    // by clearing a local copy, then prove the later user scene is clean.
+    CLICameraSeed seed;
+    seed.hasPosition = true;
+    seed.position = { 9.0f, 8.0f, 7.0f };
+    seed.hasToneMap = true;
+    seed.toneMap = ToneMapOperator::Reinhard;
+    seed = CLICameraSeed{};
+    CHECK_FALSE(HasPendingCameraSeed(seed));
+
+    SceneCamera sceneB;
+    sceneB.position = { 1.0f, 2.0f, 3.0f };
+    EditorCameraPose adoptedB;
+    REQUIRE(TryBuildAuthoringAdoptionPose(sceneB, MakePose(), adoptedB));
+    CHECK(adoptedB.position == sceneB.position);
+    CHECK(adoptedB.presentation == DefaultCameraPresentation());
+    EditorCameraPose afterSeed = adoptedB;
+    CHECK_FALSE(TryApplyCameraSeed(afterSeed, seed));
+    CHECK(afterSeed.position == adoptedB.position);
+}

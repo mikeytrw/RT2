@@ -80,6 +80,75 @@ inline PoseApplyAction ResolvePoseApplyAction(const EditorCameraPose& current,
 // SceneCamera owns no far clip, so the current far clip is retained.
 // Returns false (leaving `out` untouched) when the scene camera is not a
 // valid pose; callers keep the prior editor camera and fail loudly.
+// Initial-startup CLI camera seed lifecycle. The seed is pending while any
+// CLI camera flag is unconsumed. It settles exactly once, on the terminal
+// route of the startup request, and never leaks into a later user scene:
+//   StartupBlock     — startup code reached; applies only when no initial
+//                      scene adoption or environment load is outstanding.
+//   AdoptionSucceeded— a scene adoption just applied the file camera; the
+//                      seed overlays it now.
+//   AdoptionInvalid  — adoption rejected the file camera; the seed is
+//                      discarded with a report instead of leaking.
+//   LoadFailed       — the initial load failed; the seed is discarded with
+//                      a report instead of leaking into the next scene.
+//   EnvSucceeded     — environment completion with no outstanding scene
+//                      load; the seed applies to the current camera now.
+//                      With a scene outstanding the coming adoption decides.
+//   EnvFailed        — environment failure; the seed is discarded with a
+//                      report instead of leaking, unless a scene adoption is
+//                      still outstanding (which settles it instead, so an
+//                      unrelated env failure cannot steal the scene's seed).
+// In particular the decision never defers merely because an unrelated
+// background worker exists: only the explicitly tracked initial scene and
+// environment requests can hold the seed.
+enum class StartupSeedEvent
+{
+    StartupBlock,
+    AdoptionSucceeded,
+    AdoptionInvalid,
+    LoadFailed,
+    EnvSucceeded,
+    EnvFailed,
+};
+
+enum class StartupSeedDecision
+{
+    Hold,
+    ApplyNow,
+    SettleAndConsume,
+};
+
+inline StartupSeedDecision DecideStartupSeed(bool hasPending,
+                                             bool initialScenePending,
+                                             bool initialEnvironmentPending,
+                                             StartupSeedEvent event)
+{
+    if (!hasPending)
+        return StartupSeedDecision::Hold;
+    switch (event)
+    {
+    case StartupSeedEvent::StartupBlock:
+        return initialScenePending || initialEnvironmentPending
+                   ? StartupSeedDecision::Hold
+                   : StartupSeedDecision::ApplyNow;
+    case StartupSeedEvent::EnvSucceeded:
+    case StartupSeedEvent::EnvFailed:
+        if (initialScenePending || !initialEnvironmentPending)
+            return StartupSeedDecision::Hold;
+        return event == StartupSeedEvent::EnvFailed
+                   ? StartupSeedDecision::SettleAndConsume
+                   : StartupSeedDecision::ApplyNow;
+    case StartupSeedEvent::AdoptionSucceeded:
+        return initialScenePending ? StartupSeedDecision::ApplyNow
+                                   : StartupSeedDecision::Hold;
+    case StartupSeedEvent::AdoptionInvalid:
+    case StartupSeedEvent::LoadFailed:
+        return initialScenePending ? StartupSeedDecision::SettleAndConsume
+                                   : StartupSeedDecision::Hold;
+    }
+    return StartupSeedDecision::Hold;
+}
+
 // Pending one-shot CLI camera seed (position, forward, tone operator,
 // exposure EV), each axis independently present. The host builds one from
 // its parsed flags, applies it after the initial scene adoption completes,

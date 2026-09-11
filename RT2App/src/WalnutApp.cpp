@@ -3343,6 +3343,8 @@ private:
 		}
 		ResolveImplicitStartupDefault();
 
+		if (g_CLI.hasProject() || g_CLI.hasScene())
+			m_InitialSceneLoadPending = true;
 		if (g_CLI.hasProject())
 			OpenProjectInternal(g_CLI.projectPath, g_CLI.scenePath, true);
 		else if (g_CLI.hasScene())
@@ -3353,17 +3355,16 @@ private:
 		if (g_CLI.headless)
 			WaitForBackgroundWork();
 		if (g_CLI.hasEnvMap())
-			LoadEnvMap(g_CLI.envMapPath);
+			m_InitialEnvironmentLoadPending = LoadEnvMap(g_CLI.envMapPath);
 		if (g_CLI.headless)
 			WaitForBackgroundWork();
 
 		// One-shot CLI camera seed (pose overrides + presentation look).
-		// Deferred until the initial adoption completes: applying position
-		// or direction here would be overwritten by the async file camera,
-		// so while background work is in flight this is skipped and the
-		// adoption site applies (and consumes) the seed once the camera is
-		// stable. Headless already joined everything above.
-		ApplyCLICameraSeed();
+		// Settles here only when no initial scene adoption is outstanding;
+		// otherwise the adoption callback settles it once the file camera
+		// lands, so the seed always overlays the adopted camera instead of
+		// being overwritten by it. Headless already joined everything above.
+		SettleStartupCameraSeed(StartupSeedEvent::StartupBlock);
 
 		if (g_CLI.rasterFirst)
 			m_Cam.m_Aperture = 0.0f;
@@ -4022,7 +4023,11 @@ private:
 			return;
 		}
 
-		if (IsBackgroundBusy()) return;
+		if (IsBackgroundBusy())
+		{
+			SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
+			return;
+		}
 
 		const std::string pathCopy = filepath;
 		const bool isObj = (ext == "obj");
@@ -4040,6 +4045,7 @@ private:
 		{
 			LogAssetDiagnostics(result->diagnostics, 0, "LoadScene");
 			m_LastStatusMsg = "Scene load failed";
+			SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 			return;
 		}
 
@@ -4063,6 +4069,9 @@ private:
 			{
 				ImGui::OpenPopup("Scene Load Failed");
 				m_LastStatusMsg = "Scene load failed";
+				// Terminal route: settle the startup seed so it cannot leak
+				// into a later user-selected scene.
+				SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 				return;
 			}
 
@@ -4273,6 +4282,17 @@ private:
 	bool m_PendingFullSync = false;
 	Camera m_Cam;
 	bool m_CLIProcessed = false;
+	// Initial startup scene adoption outstanding: while true, the one-shot
+	// CLI camera seed waits for the adoption callback instead of applying
+	// at the startup block (where the async file camera would overwrite
+	// it). Unrelated background workers (environment decode, texture
+	// upload) never hold the seed. Cleared at the first terminal route.
+	bool m_InitialSceneLoadPending = false;
+	// Unlike unrelated background work, an explicitly requested startup
+	// environment is part of the startup camera-seed lifecycle. An env-only
+	// launch therefore settles the seed at the env callback, not while the
+	// decode is still in flight.
+	bool m_InitialEnvironmentLoadPending = false;
 	// Explicit UI denoiser ownership: set by the Denoiser combo handler.
 	// While false (and with no explicit CLI text) the implicit startup
 	// default owns the session until the session fallback reacts.
@@ -5161,7 +5181,11 @@ public:
 		const std::string& sceneLocator = {},
 		bool requireStartupScene = false)
 	{
-		if (IsBackgroundBusy()) return;
+		if (IsBackgroundBusy())
+		{
+			SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
+			return;
+		}
 		auto staged = std::make_shared<rt2::core::ProjectContext>();
 		rt2::core::Error err;
 		if (!rt2::core::LoadProjectContext(
@@ -5170,6 +5194,7 @@ public:
 			m_LastStatusMsg = "Project open failed: " + err.Format();
 			printf("[Project] %s\n", m_LastStatusMsg.c_str());
 			ImGui::OpenPopup("Scene Load Failed");
+			SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 			return;
 		}
 		LogProjectScanDiagnostics(*staged);
@@ -5184,6 +5209,7 @@ public:
 				m_LastStatusMsg =
 					"Project input configuration failed: " + err.Format();
 				printf("[Project] %s\n", m_LastStatusMsg.c_str());
+				SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 				return;
 			}
 		}
@@ -5197,6 +5223,7 @@ public:
 				m_LastStatusMsg =
 					"--scene must be relative when --project is used";
 				printf("[Project] %s\n", m_LastStatusMsg.c_str());
+				SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 				return;
 			}
 			for (const auto& part : locator)
@@ -5206,6 +5233,7 @@ public:
 					m_LastStatusMsg =
 						"--scene may not escape the project asset root";
 					printf("[Project] %s\n", m_LastStatusMsg.c_str());
+					SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 					return;
 				}
 			}
@@ -5219,6 +5247,7 @@ public:
 				m_LastStatusMsg =
 					"Project has no startup scene; pass --scene";
 				printf("[Project] %s\n", m_LastStatusMsg.c_str());
+				SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 				return;
 			}
 			ConfigureAssetRootWatch(staged->project.assetRoot);
@@ -5237,7 +5266,11 @@ public:
 		const std::string& filepath,
 		std::shared_ptr<const rt2::core::ProjectContext> stagedProject = {})
 	{
-		if (IsBackgroundBusy()) return;
+		if (IsBackgroundBusy())
+		{
+			SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
+			return;
+		}
 		auto projectSnapshot = stagedProject;
 		const std::filesystem::path scenePath =
 			std::filesystem::u8path(filepath).lexically_normal();
@@ -5250,6 +5283,7 @@ public:
 				m_LastStatusMsg = "Project scene is outside assetRoot";
 				printf("[Project] %s: %s\n", m_LastStatusMsg.c_str(),
 					filepath.c_str());
+				SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 				return;
 			}
 		}
@@ -5400,6 +5434,9 @@ public:
 					: std::filesystem::path{});
 				ImGui::OpenPopup("Scene Load Failed");
 				m_LastStatusMsg = *errorStr;
+				// Terminal route: settle the startup seed so it cannot leak
+				// into a later user-selected scene.
+				SettleStartupCameraSeed(StartupSeedEvent::LoadFailed);
 				return;
 			}
 
@@ -5487,9 +5524,10 @@ public:
 			RT_LOG("[Scene] adopted scene has an invalid camera; kept the editor camera");
 			printf("[Scene] WARNING: adopted scene has an invalid camera; kept the editor camera\n");
 			fflush(stdout);
+			SettleStartupCameraSeed(StartupSeedEvent::AdoptionInvalid);
 			return;
 		}
-		ApplyCLICameraSeed();
+		SettleStartupCameraSeed(StartupSeedEvent::AdoptionSucceeded);
 		const auto& applied = m_Cam.GetPresentation();
 		printf("[Scene] adopted camera fov=%.1f aperture=%.3f focus=%.2f op=%s ev=%.2f\n",
 			m_Cam.GetVerticalFOV(), m_Cam.m_Aperture, m_Cam.m_FocusDistance,
@@ -5497,15 +5535,19 @@ public:
 		fflush(stdout);
 	}
 
-	// One-shot CLI camera seed (--camera-pos / --camera-forward / --tone-map /
-	// --exposure-ev). Each present flag overlays the resolved editor camera
-	// for this invocation only, without touching saved scene data. Applied
-	// once the initial adoption completes (never before it: an early pose
-	// overlay would be overwritten by the async file camera), then consumed
-	// so later UI edits and later scene opens win. Skipped while background
-	// adoption is still in flight; the adoption site applies it once the
-	// camera is stable instead.
-	void ApplyCLICameraSeed()
+	// Initial-startup CLI camera seed lifecycle (--camera-pos /
+	// --camera-forward / --tone-map / --exposure-ev). Each present flag
+	// overlays the resolved editor camera for this invocation only, without
+	// touching saved scene data. The seed settles exactly once, on the
+	// terminal route of the startup request (see DecideStartupSeed):
+	// successful adoption applies it over the file camera; invalid
+	// adoption, failed loads and terminal environment completions without
+	// an outstanding scene consume it with a loud report instead of leaking
+	// it into a later user scene. Only an outstanding initial scene
+	// adoption or explicitly requested startup environment holds the seed;
+	// unrelated background workers never do.
+	// Returns true when the lifecycle ended (applied or discarded).
+	bool SettleStartupCameraSeed(StartupSeedEvent event)
 	{
 		CLICameraSeed seed;
 		seed.hasPosition = g_CLI.hasCameraPosition;
@@ -5527,31 +5569,53 @@ public:
 		seed.toneMap = g_CLI.toneMap;
 		seed.hasExposureEV = g_CLI.hasExposureEV;
 		seed.exposureEV = g_CLI.exposureEV;
-		if (!HasPendingCameraSeed(seed))
-			return;
-		if (IsBackgroundBusy())
-			return;
-		EditorCameraPose pose = m_Cam.GetEditorPose();
-		if (!TryApplyCameraSeed(pose, seed))
+		const bool pendingBefore = HasPendingCameraSeed(seed);
+		const bool scenePendingBefore = m_InitialSceneLoadPending;
+		const bool environmentPendingBefore = m_InitialEnvironmentLoadPending;
+		if (event == StartupSeedEvent::AdoptionSucceeded ||
+			event == StartupSeedEvent::AdoptionInvalid ||
+			event == StartupSeedEvent::LoadFailed)
+			m_InitialSceneLoadPending = false;
+		if (event == StartupSeedEvent::EnvSucceeded ||
+			event == StartupSeedEvent::EnvFailed)
+			m_InitialEnvironmentLoadPending = false;
+		const StartupSeedDecision decision = DecideStartupSeed(
+			pendingBefore, scenePendingBefore, environmentPendingBefore, event);
+		if (decision == StartupSeedDecision::Hold)
+			return false;
+		// Terminal either way: the initial request is settled from here on,
+		// so a later user scene can never inherit this seed.
+		m_InitialSceneLoadPending = false;
+		m_InitialEnvironmentLoadPending = false;
+		if (decision == StartupSeedDecision::ApplyNow)
 		{
-			RT_LOG("[CLI] camera seed is invalid; kept the editor camera");
-			return;
+			EditorCameraPose pose = m_Cam.GetEditorPose();
+			if (TryApplyCameraSeed(pose, seed) && m_Cam.SetEditorPose(pose))
+			{
+				printf("[CLI] camera seed applied: pos=%d dir=%d op=%s ev=%.2f (owner=%s)\n",
+					g_CLI.hasCameraPosition ? 1 : 0, g_CLI.hasCameraForward ? 1 : 0,
+					ToneMapOperatorName(pose.presentation.toneMap),
+					(double)pose.presentation.exposureEV,
+					g_CLI.headless ? "headless-editor" : "editor");
+				fflush(stdout);
+			}
+			else
+			{
+				RT_LOG("[CLI] camera seed is invalid; kept the editor camera");
+				printf("[CLI] WARNING: camera seed is invalid; kept the editor camera\n");
+				fflush(stdout);
+			}
 		}
-		if (!m_Cam.SetEditorPose(pose))
+		else
 		{
-			RT_LOG("[CLI] camera seed is invalid; kept the editor camera");
-			return;
+			printf("[CLI] startup camera seed discarded without applying (terminal route)\n");
+			fflush(stdout);
 		}
-		printf("[CLI] camera seed applied: pos=%d dir=%d op=%s ev=%.2f (owner=%s)\n",
-			g_CLI.hasCameraPosition ? 1 : 0, g_CLI.hasCameraForward ? 1 : 0,
-			ToneMapOperatorName(pose.presentation.toneMap),
-			(double)pose.presentation.exposureEV,
-			g_CLI.headless ? "headless-editor" : "editor");
-		fflush(stdout);
 		g_CLI.hasCameraPosition = false;
 		g_CLI.hasCameraForward = false;
 		g_CLI.hasToneMap = false;
 		g_CLI.hasExposureEV = false;
+		return true;
 	}
 
 	void SaveRt2Scene()
@@ -5716,9 +5780,10 @@ public:
 		return true;
 	}
 
-	void LoadEnvMap(const std::string& filepath)
+	bool LoadEnvMap(const std::string& filepath)
 	{
-		if (IsBackgroundBusy()) return;
+		if (IsBackgroundBusy())
+			return false;
 
 		const std::string pathCopy = filepath;
 		struct EnvResult
@@ -5773,6 +5838,9 @@ public:
 			{
 				printf("[EnvMap] Failed: %s\n", result->error.c_str());
 				m_LastStatusMsg = "Env map load failed";
+				// Terminal route when no scene adoption is outstanding:
+				// settle the startup seed instead of leaking it.
+				SettleStartupCameraSeed(StartupSeedEvent::EnvFailed);
 				return;
 			}
 
@@ -5803,7 +5871,12 @@ public:
 			}
 			m_RendererGPU.ResetAccumulation();
 			m_LastStatusMsg = "Env map loaded";
+			// Terminal route for environment-only startup (no outstanding
+			// scene adoption): apply a pending seed to the current camera
+			// now, or hold when a scene adoption will settle it instead.
+			SettleStartupCameraSeed(StartupSeedEvent::EnvSucceeded);
 		});
+		return true;
 	}
 
 private:

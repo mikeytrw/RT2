@@ -16,15 +16,15 @@
 //     (AGX_LOOK 0, the ASC-CDL identity); 6th-order default contrast
 //     approximation (mean error^2 3.6705141e-06). This is a compact display
 //     transform, not pixel identity with Blender/OCIO AgX configurations.
-//     Verified 2026-09-11 against the live post content: agx_mat,
-//     agx_mat_inv, min/max EV, all seven sigmoid coefficients, the 2.2
-//     EOTF exponent and the MSE figure are identical to the tables below.
+//     Immutable local snapshot: docs/agx-minimal-wrensch-source.glsl holds
+//     the exact upstream "AgX Minimal Source" code block (UTF-8, LF
+//     newlines, 3431 bytes) with SHA256
+//     3387fd2cdb4dd38318fdf9e28e6647a9e296f186ef6197f23cc98ed09255b01b,
+//     transcribed from the live post 2026-09-11. Every matrix entry, EV
+//     bound, sigmoid coefficient, the 2.2 exponent and the MSE figure in
+//     the tables below were verified present verbatim in that snapshot.
 //     The post changelog (through 2025.04.20) touches only saturation
-//     ordering and the license header, not the pinned constants. The post
-//     is a dated blog page with no versioned revision; the pin is the URL
-//     plus this verification record (author, MIT license, AGX_LOOK 0,
-//     MSE 3.6705141e-06, changelog dates as observed 2026-09-11).
-//     The one
+//     ordering and the license header, not the pinned constants. The one
 //     deliberate deviation: small negative sigmoid residues are clamped
 //     before pow() (the reference can feed pow() a negative base).
 //   - ACES Fitted: Stephen Hill's BakingLab ACES.hlsl

@@ -11,7 +11,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -484,5 +488,36 @@ TEST_CASE("F5 AgX black is exact and the log floor preserves the toe")
         REQUIRE(ConvertHdrPixelToDisplay8(v, v, v, 1.0f,
             ToneMapOperator::AgX, 1.0f, out));
         CHECK(out[0] <= 8);
+    }
+}
+
+TEST_CASE("R4 implemented AgX constants match the checked-in reference snapshot")
+{
+    // The snapshot is the immutable upstream pin: exact code-block bytes
+    // (UTF-8, LF), hashed and recorded in ToneMapMath.h. This test proves
+    // the production tables were transcribed from exactly those bytes by
+    // requiring every pinned literal to appear verbatim. Run from the
+    // repository root (relative fixture path, per AGENTS.md).
+    std::ifstream in("docs/agx-minimal-wrensch-source.glsl", std::ios::binary);
+    REQUIRE(in);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string snapshot = ss.str();
+    CHECK(snapshot.size() == 3431);
+    const std::vector<std::string> pinned = {
+        "0.842479062253094", "0.0423282422610123", "0.0423756549057051",
+        "0.0784335999999992", "0.878468636469772", "0.0784336",
+        "0.0792237451477643", "0.0791661274605434", "0.879142973793104",
+        "1.19687900512017", "-0.0528968517574562", "-0.0529716355144438",
+        "-0.0980208811401368", "1.15190312990417", "-0.0980434501171241",
+        "-0.0990297440797205", "-0.0989611768448433", "1.15107367264116",
+        "-12.47393", "4.026069",
+        "15.5", "40.14", "31.96", "6.868", "0.4298", "0.1191", "0.00232",
+        "3.6705141e-06", "AGX_LOOK 0", "Missing Deadlines",
+    };
+    for (const std::string& literal : pinned)
+    {
+        INFO("literal: " << literal);
+        CHECK(snapshot.find(literal) != std::string::npos);
     }
 }

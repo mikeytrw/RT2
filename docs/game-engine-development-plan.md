@@ -16159,9 +16159,8 @@ not adopt file lens on open (position/forward/look only) by decision.
 >   provenance was re-verified against live upstream sources (all AgX/ACES
 >   constants identical) and is pinned in the source headers.
 >
-> Repair evidence (repository root unless noted): full RT2Tests 1214/1214
-> with 157,962 assertions in Release and Debug, plus the separate
-> RT2ImGuiProbe target at 5/5 with 75 assertions in both configurations; Release+Debug RT2App and
+> Repair evidence (repository root unless noted): full RT2Tests 1215/1215
+> with 158,005 assertions in Release and Debug; Release+Debug RT2App and
 > Release RT2SliceRunner link clean; both SPIR-V rebuilt and spirv-val
 > clean — tonemap.spv
 > SHA256 8090da88374530d98750db61d06860ddc44c12c09b065a6c4c0622fab4144ac2,
@@ -16190,3 +16189,21 @@ not adopt file lens on open (position/forward/look only) by decision.
 > (pinned by a compile-time boundary test). Interactive startup now defers
 > CLI pose overlays until the initial adoption completes, then consumes
 > them; later opens never reapply a stale seed.
+
+> **Dated correction 2026-09-11 — final R2/R4/C1 closure.** The preceding
+> AgX provenance sentence is superseded: the exact upstream code-block bytes
+> are checked in at `docs/agx-minimal-wrensch-source.glsl` (UTF-8/LF, 3431
+> bytes, SHA256
+> `3387fd2cdb4dd38318fdf9e28e6647a9e296f186ef6197f23cc98ed09255b01b`),
+> and the CPU/GPU implementations record and test their pinned literals
+> against that immutable snapshot. Initial CLI camera seeds now have explicit
+> scene and environment request ownership: scene adoption overlays the seed;
+> environment-only startup waits for its environment terminal; invalid or
+> failed initial requests consume and report the seed; unrelated background
+> work and later user loads cannot hold or inherit it. The older 1215/158005
+> verification paragraph above remains the historical measurement rather
+> than being retro-edited. Current proportional closure evidence: Release
+> all-target build green; Release full RT2Tests 1218/1218 cases and
+> 158041/158041 assertions; Release+Debug camera-focused 41/41 and 505/505;
+> Release+Debug R2/R4-focused 10/10 and 131/131; Graphify refreshed; authored
+> diff check clean.
