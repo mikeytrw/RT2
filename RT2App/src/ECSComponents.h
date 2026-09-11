@@ -4,6 +4,7 @@
 #define ECS_COMPONENTS_H
 
 #include "AssetReference.h"
+#include "CameraPresentation.h"
 #include "core/UUID.h"
 #include "PrefabComponentKeyBase.h"
 #include "SceneTypes.h"
@@ -136,6 +137,10 @@ struct CameraComponent
     float aperture = 0.0f;
     float focusDistance = 1.0f;
     glm::vec3 forwardDirection = {0.0f, 0.0f, -1.0f};
+    // Camera-owned display look (tone operator + exposure EV). Appended with
+    // defaults so existing aggregate initializers keep compiling; every
+    // explicit copy/equality/serializer must carry it (see technical plan).
+    CameraPresentation presentation;
 };
 
 // Name tag for debugging/UI

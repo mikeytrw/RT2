@@ -4,6 +4,7 @@
 #define SCENE_TYPES_H
 
 #include "AssetReference.h"
+#include "CameraPresentation.h"
 
 #include <glm/glm.hpp>
 #include <string>
@@ -153,6 +154,8 @@ struct SceneCamera
     float verticalFOV = 45.0f;
     float aperture = 0.0f;
     float focusDistance = 1.0f;
+    // Camera-owned display look. Older files lack it and load AgX/0.
+    CameraPresentation presentation;
 };
 
 #endif // SCENE_TYPES_H

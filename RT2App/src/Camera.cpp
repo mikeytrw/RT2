@@ -28,7 +28,17 @@ EditorCameraPose Camera::GetEditorPose() const
 	pose.aperture = m_Aperture;
 	pose.focusDistance = m_FocusDistance;
 	pose.farClip = m_FarClip;
+	pose.presentation = m_Presentation;
 	return pose;
+}
+
+bool Camera::SetPresentation(const CameraPresentation& presentation)
+{
+	CameraPresentation canonical = presentation;
+	if (!TryCanonicalizeCameraPresentation(canonical))
+		return false;
+	m_Presentation = canonical;
+	return true;
 }
 
 bool Camera::SetEditorPose(const EditorCameraPose& requested)
@@ -42,6 +52,7 @@ bool Camera::SetEditorPose(const EditorCameraPose& requested)
 	m_Aperture = pose.aperture;
 	m_FocusDistance = pose.focusDistance;
 	m_FarClip = pose.farClip;
+	m_Presentation = pose.presentation;
 	RecalculateView();
 	if (m_OutputExtent.IsValid())
 		RecalculateProjection();

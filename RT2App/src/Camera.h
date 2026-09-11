@@ -30,6 +30,11 @@ public:
 	const glm::vec3& GetDirection() const { return m_ForwardDirection; }
 	float GetVerticalFOV() const { return m_VerticalFOV; }
 	float GetNearClip() const { return m_NearClip; }
+	const CameraPresentation& GetPresentation() const { return m_Presentation; }
+	// Presentation-only setter: validates + canonicalizes, never marks the
+	// camera moved and never touches view/projection. Returns false and
+	// leaves the stored value unchanged on invalid input.
+	bool SetPresentation(const CameraPresentation& presentation);
 	float GetViewportAspect() const
 	{ return m_OutputExtent.IsValid() ? float(m_OutputExtent.Width()) / float(m_OutputExtent.Height()) : 1.0f; }
 	EditorCameraPose GetEditorPose() const;
@@ -56,6 +61,9 @@ public:
 	float m_FocusDistance = 1.0f;
 	float m_Speed = 5.0f; // movement speed (units/sec)
 	float m_FarClip = 10000.0f;
+	// Camera-owned display look. Carried by Get/SetEditorPose; edited via
+	// SetPresentation without affecting transport (moved/projection).
+	CameraPresentation m_Presentation;
 
 	void SetFarClip(float farClip) { m_FarClip = farClip; RecalculateProjection(); }
 private:

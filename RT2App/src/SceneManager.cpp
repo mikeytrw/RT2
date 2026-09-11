@@ -4744,6 +4744,7 @@ rt2::core::Result<PrefabCameraPoseValue> SceneManager::StageCameraPose(
 	result.camera.aperture = pose.aperture;
 	result.camera.focusDistance = pose.focusDistance;
 	result.camera.forwardDirection = pose.forward;
+	result.camera.presentation = pose.presentation;
 	return rt2::core::Result<PrefabCameraPoseValue>::Ok(std::move(result));
 }
 

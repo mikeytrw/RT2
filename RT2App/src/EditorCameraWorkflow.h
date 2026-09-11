@@ -4,6 +4,7 @@
 #define RT2_EDITOR_CAMERA_WORKFLOW_H
 
 #include "SceneDocument.h"
+#include "CameraPresentation.h"
 #include "core/UUID.h"
 
 #include <glm/glm.hpp>
@@ -25,6 +26,10 @@ struct EditorCameraPose
     float aperture = 0.0f;
     float focusDistance = 1.0f;
     float farClip = 10000.0f;
+    // Camera-owned display look. Focus/frame helpers copy the whole pose so
+    // they preserve it; View Through / Play adoption overwrite it with the
+    // destination camera's presentation.
+    CameraPresentation presentation;
 };
 
 struct EditorSelectionBounds
@@ -47,6 +52,12 @@ struct EditorFrameSettings
 
 bool IsValidEditorCameraPose(const EditorCameraPose& pose);
 bool TryNormalizeEditorCameraPose(EditorCameraPose& pose);
+// Transport comparator: position, normalized forward, lens and projection
+// determine camera motion/cut behavior. Tone operator and exposure are
+// presentation and are EXCLUDED — a presentation-only change must not reset
+// temporal history. Canonicalize both sides before comparing so -0.0f EV
+// cannot read as a cut.
+bool EditorCameraTransportEqual(const EditorCameraPose& a, const EditorCameraPose& b);
 bool TryCameraRotationFromForward(const glm::vec3& forward, glm::quat& rotation);
 
 // Applies one complete editor-camera cut through the supplied host sink, then

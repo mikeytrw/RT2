@@ -108,7 +108,8 @@ bool IsValidEditorCameraPose(const EditorCameraPose& pose)
            pose.verticalFOV < 179.0f &&
            IsFinite(pose.aperture) && pose.aperture >= 0.0f &&
            IsFinite(pose.focusDistance) && pose.focusDistance > 0.0f &&
-           IsFinite(pose.farClip) && pose.farClip > 0.0f;
+           IsFinite(pose.farClip) && pose.farClip > 0.0f &&
+           IsValidCameraPresentation(pose.presentation);
 }
 
 bool TryNormalizeEditorCameraPose(EditorCameraPose& pose)
@@ -116,7 +117,33 @@ bool TryNormalizeEditorCameraPose(EditorCameraPose& pose)
     glm::vec3 forward;
     if (!TryNormalize(pose.forward, forward)) return false;
     pose.forward = forward;
+    if (!TryCanonicalizeCameraPresentation(pose.presentation)) return false;
     return IsValidEditorCameraPose(pose);
+}
+
+bool EditorCameraTransportEqual(const EditorCameraPose& a, const EditorCameraPose& b)
+{
+    // Canonicalize both sides so -0.0f EV (presentation, excluded below)
+    // and unnormalized forwards cannot read as a cut.
+    EditorCameraPose lhs = a;
+    EditorCameraPose rhs = b;
+    glm::vec3 lhsForward;
+    glm::vec3 rhsForward;
+    if (!TryNormalize(lhs.forward, lhsForward)) return false;
+    if (!TryNormalize(rhs.forward, rhsForward)) return false;
+    lhs.forward = lhsForward;
+    rhs.forward = rhsForward;
+    lhs.presentation = CanonicalCameraPresentation(lhs.presentation);
+    rhs.presentation = CanonicalCameraPresentation(rhs.presentation);
+    // Transport only: position, normalized forward, lens and projection.
+    // Tone operator and exposure are excluded — a presentation-only change
+    // must not reset temporal history.
+    return lhs.position == rhs.position &&
+           lhs.forward == rhs.forward &&
+           lhs.verticalFOV == rhs.verticalFOV &&
+           lhs.aperture == rhs.aperture &&
+           lhs.focusDistance == rhs.focusDistance &&
+           lhs.farClip == rhs.farClip;
 }
 
 bool TryCameraRotationFromForward(const glm::vec3& requestedForward,
@@ -180,6 +207,9 @@ bool TryGetCameraEntityPose(rt2::core::SceneDocument& document,
     pose.verticalFOV = camera->verticalFOV;
     pose.aperture = camera->aperture;
     pose.focusDistance = camera->focusDistance;
+    // Destination presentation wins: without this line View Through and Play
+    // keep the fallback (editor) look, contradicting the adoption contract.
+    pose.presentation = camera->presentation;
     return TryNormalizeEditorCameraPose(pose);
 }
 
