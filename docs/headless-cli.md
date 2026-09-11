@@ -90,6 +90,11 @@ Interactively they seed the editor camera once and are consumed, so later UI
 edits win. Invalid values exit nonzero before rendering. EXR/PFM output is
 always scene-linear and ignores both flags.
 
+`--camera-pos` and `--camera-forward` follow the same one-shot rule: they
+apply after the initial scene adoption completes (never before it, where the
+async file camera would overwrite them) and are consumed, so later opens
+never reapply a stale override.
+
 `--output-display` samples `m_DisplayImage` after the tone-map dispatch, so
 it is the GPU tone-map output itself; `--output` converts the completed HDR
 source through the C++ reference. The display-parity gate compares the two

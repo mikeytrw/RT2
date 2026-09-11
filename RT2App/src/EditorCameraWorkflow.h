@@ -80,6 +80,34 @@ inline PoseApplyAction ResolvePoseApplyAction(const EditorCameraPose& current,
 // SceneCamera owns no far clip, so the current far clip is retained.
 // Returns false (leaving `out` untouched) when the scene camera is not a
 // valid pose; callers keep the prior editor camera and fail loudly.
+// Pending one-shot CLI camera seed (position, forward, tone operator,
+// exposure EV), each axis independently present. The host builds one from
+// its parsed flags, applies it after the initial scene adoption completes,
+// and consumes it, so later UI edits and later scene opens win.
+struct CLICameraSeed
+{
+    bool hasPosition = false;
+    glm::vec3 position{0.0f};
+    bool hasForward = false;
+    glm::vec3 forward{0.0f, 0.0f, -1.0f};
+    bool hasToneMap = false;
+    ToneMapOperator toneMap = ToneMapOperator::AgX;
+    bool hasExposureEV = false;
+    float exposureEV = 0.0f;
+};
+
+inline bool HasPendingCameraSeed(const CLICameraSeed& seed)
+{
+    return seed.hasPosition || seed.hasForward ||
+           seed.hasToneMap || seed.hasExposureEV;
+}
+
+// Overlays every present seed axis onto the pose, canonicalizes and
+// validates the whole result, and consumes the seed on success. Returns
+// false leaving both pose and seed untouched when nothing is pending or
+// the result is invalid, so a failed seed can never defeat later edits.
+bool TryApplyCameraSeed(EditorCameraPose& pose, CLICameraSeed& seed);
+
 bool TryBuildAuthoringAdoptionPose(const SceneCamera& scene,
                                    const EditorCameraPose& current,
                                    EditorCameraPose& out);

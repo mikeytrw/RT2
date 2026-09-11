@@ -2,14 +2,15 @@
 # run_tonemap_capture_test.ps1 — bounded GPU/headless differential checks
 # for camera-owned filmic tone mapping (batch 3).
 #
-# Renders a small deterministic scene headlessly under three camera looks
-# (AgX/0 old-file migration, Reinhard/0, ACES/+2), plus diagnostic-view and
-# native-path variants, capturing the CPU-converted PNG, the PFM
+# Renders a small deterministic scene headlessly across the operator/EV/
+# format matrix (AgX, Reinhard and ACES looks with exposure changes on the
+# RR RGBA16F and explicit native RGBA32F paths), plus diagnostic-view, CLI
+# override and failure variants, capturing the CPU-converted PNG, the PFM
 # scene-linear source, and the post-dispatch GPU display image per variant,
 # then compares through scripts/compare_tonemap_captures.py:
 #   - GPU/CPU parity (<=1 code value) per operator,
-#   - display-image parity per operator/EV on both storage formats, with
-#     half-quantization proof that the RR path was exercised,
+#   - display-image parity per operator/EV/format plus display-vs-production
+#     PNG direct comparison and half-quantization format proof,
 #   - raw PFM isolation across operators,
 #   - operator/EV effect on the display output,
 #   - diagnostic-view bypass of the camera look,
@@ -86,6 +87,15 @@ $code = Render-VariantFull (Join-Path $work "agx.rt2scene") (Join-Path $work "na
 if ($code -ne 0) { Write-Host "[Tonemap] FAIL: native render exited $code"; exit 1 }
 if (-not (Test-Path (Join-Path $work "native.png"))) { Write-Host "[Tonemap] FAIL: no native screenshot"; exit 1 }
 if (-not (Test-Path (Join-Path $work "native.pfm"))) { Write-Host "[Tonemap] FAIL: no native HDR source"; exit 1 }
+
+# Full format/operator/EV matrix: Reinhard and ACES on the explicit native
+# path, plus an EV-only flag override (AgX operator retained).
+$code = Render-VariantFull $reinhardScene (Join-Path $work "reinhard_native.png") (Join-Path $work "reinhard_native.pfm") (Join-Path $work "display_reinhard_native.png") @("--denoiser-mode", "off")
+if ($code -ne 0) { Write-Host "[Tonemap] FAIL: native reinhard render exited $code"; exit 1 }
+$code = Render-VariantFull $acesScene (Join-Path $work "aces_native.png") (Join-Path $work "aces_native.pfm") (Join-Path $work "display_aces_native.png") @("--denoiser-mode", "off")
+if ($code -ne 0) { Write-Host "[Tonemap] FAIL: native aces render exited $code"; exit 1 }
+$code = Render-VariantFull (Join-Path $work "agx.rt2scene") (Join-Path $work "evneg.png") (Join-Path $work "evneg.pfm") (Join-Path $work "display_evneg.png") @("--exposure-ev", "-2")
+if ($code -ne 0) { Write-Host "[Tonemap] FAIL: EV-only render exited $code"; exit 1 }
 
 # Unwritable output must fail loudly (nonzero exit).
 $code = Render-Variant (Join-Path $work "agx.rt2scene") $work $null @("--frames", "1")

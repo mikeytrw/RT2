@@ -146,6 +146,24 @@ bool EditorCameraTransportEqual(const EditorCameraPose& a, const EditorCameraPos
            lhs.farClip == rhs.farClip;
 }
 
+bool TryApplyCameraSeed(EditorCameraPose& pose, CLICameraSeed& seed)
+{
+    if (!HasPendingCameraSeed(seed)) return false;
+    EditorCameraPose overlaid = pose;
+    if (seed.hasPosition)
+        overlaid.position = seed.position;
+    if (seed.hasForward)
+        overlaid.forward = seed.forward;
+    if (seed.hasToneMap)
+        overlaid.presentation.toneMap = seed.toneMap;
+    if (seed.hasExposureEV)
+        overlaid.presentation.exposureEV = seed.exposureEV;
+    if (!TryNormalizeEditorCameraPose(overlaid)) return false;
+    pose = overlaid;
+    seed = CLICameraSeed{};
+    return true;
+}
+
 bool TryBuildAuthoringAdoptionPose(const SceneCamera& scene,
                                     const EditorCameraPose& current,
                                     EditorCameraPose& out)

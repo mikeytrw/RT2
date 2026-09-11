@@ -3357,19 +3357,13 @@ private:
 		if (g_CLI.headless)
 			WaitForBackgroundWork();
 
-		if (g_CLI.hasCameraPosition)
-			m_Cam.SetPosition(glm::vec3(g_CLI.cameraPosition[0], g_CLI.cameraPosition[1], g_CLI.cameraPosition[2]));
-		if (g_CLI.hasCameraForward)
-		{
-			glm::vec3 forward(g_CLI.cameraForward[0], g_CLI.cameraForward[1], g_CLI.cameraForward[2]);
-			if (glm::dot(forward, forward) > 1e-8f)
-				m_Cam.SetForwardDirection(glm::normalize(forward));
-		}
-		// One-shot presentation seed. Skipped while background scene adoption
-		// is still in flight: the adoption site applies (and consumes) it
-		// once the camera is stable, so the seed always overlays the adopted
-		// look instead of being clobbered by it.
-		ApplyCLIPresentationSeed();
+		// One-shot CLI camera seed (pose overrides + presentation look).
+		// Deferred until the initial adoption completes: applying position
+		// or direction here would be overwritten by the async file camera,
+		// so while background work is in flight this is skipped and the
+		// adoption site applies (and consumes) the seed once the camera is
+		// stable. Headless already joined everything above.
+		ApplyCLICameraSeed();
 
 		if (g_CLI.rasterFirst)
 			m_Cam.m_Aperture = 0.0f;
@@ -5472,14 +5466,12 @@ public:
 		});
 	}
 
-	// Adopt the authoring scene camera into the editor view. Position and
-	// forward adoption is the long-standing behavior; presentation (tone
-	// operator + exposure) rides along through the non-transport setter so
-	// a newly adopted scene cannot retain the previous scene's look and no
-	// temporal history is reset. Lens adoption (FOV/aperture/focus) stays
-	// out: framing follows explicit View Through / Align gestures. Any
-	// pending one-shot CLI presentation seed overlays the adopted look and
-	// is consumed, so later UI edits remain authoritative.
+	// Adopt the complete authoring scene camera into the editor view:
+	// position, forward, lens (FOV/aperture/focus) and presentation, built
+	// by TryBuildAuthoringAdoptionPose (far clip retained). A complete
+	// adoption cannot retain a previous scene's lens or look. Any pending
+	// one-shot CLI camera seed overlays the adopted camera and is consumed,
+	// so later UI edits remain authoritative.
 	void AdoptAuthoringCameraView()
 	{
 		// Adopt the complete authoring camera: position, forward, lens
@@ -5497,7 +5489,7 @@ public:
 			fflush(stdout);
 			return;
 		}
-		ApplyCLIPresentationSeed();
+		ApplyCLICameraSeed();
 		const auto& applied = m_Cam.GetPresentation();
 		printf("[Scene] adopted camera fov=%.1f aperture=%.3f focus=%.2f op=%s ev=%.2f\n",
 			m_Cam.GetVerticalFOV(), m_Cam.m_Aperture, m_Cam.m_FocusDistance,
@@ -5505,38 +5497,59 @@ public:
 		fflush(stdout);
 	}
 
-	// One-shot CLI presentation seed (--tone-map / --exposure-ev). Each
-	// present flag overlays the resolved editor camera for this invocation
-	// only, without touching saved scene data. Consumed on first
-	// application: a later UI edit (or a later adoption) cannot be defeated
-	// by a stale seed. Skipped while background adoption is still in flight;
-	// the adoption site applies it once the camera is stable instead.
-	void ApplyCLIPresentationSeed()
+	// One-shot CLI camera seed (--camera-pos / --camera-forward / --tone-map /
+	// --exposure-ev). Each present flag overlays the resolved editor camera
+	// for this invocation only, without touching saved scene data. Applied
+	// once the initial adoption completes (never before it: an early pose
+	// overlay would be overwritten by the async file camera), then consumed
+	// so later UI edits and later scene opens win. Skipped while background
+	// adoption is still in flight; the adoption site applies it once the
+	// camera is stable instead.
+	void ApplyCLICameraSeed()
 	{
-		if (!g_CLI.hasToneMap && !g_CLI.hasExposureEV)
+		CLICameraSeed seed;
+		seed.hasPosition = g_CLI.hasCameraPosition;
+		seed.position = glm::vec3(g_CLI.cameraPosition[0],
+		                          g_CLI.cameraPosition[1],
+		                          g_CLI.cameraPosition[2]);
+		if (g_CLI.hasCameraForward)
+		{
+			glm::vec3 forward(g_CLI.cameraForward[0],
+			                  g_CLI.cameraForward[1],
+			                  g_CLI.cameraForward[2]);
+			if (glm::dot(forward, forward) > 1e-8f)
+			{
+				seed.hasForward = true;
+				seed.forward = glm::normalize(forward);
+			}
+		}
+		seed.hasToneMap = g_CLI.hasToneMap;
+		seed.toneMap = g_CLI.toneMap;
+		seed.hasExposureEV = g_CLI.hasExposureEV;
+		seed.exposureEV = g_CLI.exposureEV;
+		if (!HasPendingCameraSeed(seed))
 			return;
 		if (IsBackgroundBusy())
 			return;
-		CameraPresentation seeded = m_Cam.GetPresentation();
-		if (!TryApplyPresentationSeed(seeded, g_CLI.hasToneMap, g_CLI.toneMap,
-		                              g_CLI.hasExposureEV, g_CLI.exposureEV, seeded))
+		EditorCameraPose pose = m_Cam.GetEditorPose();
+		if (!TryApplyCameraSeed(pose, seed))
 		{
-			RT_LOG("[CLI] presentation seed is invalid; kept the editor look");
+			RT_LOG("[CLI] camera seed is invalid; kept the editor camera");
 			return;
 		}
-		if (m_Cam.SetPresentation(seeded))
+		if (!m_Cam.SetEditorPose(pose))
 		{
-			printf("[CLI] presentation seed: %s op=%s ev=%.2f (owner=%s)\n",
-				(g_CLI.hasToneMap && g_CLI.hasExposureEV) ? "tone-map+exposure-ev" :
-				(g_CLI.hasToneMap ? "tone-map" : "exposure-ev"),
-				ToneMapOperatorName(seeded.toneMap), (double)seeded.exposureEV,
-				g_CLI.headless ? "headless-editor" : "editor");
-			fflush(stdout);
+			RT_LOG("[CLI] camera seed is invalid; kept the editor camera");
+			return;
 		}
-		else
-		{
-			RT_LOG("[CLI] presentation seed is invalid; kept the editor look");
-		}
+		printf("[CLI] camera seed applied: pos=%d dir=%d op=%s ev=%.2f (owner=%s)\n",
+			g_CLI.hasCameraPosition ? 1 : 0, g_CLI.hasCameraForward ? 1 : 0,
+			ToneMapOperatorName(pose.presentation.toneMap),
+			(double)pose.presentation.exposureEV,
+			g_CLI.headless ? "headless-editor" : "editor");
+		fflush(stdout);
+		g_CLI.hasCameraPosition = false;
+		g_CLI.hasCameraForward = false;
 		g_CLI.hasToneMap = false;
 		g_CLI.hasExposureEV = false;
 	}

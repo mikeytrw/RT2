@@ -6321,6 +6321,18 @@ document is a period record of a superseded state.**
 > superseded by the 1215/1215 figures. All older baseline rows remain period
 > records.
 
+> **Updated 2026-09-11 — R1–R4 re-review repair measurement (supersedes the
+> 1215/1215 note above).** Full measured runs from the repository root after
+> the ImGui-probe target split, CLI pose-seed authority, display-vs-PNG
+> gate and provenance pins landed. RT2Tests now measures **1214 run / 1214
+> passed / 0 failed / 0 skipped; 157,962 assertions** in both Release and
+> Debug; the separate RT2ImGuiProbe target measures **5 run / 5 passed /
+> 0 failed; 75 assertions** in both configurations. The delta over 1215
+> (-5 probe cases moved out, +1 CPU-boundary guard, +3 seed-sequence cases)
+> nets -1 case / -43 assertions in RT2Tests with zero coverage lost. The
+> 1215/1215 figure above is the pre-split measurement and is superseded.
+> All older baseline rows remain period records.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -16147,8 +16159,9 @@ not adopt file lens on open (position/forward/look only) by decision.
 >   provenance was re-verified against live upstream sources (all AgX/ACES
 >   constants identical) and is pinned in the source headers.
 >
-> Repair evidence (repository root unless noted): full RT2Tests 1215/1215
-> with 158,005 assertions in Release and Debug; Release+Debug RT2App and
+> Repair evidence (repository root unless noted): full RT2Tests 1214/1214
+> with 157,962 assertions in Release and Debug, plus the separate
+> RT2ImGuiProbe target at 5/5 with 75 assertions in both configurations; Release+Debug RT2App and
 > Release RT2SliceRunner link clean; both SPIR-V rebuilt and spirv-val
 > clean — tonemap.spv
 > SHA256 8090da88374530d98750db61d06860ddc44c12c09b065a6c4c0622fab4144ac2,
@@ -16157,3 +16170,23 @@ not adopt file lens on open (position/forward/look only) by decision.
 > run_tonemap_capture_test.ps1 ALL PASS including the new display-parity,
 > format-proof, CLI-display and bypass checks; slice/script/recovery gates
 > pass; forced-validation render reports no push-constant/descriptor VUIDs.
+>
+> Dated correction 2026-09-11 (R3 closure): the display-parity checks above
+> compared GPU display rows against the Python reference port, not against
+> the production C++ PNG. The checked-in gate now additionally compares
+> each `--output-display` GPU image directly against the production C++
+> `--output` PNG from the same completed frame (no Python tone mapping in
+> that comparison), over AgX, ACES and Reinhard with exposure changes on
+> both explicitly selected RGBA32F-native and RGBA16F-RR paths plus an
+> EV-only flag case, with half-quantization proof of the exercised format.
+> The Python-port checks are retained as an additional independent oracle.
+> Reference provenance is now pinned immutably: BakingLab ACES.hlsl at
+> upstream commit 0f66f50398a372ea27ba0e4d95379d32c83d2e8a (2016-10-10),
+> git blob SHA 0f8476af81988408484528ec36e44f39447cb985 (1322 bytes),
+> verified constant-identical; Wrensch AgX pinned by URL, author, MIT
+> license, AGX_LOOK 0, MSE and observed changelog (blog page carries no
+> versioned revision). The RT2Tests ImGui probe moved to the separate
+> RT2ImGuiProbe target; RT2Tests/RT2SliceRunner carry no ImGui/Vulkan/Walnut
+> (pinned by a compile-time boundary test). Interactive startup now defers
+> CLI pose overlays until the initial adoption completes, then consumes
+> them; later opens never reapply a stale seed.

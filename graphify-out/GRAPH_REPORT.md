@@ -1,16 +1,16 @@
 # Graph Report - RT2  (2026-09-11)
 
 ## Corpus Check
-- 2185 files · ~4,772,333 words
+- 2188 files · ~4,774,324 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 37541 nodes · 79525 edges · 1490 communities (1420 shown, 70 thin omitted)
-- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 6484 edges (avg confidence: 0.8)
+- 37556 nodes · 79561 edges · 1457 communities (1383 shown, 74 thin omitted)
+- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 6486 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `4771aa43`
+- Built from commit: `cd1947c4`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -1002,7 +1002,6 @@
 - my_panic
 - vars
 - usertypes.member_variables.cpp
-- overloading.cpp
 - my_type
 - NullInputService
 - ree
@@ -1102,14 +1101,12 @@
 - entity_traits
 - setter_getter
 - optional.hpp
-- protect_t
 - single.py
 - Options
 - RecordingBridge
 - Layer
 - ManifestHeader
 - TransitionImage
-- woof
 - as_args.hpp
 - function_result.hpp
 - coroutines.cpp
@@ -1117,9 +1114,7 @@
 - nk_recti
 - gtx_string_cast.cpp
 - MetaRange
-- ImGui::GetNavInputAmount2d
 - userdata
-- test_stack_guard
 - CheckedTempDir
 - ResolveVisibility
 - nk_list_view
@@ -1129,12 +1124,8 @@
 - ext_vector_ulp.cpp
 - clazz
 - basic_bytecode
-- entt::entt_traits<my_entity>
-- nk_recti
 - gtx_range.cpp
-- entt::entt_traits<test::entity>
 - functions.cpp
-- stbtt__run_charstring
 - cr_main
 - delegate_functor
 - cr_main
@@ -1144,45 +1135,25 @@
 - Editor settings, recovery, and session lifecycle (Phase 1B)
 - BuildSliceFixture
 - ISceneRenderBridge
-- nk_cursor
 - .push
-- nk_page_element
-- dump_types
 - protect_t
 - ext_vector_int2_sized.cpp
-- type
 - Phase 7 W7 verification report (2026-08-01)
-- TEST
-- TEST
 - TEST
 - entity_id
 - present_element
 - listener
 - self_ptr
 - make_reference
-- conf.py
 - has_traits_at_test
 - read_only.cpp
 - lua_reference_func
-- .get
 - SkyMotionTests.cpp
-- VkDrawIndexedIndirectCommand
 - ENTT_DEBUG_TEST
-- type_name
-- clazz
-- RelaxAntilagSettings
-- test_t
-- _EXRBox2i
-- cocoa_window.m
-- core_setup_precision.cpp
 - has_traits_set_test
 - main.cpp
-- ImGuiResizeGripDef
-- Hierarchy
 - operator|
 - component_traits
-- basic_vtable
-- gtc_noise.cpp
 - entity_traits
 - nk_command_polygon_filled
 - entity_traits
@@ -1190,19 +1161,13 @@
 - ImGui::GetAllocatorFunctions
 - entity_traits
 - cr_main
-- ReblurHitDistanceParameters
-- SigmaSettings
 - stack_pop.hpp
 - list_headers.py
 - CubeOptions
 - TempPrefabDir
 - Case
 - ImGuiPlotArrayGetterData
-- imgui_freetype.h
 - ImGui::TableSetBgColor
-- ext_matrix_int2x4_sized.cpp
-- Destroy
-- GetBLASAddress
 - .SetDevice
 - LoadImageDataOption
 - nk_tt__bitmap
@@ -1234,27 +1199,27 @@
 ## Import Cycles
 - None detected.
 
-## Communities (1490 total, 70 thin omitted)
+## Communities (1457 total, 74 thin omitted)
 
 ### Community 0 - "imgui.cpp"
 Cohesion: 0.01
-Nodes (443): ImDrawListSharedData, ImGuiErrorLogCallback, ImGuiFocusedFlags, ImGuiHoveredFlags, ImGuiNavHighlightFlags, ImGuiPopupFlags, ImGuiPopupPositionPolicy, ImGuiTooltipFlags (+435 more)
+Nodes (555): ImDrawListSharedData, ImGuiDockRequestType, ImGuiErrorLogCallback, ImGuiFocusedFlags, ImGuiHoveredFlags, ImGuiNavHighlightFlags, ImGuiPopupFlags, ImGuiTabBarFlags (+547 more)
 
 ### Community 1 - "imgui_tables.cpp"
 Cohesion: 0.03
-Nodes (124): GlfwClientApi, GLFWcharfun, GLFWcursorenterfun, GLFWcursorposfun, GLFWmousebuttonfun, GLFWscrollfun, glfwSetCharCallback(), glfwSetCursorEnterCallback() (+116 more)
+Nodes (112): GlfwClientApi, GLFWmonitorfun, glfwSetMonitorCallback(), GLFWcharfun, GLFWcursor, GLFWcursorenterfun, GLFWcursorposfun, GLFWkeyfun (+104 more)
 
 ### Community 2 - "nuklear.h"
-Cohesion: 0.01
-Nodes (293): Assumptions, basic_registry<Entity>, BasicHandleDeathTest, bool_constant<(Len != 0u) && alignof(Type) <= Align && sizeof(Type) <= Len && std::is_nothrow_move_constructible_v<Type>>, bool_constant<!(std::is_move_constructible_v<Type> && std::is_move_assignable_v<Type>)>, Construction, CustomIdentifier, integral_constant<std::size_t, !std::is_empty_v<ENTT_ETO_TYPE(Type)> * ENTT_PACKED_PAGE> (+285 more)
+Cohesion: 0.02
+Nodes (133): basic_registry<Entity>, bool_constant<(Len != 0u) && alignof(Type) <= Align && sizeof(Type) <= Len && std::is_nothrow_move_constructible_v<Type>>, bool_constant<!(std::is_move_constructible_v<Type> && std::is_move_assignable_v<Type>)>, dense_set, integral_constant<std::size_t, !std::is_empty_v<ENTT_ETO_TYPE(Type)> * ENTT_PACKED_PAGE>, integral_constant<std::size_t, Type::page_size>, is_enum<Type>, Memory (+125 more)
 
 ### Community 3 - "lua_nil_t"
 Cohesion: 0.02
-Nodes (139): Algorithm, AssetWatchDriveKind, vector, string, unordered_map, AssetWatchBufferSize(), mutex, thread (+131 more)
+Nodes (129): Algorithm, AssetWatchDriveKind, vector, string, unordered_map, AssetWatchBufferSize(), mutex, thread (+121 more)
 
 ### Community 4 - "ImFont"
 Cohesion: 0.02
-Nodes (277): nk_byte, NK_API, va_list, nk, nk_alignof, nk_buffer_clear(), nk_buffer_info(), nk_button_image() (+269 more)
+Nodes (273): nk_byte, NK_API, nk, nk_alignof, nk_buffer_clear(), nk_buffer_info(), nk_button_image(), nk_button_image_styled() (+265 more)
 
 ### Community 5 - "SceneMaterial"
 Cohesion: 0.04
@@ -1262,7 +1227,7 @@ Nodes (96): AssetDiagnostic, entity, IInputService, IRuntimeCommandSink, IUuidPr
 
 ### Community 6 - "imgui_draw.cpp"
 Cohesion: 0.03
-Nodes (243): InstantiationResult, PrefabInstantiationCheckpoint, string, IsNull, ToString, BuildEnvMapCDF(), vector, FindComponentByWire() (+235 more)
+Nodes (218): InstantiationResult, PrefabInstantiationCheckpoint, string, IsNull, ToString, CreateEntity, SceneGraph, MarkDirty (+210 more)
 
 ### Community 7 - "GLM_INLINE"
 Cohesion: 0.03
@@ -1274,35 +1239,35 @@ Nodes (96): path, PrefabCreationResult, ReparentMode, SceneManager, uint32_t, un
 
 ### Community 9 - "ImGuiContext"
 Cohesion: 0.02
-Nodes (227): ImDrawListFlags, usertype_container_default<usertype_container<X>>, AddBezierCurve(), ImGuiMouseCursor, ImDrawCallback, ImDrawFlags, ImFont, ImFontAtlas (+219 more)
+Nodes (228): ImDrawListFlags, AddBezierCurve(), ImDrawCallback, ImDrawFlags, ImFont, ImFontAtlas, ImFontBuilderIO, ImFontConfig (+220 more)
 
 ### Community 10 - "imgui_internal.h"
 Cohesion: 0.01
-Nodes (247): ImBitArrayForNamedKeys, ImGuiActivateFlags, ImGuiInputEventType, ImGuiIO, ImGuiColorEditFlags, ImGuiConfigFlags, ImGuiDragDropFlags, ImGuiInputSource (+239 more)
+Nodes (261): ImBitArrayForNamedKeys, ImGuiActivateFlags, ImGuiInputEventType, ImGuiIO, ImFontAtlas, ImGuiColorEditFlags, ImGuiConfigFlags, ImGuiDragDropFlags (+253 more)
 
 ### Community 11 - "ext_matrix_relational.cpp"
 Cohesion: 0.01
-Nodes (143): DeterministicUuidProvider, CreateV4, DeterministicUuidProvider::DeterministicUuidProvider(), m_Counter, m_Seed, hash<rt2::core::UUID>, IUuidProvider, CreateV4 (+135 more)
+Nodes (131): DeterministicUuidProvider, CreateV4, DeterministicUuidProvider::DeterministicUuidProvider(), m_Counter, m_Seed, hash<rt2::core::UUID>, IUuidProvider, CreateV4 (+123 more)
 
 ### Community 12 - "types.hpp"
-Cohesion: 0.06
-Nodes (63): AssertData, DOCTEST_DECLARE_MUTEX, JUnitTestCaseData, MessageData, QueryData, log_assert, test_case_reenter, test_case_skipped (+55 more)
+Cohesion: 0.05
+Nodes (71): AssertData, ContextScopeBase, DOCTEST_DECLARE_MUTEX, DOCTEST_REF_WRAP, IExceptionTranslator, JUnitTestCaseData, MessageData, QueryData (+63 more)
 
 ### Community 13 - "imgui.h"
 Cohesion: 0.01
-Nodes (201): ImGuiContextHookCallback, ImGuiNextItemDataFlags, ImGuiNextWindowDataFlags, ImGuiTableColumnIdx, ImPoolIdx, ImGui::AddContextHook(), ImGui::NavMoveRequestResolveWithLastItem(), FocusableItemRegister() (+193 more)
+Nodes (193): ImGuiContextHookCallback, ImGuiNextItemDataFlags, ImGuiTableColumnIdx, ImPoolIdx, ImGui::AddContextHook(), ImGui::LogButtons(), ImGui::NavMoveRequestResolveWithLastItem(), DockNodeGetWindowMenuButtonId() (+185 more)
 
 ### Community 14 - "glm.cpp"
 Cohesion: 0.04
-Nodes (169): KOption, MatchState, lua_pushfstring(), lua_pushinteger(), boxgc(), FILE, lua_Debug, lua_Number (+161 more)
+Nodes (183): KOption, lua_WarnFunction, MatchState, lua_absindex(), lua_pushfstring(), lua_setwarnf(), lua_toboolean(), boxgc() (+175 more)
 
 ### Community 15 - "ImFontAtlas"
 Cohesion: 0.04
-Nodes (103): IdxT, lua_geti(), lua_gettop(), lua_pushboolean(), lua_seti(), lua_settop(), lua_type(), luaL_checkany() (+95 more)
+Nodes (108): lua_gettop(), lua_pushboolean(), lua_setfield(), lua_settop(), lua_type(), lua_xmove(), luaL_checkany(), luaL_checktype() (+100 more)
 
 ### Community 16 - "imgui_widgets.cpp"
-Cohesion: 0.01
-Nodes (220): any<meta::supports_to_string_member<meta::unqualified_t<T>>, meta::supports_adl_to_string<meta::unqualified_t<T>>,
+Cohesion: 0.02
+Nodes (191): any<meta::supports_to_string_member<meta::unqualified_t<T>>, meta::supports_adl_to_string<meta::unqualified_t<T>>,
 	                               meta::supports_op_left_shift<std::ostream, meta::unqualified_t<T>>>, any<std::is_same<T, variadic_args>, meta::is_optional<T>>, conditional_t<::sol::is_container_v<T>, std::integral_constant<type, type::table>, lua_type_of<T>>, integral_constant<bool, is_lua_reference_v<T> || meta::is_specialization_of_v<T, table_proxy>>, integral_constant<bool,
 	       (SOL_IS_ON(SOL_DEFAULT_AUTOMAGICAL_USERTYPES))
 	            || (std::is_array_v<
@@ -1310,59 +1275,59 @@ Nodes (220): any<meta::supports_to_string_member<meta::unqualified_t<T>>, meta::
 	       std::is_base_of_v<reference,
 	            T> || std::is_base_of_v<main_reference, T> || std::is_base_of_v<stack_reference, T> || std::is_base_of_v<stateless_stack_reference, T> || std::is_base_of_v<stateless_reference, T>>, integral_constant<bool, std::is_base_of_v<stack_reference, T>>, integral_constant<bool,
 	       (std::is_base_of_v<stateless_stack_reference, T> || std::is_base_of_v<stateless_reference, T>)&&(
-	            !std::is_base_of_v<stack_reference, T> && !std::is_base_of_v<reference, T> && !std::is_base_of_v<main_reference, T>)> (+212 more)
+	            !std::is_base_of_v<stack_reference, T> && !std::is_base_of_v<reference, T> && !std::is_base_of_v<main_reference, T>)> (+183 more)
 
 ### Community 17 - "SceneManager.cpp"
-Cohesion: 0.02
-Nodes (114): begin(), BeginPopupContextWindow(), clear_delete(), clear_destruct(), contains(), ImGuiTextRange, stbtt_pack_range, stbtt_packedchar (+106 more)
+Cohesion: 0.03
+Nodes (64): begin(), BeginPopupContextWindow(), clear_delete(), clear_destruct(), contains(), end(), erase(), erase_unsorted() (+56 more)
 
 ### Community 18 - "SceneEditorUI"
 Cohesion: 0.02
-Nodes (161): Notify, PublishTransformPreviewAndNotify(), RouteEffectiveTransformPreviewNotification(), CameraComponent, aperture, focusDistance, forwardDirection, presentation (+153 more)
+Nodes (158): Notify, PublishTransformPreviewAndNotify(), RouteEffectiveTransformPreviewNotification(), CameraComponent, aperture, focusDistance, forwardDirection, presentation (+150 more)
 
 ### Community 19 - "entt.hpp"
 Cohesion: 0.02
-Nodes (125): AssetWatchListener, ShouldCommitHeadlessOutput(), CapturePressedDesktopBinding(), AssetDiagnostic, AuthoringDocumentReplacementKind, Camera, EditorCameraPose, EditorCommandHistory (+117 more)
+Nodes (104): AssetWatchListener, EditorCommandHistory, RecoveryRecord, RendererGPU, RuntimeSceneController, SceneManager, ScriptFieldRegistry, time_point (+96 more)
 
 ### Community 20 - "stack_push.hpp"
-Cohesion: 0.03
-Nodes (119): PrefabPropagationInstanceDisposition, PrefabPropagationResourceHooks, PrefabPropagationResourceValue, SourceFingerprintReader, PrefabPropagationCommand::PrefabPropagationCommand(), DiscoveredPropagationPlan, affectedEntities, authoringRevision (+111 more)
+Cohesion: 0.02
+Nodes (178): Equal, PrefabPropagationInstanceDisposition, PrefabPropagationResourceHooks, PrefabPropagationResourceValue, Kind, string, ImportedMeshSourceComponent, model (+170 more)
 
 ### Community 21 - "stack_get_unqualified.hpp"
 Cohesion: 0.01
 Nodes (186): mat<2, 2, float32, highp>, mat<2, 2, float32, lowp>, mat<2, 2, float32, mediump>, mat<2, 2, float64, highp>, mat<2, 2, float64, lowp>, mat<2, 2, float64, mediump>, mat<2, 3, float32, highp>, mat<2, 3, float32, lowp> (+178 more)
 
 ### Community 22 - "win32_window.c"
-Cohesion: 0.04
-Nodes (58): VkComponentSwizzle, VkImageViewCreateFlags, VkImageViewType, VkSparseMemoryBindFlags, VkImage, VkBindSparseInfo, bufferBindCount, imageBindCount (+50 more)
+Cohesion: 0.02
+Nodes (70): BufferOffset, ImGuiNextWindowDataFlags, NriStruct(), StreamBufferDataDesc, StreamerDesc, StreamerInterface, StreamTextureDataDesc, ImGuiDragDropFlags (+62 more)
 
 ### Community 23 - "tiny_obj_loader.h"
 Cohesion: 0.02
 Nodes (99): choice_t, choice_t<0>, constness_as, constness_as<To, const From>, has_iterator_category, has_iterator_category<Type, std::void_t<typename std::iterator_traits<Type>::iterator_category>>, has_tuple_size_value, has_tuple_size_value<Type, std::void_t<decltype(std::tuple_size<const Type>::value)>> (+91 more)
 
 ### Community 24 - "SubtreeEntityRecord"
-Cohesion: 0.03
-Nodes (117): FullSyncFn, MaterialSyncFn, Reg, RendererAvailableFn, ResetAccumFn, SceneManager, EditorSyncRouter, m_FullSync (+109 more)
+Cohesion: 0.04
+Nodes (96): Reg, CountOverridableEntries(), size_t, coverageMatchesTable(), entity, IUuidProvider, MarkerSpec, optional (+88 more)
 
 ### Community 25 - "PathTransaction.cpp"
 Cohesion: 0.03
-Nodes (80): add_lvalue_reference_t, lua_touserdata(), S, apply(), copy_code_units_utf, target_, count_code_units_utf, needed_size (+72 more)
+Nodes (77): add_lvalue_reference_t, S, apply(), copy_code_units_utf, target_, count_code_units_utf, needed_size, get_into() (+69 more)
 
 ### Community 26 - "window.c"
 Cohesion: 0.02
-Nodes (103): basic_string_view, is_nested, lua_pushlstring(), Al, Arg, as_table_t, c_closure, Ch (+95 more)
+Nodes (102): basic_string_view, is_nested, lua_pushlstring(), Al, Arg, as_table_t, c_closure, Ch (+94 more)
 
 ### Community 27 - "TransformPreviewSession"
-Cohesion: 0.05
-Nodes (162): GLFWerrorfun, GLFWframebuffersizefun, GLFWtitlebarhittestfun, GLFWwindowclosefun, GLFWwindowcontentscalefun, GLFWwindowiconifyfun, GLFWwindowmaximizefun, GLFWwindowposfun (+154 more)
+Cohesion: 0.04
+Nodes (173): GLFWerrorfun, GLFWframebuffersizefun, GLFWtitlebarhittestfun, GLFWwindowclosefun, GLFWwindowcontentscalefun, GLFWwindowiconifyfun, GLFWwindowmaximizefun, GLFWwindowposfun (+165 more)
 
 ### Community 28 - "EditorMutationResult"
 Cohesion: 0.03
-Nodes (137): HICON, LPVOID, GLFWAPI, GLFWbool, _GLFWctxconfig, _GLFWfbconfig, GLFWglproc, _GLFWwindow (+129 more)
+Nodes (142): HICON, LPVOID, GLFWAPI, GLFWbool, _GLFWctxconfig, _GLFWfbconfig, GLFWglproc, _GLFWwindow (+134 more)
 
 ### Community 29 - "type_traits.hpp"
 Cohesion: 0.02
-Nodes (71): bfloat16_t, equiv_uint, float16_t, integral_constant<
+Nodes (84): bfloat16_t, equiv_uint, float16_t, integral_constant<
           bool, tinyobj_ff::is_same<T, double>::value || tinyobj_ff::is_same<T, float>::value
 #ifdef __STDCPP_FLOAT64_T__
                     || tinyobj_ff::is_same<T, std::float64_t>::value
@@ -1379,163 +1344,163 @@ Nodes (71): bfloat16_t, equiv_uint, float16_t, integral_constant<
                                        tinyobj_ff::is_same<UC, char16_t>::value ||
                                        tinyobj_ff::is_same<UC, char32_t>::value
 #ifdef __cpp_char8_t
-                                       || tinyobj_ff::is_same<UC, char8_t>::value, namespace, binary_format<double>::exponent_mask(), binary_format<double>::hidden_bit_mask() (+63 more)
+                                       || tinyobj_ff::is_same<UC, char8_t>::value, namespace, binary_format<double>::exponent_mask(), binary_format<double>::hidden_bit_mask() (+76 more)
 
 ### Community 30 - "compressed_pair"
 Cohesion: 0.04
-Nodes (115): _GLFWcursorWayland, _GLFWdecorationWayland, off_t, _glfw_strdup(), _glfwEncodeUTF8(), _glfwInputError(), _glfwInputWindowDamage(), EGLenum (+107 more)
+Nodes (106): _GLFWcursorWayland, _GLFWdecorationWayland, off_t, _glfwInputWindowDamage(), _glfwInputWindowMonitor(), EGLenum, EGLint, EGLNativeDisplayType (+98 more)
 
 ### Community 31 - "traits.hpp"
-Cohesion: 0.02
-Nodes (133): ImGuiBackendFlags, ImU16, ImGuiKey, ImWchar16, ImGuiConfigFlags, ImGuiKeyModFlags, ImS8, ImWchar16 (+125 more)
+Cohesion: 0.01
+Nodes (145): ImGuiBackendFlags, ImGuiNavDirSourceFlags, ImU16, ImGuiInputReadMode, ImGuiKey, ImGuiNavInput, ImWchar16, ImGuiConfigFlags (+137 more)
 
 ### Community 32 - "ImGuiIO"
 Cohesion: 0.03
-Nodes (140): Cursor, DisplayDesc(), NriStruct, MetalWindow(), SwapChainDesc(), SwapChainInterface(), WaylandWindow(), Window() (+132 more)
+Nodes (143): Cursor, DisplayDesc(), NriStruct, MetalWindow(), SwapChainDesc(), SwapChainInterface(), WaylandWindow(), Window() (+135 more)
 
 ### Community 33 - "_glfwInputError"
 Cohesion: 0.02
-Nodes (149): adl_meta_pointer_like, allocate_unique(), allocation_deleter, basic_any, choice_t, choice_t<0>, compressed_pair_element, value (+141 more)
+Nodes (150): adl_meta_pointer_like, allocate_unique(), allocation_deleter, basic_any, choice_t, choice_t<0>, compressed_pair_element, value (+142 more)
 
 ### Community 34 - "application.cpp"
 Cohesion: 0.02
-Nodes (155): CompletedFrameSnapshot, CompletedSnapshotTracker, FullResolutionHdrSource, PendingPick, DenoiserMode, GPUSceneData, optional, PickResult (+147 more)
+Nodes (163): CompletedFrameSnapshot, CompletedSnapshotTracker, FullResolutionHdrSource, PendingPick, Camera, DenoiserMode, GPUSceneData, optional (+155 more)
 
 ### Community 35 - "x11_window.c"
 Cohesion: 0.06
-Nodes (24): is_int<int16>, is_int<int64>, is_int<int8>, main(), test_bit_operator(), main(), test_comp(), main() (+16 more)
+Nodes (27): bool_constant, KeyOnly, meta_ctx_arg_t, forward_as_meta(), any, It, meta_ctx, pointer (+19 more)
 
 ### Community 36 - "luaL_error"
-Cohesion: 0.04
-Nodes (171): nk_flags, NK_LIB, nk__begin(), nk_begin_titled(), nk_build(), nk_button_behavior(), nk_button_color(), nk_button_image_label() (+163 more)
+Cohesion: 0.05
+Nodes (141): nk_flags, NK_LIB, nk__begin(), nk_begin_titled(), nk_build(), nk_button_behavior(), nk_button_color(), nk_button_image_label() (+133 more)
 
 ### Community 37 - "nk_text_undo_record"
-Cohesion: 0.12
-Nodes (31): basic_environment, proxy_key_t, set_environment(), add_package_loader(), do_file(), do_reader(), do_string(), ensure_package() (+23 more)
+Cohesion: 0.13
+Nodes (29): basic_environment, lua_Reader, lua_load(), luaL_loadbufferx(), set_environment(), add_package_loader(), do_file(), do_reader() (+21 more)
 
 ### Community 38 - "NK_LIB"
 Cohesion: 0.02
 Nodes (132): boolean, boolean<meta_detail::has_to_string_test<meta_detail::non_void_t<T>>::value>, conditional<I == 0, Arg, at_in_pack_t<I - 1, Args...>>, conditional_t<T::value, all<Args...>, boolean<false>>, conditional_t<T::value, boolean<true>, any<Args...>>, count_when_for_pack<meta_detail::on_always, Limit, 0, Pred, Ts...>, count_when_for_pack<meta_detail::on_always, sizeof...(Ts), 0, Pred, Ts...>, count_when_for_pack<When, Limit, 0, Pred, Ts...> (+124 more)
 
 ### Community 39 - "ImGuiLayout"
-Cohesion: 0.04
-Nodes (107): AssetKindName(), GenerateSliceFixture(), path, AppendNonPortableDiagnostic(), AssetReferenceToJson(), BuildDocumentFromRecords(), BuildEntityRecord(), CameraPresentationToJson() (+99 more)
+Cohesion: 0.03
+Nodes (143): AssetKindFromName(), AssetKindName(), AssetKind, string, ImportSettings, assumeDielectricWithoutMetalRough, generateNormals, mergeMegaMesh (+135 more)
 
 ### Community 40 - "NullInputService6"
 Cohesion: 0.03
-Nodes (68): AccelerationStructure, GpuDevice, GPUSceneData, VkCommandBuffer, GpuDevice, GPUSceneData, vector, VkAccelerationStructureKHR (+60 more)
+Nodes (44): AccelerationStructure, GpuDevice, GPUSceneData, vector, VkCommandBuffer, VkCommandPool, VkDeviceMemory, VkDeviceSize (+36 more)
 
 ### Community 41 - "meta_any"
-Cohesion: 0.08
+Cohesion: 0.06
 Nodes (33): input_iterator_tag, Iter, random_access_iterator_tag, error_result, argument_strings, format_string, results, handle_errors() (+25 more)
 
 ### Community 42 - "stack_core.hpp"
-Cohesion: 0.07
-Nodes (32): Camera, RenderOutcome, Render, ResetAccumulation, UpdateCameraUBO, UpdateRREligibility, ClassifyRREligibility(), EffectiveNrdEnabled() (+24 more)
+Cohesion: 0.05
+Nodes (38): CompletedDenoiser, RRBackend, string, ResolveCompletedDenoiser(), RRCompletedFrameSnapshot, backend, denoiser, fallbackReason (+30 more)
 
 ### Community 43 - "RT2Layer"
-Cohesion: 0.06
-Nodes (34): SceneDocument, uint64_t, PrefabPropagationDiscoveryRequest, assets, authoringRevision, capturedSource, changedSource, document (+26 more)
+Cohesion: 0.11
+Nodes (7): AssetDiagnostic, Camera, EntityId, shared_ptr, string, vector, WorkFn
 
 ### Community 44 - "_glfw_calloc"
 Cohesion: 0.02
-Nodes (81): ContextOptions, ContextScopeBase, DOCTEST_CONSTEXPR, DOCTEST_GCC_SUPPRESS_WARNING_POP, DOCTEST_NORETURN, DOCTEST_SUPPRESS_PRIVATE_WARNINGS_POP, DOCTEST_SUPPRESS_PUBLIC_WARNINGS_PUSH, IExceptionTranslator (+73 more)
+Nodes (99): ContextOptions, DOCTEST_GCC_SUPPRESS_WARNING_POP, DOCTEST_NORETURN, DOCTEST_SUPPRESS_PRIVATE_WARNINGS_POP, DOCTEST_SUPPRESS_PUBLIC_WARNINGS_PUSH, ForWhat, funcType, allocator (+91 more)
 
 ### Community 45 - "IEditorCommand"
-Cohesion: 0.07
-Nodes (52): LastApplied, Pending, PrefabPropagationLiveTrigger, DescribePrefabPropagation(), CollectReferencedPrefabSources(), CountPlan(), AssetDiagnostic, EditorCommandHistory (+44 more)
+Cohesion: 0.03
+Nodes (109): LastApplied, Pending, PrefabPropagationLiveTrigger, string_view, Parse, SceneDocument, string, string_view (+101 more)
 
 ### Community 46 - "lua_gettop"
 Cohesion: 0.02
-Nodes (125): nk_plugin_filter, nk_size, nk_buffer, allocated, calls, grow_factor, nk_buffer_init(), nk_buffer_init_fixed() (+117 more)
+Nodes (133): nk_size, nk_adler32(), nk_buffer, allocated, calls, grow_factor, nk_buffer_init(), nk_buffer_init_fixed() (+125 more)
 
 ### Community 47 - "MappedFile"
-Cohesion: 0.08
-Nodes (44): LUAI_FUNC, lua_State, LUAMOD_API, time_t, checkoption(), getboolfield(), getfield(), l_checktime() (+36 more)
+Cohesion: 0.20
+Nodes (20): lua_State, LUAMOD_API, time_t, getboolfield(), getfield(), l_checktime(), luaopen_os(), os_clock() (+12 more)
 
 ### Community 48 - "lcode.c"
-Cohesion: 0.07
-Nodes (53): RRMode, GLFWvidmode, compareVideoModes(), _glfwCompareVideoModes(), _glfwSplitBPP(), BOOL, GLFWAPI, GLFWbool (+45 more)
+Cohesion: 0.18
+Nodes (25): RRMode, GLFWAPI, GLFWbool, GLFWgammaramp, _GLFWmonitor, GLFWvidmode, calculateRefreshRate(), getModeInfo() (+17 more)
 
 ### Community 49 - "FieldDiagnostic"
 Cohesion: 0.04
-Nodes (149): I0, lua_WarnFunction, aux_rawset(), aux_upvalue(), auxgetstr(), auxsetstr(), GCObject, l_sinline (+141 more)
+Nodes (142): I0, IdxT, aux_rawset(), aux_upvalue(), auxgetstr(), auxsetstr(), GCObject, l_sinline (+134 more)
 
 ### Community 50 - "ImGuiWindowSettings"
-Cohesion: 0.08
-Nodes (50): EntityUuidRemap, ResolveCapturedAssetIdentity(), PrefabInstanceComponent, instanceId, prefab, ScriptComponent, vector, RemapEntityReferences() (+42 more)
+Cohesion: 0.09
+Nodes (39): call_syntax, Ret0, stack_reference, pop_n(), call(), call_from_top(), call_into_lua(), call_lua() (+31 more)
 
 ### Community 51 - "lua_State"
 Cohesion: 0.02
-Nodes (123): VkCommandBufferLevel, VkCommandPoolCreateFlags, VkDeviceGroupPresentModeFlagBitsKHR, VkEventCreateFlags, VkExternalSemaphoreHandleTypeFlagBits, VkFenceCreateFlags, VkImageAspectFlagBits, VkMemoryAllocateFlags (+115 more)
+Nodes (110): PFN_vkDebugReportCallbackEXT, VkCommandPoolCreateFlags, VkEventCreateFlags, VkExternalFenceHandleTypeFlagBits, VkExternalSemaphoreHandleTypeFlagBits, VkFenceCreateFlags, VkImageAspectFlagBits, VkMemoryAllocateFlags (+102 more)
 
 ### Community 52 - "SceneSerializer.cpp"
 Cohesion: 0.02
-Nodes (85): outerProduct_trait, outerProduct_trait<2, 2, T, Q>, outerProduct_trait<2, 3, T, Q>, outerProduct_trait<2, 4, T, Q>, outerProduct_trait<3, 2, T, Q>, outerProduct_trait<3, 3, T, Q>, outerProduct_trait<3, 4, T, Q>, outerProduct_trait<4, 2, T, Q> (+77 more)
+Nodes (80): outerProduct_trait, outerProduct_trait<2, 2, T, Q>, outerProduct_trait<2, 3, T, Q>, outerProduct_trait<2, 4, T, Q>, outerProduct_trait<3, 2, T, Q>, outerProduct_trait<3, 3, T, Q>, outerProduct_trait<3, 4, T, Q>, outerProduct_trait<4, 2, T, Q> (+72 more)
 
 ### Community 53 - "VkDeviceSize"
-Cohesion: 0.05
-Nodes (75): get_is_primitive<T, meta::meta_detail::is_adl_sol_lua_get_v<T>, meta::meta_detail::is_adl_sol_lua_get_v<meta::unqualified_t<T>>>, neg<std::is_reference<decltype(sol_lua_get(types<meta::unqualified_t<T>>(), nullptr, -1, std::declval<stack::record&>()))>>, neg<std::is_reference<decltype(sol_lua_get(types<T>(), nullptr, -1, std::declval<stack::record&>()))>>, adl_default_to_string(), as_pointer_tag, as_reference_tag, as_table_tag, as_unique_tag (+67 more)
+Cohesion: 0.11
+Nodes (35): adl_default_to_string(), cannot_destroy(), check(), check_get(), check_types(), check_usertype(), comparsion_operator_wrap(), default_size() (+27 more)
 
 ### Community 54 - "VkStructureType"
-Cohesion: 0.05
-Nodes (47): ClassLevelNewDelete, CreateFromConstructor, IteratorPageSizeAwareness, MoveOnlyComponent, NonMovableComponent, Raw, ReferencesGuaranteed, CanModifyDuringIteration (+39 more)
+Cohesion: 0.04
+Nodes (54): ClassLevelNewDelete, CreateFromConstructor, IteratorPageSizeAwareness, MoveOnlyComponent, NonMovableComponent, Raw, ReferencesGuaranteed, CanModifyDuringIteration (+46 more)
 
 ### Community 55 - "VkPhysicalDeviceLimits"
-Cohesion: 0.06
-Nodes (27): VkCommandBuffer, VkDescriptorSet, Record, RenderExtent, FromOutputNative, m_Height, m_Width, GpuDevice (+19 more)
+Cohesion: 0.09
+Nodes (20): GpuDevice, VkCommandBuffer, GpuDevice, VkBuffer, VkDeviceMemory, VkDeviceSize, ReservoirResources, ClearHistory (+12 more)
 
 ### Community 56 - "dispatcher_handler"
-Cohesion: 0.03
-Nodes (122): nk_int, nk_short, nk_ushort, NK_INTERN, nk_buffer_realloc(), nk_decompress_token(), nk_font_atlas_bake(), nk_font_bake() (+114 more)
+Cohesion: 0.04
+Nodes (99): nk_int, nk_short, nk_ushort, NK_INTERN, free, nk_buffer_realloc(), nk_color_u32(), nk_decode_85() (+91 more)
 
 ### Community 57 - "container.hpp"
 Cohesion: 0.08
 Nodes (21): argument_type, reference_equals, reference_hash, lua_State, reference, result_type, operator==(), stack_reference (+13 more)
 
 ### Community 58 - "Memory"
-Cohesion: 0.04
-Nodes (134): BuffFS, CClosure, LClosure, lua_State, StkId, TValue, UpVal, callclosemethod() (+126 more)
+Cohesion: 0.02
+Nodes (224): BuffFS, Dyndata, F2Imod, l_uint32, LUAI_FUNC, Mbuffer, Pfunc, lua_Integer() (+216 more)
 
 ### Community 59 - "doctest.h"
 Cohesion: 0.08
-Nodes (19): exception_handler_function, gc_mode, global_table, lua_gc(), create_named_table(), create_table(), create_table_with(), const_iterator (+11 more)
+Nodes (21): exception_handler_function, gc_mode, global_table, lua_gc(), size_t, total_memory_used(), create_named_table(), create_table() (+13 more)
 
 ### Community 60 - "ltests.c"
 Cohesion: 0.07
-Nodes (29): callback_t, close(), istream, string, vector, wstring, LongPathW(), MappedFile (+21 more)
+Nodes (26): callback_t, close(), string, vector, wstring, LongPathW(), MappedFile, data (+18 more)
 
 ### Community 61 - "scalar_int_sized.hpp"
 Cohesion: 0.08
-Nodes (111): OpCode, addk(), binopr2op(), binopr2TM(), boolF(), boolT(), BinOpr, expdesc (+103 more)
+Nodes (109): OpCode, addk(), binopr2op(), binopr2TM(), boolF(), boolT(), BinOpr, expdesc (+101 more)
 
 ### Community 62 - "TransformGizmoResult"
 Cohesion: 0.06
-Nodes (34): string_view, Parse, CapturedPrefabSource, fingerprint, prefabBytes, sidecarBytes, path, Severity (+26 more)
+Nodes (13): meta_base_node, meta_range, meta_type_node, meta_custom, node, meta_func, ctx, node (+5 more)
 
 ### Community 63 - "Image"
-Cohesion: 0.07
-Nodes (81): lua_createtable(), lua_getfield(), lua_pushstring(), lua_pushthread(), lua_pushvalue(), lua_setfield(), lua_xmove(), luaL_Reg (+73 more)
+Cohesion: 0.14
+Nodes (35): lua_getfield(), addtoclib(), lua_State, LUAMOD_API, checkclib(), checkload(), createclibstable(), createsearcherstable() (+27 more)
 
 ### Community 64 - "ResolveScriptAssetPath"
 Cohesion: 0.02
-Nodes (110): MaterialType, string, MaterialOverrideComponent, authored, material, materialIndex, sourceMaterialKey, NameComponent (+102 more)
+Nodes (116): MaterialType, MaterialOverrideComponent, authored, material, materialIndex, sourceMaterialKey, DuplicateMaterialAndAssignCommand::DuplicateMaterialAndAssignCommand(), optional (+108 more)
 
 ### Community 65 - "stb_image.h"
-Cohesion: 0.04
-Nodes (53): BuildEmissiveTextureOccupancy(), BuildGPUSceneDataFromECS(), BuildPunctualLightsFromECS(), GPUSceneData, RenderInstanceMap, GPUPunctualLight, color_intensity, cone (+45 more)
+Cohesion: 0.03
+Nodes (60): IRuntimeScriptDispatch, OnFixedUpdate, OnUpdate, SyncScriptEnvironments, IInputService, IRuntimeCommandSink, IRuntimeLifecycleObserver, SceneDocument (+52 more)
 
 ### Community 66 - "lparser.c"
 Cohesion: 0.05
-Nodes (88): ChannelInfo, FP16, FP32, mz_streamp, mz_ulong, AllocateImage(), applyLut(), bitmapFromData() (+80 more)
+Nodes (71): ChannelInfo, mz_streamp, mz_ulong, applyLut(), bitmapFromData(), CompressPiz(), CompressZip(), countFrequencies() (+63 more)
 
 ### Community 67 - "state_view"
 Cohesion: 0.02
-Nodes (176): CameraDiscreteCommit, CameraSession, LightSession, MaterialIndexSession, MaterialPropertiesSession, MotionSession, NameSession, GpuDevice (+168 more)
+Nodes (168): CameraDiscreteCommit, CameraSession, LightSession, MaterialIndexSession, MaterialPropertiesSession, MotionSession, NameSession, GpuDevice (+160 more)
 
 ### Community 68 - "RendererGPU"
-Cohesion: 0.04
-Nodes (73): RRFeatureOperation, RRIneligibleMode, optional, NativeExtentPlan, output, render, OutputExtent, m_Height (+65 more)
+Cohesion: 0.07
+Nodes (41): RRFeatureOperation, RRIneligibleMode, UpdateRREligibility, ClassifyRREligibility(), string, Failure(), DlssQualityMode, RREligibility (+33 more)
 
 ### Community 69 - "test_util.hpp"
 Cohesion: 0.02
@@ -1543,23 +1508,23 @@ Nodes (107): VkPhysicalDeviceLimits, bufferImageGranularity, discreteQueuePriori
 
 ### Community 70 - "false_type"
 Cohesion: 0.04
-Nodes (103): FILE_ID_128, Impl, PathTransactionFaultPoint, Result<void>, error, BuildChain(), ChainEntry, handle (+95 more)
+Nodes (106): FILE_ID_128, Impl, PathTransactionFaultPoint, Result<void>, error, BuildChain(), ChainEntry, handle (+98 more)
 
 ### Community 71 - "GPUPunctualLight"
-Cohesion: 0.10
-Nodes (21): common_type_t, all_of(), index, basic_storage_view, leading, basic_view<get_t<Get>, exclude_t<>>, basic_view<get_t<Get...>, exclude_t<Exclude...>, std::enable_if_t<(sizeof...(Get) != 0u)>>, each() (+13 more)
+Cohesion: 0.04
+Nodes (59): common_type_t, LhsType, OGet, RhsType, storage(), all_of(), basic_common_view, filter (+51 more)
 
 ### Community 72 - "size_type"
 Cohesion: 0.10
 Nodes (13): MetaAssociativeContainer, MetaPointer, MetaSequenceContainer, argument, value, base, value, clazz (+5 more)
 
 ### Community 73 - "nk_panel"
-Cohesion: 0.06
-Nodes (44): CompareTransforms(), DetectScriptError(), DetectSpawnViolation(), FormatQuat(), FormatVec3(), quat, string, vector (+36 more)
+Cohesion: 0.05
+Nodes (49): CompareTransforms(), DetectScriptError(), DetectSpawnViolation(), FormatQuat(), FormatVec3(), quat, string, vector (+41 more)
 
 ### Community 74 - "Release notes"
-Cohesion: 0.07
-Nodes (35): ExplicitCapture, optional, PairList, quat, SceneManager, unique_ptr, vector, FailureFor() (+27 more)
+Cohesion: 0.04
+Nodes (63): ExplicitCapture, optional, PairList, quat, SceneManager, unique_ptr, vector, FailureFor() (+55 more)
 
 ### Community 75 - "nk_rune"
 Cohesion: 0.10
@@ -1567,60 +1532,60 @@ Nodes (54): LINMATH_H_FUNC, mat4x4, quat, vec2, vec4, mat4x4_add(), mat4x4_arcba
 
 ### Community 76 - "GpuImage"
 Cohesion: 0.02
-Nodes (103): nk_command_custom_callback, nk_plugin_alloc, nk_plugin_copy, nk_plugin_free, nk_plugin_paste, nk_text_width_f, nk_handle, nk_allocator (+95 more)
+Nodes (97): nk_command_custom_callback, nk_plugin_alloc, nk_plugin_free, nk_text_width_f, nk_handle, nk_allocator, alloc, userdata (+89 more)
 
 ### Community 77 - "ImVec4"
 Cohesion: 0.02
 Nodes (99): Fixes:, Fixes:, Fixes:, Fixes:, Fixes:, GLM 0.1 - 2005-02-21, GLM 0.2 - 2005-05-05, GLM 0.3.1 - 2006-03-28 (+91 more)
 
 ### Community 78 - "dense_set"
-Cohesion: 0.02
-Nodes (98): VkCompositeAlphaFlagBitsKHR, VkCompositeAlphaFlagsKHR, VkImageCreateFlags, VkImageType, VkPipelineMultisampleStateCreateFlags, VkSampleMask, VkSurfaceTransformFlagBitsKHR, VkSurfaceTransformFlagsKHR (+90 more)
+Cohesion: 0.03
+Nodes (69): VkCompositeAlphaFlagBitsKHR, VkImageCreateFlags, VkImageType, VkSwapchainCreateFlagsKHR, VkColorSpaceKHR, VkFormat, VkImageTiling, VkImageUsageFlags (+61 more)
 
 ### Community 79 - "imgui_impl_vulkan_with_textures.cpp"
 Cohesion: 0.05
-Nodes (47): automagic_flags, lb, r_main_only, rb, luaL_ref(), basic_reference, luastate, copy_assign_complex() (+39 more)
+Nodes (46): automagic_flags, lb, r_main_only, rb, basic_reference, luastate, copy_assign_complex(), lua_State (+38 more)
 
 ### Community 80 - "TEST"
-Cohesion: 0.02
-Nodes (118): ClosePhase, CompositePreviewSession, Begin, Discard, ExpectedAfterSchema, m_HadEffectiveFrame, m_Key, m_Kind (+110 more)
+Cohesion: 0.03
+Nodes (108): ClosePhase, CompositePreviewSession, Begin, Discard, ExpectedAfterSchema, m_HadEffectiveFrame, m_Key, m_Kind (+100 more)
 
 ### Community 81 - ".RT2Layer"
-Cohesion: 0.06
-Nodes (68): lua_type_of_v, instance(), lua_tolstring(), lua_typename(), accumulate_and_mark(), argument_handler, argument_handler<types<R, Args...>>, associated_type_name() (+60 more)
+Cohesion: 0.04
+Nodes (86): lua_type_of_v, OptionalType, handler, instance(), lua_tolstring(), lua_typename(), call(), handle_policy() (+78 more)
 
 ### Community 82 - "loadlib.c"
 Cohesion: 0.07
-Nodes (53): nk_buffer_align(), nk_buffer_alloc(), nk_buffer_mark(), nk_buffer_push(), nk_buffer_reset(), nk_buffer_total(), nk_color_fv(), nk_draw_index*
-nk_draw_list_alloc_elements(struct nk_draw_list *list, nk_size count)() (+45 more)
+Nodes (51): nk_buffer_align(), nk_buffer_alloc(), nk_buffer_mark(), nk_buffer_push(), nk_buffer_reset(), nk_buffer_total(), nk_draw_index*
+nk_draw_list_alloc_elements(struct nk_draw_list *list, nk_size count)(), nk_draw_list_add_clip() (+43 more)
 
 ### Community 83 - "EditorSceneState"
-Cohesion: 0.12
-Nodes (71): BlockCnt, Labeldesc, Labellist, l_noret, LexState, luaK_ret(), luaK_semerror(), luaX_next() (+63 more)
+Cohesion: 0.11
+Nodes (80): BlockCnt, Labeldesc, Labellist, l_noret, LexState, luaK_checkstack(), luaK_reserveregs(), luaK_ret() (+72 more)
 
 ### Community 84 - "null_window.c"
 Cohesion: 0.03
-Nodes (75): ImFont, DragFloat(), ImU8, ImWchar, ImFont, AddRemapChar, Ascent, BuildLookupTable (+67 more)
+Nodes (73): ImFont, DragFloat(), ImFont::FindGlyph(), ImFont::FindGlyphNoFallback(), ImU8, ImWchar, ImFont, AddRemapChar (+65 more)
 
 ### Community 85 - "tinyexr.h"
 Cohesion: 0.03
-Nodes (61): ImFontAtlasFlags, ImFontAtlas::Clear(), ImFontAtlas::GetTexDataAsRGBA32(), ImDrawCallback, ImTextureID, ImDrawCmd, ClipRect, ElemCount (+53 more)
+Nodes (67): ImFontAtlasFlags, ImFontAtlas::Clear(), ImFontAtlas::GetTexDataAsRGBA32(), ImDrawCallback, ImGuiTextRange, ImTextureID, ImDrawCmd, ClipRect (+59 more)
 
 ### Community 86 - "core_type_vec3.cpp"
-Cohesion: 0.04
-Nodes (72): nk_glyph, nk_rune, nk_baked_font, ascent, descent, glyph_count, glyph_offset, height (+64 more)
+Cohesion: 0.02
+Nodes (134): nk_glyph, nk_plugin_copy, nk_plugin_filter, nk_plugin_paste, nk_rune, nk_baked_font, ascent, descent (+126 more)
 
 ### Community 87 - "VkGraphicsPipelineCreateInfo"
 Cohesion: 0.05
-Nodes (33): as_container_t, in_situ<void, Len, Align>, enum_as_bitmask, in_place_delete<void>, has_on_construct, has_on_destroy, has_on_update, key_only_associative_container<Type, std::void_t<typename Type::mapped_type>> (+25 more)
+Nodes (33): as_container_t, DOCTEST_CONSTEXPR, in_situ<void, Len, Align>, enum_as_bitmask, in_place_delete<void>, has_on_construct, has_on_destroy, has_on_update (+25 more)
 
 ### Community 88 - "VkSwapchainCreateInfoKHR"
 Cohesion: 0.05
 Nodes (84): check_vk_result(), CleanupVulkan(), CleanupVulkanWindow(), ImGui_ImplVulkanH_Window, VKAPI_ATTR, VkDebugReportFlagsEXT, VkDebugReportObjectTypeEXT, VkResult (+76 more)
 
 ### Community 89 - "TEST_F"
-Cohesion: 0.13
-Nodes (36): ConsControl, expkind, LocVar, luaK_exp2anyregup(), luaK_setlist(), allocupvalue(), expdesc, FuncState (+28 more)
+Cohesion: 0.11
+Nodes (42): ConsControl, expkind, LocVar, luaK_exp2anyregup(), luaK_setlist(), allocupvalue(), BinOpr, expdesc (+34 more)
 
 ### Community 90 - "Material"
 Cohesion: 0.05
@@ -1631,20 +1596,20 @@ Cohesion: 0.07
 Nodes (30): ImGui_ImplVulkan_InitInfo, VkDescriptorSet, VkDescriptorSetLayout, VkImage, VkImageLayout, VkImageView, VkPipelineCreateFlags, VkPipelineLayout (+22 more)
 
 ### Community 92 - "_EXRHeader"
-Cohesion: 0.05
-Nodes (56): constrained_find(), contains(), count(), dense_set, default_threshold, dense_set_iterator, it, dense_set_local_iterator (+48 more)
+Cohesion: 0.06
+Nodes (48): constrained_find(), contains(), count(), dense_set, default_threshold, dense_set_iterator, it, dense_set_local_iterator (+40 more)
 
 ### Community 93 - "jquery.js"
-Cohesion: 0.09
-Nodes (15): ActionState, IInputService, string, vec2, InputService, BuildPollList, m_Backend, m_CursorCaptureRequested (+7 more)
+Cohesion: 0.07
+Nodes (23): DesktopInputBackend, DesktopInputPollList, gamepadAxes, keys, mouseButtons, pollGamepadButtons, pair, vector (+15 more)
 
 ### Community 94 - "AssetReference"
 Cohesion: 0.09
-Nodes (84): l_mem, atomic(), atomic2gen(), CClosure, GCObject, global_State, LClosure, lu_mem (+76 more)
+Nodes (77): atomic(), atomic2gen(), CClosure, GCObject, global_State, LClosure, lu_mem, lua_State (+69 more)
 
 ### Community 95 - "ImGui_ImplDX11_Data"
 Cohesion: 0.02
-Nodes (83): AllowCast, Cast, EnumConversion, NoSBOConvertAssignValue, NoSBOConvertTransferValue, NoSBOMoveInvalidate, OpaqueAllowCast, ArithmeticConversion (+75 more)
+Nodes (81): AllowCast, Cast, EnumConversion, NoSBOConvertAssignValue, NoSBOConvertTransferValue, NoSBOMoveInvalidate, OpaqueAllowCast, ArithmeticConversion (+73 more)
 
 ### Community 96 - "mz_zip_archive"
 Cohesion: 0.02
@@ -1652,19 +1617,19 @@ Nodes (85): AnyCast, AnyDeathTest, AssociativeContainerOfNonComparable, Comparab
 
 ### Community 97 - "tiny_gltf.h"
 Cohesion: 0.03
-Nodes (108): DIDEVICEINSTANCE, DIDEVICEOBJECTINSTANCEW, DISPLAY_DEVICEW, GUID, PFN_vkGetInstanceProcAddr, defaultDeallocate(), _glfw_calloc(), _glfw_fmaxf() (+100 more)
+Nodes (135): DIDEVICEINSTANCE, DISPLAY_DEVICEW, GUID, PFN_vkGetInstanceProcAddr, GLFWAPI, defaultDeallocate(), _glfw_calloc(), _glfw_fminf() (+127 more)
 
 ### Community 98 - "main"
 Cohesion: 0.05
 Nodes (36): a(), aG(), al(), at(), az(), b(), bB(), bD() (+28 more)
 
 ### Community 99 - "VkBool32"
-Cohesion: 0.09
-Nodes (35): Real, align(), align_one(), align_user(), align_usertype_pointer(), align_usertype_unique(), align_usertype_unique_destructor(), align_usertype_unique_tag() (+27 more)
+Cohesion: 0.12
+Nodes (29): Real, align(), align_one(), align_user(), align_usertype_pointer(), align_usertype_unique(), align_usertype_unique_destructor(), align_usertype_unique_tag() (+21 more)
 
 ### Community 100 - "scalar_uint_sized.hpp"
 Cohesion: 0.03
-Nodes (85): VkExternalFenceHandleTypeFlagBits, VkMemoryHeapFlags, VkSamplerYcbcrConversion, VkTessellationDomainOrigin, glad_vk_find_core_vulkan(), glad_vk_find_extensions_vulkan(), glad_vk_free_extensions(), glad_vk_get_extensions() (+77 more)
+Nodes (85): VkMemoryHeapFlags, glad_vk_find_core_vulkan(), glad_vk_find_extensions_vulkan(), glad_vk_free_extensions(), glad_vk_get_extensions(), glad_vk_get_proc_from_userptr(), glad_vk_has_extension(), glad_vk_load_VK_EXT_debug_report() (+77 more)
 
 ### Community 101 - "common.h"
 Cohesion: 0.04
@@ -1675,36 +1640,36 @@ Cohesion: 0.05
 Nodes (77): _GLFWwindow, _glfwInputMonitorWindow(), acquireMonitor(), applySizeLimits(), EGLenum, EGLint, EGLNativeDisplayType, EGLNativeWindowType (+69 more)
 
 ### Community 103 - "handle_value"
-Cohesion: 0.03
-Nodes (38): hash<glm::mat<2, 2, T,Q> >, hash<glm::mat<2, 3, T,Q> >, hash<glm::mat<2, 4, T,Q> >, hash<glm::mat<3, 2, T,Q> >, hash<glm::mat<3, 3, T,Q> >, hash<glm::mat<3, 4, T,Q> >, hash<glm::mat<4, 2, T,Q> >, hash<glm::mat<4, 3, T,Q> > (+30 more)
+Cohesion: 0.02
+Nodes (18): main(), test_conjugate(), test_mix(), main(), test_cross(), test_dot(), test_length(), test_normalize() (+10 more)
 
 ### Community 104 - "DiscoveredPropagationPlan"
-Cohesion: 0.05
-Nodes (46): string, TransformGestureLifecycleState, RouteTransformCloseRequest(), ImGui::DestroyContext(), Application, Application::Application(), Close, FlushCommandBuffer (+38 more)
+Cohesion: 0.06
+Nodes (38): ImGui::DestroyContext(), Application, Application::Application(), FlushCommandBuffer, GetCommandBuffer, GetDescriptorPool, GetDevice, GetInstance (+30 more)
 
 ### Community 105 - "vulkan.h"
-Cohesion: 0.10
-Nodes (75): mz_bool, mz_file_write_func, MZ_FORCEINLINE, mz_uint, mz_uint16, mz_uint32, mz_uint64, mz_zip_archive (+67 more)
+Cohesion: 0.09
+Nodes (82): mz_bool, mz_file_write_func, MZ_FORCEINLINE, mz_uint, mz_uint16, mz_uint32, mz_uint64, mz_uint8 (+74 more)
 
 ### Community 106 - "fastfloat_really_inline"
-Cohesion: 0.08
-Nodes (21): joint_weight_alloc, OtherAlloc, real_alloc, basic_skin_weight_t, vertex_id, weightValues, basic_tag_t, floatValues (+13 more)
+Cohesion: 0.06
+Nodes (30): Block, joint_weight_alloc, OtherAlloc, real_alloc, arena_adapter, ArenaAllocator, allocate, default_block_size_ (+22 more)
 
 ### Community 107 - "call.hpp"
-Cohesion: 0.03
-Nodes (60): LoadImageDataFunction, nullptr, ParseStrictness, GetBaseDir(), Model, accessors, animations, asset (+52 more)
+Cohesion: 0.05
+Nodes (43): GetBaseDir(), Model, accessors, animations, asset, audioEmitters, audioSources, buffers (+35 more)
 
 ### Community 108 - "basic_attrib_t"
-Cohesion: 0.07
-Nodes (45): ID3D11Device, ID3D11RenderTargetView, float4, ID3D11DeviceContext, IDXGISwapChain, ImVec2, PS_INPUT, ImGui_ImplDX11_CreateDeviceObjects() (+37 more)
+Cohesion: 0.04
+Nodes (72): ID3D11BlendState, ID3D11Buffer, ID3D11DepthStencilState, ID3D11Device, ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState, ID3D11RenderTargetView (+64 more)
 
 ### Community 109 - "NriStruct"
 Cohesion: 0.05
-Nodes (76): ChannelsInLayer(), ConvertHeader(), DecodeEXRImage(), _EXRHeader, channels, chunk_count, compression_type, custom_attributes (+68 more)
+Nodes (80): ChannelsInLayer(), ConvertHeader(), DecodeEXRImage(), _EXRHeader, channels, chunk_count, compression_type, custom_attributes (+72 more)
 
 ### Community 110 - "llex.c"
 Cohesion: 0.04
-Nodes (70): IMGUI_IMPL_API, INT64, LPRECT, BOOL, DWORD, HDC, HMONITOR, HWND (+62 more)
+Nodes (71): IMGUI_IMPL_API, INT64, LPRECT, BOOL, DWORD, HDC, HMONITOR, HWND (+63 more)
 
 ### Community 111 - "VkDescriptorUpdateTemplateCreateInfo"
 Cohesion: 0.04
@@ -1720,40 +1685,40 @@ Nodes (6): main(), super_thing, b, thing, a, unrelated
 
 ### Community 114 - "lua_pushvalue"
 Cohesion: 0.03
-Nodes (103): Equal, PrefabPrimitiveRecipeCommand, Kind, PrimitiveComponent, kind, rings, segments, size (+95 more)
+Nodes (95): PrefabPrimitiveRecipeCommand, MeshRef, materialIndex, meshIndex, string, vector, MeshData, boundsMax (+87 more)
 
 ### Community 115 - "RasterPass"
-Cohesion: 0.04
-Nodes (68): DragState, AroundPivot(), AxisScale(), ClassifyTransformGizmoRelease(), Camera, EditorSelection, mat4, optional (+60 more)
+Cohesion: 0.09
+Nodes (31): DragState, AroundPivot(), AxisScale(), Camera, EditorSelection, mat4, optional, quat (+23 more)
 
 ### Community 116 - "gl.h"
-Cohesion: 0.06
-Nodes (51): ActionEntry, ResolvedMapping, BindingSource(), BindingSourceAxis(), ActionState, ModifierBits, string, string (+43 more)
+Cohesion: 0.07
+Nodes (44): ActionEntry, ResolvedMapping, BindingSource(), BindingSourceAxis(), ActionState, ModifierBits, string, string (+36 more)
 
 ### Community 117 - "vec_swizzle.hpp"
 Cohesion: 0.06
 Nodes (73): NVSDK_NGX_FeatureDiscoveryInfo, ApplicationDataDirectory(), AsNgxResource(), BeginOneShot(), CheckNgx(), CheckVk(), NVSDK_NGX_FeatureCommonInfo, NVSDK_NGX_Resource_VK (+65 more)
 
 ### Community 118 - "ldebug.c"
-Cohesion: 0.04
-Nodes (60): vec2, vec4, Texture, TextureNRI, dummy, texture, main(), test_bvec4_ctor() (+52 more)
+Cohesion: 0.05
+Nodes (51): vec2, vec4, Texture, TextureNRI, dummy, texture, main(), test_comp() (+43 more)
 
 ### Community 119 - "string"
 Cohesion: 0.06
-Nodes (67): chars_format, fastfloat_really_inline, ff_errc, float32_t, float64_t, __m128i, adjust_for_feature_macros(), adjusted_mantissa
-digit_comp() (+59 more)
+Nodes (71): chars_format, fastfloat_really_inline, ff_errc, float32_t, float64_t, __m128i, adjust_for_feature_macros(), adjusted_mantissa
+digit_comp() (+63 more)
 
 ### Community 120 - "WatcherFSEvents"
-Cohesion: 0.04
-Nodes (53): index_alloc, int_alloc, basic_attrib_t, colors, face_num_verts, indices, material_ids, normals (+45 more)
+Cohesion: 0.07
+Nodes (36): index_alloc, int_alloc, basic_attrib_t, colors, face_num_verts, indices, material_ids, normals (+28 more)
 
 ### Community 121 - "PrefabPropagationDiagnostic"
 Cohesion: 0.12
 Nodes (17): GPUSceneData, cdfHeight, cdfWidth, conditionalCDF, emissiveTextureOccupancy, envIntensity, envMapIndex, filteredBlackEmissiveTriangleCount (+9 more)
 
 ### Community 122 - "VkImageCreateInfo"
-Cohesion: 0.03
-Nodes (69): VkBufferViewCreateFlags, VkBuffer, VkDeviceMemory, VkDeviceSize, VkBindBufferMemoryInfo, buffer, memory, memoryOffset (+61 more)
+Cohesion: 0.02
+Nodes (121): VkBufferViewCreateFlags, VkSparseMemoryBindFlags, VkBuffer, VkDeviceMemory, VkDeviceSize, VkImage, VkBindBufferMemoryInfo, buffer (+113 more)
 
 ### Community 123 - "to_string"
 Cohesion: 0.03
@@ -1764,64 +1729,64 @@ Cohesion: 0.03
 Nodes (72): AdapterDesc, AddressModes, AllocateMemoryDesc, AttachmentDesc, BarrierDesc, BindBufferMemoryDesc, BindTextureMemoryDesc, BlendDesc (+64 more)
 
 ### Community 125 - "linux_joystick.c"
-Cohesion: 0.04
-Nodes (58): BLASData, AccelerationStructure, BuildAttributeBuffers, BuildBLASes, BuildTLAS, Destroy, GetBLASAddress, m_BLASes (+50 more)
+Cohesion: 0.06
+Nodes (32): BLASData, AccelerationStructure, m_BLASes, m_Device, m_IndexBuffer, m_IndexMemory, m_InstanceBuffer, m_InstanceMaterialIndices (+24 more)
 
 ### Community 126 - "function_types.hpp"
-Cohesion: 0.06
-Nodes (74): InputIterator, ConstIterator, ConstReverseIterator, Iterator, ReverseIterator, size_t, string, StringType (+66 more)
+Cohesion: 0.07
+Nodes (69): InputIterator, ConstIterator, ConstReverseIterator, Iterator, ReverseIterator, size_t, string, StringType (+61 more)
 
 ### Community 127 - "TEST"
 Cohesion: 0.05
 Nodes (32): BuildScriptedCube(), ActionState, AssetDiagnostic, GPUSceneData, IInputService, ISceneRenderBridge, path, RuntimeSceneController (+24 more)
 
 ### Community 128 - "AssetRecord"
-Cohesion: 0.09
-Nodes (63): STB_TEXTEDIT_KEYTYPE, STB_TEXTEDIT_STRING, StbFindState, StbTexteditRow, StbUndoRecord, StbUndoState, ImWchar, ImStrbolW() (+55 more)
+Cohesion: 0.07
+Nodes (77): STB_TEXTEDIT_KEYTYPE, STB_TEXTEDIT_STRING, StbFindState, StbTexteditRow, StbUndoRecord, StbUndoState, callback, ImWchar (+69 more)
 
 ### Community 129 - "Phase8W4S7AcceptanceTests.cpp"
 Cohesion: 0.04
-Nodes (41): GLFWbool, _GLFWplatform, _glfwConnectNull(), _glfwInitNull(), _glfwTerminateNull(), GLFWbool, _GLFWjoystick, _glfwInitJoysticksNull() (+33 more)
+Nodes (35): GLFWbool, _GLFWjoystick, _glfwInitJoysticksNull(), _glfwPollJoystickNull(), GLFWproc, _glfwPlatformGetModuleSymbol(), GLFWbool, _GLFWmutex (+27 more)
 
 ### Community 130 - "String"
-Cohesion: 0.11
-Nodes (60): F2Imod, lua_Integer(), luaO_ceillog2(), init_registry(), arrayindex(), binsearch(), l_sinline, lua_Number (+52 more)
+Cohesion: 0.14
+Nodes (48): luaO_ceillog2(), global_State, init_registry(), arrayindex(), binsearch(), l_sinline, lua_Number, lua_State (+40 more)
 
 ### Community 131 - "imstb_truetype.h"
 Cohesion: 0.05
-Nodes (38): any_policy, basic_any_storage<Len, Align>, concept_type, deleter_type, request, any_cast(), basic_any, alignment (+30 more)
+Nodes (43): any_policy, basic_any_storage<Len, Align>, concept_type, deleter_type, request, any_cast(), basic_any, alignment (+35 more)
 
 ### Community 132 - "SceneResources"
 Cohesion: 0.03
 Nodes (67): glm::vec<3, T, Q> wwx(), glm::vec<3, T, Q> xzw(), glm::vec<3, T, Q> xzx(), glm::vec<3, T, Q> yyw(), glm::vec<3, T, Q> yyy(), glm::vec<3, T, Q> yzy(), glm::vec<3, T, Q> zxw(), glm::vec<3, T, Q> zxy() (+59 more)
 
 ### Community 133 - "operator<"
-Cohesion: 0.12
+Cohesion: 0.10
 Nodes (11): adjacency_matrix, matrix, vert, container_type, in_edge_iterator, out_edge_iterator, sentinel, vertex_iterator (+3 more)
 
 ### Community 134 - "imgui_impl_win32.cpp"
 Cohesion: 0.04
-Nodes (68): FT_Bitmap, FT_Face, FT_Glyph_Metrics, FT_Int, FT_Int32, FT_Library, FT_Memory, FT_Render_Mode (+60 more)
+Nodes (63): FT_Bitmap, FT_Face, FT_Glyph_Metrics, FT_Int, FT_Int32, FT_Library, FT_Memory, FT_Render_Mode (+55 more)
 
 ### Community 135 - "object"
 Cohesion: 0.04
-Nodes (65): ID3D10BlendState, ID3D10Buffer, ID3D10DepthStencilState, ID3D10Device, ID3D10InputLayout, ID3D10PixelShader, ID3D10RasterizerState, ID3D10RenderTargetView (+57 more)
+Nodes (64): ID3D10BlendState, ID3D10Buffer, ID3D10DepthStencilState, ID3D10Device, ID3D10InputLayout, ID3D10PixelShader, ID3D10RasterizerState, ID3D10RenderTargetView (+56 more)
 
 ### Community 136 - "PrefabCommandTransaction"
-Cohesion: 0.06
-Nodes (30): basic_table, payload, dense_map, default_threshold, minimum_capacity, packed, placeholder_position, sparse (+22 more)
+Cohesion: 0.08
+Nodes (26): constrained_find(), dense_map, default_threshold, minimum_capacity, packed, placeholder_position, sparse, threshold (+18 more)
 
 ### Community 137 - "Integration"
-Cohesion: 0.12
-Nodes (15): dense_map, default_threshold, minimum_capacity, packed, placeholder_position, sparse, threshold, allocator_type (+7 more)
+Cohesion: 0.09
+Nodes (39): at(), constrained_find(), contains(), count(), dense_map, default_threshold, minimum_capacity, packed (+31 more)
 
 ### Community 138 - "ImGuiViewport"
-Cohesion: 0.06
-Nodes (91): call_syntax, COMPAT53_API, compat53_LoadF, luaL_Buffer_53, Ret0, compat53_call_lua(), compat53_checkmode(), compat53_countlevels() (+83 more)
+Cohesion: 0.08
+Nodes (64): COMPAT53_API, compat53_LoadF, luaL_Buffer_53, lua_pushvalue(), lua_State, LUAMOD_API, luaopen_lib11(), anotherfunc() (+56 more)
 
 ### Community 139 - "stbi__context"
-Cohesion: 0.05
-Nodes (64): AssetIdentityAuthority, Less, AppendDuplicateIdDiagnostic(), AssetDatabase, AddAssetDependency, AddEntityDependency, AddOrUpdate, AllRecordsSorted (+56 more)
+Cohesion: 0.03
+Nodes (98): AssetIdentityAuthority, Less, AppendDuplicateIdDiagnostic(), AssetDatabase, AddAssetDependency, AddEntityDependency, AddOrUpdate, AllRecordsSorted (+90 more)
 
 ### Community 140 - "FASTFLOAT_CONSTEXPR20"
 Cohesion: 0.07
@@ -1829,15 +1794,15 @@ Nodes (25): handler_type, assure(), basic_dispatcher, basic_dispatcher_handler, 
 
 ### Community 141 - "lvm.c"
 Cohesion: 0.05
-Nodes (40): ImGuiLayoutItemType, HasAnyNonZeroSpring(), ImGui::BalanceChildLayouts(), ImGui::BalanceLayoutItemAlignment(), ImGui::BalanceLayoutItemsAlignment(), ImGui::BeginLayoutItem(), ImGui::CalculateLayoutItemAlignmentOffset(), ImGui::EndLayoutItem() (+32 more)
+Nodes (44): ImGuiLayoutItemType, HasAnyNonZeroSpring(), ImGui::AddLayoutSpring(), ImGui::BalanceChildLayouts(), ImGui::BalanceLayoutItemAlignment(), ImGui::BalanceLayoutItemsAlignment(), ImGui::BeginLayoutItem(), ImGui::CalculateLayoutItemAlignmentOffset() (+36 more)
 
 ### Community 142 - "VkPhysicalDeviceFeatures"
-Cohesion: 0.03
-Nodes (65): VkQueueFlags, VkSampleCountFlags, VkBufferImageCopy, bufferImageHeight, bufferOffset, bufferRowLength, imageExtent, imageOffset (+57 more)
+Cohesion: 0.04
+Nodes (58): VkQueueFlags, VkSampleCountFlags, VkBufferImageCopy, bufferImageHeight, bufferOffset, bufferRowLength, imageExtent, imageOffset (+50 more)
 
 ### Community 143 - "Model"
-Cohesion: 0.05
-Nodes (38): AbstractClass, ArithmeticTypeAndNamedConstants, Construct, ConstructArithmeticConversion, ConstructCastAndConvert, ConstructInvalidArgs, ConstructMetaAnyArgs, ConstructNoArgs (+30 more)
+Cohesion: 0.04
+Nodes (55): AbstractClass, ArithmeticTypeAndNamedConstants, Construct, ConstructArithmeticConversion, ConstructCastAndConvert, ConstructInvalidArgs, ConstructMetaAnyArgs, ConstructNoArgs (+47 more)
 
 ### Community 144 - "Error"
 Cohesion: 0.03
@@ -1848,8 +1813,8 @@ Cohesion: 0.06
 Nodes (50): cl_t, FP, protect_t, c_function_invocation, call_indicator, class_indicator, get_function_pointer(), Arg0 (+42 more)
 
 ### Community 146 - "PathTracePass"
-Cohesion: 0.08
-Nodes (71): Closure, lua_Hook, auxgetinfo(), basicgetobjname(), CallInfo, Instruction, l_noret, LUA_API (+63 more)
+Cohesion: 0.09
+Nodes (66): Closure, lua_Hook, auxgetinfo(), basicgetobjname(), CallInfo, Instruction, l_noret, LUA_API (+58 more)
 
 ### Community 147 - "FileInfo"
 Cohesion: 0.04
@@ -1860,44 +1825,44 @@ Cohesion: 0.04
 Nodes (43): main_table, obj_hash, reference_type, this_state, fancy_func(), stack_object, string, unordered_map (+35 more)
 
 ### Community 149 - "VkSparseImageMemoryBind"
-Cohesion: 0.02
-Nodes (101): DEFAULT_METHODS, ExtensionMap, Animation, channels, extensions, extensions_json_string, extras, extras_json_string (+93 more)
+Cohesion: 0.03
+Nodes (81): DEFAULT_METHODS, ExtensionMap, Animation, channels, extensions, extensions_json_string, extras, extras_json_string (+73 more)
 
 ### Community 150 - "WatcherWin32"
-Cohesion: 0.02
-Nodes (100): bool_constant, KeyOnly, meta_base_node, meta_ctx_arg_t, allow_cast(), basic_vtable(), bool(), construct() (+92 more)
+Cohesion: 0.06
+Nodes (61): allow_cast(), basic_vtable(), bool(), construct(), get(), Func, id_type, in_place_t (+53 more)
 
 ### Community 151 - "SceneRecoveryService"
 Cohesion: 0.04
-Nodes (62): Fx1, is_var_bind<meta::unqualified_t<T>>, lua_CFunction_ref, Match, neg<is_variable_binding<T>>, agnostic_lua_call_wrapper, agnostic_lua_call_wrapper<bases<Args...>, is_index, is_variable, checked, boost, clean_stack, C>, agnostic_lua_call_wrapper<detail::lua_CFunction_noexcept, is_index, is_variable, checked, boost, clean_stack, C> (+54 more)
+Nodes (60): Fx1, is_var_bind<meta::unqualified_t<T>>, lua_CFunction_ref, Match, neg<is_variable_binding<T>>, agnostic_lua_call_wrapper, agnostic_lua_call_wrapper<bases<Args...>, is_index, is_variable, checked, boost, clean_stack, C>, agnostic_lua_call_wrapper<detail::lua_CFunction_noexcept, is_index, is_variable, checked, boost, clean_stack, C> (+52 more)
 
 ### Community 152 - "ImGuiViewportP"
 Cohesion: 0.04
-Nodes (85): IMGUI_API, ImGuiTableColumnFlags, ImGuiTableFlags, Draw(), EditTableColumnsFlags(), EditTableSizingFlags(), ExampleAppDocuments, Documents (+77 more)
+Nodes (75): ImGuiTableColumnFlags, ImGuiTableFlags, Draw(), EditTableColumnsFlags(), EditTableSizingFlags(), ExampleAppDocuments, Documents, HelpMarker() (+67 more)
 
 ### Community 153 - "VkPipelineViewportStateCreateInfo"
-Cohesion: 0.07
-Nodes (33): AuthoringDocumentSelectionPolicy, CancelLocal, DiscardUi, ApplyAuthoringDocumentReplacement(), CompleteAfterUiTransition(), ConsumeExternalLifecycle(), AuthoringDocumentReplacementKind, optional (+25 more)
+Cohesion: 0.04
+Nodes (54): ClassifyTransformGizmoRelease(), mat4, optional, pair, string, uint64_t, vector, TransformGizmoEventMatches() (+46 more)
 
 ### Community 154 - "TinyGLTF"
 Cohesion: 0.09
 Nodes (34): BidirIt1, BidirIt2, bigint_limbs, FASTFLOAT_CONSTEXPR14, FASTFLOAT_CONSTEXPR20, ForwardIt, limb, limb_span (+26 more)
 
 ### Community 155 - "TextureAssetLoadContext"
-Cohesion: 0.10
-Nodes (56): byte_container_with_subtype, initializer_list_t, iteration_proxy, KeyType, partial_ordering, private, public, RefStringTypeLhs (+48 more)
+Cohesion: 0.11
+Nodes (51): byte_container_with_subtype, ENUM_TYPE, initializer_list_t, iteration_proxy, KeyType, partial_ordering, private, public (+43 more)
 
 ### Community 156 - "usertypes.inheritance.multi.cpp"
-Cohesion: 0.05
-Nodes (67): FileInfoList, MovedList, iterator, string, DirectorySnapshot, addFile, deleteAll, DirectoryInfo (+59 more)
+Cohesion: 0.06
+Nodes (56): FileInfoList, MovedList, iterator, string, DirectorySnapshot, addFile, deleteAll, DirectoryInfo (+48 more)
 
 ### Community 157 - "triangle-vulkan.c"
-Cohesion: 0.07
-Nodes (32): dense_map_iterator, it, dense_map_local_iterator, it, offset, dense_map_node, element, next (+24 more)
+Cohesion: 0.06
+Nodes (34): compressed_pair_element<Type, Tag, std::enable_if_t<is_ebco_eligible_v<Type>>>, dense_map_iterator, it, dense_map_local_iterator, it, offset, dense_set_iterator, it (+26 more)
 
 ### Community 158 - "linmath.h"
-Cohesion: 0.06
-Nodes (35): nk_adler32(), nk_decompress(), nk_decompress_length(), nk_file_load(), nk_font, nk_font_atlas_add(), nk_font_atlas_add_compressed(), nk_font_atlas_add_from_file() (+27 more)
+Cohesion: 0.08
+Nodes (30): SIReSTIRPushConstants, depthThreshold, flags, frameIndex, freshCandidateCount, jitter, maxTemporalAge, normalThreshold (+22 more)
 
 ### Community 159 - "basic_storage<Entity, Entity, Allocator>"
 Cohesion: 0.05
@@ -1912,72 +1877,72 @@ Cohesion: 0.06
 Nodes (58): getopt_long(), glfwGetVersion(), GLFWAPI, glfwGetPlatform(), glfwGetVersionString(), glfwPlatformSupported(), GLFWAPI, GLFWbool (+50 more)
 
 ### Community 162 - "liolib.c"
-Cohesion: 0.11
-Nodes (20): invert_and_pop, basic_metatable, base_type, basic_table, lua_State, stack_reference, T, basic_object (+12 more)
+Cohesion: 0.06
+Nodes (36): basic_table_core, invert_and_pop, basic_lua_table, lua_State, ref_t, stack_reference, T, basic_metatable (+28 more)
 
 ### Community 163 - "Camera"
 Cohesion: 0.07
 Nodes (59): AssetWatchRefreshAction, AssetFileNeedsDatabaseRefresh(), AssetWatchEvent, action, kind, path, refreshDatabase, AssetWatchEventQueue (+51 more)
 
 ### Community 164 - "multi_custom"
-Cohesion: 0.16
-Nodes (60): json_const_array_iterator, json_const_iterator, count, ArrayBegin(), ArrayEnd(), FindMember(), ForEachInArray(), GetDouble() (+52 more)
+Cohesion: 0.12
+Nodes (67): GltfType, json_const_array_iterator, json_const_iterator, json_iterator, count, ArrayBegin(), ArrayEnd(), base64_decode() (+59 more)
 
 ### Community 165 - "type"
-Cohesion: 0.08
-Nodes (50): ProjectBinding, AssetDiagnostic, ClockNow, optional, path, RecoveryRecord, SceneDocument, SceneLoadReport (+42 more)
+Cohesion: 0.06
+Nodes (61): ProjectBinding, GenerateTinyExrEnv(), GenerateTinyTexturedGlb(), path, AssetDiagnostic, ClockNow, optional, path (+53 more)
 
 ### Community 166 - "f"
-Cohesion: 0.01
-Nodes (289): ImGuiButtonFlags, ImGuiComboFlags, ImGuiPlotType, ImGuiSelectableFlags, ImGuiSeparatorFlags, ImGuiSliderFlags, ImGuiTabBarFlags, ImGuiTextFlags (+281 more)
+Cohesion: 0.02
+Nodes (310): ImGuiButtonFlags, ImGuiComboFlags, ImGuiPlotType, ImGuiPopupPositionPolicy, ImGuiSelectableFlags, ImGuiSeparatorFlags, ImGuiSliderFlags, ImGuiTextFlags (+302 more)
 
 ### Community 167 - "texture_option_t"
 Cohesion: 0.07
-Nodes (38): CapturedMarker, ExplicitCapture, PrefabMarkerDirection, SceneManager, ExplicitCapture, MarkerSpec, optional, uint32_t (+30 more)
+Nodes (39): CapturedMarker, ExplicitCapture, PrefabMarkerDirection, SceneManager, ExplicitCapture, MarkerSpec, optional, uint32_t (+31 more)
 
 ### Community 168 - "AssetWatchPolicy.cpp"
 Cohesion: 0.03
 Nodes (60): VkPhysicalDeviceFeatures, VkPhysicalDeviceFeatures2, features, pNext, sType, alphaToOne, depthBiasClamp, depthBounds (+52 more)
 
 ### Community 169 - "ReblurSettings"
-Cohesion: 0.02
-Nodes (163): CompletedPick, SIGIReservoir, data0, data1, data2, SIReservoir, data0, data1 (+155 more)
+Cohesion: 0.01
+Nodes (229): SIGIReservoir, data0, data1, data2, SIReservoir, data0, data1, SISurfaceHistory (+221 more)
 
 ### Community 170 - "ImGui_ImplVulkan_Data"
-Cohesion: 0.09
-Nodes (42): GltfTextureManifest, ObjTextureManifest, SceneTexture, channels, floatPixels, height, isHDR, isSRGB (+34 more)
+Cohesion: 0.04
+Nodes (73): GltfTextureManifest, ObjTextureManifest, string, vector, SceneMesh, filepath, hasGeometry, indices (+65 more)
 
 ### Community 171 - "unicode_detail"
-Cohesion: 0.07
-Nodes (37): GpuDevice, VkBuffer, VkBufferUsageFlags, VkDeviceMemory, VkDeviceSize, VkFilter, VkFormat, VkImageUsageFlags (+29 more)
+Cohesion: 0.06
+Nodes (43): GpuDevice, VkAccessFlags, VkBuffer, VkBufferUsageFlags, VkCommandBuffer, VkDeviceMemory, VkDeviceSize, VkFilter (+35 more)
 
 ### Community 172 - "ProjectContext"
 Cohesion: 0.11
-Nodes (58): lu_int32, Rand64, RanState, lua_Number, lua_isinteger(), lua_pushnumber(), luaL_checknumber(), lua_Number (+50 more)
+Nodes (59): lu_int32, Rand64, RanState, lua_Number, lua_isinteger(), lua_pushnumber(), lua_Unsigned(), luaL_checknumber() (+51 more)
 
 ### Community 173 - "ldo.c"
 Cohesion: 0.06
 Nodes (43): ComputeFrameSampling(), FrameSamplingHalton(), FrameSamplingJitterForFrame(), FrameSamplingJitterToUv(), FrameSamplingMotionScaleToUv(), FrameSamplingState, frameIndex, jitter (+35 more)
 
 ### Community 174 - "basic_coroutine"
-Cohesion: 0.09
-Nodes (33): Handler, lua_State, optional, record, string, custom, bweh, check_calls (+25 more)
+Cohesion: 0.06
+Nodes (49): size_t, types, base_list, string_view, T, inheritance, is_to_stringable<base_list<Args...>>, type_cast_bases() (+41 more)
 
 ### Community 175 - "utest.h"
-Cohesion: 0.03
-Nodes (85): PropagationComponentDeltaSet, MeshRef, materialIndex, meshIndex, IsOverridable(), PrefabComponentKeyFor<CameraComponent>, value, PrefabComponentKeyFor<ImportedMeshSourceComponent> (+77 more)
+Cohesion: 0.04
+Nodes (74): PropagationComponentDeltaSet, FindComponentByWire(), optional, IsOverridable(), PrefabComponentKeyFor, PrefabComponentKeyFor<CameraComponent>, value, PrefabComponentKeyFor<ImportedMeshSourceComponent> (+66 more)
 
 ### Community 176 - "protected_function.hpp"
-Cohesion: 0.04
-Nodes (66): IndexType, PoseApplyAction, ApplyEditorCameraCut(), BuildCameraBasis(), ComputeEditorSelectionBounds(), EditorCameraPose, ISceneRenderBridge, mat4 (+58 more)
+Cohesion: 0.13
+Nodes (32): ApplyEditorCameraCut(), BuildCameraBasis(), ComputeEditorSelectionBounds(), EditorCameraPose, ISceneRenderBridge, mat4, quat, SceneDocument (+24 more)
 
 ### Community 177 - "ext_vector_common.cpp"
-Cohesion: 0.08
-Nodes (25): GLFWbool, _GLFWplatform, _GLFWwindow, wl_fixed_t, composeSymbol(), createKeyTables(), dataDeviceHandleEnter(), dataDeviceHandleMotion() (+17 more)
+Cohesion: 0.07
+Nodes (26): GLFWbool, _GLFWplatform, _GLFWwindow, wl_fixed_t, composeSymbol(), createKeyTables(), dataDeviceHandleEnter(), dataDeviceHandleMotion() (+18 more)
 
 ### Community 178 - "AsyncTextureLoader"
-Cohesion: 0.04
-Nodes (55): LPCWSTR, LPOVERLAPPED, OVERLAPPED, RefreshResult, DWORD, HANDLE, LARGE_INTEGER, WCHAR (+47 more)
+Cohesion: 0.03
+Nodes (79): LPCWSTR, LPOVERLAPPED, OVERLAPPED, RefreshResult, string, vector, WatchID, FileWatcherWin32 (+71 more)
 
 ### Community 179 - "ttUSHORT"
 Cohesion: 0.10
@@ -1988,8 +1953,8 @@ Cohesion: 0.11
 Nodes (24): main(), main(), f, main(), main(), main(), main(), main() (+16 more)
 
 ### Community 181 - "material_t"
-Cohesion: 0.05
-Nodes (42): conditional<bool(B::value), conjunction<Bs...>, B>::type, integral_constant<bool,
+Cohesion: 0.04
+Nodes (46): conditional<bool(B::value), conjunction<Bs...>, B>::type, integral_constant<bool,
 		                                       decltype(detail::swap_adl_tests::can_swap<T[N], T[N]>(0))::value
 		                                            && (!decltype(detail::swap_adl_tests::uses_std<T[N], T[N]>(0))::value || is_swappable<T, T>::value)>, integral_constant<bool,
 		                           decltype(detail::swap_adl_tests::can_swap<T, U>(0))::value
@@ -1997,23 +1962,23 @@ Nodes (42): conditional<bool(B::value), conjunction<Bs...>, B>::type, integral_c
 		                                     || (std::is_move_assignable<T>::value && std::is_move_constructible<T>::value))>, integral_constant<bool,
 		       is_swappable<T, U>::value
 		            && ((decltype(detail::swap_adl_tests::uses_std<T, U>(0))::value&& detail::swap_adl_tests::is_std_swap_noexcept<T>::value)
-		                 || (!decltype(detail::swap_adl_tests::uses_std<T, U>(0))::value&& detail::swap_adl_tests::is_adl_swap_noexcept<T, U>::value))>, integral_constant<bool, noexcept(can_swap<T, U>(0))>, integral_constant<bool, std::is_nothrow_move_constructible<T>::value && std::is_nothrow_move_assignable<T>::value>, is_trivially_copy_constructible<T>, is_void<invoke_result_t<F, U...>> (+34 more)
+		                 || (!decltype(detail::swap_adl_tests::uses_std<T, U>(0))::value&& detail::swap_adl_tests::is_adl_swap_noexcept<T, U>::value))>, integral_constant<bool, noexcept(can_swap<T, U>(0))>, integral_constant<bool, std::is_nothrow_move_constructible<T>::value && std::is_nothrow_move_assignable<T>::value>, is_trivially_copy_constructible<T>, is_void<invoke_result_t<F, U...>> (+38 more)
 
 ### Community 182 - "glfw3.h"
-Cohesion: 0.08
+Cohesion: 0.10
 Nodes (22): GpuDevice, VkCommandBuffer, VkDeviceSize, GpuDevice, VkBuffer, VkDeviceMemory, VkDeviceSize, ReservoirGIResources (+14 more)
 
 ### Community 183 - "lapi.c"
-Cohesion: 0.05
-Nodes (54): FileWatchListener, string, vector, WatchID, FileWatcherInotify, addWatch, checkForNewWatcher, directories (+46 more)
+Cohesion: 0.07
+Nodes (40): string, vector, WatchID, FileWatcherInotify, addWatch, checkForNewWatcher, directories, handleAction (+32 more)
 
 ### Community 184 - "optional_implementation.hpp"
-Cohesion: 0.09
-Nodes (30): GLuint, ImGui_ImplOpenGL2_CreateDeviceObjects(), ImGui_ImplOpenGL2_CreateFontsTexture(), ImGui_ImplOpenGL2_Data, FontTexture, ImGui_ImplOpenGL2_DestroyDeviceObjects(), ImGui_ImplOpenGL2_DestroyFontsTexture(), ImGui_ImplOpenGL2_GetBackendData() (+22 more)
+Cohesion: 0.08
+Nodes (33): ImGuiKey, ImGui_ImplGLUT_AddKeyEvent(), ImGui_ImplGLUT_Init(), ImGui_ImplGLUT_InstallFuncs(), ImGui_ImplGLUT_KeyboardFunc(), ImGui_ImplGLUT_KeyboardUpFunc(), ImGui_ImplGLUT_KeyToImGuiKey(), ImGui_ImplGLUT_NewFrame() (+25 more)
 
 ### Community 185 - "imgui_impl_opengl3.cpp"
-Cohesion: 0.09
-Nodes (58): ContentBrowserReimportCallback, AbsoluteLexical(), AddDiagnostic(), ContentBrowserIoHooks, createDirectories, moveFile, removeFile, ContentBrowserOperationReport (+50 more)
+Cohesion: 0.03
+Nodes (127): ContentBrowserReimportCallback, PSTR, AssetSidecarPath(), IUuidProvider, path, ReadSidecarId(), ResolveOrAssign(), WriteSidecarId() (+119 more)
 
 ### Community 186 - "CLIArgs"
 Cohesion: 0.06
@@ -2036,61 +2001,61 @@ Nodes (34): mat4, RRGuideScenario, string, RRGuideReportMetadata, cameraMode, ca
 
 ### Community 189 - "ltable.c"
 Cohesion: 0.04
-Nodes (52): integral_constant<bool,
+Nodes (55): integral_constant<bool,
 	       !std::is_same_v<state_view,
-	            T> && !std::is_same_v<state, T> && !meta::is_initializer_list_v<T> && !meta::is_string_like_v<T> && !meta::is_string_literal_array_v<T> && !is_transparent_argument_v<T> && !is_lua_reference_v<T> && (meta::has_begin_end_v<T> || std::is_array_v<T>)>, is_container, container_decay, container_decay<as_container_t<T>>, has_clear_test, value, has_empty_test, value (+44 more)
+	            T> && !std::is_same_v<state, T> && !meta::is_initializer_list_v<T> && !meta::is_string_like_v<T> && !meta::is_string_literal_array_v<T> && !is_transparent_argument_v<T> && !is_lua_reference_v<T> && (meta::has_begin_end_v<T> || std::is_array_v<T>)>, is_container, container_decay, container_decay<as_container_t<T>>, get_value(), has_clear_test, value, has_empty_test (+47 more)
 
 ### Community 190 - "VkPipelineDepthStencilStateCreateInfo"
 Cohesion: 0.04
-Nodes (42): GpuDevice, vector, VkAccelerationStructureKHR, VkBuffer, VkImageView, VkSampler, VkBuffer, VkDescriptorPool (+34 more)
+Nodes (45): GpuDevice, vector, VkAccelerationStructureKHR, VkBuffer, VkCommandBuffer, VkDescriptorSet, VkImageView, VkSampler (+37 more)
 
 ### Community 191 - "TYPED_TEST"
-Cohesion: 0.04
-Nodes (52): GLenum, glad_gl_find_core_gl(), glad_gl_find_extensions_gl(), glad_gl_free_extensions(), glad_gl_get_extensions(), glad_gl_get_proc_from_userptr(), glad_gl_has_extension(), glad_gl_load_GL_ARB_multisample() (+44 more)
+Cohesion: 0.05
+Nodes (50): glad_gl_find_core_gl(), glad_gl_find_extensions_gl(), glad_gl_free_extensions(), glad_gl_get_extensions(), glad_gl_get_proc_from_userptr(), glad_gl_has_extension(), glad_gl_load_GL_ARB_multisample(), glad_gl_load_GL_ARB_robustness() (+42 more)
 
 ### Community 192 - "TEST"
 Cohesion: 0.03
-Nodes (74): VkCullModeFlags, VkFrontFace, VkPipelineRasterizationStateCreateFlags, VkPolygonMode, VkBool32, VkDescriptorSetLayoutSupport, pNext, sType (+66 more)
+Nodes (68): VkPipelineMultisampleStateCreateFlags, VkSampleMask, VkBool32, VkDescriptorSetLayoutSupport, pNext, sType, supported, VkMemoryDedicatedRequirements (+60 more)
 
 ### Community 193 - "NRDWrapper"
-Cohesion: 0.05
-Nodes (58): bool_constant<std::is_base_of_v<internal::meta_policy, Type>>, CrossRegistry, is_meta_policy_v, MaybeType, meta_handle, Policy, as_cref_t, as_is_t (+50 more)
+Cohesion: 0.07
+Nodes (52): bool_constant<std::is_base_of_v<internal::meta_policy, Type>>, CrossRegistry, is_meta_policy_v, MaybeType, meta_handle, Policy, as_cref_t, as_is_t (+44 more)
 
 ### Community 194 - "Key"
-Cohesion: 0.10
-Nodes (26): Entity(), operator, null_t, operator==(), to_entity(), to_version(), tombstone_t, id_type (+18 more)
+Cohesion: 0.06
+Nodes (47): basic_entt_traits, entity_mask, length, version_mask, Entity(), entt_traits, page_size, entt_traits<std::uint32_t> (+39 more)
 
 ### Community 195 - "_vectorize.hpp"
 Cohesion: 0.06
 Nodes (37): a, props, ud, b, c, stack_object, string, this_environment (+29 more)
 
 ### Community 196 - "RenderResources"
-Cohesion: 0.08
-Nodes (48): VkAccessFlagBits, VKAPI_CALL, VkFlags, BreakCallback(), GLFWwindow, VkBool32, VkDebugReportObjectTypeEXT, VkImage (+40 more)
+Cohesion: 0.07
+Nodes (48): VkAccessFlagBits, VKAPI_CALL, VkFlags, VkLayerProperties, description, implementationVersion, layerName, specVersion (+40 more)
 
 ### Community 197 - "meta_type_node"
 Cohesion: 0.02
-Nodes (132): ImGuiTableBgTarget, ImGuiTableDrawChannelIdx, ImGuiTableRowFlags, ImGui::GetCursorPos(), ImGui::GetCursorPosX(), ImGui::GetCursorPosY(), ImGui::GetCursorScreenPos(), ImGui::GetCursorStartPos() (+124 more)
+Nodes (145): ImGuiTableBgTarget, ImGuiTableDrawChannelIdx, ImGuiTableRowFlags, PopClipRect, ImGui::DebugNodeColumns(), ImGuiOldColumnFlags, ImGuiTableColumnFlags, ImGuiTableFlags (+137 more)
 
 ### Community 198 - "Application"
 Cohesion: 0.12
-Nodes (51): LStream, RN, luaL_fileresult(), aux_close(), aux_lines(), FILE, lua_State, LUAMOD_API (+43 more)
+Nodes (52): LStream, RN, luaL_fileresult(), aux_close(), aux_lines(), FILE, lua_State, LUAMOD_API (+44 more)
 
 ### Community 199 - "map_number_storage"
 Cohesion: 0.07
-Nodes (37): one_arg_type, callback(), adjusted_mantissa, mantissa, power2, binary_format, binary_format<double>::max_mantissa_fast_path(), exact_power_of_ten (+29 more)
+Nodes (38): one_arg_type, callback(), adjusted_mantissa, mantissa, power2, binary_format, binary_format<double>::max_mantissa_fast_path(), exact_power_of_ten (+30 more)
 
 ### Community 200 - "usertype_container.hpp"
 Cohesion: 0.04
 Nodes (53): as_args_t, as_container_t, as_table_t, base, basic_bytecode, basic_coroutine, basic_environment, basic_function (+45 more)
 
 ### Community 201 - "gtc_packing.cpp"
-Cohesion: 0.11
-Nodes (21): basic_table_core, clean, L, create(), create_named(), create_with(), fail_on_newindex(), basic_object (+13 more)
+Cohesion: 0.06
+Nodes (33): Pairs, basic_table_core, clean, L, create(), create_named(), create_with(), fail_on_newindex() (+25 more)
 
 ### Community 202 - "lgc.c"
-Cohesion: 0.09
-Nodes (12): compressed_pair_element<Type, Tag, std::enable_if_t<is_ebco_eligible_v<Type>>>, const_reference, difference_type, pointer, reference, iota_iterator, current, table_iterator (+4 more)
+Cohesion: 0.05
+Nodes (40): basic_hashed_string, base_type, hash, length, repr, data(), dense_map_node, element (+32 more)
 
 ### Community 203 - "RenderSettings"
 Cohesion: 0.04
@@ -2105,39 +2070,39 @@ Cohesion: 0.05
 Nodes (41): ErCh, code_point_to_utf16(), code_point_to_utf32(), code_point_to_utf8(), decoded_result, codepoint, error, next (+33 more)
 
 ### Community 206 - "stbi__load_main"
-Cohesion: 0.07
-Nodes (27): ID3D11BlendState, ID3D11Buffer, ID3D11DepthStencilState, ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState, ID3D11SamplerState, ID3D11ShaderResourceView (+19 more)
+Cohesion: 0.09
+Nodes (36): stbtt_int16, stbtt_vertex, stbtt__close_shape(), stbtt_fontinfo, cff, charstrings, data, fdselect (+28 more)
 
 ### Community 207 - "functions.cpp"
-Cohesion: 0.08
-Nodes (26): AdjacencyMatrix, EdgeIterator, EdgesBackwardOnlyDirected, EdgesBackwardOnlyUndirected, EdgesDirected, EdgesUndirected, EraseDirected, EraseUndirected (+18 more)
+Cohesion: 0.10
+Nodes (27): DIDEVICEOBJECTINSTANCEW, _GLFWjoystick, _glfwFreeJoystick(), _glfwInputJoystick(), _glfwInputJoystickAxis(), _glfwInputJoystickButton(), _glfwInputJoystickHat(), GLFWbool (+19 more)
 
 ### Community 208 - "VkImageMemoryBarrier"
-Cohesion: 0.07
-Nodes (36): GpuDevice, GPUSceneData, VkCommandBuffer, VkDescriptorSet, VkDescriptorSetLayout, VkImageView, GpuDevice, vector (+28 more)
+Cohesion: 0.09
+Nodes (31): basic_hashed_string, base_type, hash, length, repr, data(), fnv_1a_params, fnv_1a_params<std::uint32_t> (+23 more)
 
 ### Community 209 - "group_handler"
-Cohesion: 0.08
-Nodes (43): ActionDescription(), AddActionReferences(), AddAxisReferences(), AxisDescription(), BindingKey, code, device, gamepadSlot (+35 more)
+Cohesion: 0.06
+Nodes (49): ActionDescription(), AddActionReferences(), AddAxisReferences(), AxisDescription(), BindingKey, code, device, gamepadSlot (+41 more)
 
 ### Community 210 - "format_punct"
 Cohesion: 0.03
-Nodes (54): Material, additionalValues, alphaCutoff, alphaMode, doubleSided, emissiveFactor, emissiveTexture, extensions (+46 more)
+Nodes (55): ParameterMap, Material, additionalValues, alphaCutoff, alphaMode, doubleSided, emissiveFactor, emissiveTexture (+47 more)
 
 ### Community 211 - "PrefabPropagationDiscoveryRequest"
-Cohesion: 0.15
-Nodes (37): Dyndata, LoadState, Mbuffer, luaD_inctop(), luaF_newproto(), LClosure, lua_State, ZIO (+29 more)
+Cohesion: 0.16
+Nodes (36): LoadState, luaD_inctop(), l_noret, LClosure, lu_byte, lua_Number, lua_State, Proto (+28 more)
 
 ### Community 212 - "stack_field.hpp"
 Cohesion: 0.05
 Nodes (47): Encoding, UTEST(), main(), FILE, T, utest_fabs(), utest_fopen(), utest_int64_t utest_ns() (+39 more)
 
 ### Community 213 - "bind_traits.hpp"
-Cohesion: 0.09
-Nodes (72): GltfType, json_iterator, operator==, base64_encode(), Equals(), Erase(), from_hex(), GetBaseFilename() (+64 more)
+Cohesion: 0.12
+Nodes (67): base64_encode(), Erase(), from_hex(), GetBaseFilename(), Document, json, ostream, T (+59 more)
 
 ### Community 214 - "TEST"
-Cohesion: 0.09
+Cohesion: 0.10
 Nodes (20): NVSDK_NGX_D3D12_DLSSG_Eval_Params, NVSDK_NGX_VK_DLSSG_Eval_Params, ID3D12GraphicsCommandList, NVSDK_NGX_DLSSG_Create_Params, NVSDK_NGX_DLSSG_Opt_Eval_Params, NVSDK_NGX_Handle, NVSDK_NGX_Parameter, NVSDK_NGX_Result (+12 more)
 
 ### Community 215 - "Phase8W3OverrideTests.cpp"
@@ -2145,28 +2110,28 @@ Cohesion: 0.07
 Nodes (50): DlssQualityMode, NVSDK_NGX_FeatureCommonInfo, NVSDK_NGX_Result, path, string, vector, VkCommandBuffer, VkInstance (+42 more)
 
 ### Community 216 - "VkSamplerCreateInfo"
-Cohesion: 0.06
-Nodes (40): check_handler_type, lua_State, record, sol_lua_check(), sol_lua_get(), sol_lua_push(), ABC, v_ (+32 more)
+Cohesion: 0.18
+Nodes (12): ABC, v_, check_with_sol(), Handler, lua_State, pair, record, T (+4 more)
 
 ### Community 217 - "Phase1ASceneAssetTests.cpp"
-Cohesion: 0.08
-Nodes (43): clockid_t, cnd_t, mtx_t, PARTICLE, thrd_t, tss_dtor_t, tss_t, DWORD (+35 more)
+Cohesion: 0.07
+Nodes (47): clockid_t, cnd_t, mtx_t, PARTICLE, thrd_t, tss_dtor_t, tss_t, DWORD (+39 more)
 
 ### Community 218 - "optional"
 Cohesion: 0.03
-Nodes (67): CLIArgs, benchmarkTimings, bounces, cameraForward, cameraPosition, cameraSweepAmplitude, cameraSweepCycles, cameraSweepMode (+59 more)
+Nodes (65): CLIArgs, benchmarkTimings, bounces, cameraForward, cameraPosition, cameraSweepAmplitude, cameraSweepCycles, cameraSweepMode (+57 more)
 
 ### Community 219 - "vec3"
 Cohesion: 0.06
 Nodes (38): ConstReference, EmbeddedVtable, InheritanceSupport, NoSboAlignment, Owned, PolyDeathTest, poly_call(), absolutely_random() (+30 more)
 
 ### Community 220 - "poly.cpp"
-Cohesion: 0.05
-Nodes (35): ImDrawListSplitter, _Channels, ClearFreeMemory, _Count, _Current, Merge, Split, ImGui::DebugNodeColumns() (+27 more)
+Cohesion: 0.06
+Nodes (15): hash<glm::mat<2, 2, T,Q> >, hash<glm::mat<2, 3, T,Q> >, hash<glm::mat<2, 4, T,Q> >, hash<glm::mat<3, 2, T,Q> >, hash<glm::mat<3, 3, T,Q> >, hash<glm::mat<3, 4, T,Q> >, hash<glm::mat<4, 2, T,Q> >, hash<glm::mat<4, 3, T,Q> > (+7 more)
 
 ### Community 221 - "usertype_storage_base"
 Cohesion: 0.07
-Nodes (45): BasicJsonType, lexer_t, number_float_t, number_integer_t, number_unsigned_t, parser_callback_t, back(), BasicJsonType* handle_value(Value&& v)() (+37 more)
+Nodes (48): BasicJsonType, lexer_t, number_float_t, number_integer_t, number_unsigned_t, parser_callback_t, back(), BasicJsonType* handle_value(Value&& v)() (+40 more)
 
 ### Community 222 - "DirWatcherGeneric"
 Cohesion: 0.04
@@ -2177,20 +2142,20 @@ Cohesion: 0.11
 Nodes (30): stbtt__bitmap, stbtt__point, stbtt__active_edge, next, stbtt__add_point(), stbtt__edge, invert, x0 (+22 more)
 
 ### Community 224 - "nk_size"
-Cohesion: 0.09
-Nodes (23): optional_delete_assign_base<T>, optional_delete_ctor_base<T>, optional_move_assign_base<T>, forward_as(), conjunction, emplace(), enable_if_t, in_place_t (+15 more)
+Cohesion: 0.10
+Nodes (19): optional_delete_assign_base<T>, optional_delete_ctor_base<T>, optional_move_assign_base<T>, disjunction(), emplace(), enable_if_t, in_place_t, initializer_list (+11 more)
 
 ### Community 225 - "FileWatcherCWrapper.cpp"
 Cohesion: 0.07
 Nodes (42): GLsizeiptr, SDL_Keymod, CheckProgram(), CheckShader(), GLint, GLuint, ImGui_ImplOpenGL3_CreateDeviceObjects(), ImGui_ImplOpenGL3_CreateFontsTexture() (+34 more)
 
 ### Community 226 - "AppViewController"
-Cohesion: 0.06
-Nodes (33): VkDescriptorUpdateTemplateCreateFlags, VkDescriptorUpdateTemplateType, VkPipelineBindPoint, VkSubpassDescriptionFlags, VkDescriptorUpdateTemplateCreateInfo, descriptorSetLayout, descriptorUpdateEntryCount, flags (+25 more)
+Cohesion: 0.04
+Nodes (52): VkAttachmentDescriptionFlags, VkAttachmentLoadOp, VkAttachmentStoreOp, VkPipelineBindPoint, VkRenderPassCreateFlags, VkSubpassDescriptionFlags, VkImageLayout, VkAttachmentDescription (+44 more)
 
 ### Community 227 - "basic_sigh_mixin"
-Cohesion: 0.12
-Nodes (16): Denoiser, DenoiserDesc, denoiser, identifier, DispatchDesc, constantBufferData, constantBufferDataMatchesPreviousDispatch, constantBufferDataSize (+8 more)
+Cohesion: 0.06
+Nodes (35): Denoiser, ComputeShaderDesc, size, DenoiserDesc, denoiser, identifier, DispatchDesc, constantBufferData (+27 more)
 
 ### Community 228 - "Harness6C"
 Cohesion: 0.05
@@ -2205,52 +2170,52 @@ Cohesion: 0.10
 Nodes (29): functor1, functor1<vec, 1, R, T, Q>, GLM_CONSTEXPR, functor1<vec, 2, R, T, Q>, GLM_CONSTEXPR, functor1<vec, 3, R, T, Q>, GLM_CONSTEXPR, functor1<vec, 4, R, T, Q> (+21 more)
 
 ### Community 231 - "adjacency_matrix"
-Cohesion: 0.07
-Nodes (44): ImDrawIdx, FrameResources, IndexBuffer, IndexBufferHost, IndexBufferSize, VertexBuffer, VertexBufferHost, VertexBufferSize (+36 more)
+Cohesion: 0.05
+Nodes (56): ImDrawIdx, FrameResources, IndexBuffer, IndexBufferHost, IndexBufferSize, VertexBuffer, VertexBufferHost, VertexBufferSize (+48 more)
 
 ### Community 232 - "T"
-Cohesion: 0.13
-Nodes (26): CFStringRef, ConstFSEventStreamRef, FSEventStreamEventFlags, FSEventStreamEventId, convertCFStringToStdString(), string, vector, WatchID (+18 more)
+Cohesion: 0.12
+Nodes (27): CFStringRef, ConstFSEventStreamRef, FSEventStreamEventFlags, FSEventStreamEventId, convertCFStringToStdString(), string, vector, WatchID (+19 more)
 
 ### Community 233 - "stb_image_write.h"
 Cohesion: 0.05
 Nodes (43): SIGIPushConstants, depthThreshold, flags, frameIndex, freshCandidateCount, jitter, maxTemporalAge, normalThreshold (+35 more)
 
 ### Community 234 - "stb_image_write.h"
-Cohesion: 0.08
-Nodes (21): BufferOffset, NriStruct(), StreamBufferDataDesc, StreamerDesc, StreamerInterface, StreamTextureDataDesc, ImGuiDragDropFlags, Clear (+13 more)
+Cohesion: 0.07
+Nodes (29): ConstIterable, ConstReverseIterable, Constructors, entity, Getters, It, IterableAlgorithmCompatibility, IterableIteratorConversion (+21 more)
 
 ### Community 235 - "Node"
-Cohesion: 0.07
-Nodes (28): basic_iterator, basic_sparse_set, descriptor, head, max_size, mode, packed, sparse (+20 more)
+Cohesion: 0.05
+Nodes (38): basic_iterator, basic_sparse_set, descriptor, head, max_size, mode, packed, sparse (+30 more)
 
 ### Community 236 - "Image"
-Cohesion: 0.10
-Nodes (14): const_iterator, iterator, lua_State, ptrdiff_t, size_t, size_type, string, unordered_map (+6 more)
+Cohesion: 0.09
+Nodes (19): iterator, lua_State, pair, ptrdiff_t, size_type, string, unordered_map, value_type (+11 more)
 
 ### Community 237 - "meta.hpp"
 Cohesion: 0.08
 Nodes (44): uint, main(), print_10bits(), print_11bits(), print_bits(), print_value(), test_F2x11_1x10(), test_F3x9_E1x5() (+36 more)
 
 ### Community 238 - "WatcherKqueue"
-Cohesion: 0.06
-Nodes (33): DelegateDeathTest, InvokeEmpty, ENTT_DEBUG_TEST(), deleter, check_get_arg(), unchecked_get_arg(), checked_class, value (+25 more)
+Cohesion: 0.11
+Nodes (22): check_get_arg(), unchecked_get_arg(), checked_class, value, checked_ptr, del, ptr, const_ptr_test() (+14 more)
 
 ### Community 239 - "EditorSettingsStore"
-Cohesion: 0.06
-Nodes (41): AsyncTextureLoader, Adopt, Begin, Cancel, Destroy, IsComplete, m_Busy, m_CDFHeight (+33 more)
+Cohesion: 0.03
+Nodes (75): AuthoringDocumentSelectionPolicy, CancelLocal, Choice, ConstnessAs, DiscardUi, IntegralConstant, IsApplicable, IsEBCOEligible (+67 more)
 
 ### Community 240 - "basic_handle"
 Cohesion: 0.04
-Nodes (47): SetEditorPresentation, DenoiserMode, DlssQualityMode, IsBackgroundVisible(), RenderSettings, accumulate, denoiserMode, dirty (+39 more)
+Nodes (53): DenoiserMode, DlssQualityMode, RenderSettings, accumulate, denoiserMode, dirty, dlssQuality, emissiveBoost (+45 more)
 
 ### Community 241 - "basic_hashed_string"
 Cohesion: 0.05
 Nodes (25): A, a, bark(), shared_ptr, string, T, unique_ptr, variadic_args (+17 more)
 
 ### Community 242 - "protected_function_result"
-Cohesion: 0.06
-Nodes (36): VkClearValue, VkImageAspectFlags, VkClearAttachment, aspectMask, clearValue, colorAttachment, VkImageMemoryBarrier, dstAccessMask (+28 more)
+Cohesion: 0.05
+Nodes (42): VkClearValue, VkComponentSwizzle, VkImageViewCreateFlags, VkImageViewType, VkImageAspectFlags, VkClearAttachment, aspectMask, clearValue (+34 more)
 
 ### Community 243 - "stbtt_fontinfo"
 Cohesion: 0.07
@@ -2269,36 +2234,36 @@ Cohesion: 0.06
 Nodes (30): Camera, extensions, extensions_json_string, extras, extras_json_string, name, operator==, orthographic (+22 more)
 
 ### Community 247 - "StagingArena"
-Cohesion: 0.18
-Nodes (6): string, this_state, variadic_args, ext_getset, bark, meow
+Cohesion: 0.05
+Nodes (23): aligned_base, aligned_derived, bark, var, var2, blah, F, size_t (+15 more)
 
 ### Community 248 - "egl_context.c"
 Cohesion: 0.08
 Nodes (34): path, string, vector, DegenerateShapeFixture, dir, mtlPath, objPath, validShapeName (+26 more)
 
 ### Community 249 - "T"
-Cohesion: 0.08
-Nodes (65): STBTT_DEF, stbtt_int16, ImFontAtlasBuildWithStbTruetype(), stbtt_pack_range, main(), stbtt_BakeFontBitmap_internal(), stbtt_FindGlyphIndex(), stbtt_fontinfo (+57 more)
+Cohesion: 0.11
+Nodes (57): stbtt_aligned_quad, stbtt_bakedchar, STBTT_DEF, ImFontAtlasBuildWithStbTruetype(), stbtt_pack_range, stbtt_packedchar, main(), my_stbtt_initfont() (+49 more)
 
 ### Community 250 - "Phase7W3CharacterizationTests.cpp"
-Cohesion: 0.07
-Nodes (30): VkPipelineLayoutCreateFlags, VkSubgroupFeatureFlags, VkDescriptorPool, VkDescriptorSetLayout, VkShaderStageFlags, VkDescriptorSetAllocateInfo, descriptorPool, descriptorSetCount (+22 more)
+Cohesion: 0.04
+Nodes (50): VkDescriptorUpdateTemplateCreateFlags, VkDescriptorUpdateTemplateType, VkPipelineLayoutCreateFlags, VkSubgroupFeatureFlags, VkDescriptorPool, VkDescriptorSetLayout, VkShaderStageFlags, VkDescriptorSetAllocateInfo (+42 more)
 
 ### Community 251 - "input.c"
 Cohesion: 0.05
 Nodes (43): 3.10.1. GLM_EXT_quaternion_float_precision, 3.10.2. GLM_EXT_quaternion_double_precision, 3.1.1. GLM_EXT_scalar_int_sized, 3.1.2. GLM_EXT_scalar_uint_sized, 3.2.1. GLM_EXT_scalar_common, 3.2.2. GLM_EXT_scalar_relational, 3.2.3. GLM_EXT_scalar_constants, 3.2.4. GLM_EXT_scalar_ulp (+35 more)
 
 ### Community 252 - "core.md"
-Cohesion: 0.07
-Nodes (28): GpuDevice, VkCommandBuffer, VkImageView, VkDescriptorPool, VkDescriptorSet, VkDescriptorSetLayout, VkDevice, VkImageView (+20 more)
+Cohesion: 0.08
+Nodes (18): check_handler_type, IndexType, entity, position_, vec3, lua_State, record, sol_lua_check() (+10 more)
 
 ### Community 253 - "hash.hpp"
-Cohesion: 0.04
-Nodes (43): ImGuiViewportFlags, AddPolyline, ImGui::AddUpdateViewport(), ImGui::DebugNodeDrawList(), ImGui::DebugNodeViewport(), ImGui::DestroyPlatformWindow(), ImGui::FindHoveredViewportFromPlatformWindowStack(), ImGui::SetCurrentViewport() (+35 more)
+Cohesion: 0.05
+Nodes (34): ImGuiViewportFlags, ImGui::AddUpdateViewport(), ImGui::DebugNodeViewport(), ImGui::DebugRenderViewportThumbnail(), ImGui::DestroyPlatformWindow(), ImGui::FindHoveredViewportFromPlatformWindowStack(), ImGui::SetCurrentViewport(), ImGui::UpdateViewportPlatformMonitor() (+26 more)
 
 ### Community 254 - "VkPipelineLayoutCreateInfo"
-Cohesion: 0.02
-Nodes (89): Archive, Continuous, Full, context, base_1, value_1, base_2, value_2 (+81 more)
+Cohesion: 0.03
+Nodes (73): context, base, value, clazz, c, i, derived, clazz (+65 more)
 
 ### Community 255 - "gtc_type_aligned.cpp"
 Cohesion: 0.05
@@ -2309,8 +2274,8 @@ Cohesion: 0.15
 Nodes (39): AddInstance(), AddMember(), AppendAsset(), AppendComponentState(), AppendFields(), AppendGpu(), AppendMaterial(), AppendMesh() (+31 more)
 
 ### Community 257 - "TEST"
-Cohesion: 0.14
-Nodes (18): ComputeRRGuideFixtureIdentity(), RRGuideFormat, string, Fnv1a64(), string, string_view, IsRRGuideControlledFixture(), NormalizedFixturePath() (+10 more)
+Cohesion: 0.09
+Nodes (7): ApplyCLIDenoiserSelection(), CapturePressedDesktopBinding(), EditorCameraPose, optional, Region, from_void_callback, cb
 
 ### Community 258 - "AccelerationStructure"
 Cohesion: 0.10
@@ -2321,16 +2286,16 @@ Cohesion: 0.06
 Nodes (40): MTKView, MTKViewDelegate, NSViewController, UIApplicationDelegate, UIResponder, UIViewController, UIWindow, AppDelegate (+32 more)
 
 ### Community 260 - "types"
-Cohesion: 0.11
-Nodes (20): RotationFunc, TestDerivedFunc, TestExtractionFunc, TestRotationFunc, main(), myfrand(), myrand(), test_dquat_type() (+12 more)
+Cohesion: 0.08
+Nodes (26): AdjacencyMatrix, EdgeIterator, EdgesBackwardOnlyDirected, EdgesBackwardOnlyUndirected, EdgesDirected, EdgesUndirected, EraseDirected, EraseUndirected (+18 more)
 
 ### Community 261 - "GpuTimestampProfiler"
-Cohesion: 0.05
-Nodes (40): AssignEntities, AssureMixinLoop, CleanFullOwningGroupViewAfterRemoveAndClear, CleanNonOwningGroupViewAfterRemoveAndClear, CleanPartialOwningGroupViewAfterRemoveAndClear, CleanViewAfterRemoveAndClear, ConstStorageIterable, ContextAsConstRef (+32 more)
+Cohesion: 0.03
+Nodes (66): AssignEntities, AssureMixinLoop, CleanFullOwningGroupViewAfterRemoveAndClear, CleanNonOwningGroupViewAfterRemoveAndClear, CleanPartialOwningGroupViewAfterRemoveAndClear, CleanViewAfterRemoveAndClear, ConflictingGroups, ConstStorageIterable (+58 more)
 
 ### Community 262 - "meta_type"
-Cohesion: 0.11
-Nodes (37): FileWatcherKqueue, string, WatchID, FileWatcherKqueue, vector, WatchMap, kevent, WatcherKqueue (+29 more)
+Cohesion: 0.07
+Nodes (47): FileWatcherKqueue, FileWatchListener, string, WatchID, string, WatchID, Watcher, Directory (+39 more)
 
 ### Community 263 - "SIReSTIRPushConstants"
 Cohesion: 0.08
@@ -2345,48 +2310,48 @@ Cohesion: 0.13
 Nodes (36): stbi__write_context, stbi_write_func, STBIWDEF, va_list, stbi__end_write_file(), stbi__start_write_callbacks(), stbi__start_write_file(), stbi_write_bmp() (+28 more)
 
 ### Community 266 - "variadic_args"
-Cohesion: 0.10
-Nodes (43): animate(), GLfloat, GLFWwindow, GLint, draw(), gear(), init(), key() (+35 more)
+Cohesion: 0.14
+Nodes (34): glfwGetKeyName(), glfwGetTime(), glfwGetWindowUserPointer(), GLFWwindow, char_callback(), cursor_enter_callback(), cursor_position_callback(), drop_callback() (+26 more)
 
 ### Community 267 - "VkCommandBufferInheritanceInfo"
-Cohesion: 0.08
-Nodes (30): SIReSTIRPushConstants, depthThreshold, flags, frameIndex, freshCandidateCount, jitter, maxTemporalAge, normalThreshold (+22 more)
+Cohesion: 0.05
+Nodes (28): optional, NativeExtentPlan, output, render, OutputExtent, m_Height, m_Width, PlanNativeExtents() (+20 more)
 
 ### Community 268 - "core_func_common.cpp"
 Cohesion: 0.12
 Nodes (21): string, Log::createLastError(), Log::getLastErrorCode(), Log::getLastErrorLog(), AInputEvent, ANativeWindow, ImGuiKey, ImGui_ImplAndroid_HandleInputEvent() (+13 more)
 
 ### Community 269 - "unique_usertype_traits.hpp"
-Cohesion: 0.05
-Nodes (39): VkPipelineViewportStateCreateFlags, VkBindImageMemoryDeviceGroupInfo, deviceIndexCount, pDeviceIndices, pNext, pSplitInstanceBindRegions, splitInstanceBindRegionCount, sType (+31 more)
+Cohesion: 0.04
+Nodes (56): VkCompositeAlphaFlagsKHR, VkPipelineViewportStateCreateFlags, VkSurfaceTransformFlagBitsKHR, VkSurfaceTransformFlagsKHR, VkBindImageMemoryDeviceGroupInfo, deviceIndexCount, pDeviceIndices, pNext (+48 more)
 
 ### Community 270 - "AppView"
-Cohesion: 0.06
-Nodes (33): Block, arena_adapter, ArenaAllocator, allocate, default_block_size_, destroy, head_, new_block (+25 more)
+Cohesion: 0.09
+Nodes (22): OptAttrib, colors, face_num_verts, indices, material_ids, normals, smoothing_group_ids, texcoord_ws (+14 more)
 
 ### Community 271 - "lua.c"
-Cohesion: 0.19
-Nodes (22): base_walk_index(), call_(), call_with_(), clear_usertype_registry_names(), clear_usertype_storage(), destroy_usertype_storage(), for_each_table(), bases (+14 more)
+Cohesion: 0.14
+Nodes (31): base_walk_index(), call_(), call_with_(), clear_usertype_registry_names(), clear_usertype_storage(), destroy_usertype_storage(), for_each_table(), bases (+23 more)
 
 ### Community 272 - "ImDrawData"
 Cohesion: 0.06
 Nodes (36): Acceptance, Acceptance and discrimination proof, Boundary — not delivered by W3, Build / gate outcomes (2026-08-09), Completion boundary, Current Open questions, D3.1–D3.10 decision disposition, Decisions (+28 more)
 
 ### Community 273 - "NRDIntegration.hpp"
-Cohesion: 0.03
-Nodes (100): invoke_type, meta_context, basic_hashed_string, base_type, hash, length, repr, data() (+92 more)
+Cohesion: 0.05
+Nodes (63): meta_context, fast_mod(), has_single_bit(), enable_if_t, is_unsigned_v, size_t, Type, next_power_of_two() (+55 more)
 
 ### Community 274 - "type_trait.hpp"
-Cohesion: 0.09
-Nodes (34): mat4, Transform, dirty, prevWorldMatrix, rotation, scale, translation, worldMatrix (+26 more)
+Cohesion: 0.07
+Nodes (51): OptionalKind, PrefabEntityRecord, record, templateId, AddMember(), Bytes(), entity, optional (+43 more)
 
 ### Community 275 - "VkSparseImageFormatProperties"
-Cohesion: 0.06
-Nodes (39): RRGuideMotionValidation, densityValid, expectedMinimumPixels, expectedObservedErrorPixels, minimumNonzeroPixels, toleranceValid, valid, ValidateRRGuideMotion() (+31 more)
+Cohesion: 0.05
+Nodes (51): RRGuideExtent, RRGuideSpace, ComputeRRGuideFixtureIdentity(), RRGuideFormat, RRGuideScenario, string, EnvBRDFApprox2CPU(), EvaluateRRGuideMaterial() (+43 more)
 
 ### Community 276 - "PrefabPropagationComponentDelta"
 Cohesion: 0.08
-Nodes (25): basic_coroutine, m_error_handler, stats, call(), basic_function, basic_object, call_status, handler_t (+17 more)
+Nodes (24): basic_coroutine, m_error_handler, stats, call(), basic_function, basic_object, call_status, handler_t (+16 more)
 
 ### Community 277 - "operator=="
 Cohesion: 0.09
@@ -2401,15 +2366,15 @@ Cohesion: 0.07
 Nodes (38): GLFWContentView, -acceptsFirstMouse, -acceptsFirstResponder, -attributedSubstringForProposedRangeactualRange, -canBecomeKeyView, -characterIndexForPoint, -doCommandBySelector, -draggingEntered (+30 more)
 
 ### Community 280 - "nk_font_config"
-Cohesion: 0.16
-Nodes (26): bitfieldReverseLoop(), compute_bitfieldBitCountStep, compute_bitfieldBitCountStep<true>, compute_bitfieldReverseStep, compute_bitfieldReverseStep<true>, genIUType, findLSB_095(), findLSB_branchfree() (+18 more)
+Cohesion: 0.14
+Nodes (24): bitfieldReverseLoop(), bitfieldReverseOps(), compute_bitfieldBitCountStep, compute_bitfieldBitCountStep<true>, compute_bitfieldReverseStep, compute_bitfieldReverseStep<true>, GLM_FUNC_QUALIFIER, uint32 (+16 more)
 
 ### Community 281 - "Phase8W4S3ReconciliationTests.cpp"
 Cohesion: 0.07
 Nodes (34): stbi_image_free(), BytesPerPixel(), ImageFormat, string_view, VkFormat, VkMemoryPropertyFlags, GetVulkanMemoryType(), ImageFormat (+26 more)
 
 ### Community 282 - "InstanceDesc"
-Cohesion: 0.10
+Cohesion: 0.09
 Nodes (33): ALLEGRO_BITMAP, ALLEGRO_COLOR, ALLEGRO_EVENT, ALLEGRO_MOUSE_CURSOR, ALLEGRO_VERTEX_DECL, ALLEGRO_DISPLAY, ImGuiKey, ImVec2 (+25 more)
 
 ### Community 283 - "basic_group<owned_t<>, get_t<Get...>, exclude_t<Exclude...>>"
@@ -2429,16 +2394,16 @@ Cohesion: 0.09
 Nodes (34): DuplicationResult, EditorCameraPose, optional, SceneDocument, SceneManager, vector, EditorSceneState, AnyDirectlyLocked (+26 more)
 
 ### Community 287 - "sol.hpp"
-Cohesion: 0.12
-Nodes (30): CanonicalForContainment(), Code, path, string, Fail(), Fold(), path, string (+22 more)
+Cohesion: 0.11
+Nodes (16): FullSyncFn, MaterialSyncFn, RendererAvailableFn, ResetAccumFn, SceneManager, EditorSyncRouter, m_FullSync, m_LastSyncedResourceGeneration (+8 more)
 
 ### Community 288 - "SceneDocument"
 Cohesion: 0.05
 Nodes (36): Alignment requirement, Allocator aware unique pointers, Almost unique identifiers, Any as in any type, Bit, Built-in RTTI support, Compile-time generator, Compressed pair (+28 more)
 
 ### Community 289 - "TEST"
-Cohesion: 0.12
-Nodes (14): basic_flow, deps, index, sync_on, vertices, adjacency_matrix_type, allocator_type, deps_container_type (+6 more)
+Cohesion: 0.08
+Nodes (24): CompletedPick, optional, RenderInstanceMap, VkCommandBuffer, VkDescriptorSet, GpuPickingPass, Destroy, Invalidate (+16 more)
 
 ### Community 290 - "usertype_storage.hpp"
 Cohesion: 0.07
@@ -2449,32 +2414,32 @@ Cohesion: 0.08
 Nodes (31): CommandBuffer, CreateDescriptorKey(), DivideUp(), GetNriFormat(), AccessLayoutStage, ResourceType, Denoise, _Dispatch (+23 more)
 
 ### Community 292 - "imgui_impl_dx9.cpp"
-Cohesion: 0.07
-Nodes (33): Pairs, Fx, R, set_fx(), set_resolved_function(), raw_get_field(), for_each(), get_or() (+25 more)
+Cohesion: 0.08
+Nodes (25): stbtt_pack_range, stbtt_packedchar, ImFontBuildDstData, GlyphsCount, GlyphsHighest, GlyphsSet, SrcCount, ImFontBuildSrcData (+17 more)
 
 ### Community 293 - "basic_process"
-Cohesion: 0.05
-Nodes (47): ComputeShaderDesc, size, DescriptorPoolDesc, perSetStorageTexturesMaxNum, perSetTexturesMaxNum, setsMaxNum, totalStorageTexturesNum, totalTexturesNum (+39 more)
+Cohesion: 0.07
+Nodes (28): DescriptorPoolDesc, perSetStorageTexturesMaxNum, perSetTexturesMaxNum, setsMaxNum, totalStorageTexturesNum, totalTexturesNum, Format, Sampler (+20 more)
 
 ### Community 294 - "locals.lua"
-Cohesion: 0.10
-Nodes (28): CacheEntry, optional, path, ScriptFieldType, ScriptFieldValue, string, table, vector (+20 more)
+Cohesion: 0.20
+Nodes (17): optional, path, ScriptFieldType, ScriptFieldValue, string, table, vector, HashSource() (+9 more)
 
 ### Community 295 - "pairs_iterator"
-Cohesion: 0.07
-Nodes (51): ContextMap, InputConfigScope, path, string, EditorSettingsLoadReport, diagnostics, migrated, sourceVersion (+43 more)
+Cohesion: 0.04
+Nodes (81): ContextMap, InputConfigScope, path, string, EditorSettingsLoadReport, diagnostics, migrated, sourceVersion (+73 more)
 
 ### Community 296 - "Accessor"
-Cohesion: 0.13
-Nodes (42): stbtt_int32, stbtt_uint16, stbtt_uint32, stbtt_uint8, stbtt_vertex, stbtt__close_shape(), stbtt_CompareUTF8toUTF16_bigendian(), stbtt_CompareUTF8toUTF16_bigendian_internal() (+34 more)
+Cohesion: 0.18
+Nodes (25): stbtt_int32, stbtt_uint16, stbtt_uint32, stbtt_uint8, stbtt_CompareUTF8toUTF16_bigendian(), stbtt_CompareUTF8toUTF16_bigendian_internal(), stbtt__CompareUTF8toUTF16_bigendian_prefix(), stbtt__find_table() (+17 more)
 
 ### Community 297 - "Camera"
 Cohesion: 0.08
 Nodes (27): basic_packaged_coroutine(), call(), basic_function, call_status, handler_t, HandlerReference, I, index_sequence (+19 more)
 
 ### Community 298 - "ReservoirResources"
-Cohesion: 0.04
-Nodes (95): CursorMode, GLFWcharmodsfun, GLFWdropfun, GLFWjoystickfun, _GLFWmapelement, _GLFWmapping, DesktopInputBackend, CaptureFrame (+87 more)
+Cohesion: 0.05
+Nodes (84): CursorMode, GLFWcharmodsfun, GLFWdropfun, GLFWjoystickfun, _GLFWmapelement, _GLFWmapping, CaptureFrame, mouse_button_callback() (+76 more)
 
 ### Community 299 - "TEST_F"
 Cohesion: 0.18
@@ -2485,20 +2450,20 @@ Cohesion: 0.06
 Nodes (36): VkCommandBufferUsageFlags, VkFramebuffer, VkQueryControlFlags, VkQueryPipelineStatisticFlags, VkQueryPoolCreateFlags, VkQueryType, VkRenderPass, VkCommandBufferBeginInfo (+28 more)
 
 ### Community 301 - "AnimationChannel"
-Cohesion: 0.12
-Nodes (24): AppendPrefabPropagationDiagnostics(), AssetDiagnostic, SceneDocument, vector, path, size_t, vector, PrefabPropagationLoadHooks (+16 more)
+Cohesion: 0.19
+Nodes (21): GpuDevice, GPUSceneData, VkCommandBuffer, AdvanceTransformBuffers, BeginRebuildAccelerationStructures, CreateInstanceTransformBuffer, CreateLightBuffer, CreateMaterialBuffer (+13 more)
 
 ### Community 302 - "FileWatcherFSEvents"
 Cohesion: 0.06
 Nodes (35): ArrowOperator, ConstNonConstAndAllInBetweenWithEmptyType, EachWithSuggestedType, EmptyType, IterableViewAlgorithmCompatibility, MultiStorageView, Pipe, PipeWithPlaceholder (+27 more)
 
 ### Community 303 - "unsafe_function_result"
-Cohesion: 0.06
-Nodes (41): dispatch_queue_t, FSEventStreamRef, exists, FileWatcherImpl, string, Uint32, Uint64, vector (+33 more)
+Cohesion: 0.09
+Nodes (30): dispatch_queue_t, FSEventStreamRef, exists, string, Uint32, Uint64, vector, WatchID (+22 more)
 
 ### Community 304 - "lfunc.c"
-Cohesion: 0.12
-Nodes (34): EDGE, B, genFIType, genType, GLM_FUNC_QUALIFIER, size_t, T, VEC (+26 more)
+Cohesion: 0.21
+Nodes (24): genFIType, genType, GLM_FUNC_QUALIFIER, size_t, main(), min_int(), min_tern(), perf() (+16 more)
 
 ### Community 305 - "memory.hpp"
 Cohesion: 0.09
@@ -2509,8 +2474,8 @@ Cohesion: 0.08
 Nodes (34): NSMenu, NSMenuItem, NSOpenGLPixelFormat, NSOpenGLView, AppDelegate, -applicationDidFinishLaunching, -applicationShouldTerminateAfterLastWindowClosed, -dealloc (+26 more)
 
 ### Community 307 - "lua.h"
-Cohesion: 0.11
-Nodes (15): group_descriptor, group_handler, filter, len, pools, group_handler<Type, 0u, Get, Exclude>, elem, filter (+7 more)
+Cohesion: 0.13
+Nodes (14): ElementWithDeleter, ResetHandle, base_service, invoke, Emplace, testing::Test, derived_service, value (+6 more)
 
 ### Community 308 - "loslib.c"
 Cohesion: 0.09
@@ -2518,15 +2483,15 @@ Nodes (26): dump_error, m_ec, dump_panic_on_error(), dump_pass_on_error(), dump_
 
 ### Community 309 - "raii.hpp"
 Cohesion: 0.15
-Nodes (35): lua_State, LUALIB_API, luaL_openlibs(), addreturn(), lua_Debug, lua_State, collectargs(), createargtable() (+27 more)
+Nodes (34): lua_State, LUALIB_API, luaL_openlibs(), addreturn(), lua_Debug, lua_State, collectargs(), createargtable() (+26 more)
 
 ### Community 310 - "basic_registry"
 Cohesion: 0.09
-Nodes (15): const_iterator, const_reverse_iterator, difference_type, iterator, lua_State, record, reverse_iterator, size_t (+7 more)
+Nodes (16): stack_proxy, const_iterator, const_reverse_iterator, difference_type, iterator, lua_State, record, reverse_iterator (+8 more)
 
 ### Community 311 - "dense_map_local_iterator"
 Cohesion: 0.03
-Nodes (73): VkBufferView, VkDescriptorPoolCreateFlags, VkDescriptorSetLayoutCreateFlags, VkFramebufferCreateFlags, VkDescriptorSet, VkDescriptorType, VkImageLayout, VkImageView (+65 more)
+Nodes (65): VkBufferView, VkDescriptorPoolCreateFlags, VkDescriptorSetLayoutCreateFlags, VkFramebufferCreateFlags, VkDescriptorSet, VkDescriptorType, VkImageView, VkSampler (+57 more)
 
 ### Community 312 - "mz_zip_archive_tag"
 Cohesion: 0.10
@@ -2537,20 +2502,20 @@ Cohesion: 0.06
 Nodes (35): Approved unified contract, Assumed / not verified, Assumed or intentionally not run, Authorized expectation changes, Concrete API and data flow, Current behaviour, side by side, Decisions resolved by review, Delivered recovery points (+27 more)
 
 ### Community 314 - "FileWatcherKqueue"
-Cohesion: 0.15
-Nodes (16): basic_common_view, filter, placeholder, pools, difference_type, Exclude, Get, size_t (+8 more)
+Cohesion: 0.12
+Nodes (29): TryGetCameraEntityPose(), BuildEmissiveTextureOccupancy(), BuildEnvMapCDF(), BuildGPUSceneDataFromECS(), BuildPunctualLightsFromECS(), GPUSceneData, RenderInstanceMap, vector (+21 more)
 
 ### Community 315 - "dense_map"
-Cohesion: 0.10
-Nodes (21): defaultp, GLM_FUNC_DECL, mat, Q, qua, T, mat<3, 3, T, Q> toMat3(), mat<4, 4, T, Q> toMat4() (+13 more)
+Cohesion: 0.33
+Nodes (8): defaultp, T, vec, main(), test_axisAngle(), test_axisAngle2(), test_rotate(), testForAxisAngle()
 
 ### Community 316 - "basic_flow"
 Cohesion: 0.22
 Nodes (18): check_vk_result(), ImGui_ImplVulkanH_Window, string, vector, VkInstance, VkPhysicalDevice, VkResult, VkSurfaceKHR (+10 more)
 
 ### Community 317 - "usertypes.constructors.cpp"
-Cohesion: 0.06
-Nodes (42): ErrorHandler_, basic_protected_function, is_stack_handler_v, m_error_handler, call(), dump(), handle_protected_exception(), b (+34 more)
+Cohesion: 0.05
+Nodes (48): ErrorHandler_, protected_function_result, basic_protected_function, is_stack_handler_v, m_error_handler, call(), dump(), handle_protected_exception() (+40 more)
 
 ### Community 318 - "basic_environment"
 Cohesion: 0.06
@@ -2561,12 +2526,12 @@ Cohesion: 0.06
 Nodes (33): AccumulationMode, CommonSettings, accumulationMode, cameraAttachedReflectionMaterialID, cameraJitter, cameraJitterPrev, debug, denoisingRange (+25 more)
 
 ### Community 320 - "TYPED_TEST"
-Cohesion: 0.07
-Nodes (28): ImGuiListClipper, ImGuiListClipper, DisplayEnd, DisplayStart, ForceDisplayRangeByIndices, ImGuiListClipper, ItemsCount, ItemsHeight (+20 more)
+Cohesion: 0.11
+Nodes (20): CameraEqStrict(), path, string, vector, OldSessionCommits(), ProbeFrame, combo, reset (+12 more)
 
 ### Community 321 - "Headless CLI and Automation"
-Cohesion: 0.10
-Nodes (21): FastMod, FlowDeathTest, HasSingleBit, MetaFactoryDeathTest, NextPowerOfTwo, NextPowerOfTwoDeathTest, NoBind, Overlapping (+13 more)
+Cohesion: 0.03
+Nodes (78): AllocateUnique, DataGetterOnly, DataMemberObject, DataOverwrite, DataPointer, DataSetterGetter, DataValue, EntityLifecycle (+70 more)
 
 ### Community 322 - "extended_view_iterator"
 Cohesion: 0.06
@@ -2589,8 +2554,8 @@ Cohesion: 0.06
 Nodes (30): Accessor, bufferView, byteOffset, componentType, extensions, extensions_json_string, extras, extras_json_string (+22 more)
 
 ### Community 327 - "basic_common_view"
-Cohesion: 0.10
-Nodes (17): ILhs, IRhs, basic_handle, entt, owner, handle_storage_iterator, entt, it (+9 more)
+Cohesion: 0.07
+Nodes (19): ILhs, IRhs, basic_handle, entt, owner, handle_storage_iterator, entt, it (+11 more)
 
 ### Community 328 - "stdint.h"
 Cohesion: 0.08
@@ -2601,8 +2566,8 @@ Cohesion: 0.07
 Nodes (30): length_t, type, cols, components, is_mat, is_quat, is_vec, type<mat<C, R, T, Q> > (+22 more)
 
 ### Community 330 - "EditorCommandHistory"
-Cohesion: 0.06
-Nodes (32): mz_alloc_func, mz_file_read_func, mz_free_func, mz_realloc_func, mz_zip_internal_state, mz_zip_mode, mz_stream_s, adler (+24 more)
+Cohesion: 0.07
+Nodes (31): mz_alloc_func, mz_file_read_func, mz_free_func, mz_realloc_func, mz_zip_internal_state, mz_zip_mode, mz_stream_s, adler (+23 more)
 
 ### Community 331 - "stbtt__edge"
 Cohesion: 0.11
@@ -2622,31 +2587,31 @@ Nodes (30): genIUType, genType, GLM_FUNC_QUALIFIER, T, uint, highestBitValue(), 
 
 ### Community 335 - "lobject.c"
 Cohesion: 0.10
-Nodes (21): entity, path, string, IUuidProvider, SceneDocument, AssignKnownUuid, AssignNewUuid, Clear (+13 more)
+Nodes (20): entity, path, string, IUuidProvider, SceneDocument, AssignNewUuid, Clear, ecs (+12 more)
 
 ### Community 336 - "NRIWrapperD3D12.h"
 Cohesion: 0.27
 Nodes (16): NgxLifecycleOperation, NgxSupportState, string, Failed(), Is(), NgxLifecycleAuthority, ExternalFailure, Failure (+8 more)
 
 ### Community 337 - "timer"
-Cohesion: 0.10
-Nodes (27): emplace(), extract(), fill_dependencies(), basic_group, basic_registry, basic_view, Registry, size_t (+19 more)
+Cohesion: 0.08
+Nodes (33): basic_organizer, builder, vertices, emplace(), extract(), fill_dependencies(), basic_group, basic_registry (+25 more)
 
 ### Community 338 - "luaL_openlibs"
 Cohesion: 0.06
 Nodes (30): GLFWallocatefun, GLFWdeallocatefun, GLFWreallocatefun, GLFWallocator, allocate, deallocate, reallocate, user (+22 more)
 
 ### Community 339 - "main.cpp"
-Cohesion: 0.14
-Nodes (18): CountSeverity(), AssetDiagnostic, AssetKind, path, Severity, string, vector, CreateAssetFile() (+10 more)
+Cohesion: 0.10
+Nodes (21): nk_context, active, begin, build, button_behavior, clip, count, current (+13 more)
 
 ### Community 340 - "usertypes.inheritance.cpp"
-Cohesion: 0.06
-Nodes (31): mz_uint8, mz_write_le16(), mz_write_le32(), tdefl_record_literal(), tinfl_decompress(), tinfl_decompress_mem_to_callback(), tinfl_decompress_mem_to_heap(), tinfl_decompress_mem_to_mem() (+23 more)
+Cohesion: 0.10
+Nodes (20): tinfl_decompressor_tag, m_bit_buf, m_check_adler32, m_counter, m_dist, m_dist_from_out_buf_start, m_final, m_len_codes (+12 more)
 
 ### Community 341 - "basic_runtime_view"
 Cohesion: 0.06
-Nodes (36): PrefabMemberComponent, instanceId, overrides, templateId, quat, ScriptComponent, string, SubtreeEntityRecord (+28 more)
+Nodes (32): quat, ScriptComponent, string, SubtreeEntityRecord, camera, hasCamera, hasImportedSource, hasLight (+24 more)
 
 ### Community 342 - "GLM 0.9.9 Manual"
 Cohesion: 0.07
@@ -2661,8 +2626,8 @@ Cohesion: 0.08
 Nodes (21): class01, x, class02, x, constructor_cheat, val, table, matrix_xf (+13 more)
 
 ### Community 345 - "HeaderInfo"
-Cohesion: 0.12
-Nodes (12): basic_storage<Entity, Entity, Allocator>, placeholder, storage_policy, basic_storage<Type, Entity, Allocator, std::enable_if_t<component_traits<Type, Entity>::page_size == 0u>>, storage_policy, generate(), Allocator, basic_sparse_set (+4 more)
+Cohesion: 0.11
+Nodes (18): F0, F1, u, GLM_CONSTEXPR vec(), E0, E1, E2, E3 (+10 more)
 
 ### Community 346 - "Phase 7 W4–W5 — project ownership and schema-v4 migration (implementation spec)"
 Cohesion: 0.18
@@ -2670,15 +2635,15 @@ Nodes (12): NgxLifecycleOperation, NgxSupportState, FailureCase, operation, oper
 
 ### Community 347 - "Scene Management"
 Cohesion: 0.11
-Nodes (18): const_pointer, Page, extended_storage_iterator, it, Container, difference_type, It, iterator_type (+10 more)
+Nodes (18): VkCullModeFlags, VkFrontFace, VkPipelineRasterizationStateCreateFlags, VkPolygonMode, VkPipelineRasterizationStateCreateInfo, cullMode, depthBiasClamp, depthBiasConstantFactor (+10 more)
 
 ### Community 348 - "lundump.c"
-Cohesion: 0.12
-Nodes (18): Otherwise, call(), get_or(), get_or_create(), D, index_sequence, K, lua_State (+10 more)
+Cohesion: 0.04
+Nodes (56): basic_reference, Otherwise, basic_environment, get_environment(), b, base_type, basic_table, E (+48 more)
 
 ### Community 349 - "TEST"
-Cohesion: 0.08
-Nodes (23): DataGetterOnly, DataMemberObject, DataOverwrite, DataPointer, DataSetterGetter, DataValue, FuncOverload, MetaReset (+15 more)
+Cohesion: 0.18
+Nodes (11): nk_popup_state, active, active_con, buf, combo_count, con_count, con_old, header (+3 more)
 
 ### Community 350 - "MetalContext"
 Cohesion: 0.07
@@ -2693,16 +2658,16 @@ Cohesion: 0.08
 Nodes (24): Dx, F, unqualified_pusher<constructor_wrapper<F, Fxs...>>, construct(), constructor_list, constructor_wrapper, functions, default_construct (+16 more)
 
 ### Community 353 - "TEST"
-Cohesion: 0.09
-Nodes (21): unordered_set, RawInputSnapshot, alt, ctrl, gamepadAxes, gamepadButtons, gamepadPresent, gizmoConsumesMouse (+13 more)
+Cohesion: 0.07
+Nodes (28): unordered_set, RawInputSnapshot, alt, ctrl, gamepadAxes, gamepadButtons, gamepadPresent, gizmoConsumesMouse (+20 more)
 
 ### Community 354 - "function.hpp"
 Cohesion: 0.11
 Nodes (20): basic_entt_traits<other_entity_traits>, Null, basic_entt_traits<entity_traits>, entity_type, size_t, Test, Traits, Entity (+12 more)
 
 ### Community 355 - "OptAttrib"
-Cohesion: 0.24
-Nodes (6): allocator_type, container_type, size_type, sigh, sigh<Ret(Args...), Allocator>, calls
+Cohesion: 0.04
+Nodes (51): DelegateDeathTest, InvokeEmpty, connect(), delegate, Candidate, index_sequence, Ret, Type (+43 more)
 
 ### Community 356 - "TEST"
 Cohesion: 0.13
@@ -2710,19 +2675,19 @@ Nodes (21): SceneManager, string, unique_ptr, EditorCommandHistory, CheckGenerat
 
 ### Community 357 - "Phase 5 — Input action system (completion, implemented)"
 Cohesion: 0.08
-Nodes (25): FileWatcher(), Atomic, set_, T, FileWatcherFSEvents::FileWatcherFSEvents(), FileWatcherGeneric::FileWatcherGeneric(), Option, string (+17 more)
+Nodes (27): FileWatcher(), FileWatcherImpl, Option, WatcherOption, mOption, mValue, FileWatcherFSEvents::FileWatcherFSEvents(), FileWatcherGeneric::FileWatcherGeneric() (+19 more)
 
 ### Community 358 - "ImGui_ImplDX10_Data"
-Cohesion: 0.10
-Nodes (18): MetaDataDeathTest, base, value, clazz, h, i, instance, j (+10 more)
+Cohesion: 0.05
+Nodes (31): MetaDataDeathTest, MetaFuncDeathTest, base, value, clazz, h, i, instance (+23 more)
 
 ### Community 359 - "resource_cache"
-Cohesion: 0.11
-Nodes (29): string, vector, WatchID, FileWatcherKqueue, addFD, addWatch, availablesFD, directories (+21 more)
+Cohesion: 0.07
+Nodes (41): string, vector, WatchID, FileWatcherKqueue, addFD, addWatch, availablesFD, directories (+33 more)
 
 ### Community 360 - "storage_iterator"
-Cohesion: 0.16
-Nodes (37): l_noret, LexState, lua_State, TString, ZIO, check_next1(), check_next2(), esccheck() (+29 more)
+Cohesion: 0.21
+Nodes (30): l_noret, LexState, lua_State, TString, ZIO, check_next1(), check_next2(), esccheck() (+22 more)
 
 ### Community 361 - "RTDispatch"
 Cohesion: 0.12
@@ -2734,7 +2699,7 @@ Nodes (53): EGLConfig, GLXContext, GLXFBConfig, _GLFWfbconfig, _glfwChooseFBConf
 
 ### Community 363 - "IndexRebaseAxis"
 Cohesion: 0.12
-Nodes (30): mz_deflateReset(), tdefl_calculate_minimum_redundancy(), tdefl_compress(), tdefl_compress_block(), tdefl_compress_buffer(), tdefl_compress_fast(), tdefl_compress_lz_codes(), tdefl_compress_mem_to_heap() (+22 more)
+Nodes (31): mz_deflateReset(), tdefl_calculate_minimum_redundancy(), tdefl_compress(), tdefl_compress_block(), tdefl_compress_buffer(), tdefl_compress_fast(), tdefl_compress_lz_codes(), tdefl_compress_mem_to_heap() (+23 more)
 
 ### Community 364 - "MigrateSceneAssetReferences"
 Cohesion: 0.07
@@ -2765,8 +2730,8 @@ Cohesion: 0.28
 Nodes (19): FileInfoMap, string, wstring, FileSystem, changeWorkingDirectory, dirAddSlashAtEnd, dirRemoveSlashAtEnd, fileNameFromPath (+11 more)
 
 ### Community 371 - "NRDDescs.h"
-Cohesion: 0.12
-Nodes (15): base1, a1, base2, a2, CardAction, value, complex, optional (+7 more)
+Cohesion: 0.08
+Nodes (23): base1, a1, base2, a2, CardAction, value, complex, optional (+15 more)
 
 ### Community 372 - "tolua_Player.h"
 Cohesion: 0.22
@@ -2777,12 +2742,12 @@ Cohesion: 0.10
 Nodes (17): basic_runtime_view, filter, pools, allocator_type, container_type, entity_type, iterator, iterator_type (+9 more)
 
 ### Community 374 - "stbtt__buf"
-Cohesion: 0.08
-Nodes (25): Choice, ConstnessAs, IntegralConstant, IsApplicable, IsEBCOEligible, IsEqualityComparable, IsIterator, IsTransparent (+17 more)
+Cohesion: 0.13
+Nodes (17): array_t, binary_t, boolean_t, friend, object_t, binary(), get_impl_ptr(), get_ptr() (+9 more)
 
 ### Community 375 - "TwoMatObjFixture"
-Cohesion: 0.11
-Nodes (22): GpuDevice, VkCommandBuffer, VkDeviceSize, GpuDiagnostics, BeginFrame, CounterCount, CounterName, Destroy (+14 more)
+Cohesion: 0.05
+Nodes (42): Archive, Continuous, Full, GpuDevice, VkCommandBuffer, VkDeviceSize, GpuDiagnostics, BeginFrame (+34 more)
 
 ### Community 376 - "VkWriteDescriptorSet"
 Cohesion: 0.20
@@ -2793,20 +2758,20 @@ Cohesion: 0.08
 Nodes (28): AsConstRef, DereferenceArray, DereferenceOperatorConstAnyConstType, DereferenceOperatorConstAnyNonConstType, DereferenceOperatorConstType, DereferenceOperatorInvalidType, DereferenceOperatorRawPointer, DereferenceOperatorSmartPointer (+20 more)
 
 ### Community 378 - "hufUncompress"
-Cohesion: 0.17
-Nodes (6): binary_t, NLOHMANN_JSON_NAMESPACE_END, binary(), json_sax_acceptor, namespace(), NLOHMANN_JSON_NAMESPACE_BEGIN()
+Cohesion: 0.11
+Nodes (16): json_value, NLOHMANN_BASIC_JSON_TPL, NLOHMANN_BASIC_JSON_TPL_DECLARATION, NLOHMANN_JSON_NAMESPACE_END, NumberType, data, m_type, m_value (+8 more)
 
 ### Community 379 - "tracked_memory_resource"
-Cohesion: 0.04
-Nodes (80): equal_to, group_container_type, pool_container_type, exclude_t, get_t, type_list, owned_t, dispatch() (+72 more)
+Cohesion: 0.05
+Nodes (60): equal_to, group_container_type, pool_container_type, all_of(), any_of(), assure(), basic_registry, entities (+52 more)
 
 ### Community 380 - "locator.cpp"
 Cohesion: 0.07
 Nodes (28): D3 — split the existing `projectRoot` by responsibility, D4 — split shippable defaults from per-user overrides, D6 — portable locator, generated local contents, separate recovery, Decisions — answered before code, Explicit migration algorithm, Grounded findings at `7ec974b7`, Host and API cutover, Implementation order (+20 more)
 
 ### Community 381 - "TEST"
-Cohesion: 0.11
-Nodes (54): l_uint32, Pfunc, luaG_tracecall(), CallInfo, l_noret, l_sinline, LUA_API, lua_KContext (+46 more)
+Cohesion: 0.14
+Nodes (3): AuthoringDocumentReplacementKind, SceneDocument, Walnut::CreateApplication()
 
 ### Community 382 - "automagic_enrollments"
 Cohesion: 0.12
@@ -2817,20 +2782,20 @@ Cohesion: 0.19
 Nodes (27): NVSDK_NGX_CUDA_DLISP_Eval_Params, NVSDK_NGX_D3D11_DLISP_Eval_Params, NVSDK_NGX_D3D11_DLSS_Eval_Params, NVSDK_NGX_D3D12_DLISP_Eval_Params, NVSDK_NGX_D3D12_DLSS_Eval_Params, ID3D11DeviceContext, ID3D12GraphicsCommandList, NVSDK_NGX_DLSS_Create_Params (+19 more)
 
 ### Community 384 - "wl_init.c"
-Cohesion: 0.10
-Nodes (20): ConstIterable, ConstReverseIterable, Constructors, IterableAlgorithmCompatibility, IterableIteratorConversion, Move, ReverseIterable, ReverseIterableAlgorithmCompatibility (+12 more)
+Cohesion: 0.19
+Nodes (4): basic_table, payload, const_reverse_iterator, reverse_iterator
 
 ### Community 385 - "utility.hpp"
 Cohesion: 0.07
 Nodes (26): AudioEmitter, distanceModel, extensions, extensions_json_string, extras, extras_json_string, gain, loop (+18 more)
 
 ### Community 386 - "Host dispatch extraction (implementation spec)"
-Cohesion: 0.17
-Nodes (12): LightType, LightTypeFromName(), LightTypeName(), SceneLight, color, direction, innerConeAngle, intensity (+4 more)
+Cohesion: 0.09
+Nodes (23): mat4, quat, LightDirectionToRotation(), Transform, dirty, prevWorldMatrix, rotation, scale (+15 more)
 
 ### Community 387 - "gtc_type_precision.cpp"
-Cohesion: 0.06
-Nodes (31): basic_bytecode, return_type_t, bytecode, condition_variable, mutex, state, variant, vector (+23 more)
+Cohesion: 0.12
+Nodes (17): basic_bytecode, return_type_t, get_std_func(), Allocator, lua_State, protected_function_result, record, Signature (+9 more)
 
 ### Community 388 - "calls.lua"
 Cohesion: 0.07
@@ -2854,27 +2819,27 @@ Nodes (25): PFN_vkCmdBeginRenderingKHR, PFN_vkCmdBuildAccelerationStructuresKHR,
 
 ### Community 393 - "vector"
 Cohesion: 0.11
-Nodes (18): vector, CreateTextures, GpuDevice, VkDeviceSize, VkBuffer, VkDevice, VkDeviceMemory, VkDeviceSize (+10 more)
+Nodes (19): vector, CreateEnvMapCDFTextures, CreateTextures, GpuDevice, VkDeviceSize, VkBuffer, VkDevice, VkDeviceMemory (+11 more)
 
 ### Community 394 - "TEST"
 Cohesion: 0.05
 Nodes (61): AbsoluteNormalized(), CanonicalRoot(), AssetDiagnostic, path, SceneDocument, Severity, string, vector (+53 more)
 
 ### Community 395 - "GBufferTarget"
-Cohesion: 0.20
-Nodes (8): aligned_base, aligned_derived, blah, T, des(), protect_me, test, value
+Cohesion: 0.12
+Nodes (11): genIUType, genType, T, main(), test(), type, Multiple, Return (+3 more)
 
 ### Community 396 - "Walnut::CreateApplication"
 Cohesion: 0.14
 Nodes (9): basic_table, payload, Allocator, const_iterator, const_reverse_iterator, container_type, iterator, reverse_iterator (+1 more)
 
 ### Community 397 - "tdefl_compressor"
-Cohesion: 0.13
-Nodes (24): string, vector, WatchID, FileWatcherWin32, addWatch, directories, FileWatcherWin32::FileWatcherWin32(), handleAction (+16 more)
+Cohesion: 0.18
+Nodes (10): col_type, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, mat<4, 4, T, Q>, explicit, GLM_CONSTEXPR, GLM_EXPLICIT (+2 more)
 
 ### Community 398 - "What You Must Do When Invoked"
-Cohesion: 0.04
-Nodes (51): VkAttachmentDescriptionFlags, VkAttachmentLoadOp, VkAttachmentStoreOp, VkDependencyFlags, VkRenderPassCreateFlags, VkAccessFlags, VkCommandBuffer, VkPipelineStageFlags (+43 more)
+Cohesion: 0.07
+Nodes (27): VkDependencyFlags, VkAccessFlags, VkCommandBuffer, VkPipelineStageFlags, VkMemoryBarrier, dstAccessMask, pNext, srcAccessMask (+19 more)
 
 ### Community 399 - "function_types_templated.hpp"
 Cohesion: 0.23
@@ -2889,16 +2854,16 @@ Cohesion: 0.11
 Nodes (22): AutoSignal, InsertWeakRange, auto_signal, created, destroyed, updated, entity, Functionalities (+14 more)
 
 ### Community 402 - "windows.c"
-Cohesion: 0.09
-Nodes (22): path, shared_ptr, PrefabPropagationLiveContext, assetRoot, database, PrefabPropagationLiveHostCallbacks, acquireContext, publish (+14 more)
+Cohesion: 0.14
+Nodes (14): DenoiserMode, DlssQualityMode, ImplicitStartupDenoiser, mode, quality, reason, ResolvedDenoiserSelection, mode (+6 more)
 
 ### Community 403 - "policies.cpp"
-Cohesion: 0.09
-Nodes (14): basic_registry_type, basic_reactive_mixin, conn, owner, basic_sigh_mixin, construction, destruction, owner (+6 more)
+Cohesion: 0.05
+Nodes (26): basic_registry_type, basic_reactive_mixin, conn, owner, basic_sigh_mixin, construction, destruction, owner (+18 more)
 
 ### Community 404 - "meta_base.cpp"
-Cohesion: 0.07
-Nodes (29): PrimGroup, real_t, joint_and_weight_t, joint_id, weight, parseReal(), parseV(), pnpoly() (+21 more)
+Cohesion: 0.08
+Nodes (27): PrimGroup, real_t, joint_and_weight_t, joint_id, weight, parseV(), pnpoly(), SetAmbient() (+19 more)
 
 ### Community 405 - "Phase 7 W7 — watching and async reimport (implementation spec)"
 Cohesion: 0.09
@@ -2909,12 +2874,12 @@ Cohesion: 0.10
 Nodes (24): string, vector, WatchID, FileWatcherGeneric, addWatch, directories, handleAction, mLastWatchID (+16 more)
 
 ### Community 407 - "json.hpp"
-Cohesion: 0.10
-Nodes (16): basic_group<owned_t<>, get_t<Get...>, exclude_t<Exclude...>>, descriptor, basic_group<owned_t<Owned...>, get_t<Get...>, exclude_t<Exclude...>>, descriptor, each(), get(), Compare, Func (+8 more)
+Cohesion: 0.06
+Nodes (30): basic_group<owned_t<>, get_t<Get...>, exclude_t<Exclude...>>, descriptor, basic_group<owned_t<Owned...>, get_t<Get...>, exclude_t<Exclude...>>, descriptor, each(), get(), group_descriptor, group_handler (+22 more)
 
 ### Community 408 - "GLFWApplicationDelegate"
-Cohesion: 0.02
-Nodes (86): ClearFromCallback, emitter<emitter>, Ident, On, OnAndErase, boxed_type, value, Type (+78 more)
+Cohesion: 0.03
+Nodes (78): ClearFromCallback, emitter<emitter>, Ident, On, OnAndErase, boxed_type, value, Type (+70 more)
 
 ### Community 409 - "delegate<Ret(Args...)>"
 Cohesion: 0.09
@@ -2929,12 +2894,12 @@ Cohesion: 0.08
 Nodes (26): VkExternalMemoryFeatureFlags, VkExternalMemoryHandleTypeFlags, VkExportMemoryAllocateInfo, handleTypes, pNext, sType, VkExternalBufferProperties, externalMemoryProperties (+18 more)
 
 ### Community 412 - "Resolve"
-Cohesion: 0.03
-Nodes (84): Test, x, GLFWwindow, NK_API, nk_handle, NK_INTERN, nk_gflw3_scroll_callback(), nk_glfw3_char_callback() (+76 more)
+Cohesion: 0.04
+Nodes (69): GLFWwindow, NK_API, nk_handle, NK_INTERN, nk_gflw3_scroll_callback(), nk_glfw3_char_callback(), nk_glfw3_clipboard_copy(), nk_glfw3_clipboard_paste() (+61 more)
 
 ### Community 413 - "load_result"
-Cohesion: 0.04
-Nodes (38): as_args(), as_args_t, src, lua_State, Source, T, unqualified_pusher<as_args_t<T>>, as_returns() (+30 more)
+Cohesion: 0.17
+Nodes (12): basic_variadic_results, Al, Arg0, lua_State, protected_function_result, unsafe_function_result, is_container<basic_variadic_results<Al>>, is_container<variadic_results> (+4 more)
 
 ### Community 414 - "nk_window"
 Cohesion: 0.08
@@ -2961,8 +2926,8 @@ Cohesion: 0.17
 Nodes (12): id_type, in_place_type_t, string_view, Type, operator==(), type_hash(), type_info, alias (+4 more)
 
 ### Community 420 - "Phase 7 W3 — unified asset resolution (approved implementation plan)"
-Cohesion: 0.09
-Nodes (28): GamepadAxis, GamepadButton, KeyCode, MouseButton, vector, ApplyConfiguration, EndFrame, LoadDefaults (+20 more)
+Cohesion: 0.13
+Nodes (21): GamepadAxis, GamepadButton, KeyCode, MouseButton, vector, ApplyConfiguration, EndFrame, LoadDefaults (+13 more)
 
 ### Community 421 - "TEST"
 Cohesion: 0.09
@@ -2978,23 +2943,19 @@ Nodes (24): Background-work completion drain, D-W7-1 — self-inflicted events a
 
 ### Community 424 - "TYPED_TEST"
 Cohesion: 0.08
-Nodes (24): Async import merge, Automatic prefab override marking (S6), Camera, Command layer (Phase 3A), Command layer — property correctness (Phase 3B2, implemented), Command layer — structural correctness (Phase 3B1, implemented), Coordinate and ray contract, Editor selection and viewport picking (+16 more)
+Nodes (24): Automatic prefab override marking (S6), Camera, Command layer (Phase 3A), Command layer — property correctness (Phase 3B2, implemented), Command layer — structural correctness (Phase 3B1, implemented), Coordinate and ray contract, ECS Components, ECSScene (+16 more)
 
 ### Community 425 - "environment"
 Cohesion: 0.12
 Nodes (15): ExecuteGate, PendingAction, optional, PendingAction, UnsavedChangesCoordinator, m_DiscardRecovery, m_Execute, m_IsDirty (+7 more)
 
 ### Community 426 - "_swizzle.hpp"
-Cohesion: 0.09
-Nodes (29): DenoiserMode, DlssQualityMode, ImplicitStartupDenoiser, mode, quality, reason, ResolvedDenoiserSelection, mode (+21 more)
+Cohesion: 0.20
+Nodes (14): ResolveDenoiserSelectionFromCLI(), CompletedDenoiserName(), DenoiserModeName(), DlssQualityModeName(), EffectiveNrdEnabled(), CompletedDenoiser, DenoiserMode, DlssQualityMode (+6 more)
 
 ### Community 427 - "common_type"
-Cohesion: 0.12
-Nodes (13): MetaFuncDeathTest, base, value, Custom, size_t, testing::Test, UserTraits, derived (+5 more)
-
-### Community 428 - "VkPipelineColorBlendStateCreateInfo"
-Cohesion: 0.13
-Nodes (15): RRGuideExtent, RRGuideSpace, RRGuideFormat, RRGuideKind, RRGuideContract, binding, clearValue, dedicated (+7 more)
+Cohesion: 0.22
+Nodes (11): environment, CopySandboxLibrary(), DenySandboxGlobal(), lua_Debug, lua_State, state_view, InstallSandbox(), InstallSandboxDenials() (+3 more)
 
 ### Community 429 - "VkBufferCreateInfo"
 Cohesion: 0.09
@@ -3013,8 +2974,8 @@ Cohesion: 0.08
 Nodes (24): 2.14.1. Swizzle functions for standard C++ 98, 2.14.2. Swizzle operations for C++ 98 with language extensions, <a name="section2_10"></a> 2.10. GLM\_FORCE\_DEFAULT\_ALIGNED\_GENTYPES: Force GLM to use aligned types by default, <a name="section2_11"></a> 2.11. GLM\_FORCE\_INTRINSICS: Using SIMD optimizations, <a name="section2_12"></a> 2.12. GLM\_FORCE\_PRECISION\_**: Default precision, <a name="section2_13"></a> 2.13. GLM\_FORCE\_SINGLE\_ONLY: Removed explicit 64-bits floating point types, <a name="section2_14"></a> 2.14. GLM\_FORCE\_SWIZZLE: Enable swizzle operators, <a name="section2_15"></a> 2.15. GLM\_FORCE\_XYZW\_ONLY: Only exposes x, y, z and w components (+16 more)
 
 ### Community 433 - "NullSceneRenderBridge4"
-Cohesion: 0.09
-Nodes (23): Box2iInfo, _EXRAttribute, name, pad0, size, type, value, HeaderInfo (+15 more)
+Cohesion: 0.07
+Nodes (28): Box2iInfo, _EXRAttribute, name, pad0, size, type, value, _EXRBox2i (+20 more)
 
 ### Community 434 - "NullSceneRenderBridge"
 Cohesion: 0.09
@@ -3029,20 +2990,20 @@ Cohesion: 0.16
 Nodes (22): PFN_vkVoidFunction, ImVec2, VkCommandBuffer, VkMemoryPropertyFlags, VkPipeline, VkRenderPass, ImGui_ImplVulkan_CreateDeviceObjects(), ImGui_ImplVulkan_CreateFontsTexture() (+14 more)
 
 ### Community 437 - "ldump.c"
-Cohesion: 0.10
-Nodes (20): compressed_pair, compressed_pair_element, compressed_pair_element<Type, Tag, std::enable_if_t<is_ebco_eligible_v<Type>>>, value, get(), Arg, compressed_pair_element<First, 0u>, compressed_pair_element<Second, 1u> (+12 more)
+Cohesion: 0.08
+Nodes (25): compressed_pair, compressed_pair_element, compressed_pair_element<Type, Tag, std::enable_if_t<is_ebco_eligible_v<Type>>>, value, get(), Arg, compressed_pair_element<First, 0u>, compressed_pair_element<Second, 1u> (+17 more)
 
 ### Community 438 - "apply"
-Cohesion: 0.18
-Nodes (15): invoke_result_t, Opt, and_then(), detail::invoke_result_t<F, T&> and_then(), disjunction(), hash<::sol::optional<T>>, F, Fn (+7 more)
+Cohesion: 0.17
+Nodes (16): invoke_result_t, forward_as(), and_then(), conjunction, detail::invoke_result_t<F, T&> and_then(), F, Fn, invoke() (+8 more)
 
 ### Community 439 - "TEST_F"
-Cohesion: 0.11
-Nodes (18): Node, camera, children, emitter, extensions, extensions_json_string, extras, extras_json_string (+10 more)
+Cohesion: 0.38
+Nodes (12): genIUType, findLSB_095(), findLSB_branchfree(), findLSB_intrinsic(), findLSB_ntz2(), findMSB_095(), findMSB_avx(), findMSB_intrinsic() (+4 more)
 
 ### Community 440 - "TEST"
-Cohesion: 0.11
-Nodes (29): CurrentTestCaseStats, ConsoleReporter, currentSubcaseLevel, file_line_to_stream, hasLoggedCurrentTestStart, log_contexts, log_message, logTestStart (+21 more)
+Cohesion: 0.07
+Nodes (45): CurrentTestCaseStats, DOCTEST_THREAD_LOCAL, ConsoleReporter, currentSubcaseLevel, file_line_to_stream, getSuccessOrFailColor, getSuccessOrFailString, hasLoggedCurrentTestStart (+37 more)
 
 ### Community 441 - "main"
 Cohesion: 0.23
@@ -3065,12 +3026,12 @@ Cohesion: 0.09
 Nodes (23): nk_style_edit, active, border, border_color, cursor_hover, cursor_normal, cursor_size, cursor_text_hover (+15 more)
 
 ### Community 446 - "gtc_bitfield.cpp"
-Cohesion: 0.17
-Nodes (22): A, f, B, g, v, size_t, vec4, main() (+14 more)
+Cohesion: 0.12
+Nodes (29): A, f, AoS, A, B, C, D, B (+21 more)
 
 ### Community 447 - "basic_meta_factory"
-Cohesion: 0.14
-Nodes (18): EntityLifecycle, ManagedStorage, OnConstruct, OnConstructCallback, OnDestroy, OnDestroyCallback, OnUpdate, OnUpdateCallback (+10 more)
+Cohesion: 0.24
+Nodes (10): ImGuiDataType, ImGuiStyleVar, GetStyleVarInfo(), ImGui::DebugHookIdInfo(), ImGui::PopStyleVar(), ImGui::PushStyleVar(), ImGuiStyleVarInfo, Count (+2 more)
 
 ### Community 448 - "Reporting a bug"
 Cohesion: 0.09
@@ -3109,8 +3070,8 @@ Cohesion: 0.18
 Nodes (21): main(), test_mat2x2_col_set(), test_mat2x2_row_set(), test_mat2x3_col_set(), test_mat2x3_row_set(), test_mat2x4_col_set(), test_mat2x4_row_set(), test_mat3x2_col_set() (+13 more)
 
 ### Community 457 - "First tiny vertical slice development plan"
-Cohesion: 0.26
-Nodes (14): at(), constrained_find(), contains(), count(), equal_range(), find(), conditional_t, const_iterator (+6 more)
+Cohesion: 0.27
+Nodes (13): main(), test_acot(), test_acoth(), test_acsc(), test_acsch(), test_asec(), test_asech(), test_cot() (+5 more)
 
 ### Community 458 - "Phase 8 W3 — overrides (implementation spec, 2026-08-06)"
 Cohesion: 0.10
@@ -3121,8 +3082,8 @@ Cohesion: 0.10
 Nodes (20): 1. Current State of the Art (What Commercial Engines Do), 2. The Technology Stack (Ordered by Impact), 3. Recommended Path Forward for RT2, 4. Priority Order (What to Do First), 5. Papers Downloaded (in research/), 6. Key Open-Source References, Cyberpunk 2077 RT Overdrive, Executive Summary (+12 more)
 
 ### Community 460 - "path"
-Cohesion: 0.17
-Nodes (13): base_classes_tag, IFx, stack_reference, call_construction, Arg, Fx, meta_function, string (+5 more)
+Cohesion: 0.21
+Nodes (12): base_classes_tag, IFx, call_construction, Arg, Fx, meta_function, string, string_view (+4 more)
 
 ### Community 461 - "HostProbe"
 Cohesion: 0.11
@@ -3137,8 +3098,8 @@ Cohesion: 0.10
 Nodes (20): IRuntimeCommandSink, DestroyEntity, FindByName, GetCamera, GetLight, GetLocalTransform, GetName, GetPosition (+12 more)
 
 ### Community 464 - "memory_tracker"
-Cohesion: 0.16
-Nodes (22): ImGuiStoragePair, ImGuiStoragePair, ImGui::DebugNodeStorage(), ImGui::GetStateStorage(), ImGui::SetStateStorage(), ImGuiStorage, Data, GetBool (+14 more)
+Cohesion: 0.15
+Nodes (11): CacheEntry, string, unordered_map, ScriptFieldRegistry, Clear, kInstructionBudget, kMaxCachedPaths, m_Cache (+3 more)
 
 ### Community 465 - "Phase 7 W8 — deferred commitments (implementation spec)"
 Cohesion: 0.12
@@ -3157,8 +3118,8 @@ Cohesion: 0.10
 Nodes (21): VkPhysicalDeviceType, VkPhysicalDeviceProperties, VkPhysicalDeviceProperties2, pNext, properties, sType, apiVersion, deviceID (+13 more)
 
 ### Community 469 - "<a name="section3_3"></a> 3.3. Vector types"
-Cohesion: 0.11
-Nodes (26): CompatibleType, json_value, JsonRef, output_adapter, priority_tag, basic_json(), data, m_type (+18 more)
+Cohesion: 0.21
+Nodes (11): GLenum, GLFWwindow, GLuint, generate_heightmap__circle(), init_map(), key_callback(), make_mesh(), make_shader() (+3 more)
 
 ### Community 470 - "<a name="section4"></a> 4. Recommended extensions"
 Cohesion: 0.20
@@ -3197,8 +3158,8 @@ Cohesion: 0.17
 Nodes (12): ABC, v_, check_with_sol(), Handler, lua_State, pair, record, T (+4 more)
 
 ### Community 479 - "bitCount_bitfield"
-Cohesion: 0.14
-Nodes (17): basic_reference, basic_environment, get_environment(), b, base_type, basic_table, E, lua_State (+9 more)
+Cohesion: 0.36
+Nodes (12): FileInfoMap, string, FileSystem, changeWorkingDirectory, filesInfoFromPath, getCurrentWorkingDirectory, getOSSlash, isDirectory (+4 more)
 
 ### Community 480 - "gles2.h"
 Cohesion: 0.12
@@ -3209,28 +3170,28 @@ Cohesion: 0.11
 Nodes (12): FILE, lua_State, size_t, custom_reader, buffer, current_size, custom_reader_function(), read_count (+4 more)
 
 ### Community 482 - "coroutine.lua"
-Cohesion: 0.16
-Nodes (15): handle_policy(), F, Fx, size_t, policies(), policy_base_tag, policy_wrapper, policies (+7 more)
+Cohesion: 0.15
+Nodes (14): F, Fx, size_t, policies(), policy_base_tag, policy_wrapper, policies, value (+6 more)
 
 ### Community 483 - "custom_reader"
-Cohesion: 0.21
-Nodes (7): A, children, value, ArrayProxy, shared_ptr, vector, getChildren()
+Cohesion: 0.14
+Nodes (12): A, children, value, ArrayProxy, lua_State, shared_ptr, T, vector (+4 more)
 
 ### Community 484 - "usertype_bitfields.cpp"
-Cohesion: 0.10
-Nodes (17): attrib_t, colors, normals, skin_weights, texcoord_ws, texcoords, vertex_weights, vertices (+9 more)
+Cohesion: 0.05
+Nodes (34): attrib_t, colors, normals, skin_weights, texcoord_ws, texcoords, vertex_weights, vertices (+26 more)
 
 ### Community 485 - "boing.c"
 Cohesion: 0.29
 Nodes (19): uSynergyBool, uSynergyContext, sAddString(), sAddUInt16(), sAddUInt32(), sAddUInt8(), sNetToNative16(), sNetToNative32() (+11 more)
 
 ### Community 486 - "tinfl_decompressor_tag"
-Cohesion: 0.12
-Nodes (16): AssetBatchEntry, entityName, entityUuid, ref, AssetDiagnostic, detail, entityName, entityUuid (+8 more)
+Cohesion: 0.18
+Nodes (8): DenoiserMode, ResolveSessionFallbackDenoiser(), ShouldClearRetainedFallback(), ShouldCommitHeadlessOutput(), RenderOutcome, Fnv1a64(), ReadRRGuidePairManifest(), WriteRRGuidePairManifest()
 
 ### Community 487 - "attrib_t"
-Cohesion: 0.08
-Nodes (24): bitset, unordered_map, vector, usertype_storage_base, auxiliary_keys, base_index, const_reference_index_table, const_value_index_table (+16 more)
+Cohesion: 0.07
+Nodes (33): index_call_function, bitset, string_view, unordered_map, vector, index_call_storage, binding_data, index (+25 more)
 
 ### Community 488 - "imgui_impl_sdlrenderer.cpp"
 Cohesion: 0.19
@@ -3241,8 +3202,8 @@ Cohesion: 0.10
 Nodes (19): GLFWcursor, GLFWgammaramp, blue, green, red, size, GLFWimage, height (+11 more)
 
 ### Community 490 - "nk_style_combo"
-Cohesion: 0.13
-Nodes (16): basic_table_core, basic_lua_table, lua_State, ref_t, stack_reference, T, ref_index, index (+8 more)
+Cohesion: 0.38
+Nodes (9): C::*resolve(Sig C::*mem_ptr)(), C::*resolve_v(std::false_type, Sig C::*mem_func_ptr)(), C::*resolve_v(std::true_type, Sig C::*mem_variable_ptr)(), F, R, Sig, resolve(), resolve_f() (+1 more)
 
 ### Community 491 - "GpuDevice"
 Cohesion: 0.19
@@ -3261,16 +3222,16 @@ Cohesion: 0.32
 Nodes (18): ndarray, add_flag(), case_command(), compare_images(), display_transform(), finite_image(), image_stats(), luminance() (+10 more)
 
 ### Community 495 - "glfw3.h"
-Cohesion: 0.30
-Nodes (19): char_int_type, InputType, IteratorType, JSON_HEDLEY_WARN_UNUSED_RESULT, accept(), add(), array(), from_bjdata() (+11 more)
+Cohesion: 0.20
+Nodes (25): char_int_type, InputType, IteratorType, JSON_HEDLEY_WARN_UNUSED_RESULT, accept(), add(), end_pos(), from_bjdata() (+17 more)
 
 ### Community 496 - "my_thing"
-Cohesion: 0.11
-Nodes (26): main(), test_acot(), test_acoth(), test_acsc(), test_acsch(), test_asec(), test_asech(), test_cot() (+18 more)
+Cohesion: 0.27
+Nodes (13): main(), test_acot(), test_acoth(), test_acsc(), test_acsch(), test_asec(), test_asech(), test_cot() (+5 more)
 
 ### Community 497 - "Phase 6B W5 implementation plan — inspector authoring (planned 2026-07-22)"
-Cohesion: 0.24
-Nodes (7): IInputService, GetActionState, GetAxisValue, GetMouseDelta, GetScrollDelta, IsCursorCaptureRequested, RequestCursorCapture
+Cohesion: 0.12
+Nodes (14): SuppressKeyboardActions, SuppressMouseActions, string, unordered_map, IInputService, GetActionState, GetAxisValue, GetMouseDelta (+6 more)
 
 ### Community 498 - "uint32"
 Cohesion: 0.12
@@ -3298,7 +3259,7 @@ Nodes (21): CaptureOptionalFile(), EditorCommandHistory, path, SceneManager, vec
 
 ### Community 504 - "W3 step 6 grounded implementation plan — textures cut over last"
 Cohesion: 0.03
-Nodes (74): AssetDiagnostic, vector, SceneLoadReport, assetDiagnostics, droppedScriptFieldData, fieldDiagnostics, hasNonPortableAsset, normalizedScriptFieldData (+66 more)
+Nodes (76): AssetDiagnostic, vector, SceneLoadReport, assetDiagnostics, droppedScriptFieldData, fieldDiagnostics, hasNonPortableAsset, normalizedScriptFieldData (+68 more)
 
 ### Community 505 - "stack_proxy_base"
 Cohesion: 0.11
@@ -3321,8 +3282,8 @@ Cohesion: 0.18
 Nodes (12): proxy_t, is_const, difference_type, lua_State, pointer, reference, operator+(), stack_iterator (+4 more)
 
 ### Community 510 - "nk_text_edit"
-Cohesion: 0.09
-Nodes (20): const_reverse_iterable, reverse_iterable, Registry, basic_storage, payload, storage_policy, allocator_type, CIt (+12 more)
+Cohesion: 0.04
+Nodes (49): const_pointer, const_reverse_iterable, Page, reverse_iterable, Registry, basic_storage, basic_storage<Entity, Entity, Allocator>, placeholder (+41 more)
 
 ### Community 511 - "VkPipelineVertexInputStateCreateInfo"
 Cohesion: 0.11
@@ -3338,7 +3299,7 @@ Nodes (17): NVSDK_NGX_D3D11_DLSSD_Eval_Params, NVSDK_NGX_D3D12_DLSSD_Eval_Params
 
 ### Community 514 - "GLM_CONSTEXPR vec"
 Cohesion: 0.01
-Nodes (167): EHandle, forward_list, info_vector, deque, Set, TextureVK, format, image (+159 more)
+Nodes (192): EHandle, forward_list, info_vector, deque, Set, TextureVK, format, image (+184 more)
 
 ### Community 515 - "<a name="section3_7"></a> 3.7. Matrix types with precision qualifiers"
 Cohesion: 0.14
@@ -3353,8 +3314,8 @@ Cohesion: 0.10
 Nodes (19): CastAndConvert, ConstNonConstRefArgs, ExternalMemberFunction, FuncArithmeticConversion, FuncCastAndConvert, FuncConstNonConstRefArgs, FuncMetaAnyArgs, InvalidArgs (+11 more)
 
 ### Community 518 - "basic_sparse_set"
-Cohesion: 0.04
-Nodes (43): All, integral_constant<bool, (::sol::tie_size<T>::value > 0)>, Version, TEST(), undefined_metatable, associated_nullopt, associated_nullopt<boost::optional<T>>, boost (+35 more)
+Cohesion: 0.05
+Nodes (36): CTr, integral_constant<bool, (::sol::tie_size<T>::value > 0)>, undefined_metatable, associated_nullopt, associated_nullopt<boost::optional<T>>, boost, value, nullopt_t (+28 more)
 
 ### Community 519 - "ltm.c"
 Cohesion: 0.12
@@ -3365,8 +3326,8 @@ Cohesion: 0.24
 Nodes (12): QueueFamilyD3D12Desc, AccelerationStructureD3D12Desc(), CommandBufferD3D12Desc(), DescriptorPoolD3D12Desc(), DeviceCreationD3D12Desc(), FenceD3D12Desc(), NriNamespaceBegin, NriOptional (+4 more)
 
 ### Community 521 - "Runtime frame-order contract"
-Cohesion: 0.10
-Nodes (31): AssetSidecarPath(), IUuidProvider, path, ReadSidecarId(), ResolveOrAssign(), WriteSidecarId(), path, string (+23 more)
+Cohesion: 0.18
+Nodes (10): Functionalities, Order, string_view, entt::type_name<float>, TEST(), TypeId, TypeIndex, TypeInfo (+2 more)
 
 ### Community 522 - "lstate.c"
 Cohesion: 0.13
@@ -3389,12 +3350,12 @@ Cohesion: 0.24
 Nodes (10): function_args_t, constructor_match, obj_, obj_lua_ref_, p_umf_, List, reference, T (+2 more)
 
 ### Community 527 - "FileSystemImpl.cpp"
-Cohesion: 0.06
-Nodes (42): PointAttribute, Buffer, data, extensions, extensions_json_string, extras, extras_json_string, name (+34 more)
+Cohesion: 0.03
+Nodes (78): PointAttribute, operator==, Buffer, data, extensions, extensions_json_string, extras, extras_json_string (+70 more)
 
 ### Community 528 - "exhaustive.cpp"
-Cohesion: 0.11
-Nodes (21): entt::enum_as_bitmask<test::enum_as_bitmask>, Functionalities, Test, Enum, TYPED_TEST(), addAssert(), addFailedAssert(), AssertData::AssertData() (+13 more)
+Cohesion: 0.12
+Nodes (18): entt::enum_as_bitmask<test::enum_as_bitmask>, Functionalities, Test, Enum, TYPED_TEST(), addAssert(), addFailedAssert(), AssertData::AssertData() (+10 more)
 
 ### Community 529 - "nk_context"
 Cohesion: 0.11
@@ -3405,12 +3366,12 @@ Cohesion: 0.22
 Nodes (17): error(), main(), nlz1(), nlz10(), nlz10a(), nlz10b(), nlz1a(), nlz2() (+9 more)
 
 ### Community 531 - "Timer"
-Cohesion: 0.23
-Nodes (21): uint16, uint8, mask, vector, main(), mask_half(), mask_loop(), mask_mix() (+13 more)
+Cohesion: 0.07
+Nodes (56): glm_uvec4, PARAM, uint16, uint8, GLFWApplicationDelegate, -applicationDidChangeScreenParameters, -applicationDidFinishLaunching, -applicationDidHide (+48 more)
 
 ### Community 532 - "basic.cpp"
-Cohesion: 0.12
-Nodes (11): ColorValue, ParameterMap, Parameter, bool_value, has_number_value, json_double_value, number_array, number_value (+3 more)
+Cohesion: 0.13
+Nodes (8): ColorValue, Parameter, bool_value, has_number_value, json_double_value, number_array, number_value, string_value
 
 ### Community 533 - "compatibility.hpp"
 Cohesion: 0.12
@@ -3437,8 +3398,8 @@ Cohesion: 0.16
 Nodes (11): basic_continuous_loader, reg, remloc, basic_snapshot, basic_snapshot_loader, reg, reg, dense_map (+3 more)
 
 ### Community 539 - "ResolveAll"
-Cohesion: 0.11
-Nodes (10): abstract, base, value, clazz, value, concrete, value, derived (+2 more)
+Cohesion: 0.17
+Nodes (8): deleter, Deleter, unique_ptr, factory_test, a, num_killed, num_saved, true_a
 
 ### Community 540 - "ReSTIR GI Implementation Plan"
 Cohesion: 0.18
@@ -3465,8 +3426,8 @@ Cohesion: 0.12
 Nodes (17): nk_style_property, active, border, border_color, dec_button, edit, hover, inc_button (+9 more)
 
 ### Community 546 - "Value"
-Cohesion: 0.14
-Nodes (19): BasicJsonContext, position_t, ReferenceType, create(), end_pos(), get_ref(), get_ref_impl(), hex_bytes() (+11 more)
+Cohesion: 0.16
+Nodes (18): BasicJsonContext, position_t, container, values, iterator, value_type, create(), erase() (+10 more)
 
 ### Community 547 - "test_qr"
 Cohesion: 0.43
@@ -3485,7 +3446,7 @@ Cohesion: 0.17
 Nodes (19): GetPickingRay, RequestPick, BuildOutputPickingRay(), BuildPickingRay(), CameraRay, direction, origin, mat4 (+11 more)
 
 ### Community 551 - "nk_style_property"
-Cohesion: 0.06
+Cohesion: 0.07
 Nodes (47): OptionalVulkanFeatureDisableReason, OptionalVulkanFeatureRequirementPhase, DeduplicateAndValidateVulkanExtensions(), string, T, vector, VkPhysicalDevice, VkResult (+39 more)
 
 ### Community 552 - "_noise.hpp"
@@ -3509,8 +3470,8 @@ Cohesion: 0.18
 Nodes (14): IndexRebaseMode, MaterialT, Fn, Index, ForEachMaterialTextureIndex(), IndexRebase, material, mesh (+6 more)
 
 ### Community 557 - "TEST_F"
-Cohesion: 0.11
-Nodes (19): AllocateUnique, LeadingAllocatorConvention, MakeObjUsingAllocator, PairConstLValueReference, PairNoArgs, PairPiecewiseConstruct, PairRValueReference, PairValues (+11 more)
+Cohesion: 0.21
+Nodes (9): coroutine_storage, mLuaState, mThread, mThreadEnvironment, mThreadTick, coroutine_thread_runner, prunner_thread, state (+1 more)
 
 ### Community 558 - "SceneSerializer"
 Cohesion: 0.25
@@ -3529,8 +3490,8 @@ Cohesion: 0.25
 Nodes (5): Amalgamation, _is_within(), main(), object, TranslationUnit
 
 ### Community 562 - "TranslationUnit"
-Cohesion: 0.13
-Nodes (14): ElementWithDeleter, ResetHandle, base_service, invoke, Emplace, testing::Test, derived_service, value (+6 more)
+Cohesion: 0.17
+Nodes (11): Sampler, extensions, extensions_json_string, extras, extras_json_string, magFilter, minFilter, name (+3 more)
 
 ### Community 564 - "Phase7W3LocatorTests.cpp"
 Cohesion: 0.17
@@ -3549,20 +3510,20 @@ Cohesion: 0.12
 Nodes (16): nk_chart, h, nk_chart_slot, color, count, highlight, index, last (+8 more)
 
 ### Community 568 - "Phase 8 W0 — verification report (prefab asset kind and file envelope, 2026-08-03)"
-Cohesion: 0.14
-Nodes (15): PARAM, GLFWApplicationDelegate, -applicationDidChangeScreenParameters, -applicationDidFinishLaunching, -applicationDidHide, -applicationShouldTerminate, -applicationWillFinishLaunching, GLFWHelper (+7 more)
+Cohesion: 0.17
+Nodes (12): nk_edit_state, active, cursor, mode, name, old, prev, scrollbar (+4 more)
 
 ### Community 569 - "TYPED_TEST"
 Cohesion: 0.10
 Nodes (20): Constructors, Contains, Each, EachWithHoles, Empty, Exclude, Functionalities, InvalidView (+12 more)
 
 ### Community 570 - "ImFileLoadToMemory"
-Cohesion: 0.16
-Nodes (15): ImGuiKey, ImGui_ImplGLUT_AddKeyEvent(), ImGui_ImplGLUT_Init(), ImGui_ImplGLUT_InstallFuncs(), ImGui_ImplGLUT_KeyboardFunc(), ImGui_ImplGLUT_KeyboardUpFunc(), ImGui_ImplGLUT_KeyToImGuiKey(), ImGui_ImplGLUT_NewFrame() (+7 more)
+Cohesion: 0.25
+Nodes (9): BuildAttributeBuffers, BuildBLASes, BuildTLAS, Destroy, GetBLASAddress, RebuildTLASOnly, vector, VkCommandBuffer (+1 more)
 
 ### Community 571 - "nk_chart_slot"
-Cohesion: 0.10
-Nodes (21): basic_hashed_string, base_type, hash, length, repr, data(), hash_type(), basic_hashed_string<Char> (+13 more)
+Cohesion: 0.14
+Nodes (14): basic_flow, deps, index, sync_on, vertices, adjacency_matrix_type, allocator_type, deps_container_type (+6 more)
 
 ### Community 572 - "nk_style_window_header"
 Cohesion: 0.22
@@ -3581,20 +3542,20 @@ Cohesion: 0.22
 Nodes (13): ImGuiInputTextCallbackData, ImGuiInputTextCallback, ImGuiInputTextFlags, ImVec2, string, ImGui::InputText(), ImGui::InputTextMultiline(), ImGui::InputTextWithHint() (+5 more)
 
 ### Community 576 - "lstring.c"
-Cohesion: 0.20
-Nodes (10): adl_wrapped_shared_ptr, shared_ptr, Type, entt::adl_meta_pointer_like<spec_wrapped_shared_ptr<Type>>, entt::is_meta_pointer_like<proxy_ptr>, entt::is_meta_pointer_like<self_ptr>, self_ptr, value (+2 more)
+Cohesion: 0.18
+Nodes (10): adl_wrapped_shared_ptr, shared_ptr, Type, entt::adl_meta_pointer_like<spec_wrapped_shared_ptr<Type>>, entt::is_meta_pointer_like<proxy_ptr>, entt::is_meta_pointer_like<self_ptr>, proxy_ptr, value (+2 more)
 
 ### Community 577 - "GPU Buffer Reference"
 Cohesion: 0.05
 Nodes (33): CustomTraits, delegate_type, BackgroundWork, m_Done, m_Result, m_Started, m_Status, m_StatusMutex (+25 more)
 
 ### Community 578 - "Lua scripting"
-Cohesion: 0.11
-Nodes (21): ImGuiNavDirSourceFlags, ImGuiInputReadMode, ImGuiNavInput, FindWindowNavFocusable(), ImGui::GetNavInputAmount(), ImGui::GetNavInputAmount2d(), ImGui::GetNavInputName(), ImGui::NavUpdateCancelRequest() (+13 more)
+Cohesion: 0.18
+Nodes (11): CLICameraSeed, exposureEV, forward, hasExposureEV, hasForward, hasPosition, hasToneMap, position (+3 more)
 
 ### Community 579 - "RecordingObserver"
-Cohesion: 0.16
-Nodes (20): meta_dynamic_extent, tuple_size<entt::compressed_pair<First, Second>>, tuple_size<entt::compressed_pair<First, Second>>, sequence_container_extent, get(), get_empty(), get_one(), get_using() (+12 more)
+Cohesion: 0.09
+Nodes (30): integral_constant<C, v>, meta_dynamic_extent, tuple_size<entt::compressed_pair<First, Second>>, tuple_size<entt::compressed_pair<First, Second>>, sequence_container_extent, T, vcxx_warning_crap(), var() (+22 more)
 
 ### Community 580 - "imgui_stdlib.cpp"
 Cohesion: 0.17
@@ -3629,44 +3590,44 @@ Cohesion: 0.16
 Nodes (11): it_t, string, this_state, user, lua_iterator_state, it, last, my_next() (+3 more)
 
 ### Community 588 - "Views"
-Cohesion: 0.23
-Nodes (12): ebco<T>, F, G, R, no_prop, property(), readonly(), readonly_property() (+4 more)
+Cohesion: 0.21
+Nodes (12): agnostic_lua_call_wrapper<detail::no_prop, is_index, is_variable, checked, boost, clean_stack, C>, ebco<T>, F, G, R, no_prop, property(), readonly() (+4 more)
 
 ### Community 589 - "stack"
-Cohesion: 0.05
-Nodes (64): AssetResolutionSource, CanonicalAssetPathProbe, AssetDiagnosticSeverityName(), AssetDiagnosticSortKey(), AssetResolutionContext, assetRoot, database, AssetResolutionResult (+56 more)
+Cohesion: 0.02
+Nodes (194): AssetResolutionSource, CanonicalAssetPathProbe, EntityUuidRemap, AssetReference, assetId, importSettings, kind, path (+186 more)
 
 ### Community 590 - "basic_scheduler"
-Cohesion: 0.09
-Nodes (17): coroutine, metatable, state, Class, usertype, new_usertype(), lua_State, unqualified_getter<metatable_key_t> (+9 more)
+Cohesion: 0.07
+Nodes (22): coroutine, metatable, state, bytecode, condition_variable, mutex, state, variant (+14 more)
 
 ### Community 591 - "throwing_allocator"
 Cohesion: 0.31
 Nodes (14): add_flag(), aggregate_records(), build_command(), derive_records(), detect_gpus(), file_hash(), main(), markdown_report() (+6 more)
 
 ### Community 592 - "nextvar.lua"
-Cohesion: 0.11
-Nodes (20): CameraEqStrict(), path, string, vector, OldSessionCommits(), ProbeFrame, combo, reset (+12 more)
+Cohesion: 0.20
+Nodes (5): istream, MaterialFileReader, m_mtlBaseDir, MaterialReader, MaterialStreamReader
 
 ### Community 593 - "NRIWrapperVK.h"
-Cohesion: 0.22
-Nodes (9): Container, difference_type, pointer, ptrdiff_t, reference, operator-(), sparse_set_iterator, offset (+1 more)
+Cohesion: 0.20
+Nodes (10): EDGE, B, T, VEC, entry, a, edge, Result (+2 more)
 
 ### Community 594 - "unsafe_function.hpp"
 Cohesion: 0.16
 Nodes (10): it_t, lua_State, string, lua_iterator_state, it, last, my_next(), my_pairs() (+2 more)
 
 ### Community 595 - "GPUSceneData"
-Cohesion: 0.05
-Nodes (42): nk_uint, nk_list_view, count, ctx, scroll_pointer, scroll_value, total_height, nk_panel (+34 more)
+Cohesion: 0.11
+Nodes (19): nk_panel, at_x, at_y, border, bounds, buffer, chart, clip (+11 more)
 
 ### Community 596 - "Phase 8 W1 — third cold-review repair (2026-08-05)"
 Cohesion: 0.12
 Nodes (16): nk_style_window_header, active, align, close_button, close_symbol, hover, label_active, label_hover (+8 more)
 
 ### Community 597 - "perf_benchmark.py"
-Cohesion: 0.07
-Nodes (29): stbrp_coord, stbrp_context, stbrp_node, stbrp_init_target(), stbrp_pack_rects(), stbrp_rect, h, id (+21 more)
+Cohesion: 0.08
+Nodes (27): stbrp_coord, stbrp_context, stbrp_node, stbrp_init_target(), stbrp_pack_rects(), stbrp_rect, h, id (+19 more)
 
 ### Community 598 - "BackgroundWork"
 Cohesion: 0.26
@@ -3681,8 +3642,8 @@ Cohesion: 0.13
 Nodes (15): Q&A: Usage, Q: About the ID Stack system..., Q: How can I display an image? What is ImTextureID, how does it work?, Q: How can I display custom shapes? (using low-level ImDrawList API), Q: How can I have multiple widgets with the same label?, Q: How can I have multiple windows with the same label?, Q: How can I have widgets with an empty label?, Q: How can I interact with standard C++ types (such as std::string and std::vector)? (+7 more)
 
 ### Community 601 - "nk_style_tab"
-Cohesion: 0.12
-Nodes (17): AbortImmediately, AbortNextTick, AbortNoOverride, Basics, FailNoOverride, NoUpdateAbort, process, CustomAllocator (+9 more)
+Cohesion: 0.05
+Nodes (40): AbortImmediately, AbortNextTick, AbortNoOverride, AttachThen, basic_process<Delta>, Basics, FailNoOverride, Functor (+32 more)
 
 ### Community 602 - "resolve.hpp"
 Cohesion: 0.15
@@ -3704,8 +3665,8 @@ Nodes (18): bit_type_t, bit_type, bit_type<sz, std::enable_if_t<(sz <= 1)>>, bit
 	     std::enable_if_t<(sz > 32 && sz <= 64)>>, Base, size (+10 more)
 
 ### Community 606 - "base"
-Cohesion: 0.16
-Nodes (11): NamedQueue, OpaqueDisconnect, CustomAllocator, dispatcher, empty, Functionalities, Swap, receiver (+3 more)
+Cohesion: 0.15
+Nodes (12): NamedQueue, OpaqueDisconnect, CustomAllocator, dispatcher, empty, Functionalities, Swap, non_aggregate (+4 more)
 
 ### Community 607 - "reference"
 Cohesion: 0.18
@@ -3716,16 +3677,16 @@ Cohesion: 0.14
 Nodes (14): Aliased properties, Archives, Auto-binding, Context variables, Continuous loader, Entity lifecycle, Listeners disconnection, Observe changes (+6 more)
 
 ### Community 609 - "Native scene persistence (.rt2scene)"
-Cohesion: 0.17
-Nodes (10): Option, WatcherOption, mOption, mValue, string, vector, WatchID, FileWatcher::addWatch() (+2 more)
+Cohesion: 0.25
+Nodes (6): string, vector, WatchID, FileWatcher::addWatch(), FileWatcher::directories(), FileWatcher::removeWatch()
 
 ### Community 610 - "nk_style_scrollbar"
-Cohesion: 0.16
-Nodes (25): OptionalKind, PrefabEntityRecord, record, templateId, AddMember(), Bytes(), entity, optional (+17 more)
+Cohesion: 0.20
+Nodes (10): PoseApplyAction, EditorCameraPose, aperture, farClip, focusDistance, forward, position, presentation (+2 more)
 
 ### Community 611 - "type_info"
-Cohesion: 0.17
-Nodes (14): basic_entt_traits, entity_mask, length, version_mask, entt_traits<std::uint32_t>, entity_mask, version_mask, entt_traits<std::uint64_t> (+6 more)
+Cohesion: 0.22
+Nodes (10): ClosePreviewSessionsAndAdmit(), SceneManager, size_t, PreviewSessionCloseSlotOutcome, outcome, sessionWasOpen, PreviewSessionsBeforeActionResult, allClosed (+2 more)
 
 ### Community 612 - "RecordingBridge"
 Cohesion: 0.19
@@ -3744,20 +3705,20 @@ Cohesion: 0.11
 Nodes (16): conditional, conditional<false>, detector, detector<_Default, void_t<_Op<_Args...>>, _Op, _Args...>, has_internal_marker_impl, has_internal_marker_impl<T, void_t<typename T::SOL_INTERNAL_UNSPECIALIZED_MARKER_>>, T, identity (+8 more)
 
 ### Community 616 - "usertypes.properties.cpp"
-Cohesion: 0.12
-Nodes (7): Image, PSTR, HINSTANCE, WinMain(), Layer, ExampleLayer, Walnut::CreateApplication()
+Cohesion: 0.33
+Nodes (8): Handler, lua_State, record, GlobalResource, value, sol_lua_check(), sol_lua_get(), sol_lua_push()
 
 ### Community 617 - "TEST"
 Cohesion: 0.24
 Nodes (15): main(), test_mat2x2_ctor(), test_mat2x3_ctor(), test_mat2x4_ctor(), test_mat3x2_ctor(), test_mat3x3_ctor(), test_mat3x4_ctor(), test_mat4x2_ctor() (+7 more)
 
 ### Community 618 - "The Registry, the Entity and the Component"
-Cohesion: 0.05
-Nodes (40): AssetKindFromName(), AssetReference, assetId, importSettings, kind, path, sourceKey, AssetKind (+32 more)
+Cohesion: 0.38
+Nodes (9): main(), test_bvec4_ctor(), test_operator_increment(), test_vec4_ctor(), test_vec4_equal(), test_vec4_operators(), test_vec4_simd(), test_vec4_size() (+1 more)
 
 ### Community 619 - "davey"
-Cohesion: 0.07
-Nodes (12): KeySym, Crash Course: events, signals and everything in between, Delegate, Event dispatcher, Event emitter, Introduction, Lambda support, Named queues (+4 more)
+Cohesion: 0.08
+Nodes (6): KeySym, LPDIDEVICEIMAGEINFO, LPDIDEVICEINSTANCE_DX3, LPDIDEVICEOBJECTINSTANCE, LPDIDEVICEOBJECTINSTANCE_DX3, DECL_WINELIB_TYPE_AW()
 
 ### Community 620 - "context"
 Cohesion: 0.31
@@ -3768,16 +3729,16 @@ Cohesion: 0.14
 Nodes (14): nk_font_atlas, config, cursors, custom, default_font, font_num, fonts, glyph_count (+6 more)
 
 ### Community 622 - "errors.lua"
-Cohesion: 0.50
-Nodes (3): callback, AssetWatchOperationKind, AssetWatchSuppressedOperation
+Cohesion: 0.18
+Nodes (5): callback, AssetWatchOperationKind, AssetWatchSuppressedOperation, path, ExecutableDirectory()
 
 ### Community 623 - "Phase 8 (Prefabs) — read-only grounding findings"
 Cohesion: 0.14
 Nodes (14): <a name="section7_10"></a> 7.10. Why some GLM functions can crash because of division by zero?, <a name="section7_11"></a> 7.11. What unit for angles is used in GLM?, <a name="section7_12"></a> 7.12. Windows headers cause build errors..., <a name="section7_13"></a> 7.13. Constant expressions support, <a name="section7_1"></a> 7.1 Why GLM follows GLSL specification and conventions?, <a name="section7_2"></a> 7.2. Does GLM run GLSL program?, <a name="section7_3"></a> 7.3. Does a GLSL compiler build GLM codes?, <a name="section7_4"></a> 7.4. Should I use ‘GTX’ extensions? (+6 more)
 
 ### Community 624 - "A"
-Cohesion: 0.16
-Nodes (23): bitCount_bitfield(), bitCount_if(), bitCount_vec(), bitfieldReverseOps(), genType, GLM_FUNC_QUALIFIER, L, Q (+15 more)
+Cohesion: 0.29
+Nodes (13): bitCount_bitfield(), bitCount_if(), bitCount_vec(), genType, L, Q, size_t, T (+5 more)
 
 ### Community 625 - "FileSystem.cpp"
 Cohesion: 0.14
@@ -3800,8 +3761,8 @@ Cohesion: 0.21
 Nodes (8): element_type, handle_type, Lhs, Other, Rhs, operator==(), resource, value
 
 ### Community 630 - "nk_font_atlas"
-Cohesion: 0.18
-Nodes (9): A, a, aligned_class, var, deallocate_only, indestructible, v, st (+1 more)
+Cohesion: 0.22
+Nodes (9): Assumptions, BasicHandleDeathTest, Construction, BasicHandle, DeductionGuide, Storage, Test, ENTT_DEBUG_TYPED_TEST() (+1 more)
 
 ### Community 631 - "main.cpp"
 Cohesion: 0.21
@@ -3812,8 +3773,8 @@ Cohesion: 0.29
 Nodes (14): aces_display(), aces_fit(), agx_display(), agx_sigmoid(), clamp01(), convert(), main(), matvec() (+6 more)
 
 ### Community 633 - "nk_row_layout"
-Cohesion: 0.14
-Nodes (14): DOCTEST_THREAD_LOCAL, DebugOutputWindowReporter, log_assert, log_message, std, subcase_end, subcase_start, test_case_end (+6 more)
+Cohesion: 0.25
+Nodes (9): RotationFunc, TestDerivedFunc, TestExtractionFunc, TestRotationFunc, mat4, value_type, epsilonEqual(), main() (+1 more)
 
 ### Community 634 - "MetaContext"
 Cohesion: 0.27
@@ -3832,8 +3793,8 @@ Cohesion: 0.19
 Nodes (9): pointer, reference, Type, value_type, input_iterator_pointer, value, iota_iterator, current (+1 more)
 
 ### Community 638 - "ImGuiDockRequest"
-Cohesion: 0.16
-Nodes (16): GLFWbool, GLFWgammaramp, _GLFWmonitor, GLFWvidmode, _glfwFreeMonitorWayland(), _glfwGetGammaRampWayland(), _glfwGetMonitorContentScaleWayland(), _glfwGetMonitorPosWayland() (+8 more)
+Cohesion: 0.25
+Nodes (7): EditorWorldTransformSnapshot, primaryIndex, uuids, worldMatrices, mat4, size_t, vector
 
 ### Community 639 - "Phase7W7Tests.cpp"
 Cohesion: 0.17
@@ -3888,20 +3849,20 @@ Cohesion: 0.17
 Nodes (11): Design Goals, Future Extension Points, Infrastructure, Module List, Rendering Layer, RT2 — Architecture Overview, Scene Layer, Shaders (+3 more)
 
 ### Community 652 - "resource_cache_iterator"
-Cohesion: 0.09
-Nodes (14): LhsType, OGet, RhsType, storage(), basic_view, dereference(), extended_view_iterator, it (+6 more)
+Cohesion: 0.28
+Nodes (7): as_args(), as_args_t, src, lua_State, Source, T, unqualified_pusher<as_args_t<T>>
 
 ### Community 653 - "fx"
 Cohesion: 0.22
 Nodes (8): entity, SceneManager, MirroredOverrideFixture, entity, mgr, UnmirroredOverrideFixture, entity, mgr
 
 ### Community 654 - "ImDrawCmd"
-Cohesion: 0.16
-Nodes (15): assign(), construct(), T, optional_copy_assign_base, optional_copy_assign_base<T, false>, optional_copy_base, optional_copy_base<T, false>, optional_move_assign_base (+7 more)
+Cohesion: 0.12
+Nodes (18): Opt, assign(), construct(), hash<::sol::optional<T>>, size_t, T, optional_copy_assign_base, optional_copy_assign_base<T, false> (+10 more)
 
 ### Community 655 - "property.hpp"
-Cohesion: 0.18
-Nodes (17): getCode(), hufBuildDecTable(), hufClearDecTable(), hufCode(), HufDec, len, lit, p (+9 more)
+Cohesion: 0.25
+Nodes (7): as_returns(), as_returns_t, ebco<T>, lua_State, Source, T, unqualified_pusher<as_returns_t<T>>
 
 ### Community 656 - "constructor_match"
 Cohesion: 0.17
@@ -3928,16 +3889,16 @@ Cohesion: 0.17
 Nodes (11): Concept and implementation, Crash Course: poly, Deduced interface, Defined interface, Fulfill a concept, Inheritance, Introduction, Other libraries (+3 more)
 
 ### Community 662 - "dense_set"
-Cohesion: 0.24
-Nodes (13): GLM_FUNC_QUALIFIER, uint32, uint64, fastBitfieldInterleave(), glm::u16vec2 bitfieldDeinterleave_u16vec2(), glm::u8vec2 bitfieldDeinterleave_u8vec2(), glm::u8vec4 bitfieldDeinterleave_u8vec4(), glm::uint16 bitfieldInterleave_u8vec2() (+5 more)
+Cohesion: 0.22
+Nodes (5): as_stack(), basic_object_base, ref_t, T, is_stack()
 
 ### Community 663 - "RT2 — Architecture Overview"
 Cohesion: 0.16
 Nodes (8): GPUSceneData, ISceneRenderBridge, NullSceneRenderBridge4, fullSyncCalls, materialSyncCalls, renderRequests, resetTemporalCalls, transformSyncCalls
 
 ### Community 664 - "ContentBrowserDispatchContext"
-Cohesion: 0.26
-Nodes (10): OptionalType, get(), get_optional(), Handler, lua_State, optional, R, record (+2 more)
+Cohesion: 0.22
+Nodes (9): VkRenderPassMultiviewCreateInfo, correlationMaskCount, dependencyCount, pCorrelationMasks, pNext, pViewMasks, pViewOffsets, sType (+1 more)
 
 ### Community 665 - "iota_iterator"
 Cohesion: 0.21
@@ -3964,12 +3925,12 @@ Cohesion: 0.18
 Nodes (9): state, string, goddamnit, state_pointer_and_registration, lua_ptr, registered_ptr, unregister_me, b (+1 more)
 
 ### Community 673 - "entity.md"
-Cohesion: 0.38
-Nodes (11): CollectSubtreePostOrder(), CollectSubtreePreOrder(), entity, registry, string, vector, EntityLabel(), IsDescendant() (+3 more)
+Cohesion: 0.33
+Nodes (8): begin(), components(), end(), genType, length_t, Q, T, vec
 
 ### Community 674 - "FAQ"
 Cohesion: 0.08
-Nodes (22): assert_handler, high_resolution_clock, IReporter, MultiLaneAtomic, ContextState, filters, numAssertsCurrentTest_atomic, numAssertsFailedCurrentTest_atomic (+14 more)
+Nodes (24): assert_handler, high_resolution_clock, IReporter, MultiLaneAtomic, ContextState, filters, numAssertsCurrentTest_atomic, numAssertsFailedCurrentTest_atomic (+16 more)
 
 ### Community 675 - "poly.md"
 Cohesion: 0.17
@@ -3986,10 +3947,6 @@ Nodes (12): nk_command_text, background, font, foreground, h, header, height, le
 ### Community 678 - "tdualquat"
 Cohesion: 0.16
 Nodes (9): load_status, lua_State, proxy_base, load_result, err, index, L, popcount (+1 more)
-
-### Community 679 - "array"
-Cohesion: 0.18
-Nodes (7): basic_process<Delta>, Delta, test_process, aborted_invoked, failed_invoked, succeeded_invoked, update_invoked
 
 ### Community 680 - "attrib.lua"
 Cohesion: 0.17
@@ -4024,20 +3981,20 @@ Cohesion: 0.18
 Nodes (11): D1 — where the before-capture lives: decided (b), the testable seam, Discrimination proofs (all run fault-first, red then green), F1 — guard under which SetMaterial creates/replaces the override, F2 — Redo has no mirrored problem; the asymmetry is structural, F3 — audit of the remaining Record*Edit functions: clean, Interactive check — BLOCKED, not performed, Material-index undo — interactive acceptance closed (2026-08-03), Material-index undo restores the wrong override (verification report) (+3 more)
 
 ### Community 688 - "meta_func"
-Cohesion: 0.14
-Nodes (13): GLM_CONSTEXPR vec(), E0, E1, GLM_DEFAULT, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, Q (+5 more)
+Cohesion: 0.25
+Nodes (7): BLASInstance, blasAddress, customIndex, sbtHitOffset, transform, VkDeviceAddress, VkTransformMatrixKHR
 
 ### Community 689 - "VkExternalFenceProperties"
-Cohesion: 0.10
-Nodes (32): at(), constrained_find(), contains(), count(), emplace(), equal_range(), find(), Arg (+24 more)
+Cohesion: 0.14
+Nodes (22): at(), contains(), count(), emplace(), fast_mod(), find(), has_single_bit(), Arg (+14 more)
 
 ### Community 690 - "VkExternalSemaphoreProperties"
 Cohesion: 0.20
 Nodes (10): registry, uint64_t, main(), position, x, y, update(), velocity (+2 more)
 
 ### Community 691 - "nk_command_text"
-Cohesion: 0.22
-Nodes (9): difference_type, It, meta_ctx, pointer, ptrdiff_t, reference, meta_range_iterator, ctx (+1 more)
+Cohesion: 0.20
+Nodes (10): difference_type, It, meta_ctx, pointer, ptrdiff_t, reference, meta_range_iterator, ctx (+2 more)
 
 ### Community 692 - "signal.md"
 Cohesion: 0.33
@@ -4056,8 +4013,8 @@ Cohesion: 0.20
 Nodes (5): main(), player, bullets, hp, speed
 
 ### Community 696 - "NSCursor"
-Cohesion: 0.21
-Nodes (7): main(), test_clamp(), test_iround(), test_mirrorClamp(), test_mirrorRepeat(), test_repeat(), test_uround()
+Cohesion: 0.16
+Nodes (9): main(), test_clamp(), test_iround(), test_mirrorClamp(), test_mirrorRepeat(), test_repeat(), test_uround(), main() (+1 more)
 
 ### Community 697 - "ext_scalar_common.cpp"
 Cohesion: 0.18
@@ -4068,12 +4025,12 @@ Cohesion: 0.21
 Nodes (11): NRI_API, FormatProps(), NriNamespaceBegin, NriOptional, HelperInterface(), Nri(), NriPtr(), NriStruct() (+3 more)
 
 ### Community 699 - "stbtt_pack_context"
-Cohesion: 0.33
-Nodes (5): lua_State, this_main_state, L, this_state, L
+Cohesion: 0.26
+Nodes (7): lua_State, string, this_main_state, L, this_state, L, type_name()
 
 ### Community 700 - "MainActivity"
-Cohesion: 0.32
-Nodes (11): main(), test_identity(), test_mul(), test_quat_angle(), test_quat_angleAxis(), test_quat_euler(), test_quat_mix(), test_quat_mul_vec() (+3 more)
+Cohesion: 0.46
+Nodes (7): main(), test_constexpr(), test_ctor(), test_operator_increment(), test_operators(), test_size(), test_swizzle()
 
 ### Community 701 - "ImGui_ImplVulkanH_CreateOrResizeWindow"
 Cohesion: 0.12
@@ -4100,8 +4057,8 @@ Cohesion: 0.18
 Nodes (10): col_type, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, mat<3, 2, T, Q>, explicit, GLM_CONSTEXPR, GLM_EXPLICIT (+2 more)
 
 ### Community 707 - "TEST"
-Cohesion: 0.18
-Nodes (10): col_type, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, mat<4, 4, T, Q>, explicit, GLM_CONSTEXPR, GLM_EXPLICIT (+2 more)
+Cohesion: 0.25
+Nodes (3): Test, x, _thrd_wrapper_function()
 
 ### Community 708 - "VkDeviceGroupPresentCapabilitiesKHR"
 Cohesion: 0.18
@@ -4116,8 +4073,8 @@ Cohesion: 0.18
 Nodes (10): col_type, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, mat<4, 3, T, Q>, explicit, GLM_CONSTEXPR, GLM_EXPLICIT (+2 more)
 
 ### Community 711 - "error.hpp"
-Cohesion: 0.15
-Nodes (13): change_indexing_mem_func, inheritance_cast_function, inheritance_check_function, update_bases_func, base_class_cast_func, base_class_check_func, change_indexing, idx_call (+5 more)
+Cohesion: 0.11
+Nodes (17): change_indexing_mem_func, inheritance_cast_function, inheritance_check_function, make_closure(), stateless_reference, stateless_stack_reference, update_bases_func, base_class_cast_func (+9 more)
 
 ### Community 712 - "player"
 Cohesion: 0.20
@@ -4132,8 +4089,8 @@ Cohesion: 0.18
 Nodes (16): c_call(), c_call_matcher, c_call_raw(), call_set_assignable(), call_set_variable(), call_wrapper_entry(), call_wrapper_function(), call_wrapper_variable() (+8 more)
 
 ### Community 715 - "AoS"
-Cohesion: 0.09
-Nodes (36): SetPresentation, CameraExposureMultiplier(), CameraPresentation, exposureEV, toneMap, CanonicalCameraPresentation(), DefaultCameraPresentation(), ToneMapOperator (+28 more)
+Cohesion: 0.11
+Nodes (24): LinearToSRGB(), LinearToSRGB8(), ComponentCount(), vector, PackRGB32FTopDown(), PackRGBA8TopDown(), ACESFit(), ACESFittedDisplay() (+16 more)
 
 ### Community 716 - "lua_State"
 Cohesion: 0.24
@@ -4148,8 +4105,8 @@ Cohesion: 0.24
 Nodes (5): emitter, handlers, allocator_type, compressed_pair, container_type
 
 ### Community 719 - "GBufferDebugPass"
-Cohesion: 0.19
-Nodes (14): AdaptDatabaseDiagnostic(), AssetDiagnostic, path, string, DiagnosticLess(), AssetDiagnostic, shared_ptr, vector (+6 more)
+Cohesion: 0.25
+Nodes (8): VkCommandBufferLevel, VkCommandPool, VkCommandBufferAllocateInfo, commandBufferCount, commandPool, level, pNext, sType
 
 ### Community 720 - "plain_types.cpp"
 Cohesion: 0.22
@@ -4164,12 +4121,12 @@ Cohesion: 0.20
 Nodes (4): deleter, unique_ptr, holy, data
 
 ### Community 724 - "protect_t"
-Cohesion: 0.22
-Nodes (11): main(), test_equal_epsilon(), test_equal_sign(), test_equal_ulps(), test_notEqual_epsilon(), test_notEqual_ulps(), main(), test_ulp_double_dist() (+3 more)
+Cohesion: 0.16
+Nodes (16): main(), test_equal_epsilon(), test_equal_sign(), test_equal_ulps(), test_notEqual_epsilon(), test_notEqual_ulps(), main(), test_ulp_double_dist() (+8 more)
 
 ### Community 725 - "TEST"
-Cohesion: 0.14
-Nodes (13): string, vector, SceneMesh, filepath, hasGeometry, indices, materialIndex, normals (+5 more)
+Cohesion: 0.25
+Nodes (7): GLM_DEFAULT, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, vec<1, T, Q>, GLM_CONSTEXPR, operator++
 
 ### Community 726 - "mat<3, 4, T, Q>"
 Cohesion: 0.23
@@ -4204,8 +4161,8 @@ Cohesion: 0.20
 Nodes (10): Q&A: Fonts, Text, Q: How can I display and input non-Latin characters such as Chinese, Japanese, Korean, Cyrillic?, Q: How can I easily use icons in my application?, Q: How can I load a different font than the default?, Q: How can I load multiple fonts?, Q: How should I handle DPI in my application?, [Return to Index](#index), [Return to Index](#index) (+2 more)
 
 ### Community 734 - "TEST"
-Cohesion: 0.20
-Nodes (3): proxy_base, stack_proxy, unqualified_pusher<unsafe_function_result>
+Cohesion: 0.08
+Nodes (6): proxy_base, lua_State, proxy_base, proxy_base_tag, unqualified_pusher<unsafe_function_result>, stack
 
 ### Community 735 - "ref_index"
 Cohesion: 0.22
@@ -4228,8 +4185,8 @@ Cohesion: 0.22
 Nodes (9): Commitments earlier phases deferred *to* Phase 7, Decisions required before implementation, Grounded findings, Notes for whoever implements this, Phase 7 — Project model and asset database (implementation plan, not started), Proposed workstreams, Risks, Test requirements (+1 more)
 
 ### Community 740 - "meta_custom.cpp"
-Cohesion: 0.16
-Nodes (12): path, string, wchar_t, OpenFile(), OpenFolder(), RunLegacyFileDialog(), SaveFile(), WideToUtf8() (+4 more)
+Cohesion: 0.61
+Nodes (8): path, string, wchar_t, OpenFile(), OpenFolder(), RunLegacyFileDialog(), SaveFile(), WideToUtf8()
 
 ### Community 741 - "config"
 Cohesion: 0.22
@@ -4244,20 +4201,20 @@ Cohesion: 0.20
 Nodes (10): retType, result, type, Base, Bits, Insert, Offset, Result (+2 more)
 
 ### Community 744 - "sol_lua_check"
-Cohesion: 0.50
-Nodes (4): F, weird_aligned_wrapper, lambda, SelfType
+Cohesion: 0.43
+Nodes (8): GLM_FUNC_DECL, mat, Q, qua, T, mat<3, 3, T, Q> toMat3(), mat<4, 4, T, Q> toMat4(), toQuat()
 
 ### Community 745 - "holy"
-Cohesion: 0.12
-Nodes (9): enable_shared_from_this<basic_process<Delta, Allocator>>, basic_process, current, next, allocator_type, compressed_pair, Delta, handle_type (+1 more)
+Cohesion: 0.10
+Nodes (14): enable_shared_from_this<basic_process<Delta, Allocator>>, basic_process, current, next, Allocator, allocator_type, compressed_pair, Delta (+6 more)
 
 ### Community 746 - "stack_guard"
 Cohesion: 0.22
 Nodes (3): ScriptRepairPersistenceGate, m_Acknowledged, m_Pending
 
 ### Community 747 - "Phase 6 - Lua scripting"
-Cohesion: 0.31
-Nodes (7): string, Uint64, System, getMaxFD, getProcessPath, maxFD, sleep
+Cohesion: 0.11
+Nodes (11): Image, string, Uint64, System, getMaxFD, getProcessPath, maxFD, sleep (+3 more)
 
 ### Community 748 - "What follows immediately"
 Cohesion: 0.22
@@ -4276,20 +4233,20 @@ Cohesion: 0.22
 Nodes (5): node_type, Service, shared_ptr, locator, service
 
 ### Community 752 - "RecordingBridge"
-Cohesion: 0.05
-Nodes (51): ExpandFilePathFunction, FileExistsFunction, GetFileSizeFunction, ReadWholeFileFunction, base64_decode(), DecodeDataURI(), FileExists(), FindFile() (+43 more)
+Cohesion: 0.03
+Nodes (68): ExpandFilePathFunction, FileExistsFunction, GetFileSizeFunction, LoadImageDataFunction, nullptr, ParseStrictness, ReadWholeFileFunction, FsCallbacks (+60 more)
 
 ### Community 753 - "RecordingBridge"
-Cohesion: 0.15
-Nodes (13): BrokenLoader, Load, LoaderDispatching, ResourceCache, ConstIterator, Constructors, Functionalities, Indexing (+5 more)
+Cohesion: 0.11
+Nodes (18): BrokenLoader, Load, LoaderDispatching, ResourceCache, other_empty, ConstIterator, Constructors, empty (+10 more)
 
 ### Community 754 - "singleton.cpp"
 Cohesion: 0.17
 Nodes (8): optional, T, PropertyEditSession, m_BeforeValue, m_CommittedThisActivation, m_Open, m_Target, SessionRecord
 
 ### Community 755 - "mat<4, 4, T, Q>"
-Cohesion: 0.17
-Nodes (10): extended_group_iterator<It, owned_t<Owned...>, get_t<Get...>>, it, pools, It, iterator_type, pointer, reference, Type (+2 more)
+Cohesion: 0.14
+Nodes (12): extended_group_iterator, extended_group_iterator<It, owned_t<Owned...>, get_t<Get...>>, it, pools, It, iterator_type, pointer, reference (+4 more)
 
 ### Community 756 - "RecordingBridge"
 Cohesion: 0.36
@@ -4300,8 +4257,8 @@ Cohesion: 0.22
 Nodes (6): string, this_state, variadic_args, variadic_results, fallback(), func_2()
 
 ### Community 758 - "nk_command_rect_multi_color"
-Cohesion: 0.40
-Nodes (5): ImGuiResizeBorderDef, InnerDir, OuterAngle, SegmentN1, SegmentN2
+Cohesion: 0.33
+Nodes (6): EditorSelection, mat4, vec2, MakeIcon(), TestUuid(), TestViewProj()
 
 ### Community 759 - "nk_rp_context"
 Cohesion: 0.22
@@ -4320,28 +4277,28 @@ Cohesion: 0.39
 Nodes (6): dot(), main(), operator+(), vec, x, y
 
 ### Community 763 - "_EXRBox2i"
-Cohesion: 0.36
-Nodes (4): make_closure(), stateless_reference, stateless_stack_reference, submetatable_type
+Cohesion: 0.46
+Nodes (7): main(), test_bvec1_ctor(), test_constexpr(), test_vec1_ctor(), test_vec1_operator_increment(), test_vec1_operators(), test_vec1_size()
 
 ### Community 764 - "SourceKey"
-Cohesion: 0.19
-Nodes (11): CheckedTempDir, armed, path, path, SceneDocument, SceneManager, string, DurableSceneBytes() (+3 more)
+Cohesion: 0.48
+Nodes (7): l_mem, genstep(), incstep(), luaC_step(), setminordebt(), setpause(), luaE_setdebt()
 
 ### Community 765 - "win32_thread.c"
 Cohesion: 0.25
 Nodes (7): state, T, uint64_t, int53_roundtrip(), intT_passthrough(), intT_roundtrip(), trigger_passthrough_crash()
 
 ### Community 766 - "Q&A: Fonts, Text"
-Cohesion: 0.20
-Nodes (9): mapped_type, pair, value_type, vector, MyContainer, m_vec, order_suit, objs (+1 more)
+Cohesion: 0.38
+Nodes (7): ENTT_API, registry, insert(), update(), Lib, Registry, TEST()
 
 ### Community 767 - "MirroredOverrideFixture"
 Cohesion: 0.24
 Nodes (15): main(), test_dmat_size(), test_dvec_precision(), test_fmat_size(), test_fvec_conversion(), test_fvec_precision(), test_fvec_size(), test_ivec_precision() (+7 more)
 
 ### Community 768 - "TEST"
-Cohesion: 0.08
-Nodes (26): ConflictingGroups, InsertionSort, InsertionSortBoxedInt, InsertionSortEmptyContainer, NestedGroups, RadixSort, RadixSortBoxedInt, RadixSortEmptyContainer (+18 more)
+Cohesion: 0.57
+Nodes (6): dump_types(), lua_State, string, print_lua_information(), print_section(), print_stack()
 
 ### Community 769 - "Phase 7 W3 step 7 implementation report (2026-07-26)"
 Cohesion: 0.27
@@ -4364,8 +4321,8 @@ Cohesion: 0.22
 Nodes (9): OptionalVulkanFeatureDiagnosticSink, ApplicationSpecification, EnableSyncValidation, EnableValidation, Height, Name, optionalVulkanFeatureDiagnosticSink, optionalVulkanFeatureProvider (+1 more)
 
 ### Community 774 - "graphify reference: extra exports and benchmark"
-Cohesion: 0.39
-Nodes (8): empty(), enable_if_t, reverse_iterator, size_type, rbegin(), rend(), size(), size_hint()
+Cohesion: 0.29
+Nodes (7): tinfl_decompress(), tinfl_decompress_mem_to_callback(), tinfl_decompress_mem_to_heap(), tinfl_decompress_mem_to_mem(), tinfl_decompressor, tinfl_put_buf_func_ptr, tinfl_status
 
 ### Community 775 - "PrefabPropagationDiscovery.cpp"
 Cohesion: 0.22
@@ -4392,16 +4349,16 @@ Cohesion: 0.25
 Nodes (8): Boundary, Decisions, Grounded findings, Implementation order, Motivation, Permanent tests and discrimination proofs, Punctual lights (spec) — renderer work, not a roadmap phase, Review amendments (2026-07-26)
 
 ### Community 781 - "AccelerationStructure.cpp"
-Cohesion: 0.15
-Nodes (12): ImGuiDockRequestType, ImGui::DockContextProcessDock(), ImGuiDockRequest, DockPayload, DockSplitDir, DockSplitOuter, DockSplitRatio, DockTargetNode (+4 more)
+Cohesion: 0.60
+Nodes (5): path, string, ReadFile(), UniqueTempDir(), WriteRaw()
 
 ### Community 782 - "container.md"
 Cohesion: 0.25
 Nodes (8): Current measured baseline and gates, Grounded A-case matrix, Phase 8 W4 S7 — acceptance closure (2026-08-22), Review ranges and closure boundary, S7 acceptance-test addendum (supersedes the provisional matrix above), S7 decisive-proof correction (2026-08-22), S7 final acceptance correction (2026-08-22), S7 pre-merge architectural quality addendum (2026-08-22)
 
 ### Community 783 - "Helpers"
-Cohesion: 0.10
-Nodes (16): CTr, OS, ConanFile, TestPackageConan, get_include(), is_include_guard(), process_file(), basic_ostream (+8 more)
+Cohesion: 0.11
+Nodes (15): OS, ConanFile, TestPackageConan, generate_doxygen_xml(), Run the cmake command to get the doxygen sources, Run the doxygen make commands if we're on the ReadTheDocs server, run_cmake_doxygen(), setup() (+7 more)
 
 ### Community 784 - "EnTT in Action"
 Cohesion: 0.20
@@ -4412,12 +4369,12 @@ Cohesion: 0.21
 Nodes (6): mt19937, uniform_int_distribution, result_type, Random, s_Distribution, s_RandomEngine
 
 ### Community 786 - "locator"
-Cohesion: 0.36
-Nodes (8): VkDevice, VkQueue, FrameContext::AbortAndSubmitEmpty(), FrameContext::Begin(), FrameContext::Destroy(), FrameContext::Init(), FrameContext::Submit(), FrameContext::WaitForFence()
+Cohesion: 0.29
+Nodes (7): VkDeviceGroupPresentModeFlagBitsKHR, VkDeviceGroupPresentInfoKHR, mode, pDeviceMasks, pNext, sType, swapchainCount
 
 ### Community 787 - "locator"
-Cohesion: 0.27
-Nodes (10): lua_State, LUAMOD_API, luaopen_lib11(), anotherfunc(), lua_State, LUAMOD_API, id(), lib1_export() (+2 more)
+Cohesion: 0.29
+Nodes (7): VkShaderModuleCreateFlags, VkShaderModuleCreateInfo, codeSize, flags, pCode, pNext, sType
 
 ### Community 788 - "TEST_F"
 Cohesion: 0.15
@@ -4476,8 +4433,8 @@ Cohesion: 0.17
 Nodes (12): nk_property_state, active, buffer, cursor, length, name, old, prev (+4 more)
 
 ### Community 802 - "core_func_integer.cpp"
-Cohesion: 0.22
-Nodes (9): nk_tt_pack_context, h_oversample, height, nodes, pack_info, padding, pixels, stride_in_bytes (+1 more)
+Cohesion: 0.52
+Nodes (6): main(), test_compiler(), test_cpp_version(), test_instruction_set(), test_model(), test_operators()
 
 ### Community 803 - "efsw-test.cpp"
 Cohesion: 0.22
@@ -4500,16 +4457,16 @@ Cohesion: 0.25
 Nodes (8): _EXRTile, height, images, level_x, level_y, offset_x, offset_y, width
 
 ### Community 808 - "nk_command_rect"
-Cohesion: 0.13
-Nodes (13): ConstRegistry, Dependencies, EmplaceDirectFunction, EmplaceFreeFunction, EmplaceFreeFunctionWithPayload, EmplaceMemberFunction, Organizer, Override (+5 more)
+Cohesion: 0.04
+Nodes (55): All, ConstRegistry, Dependencies, EmplaceDirectFunction, EmplaceFreeFunction, EmplaceFreeFunctionWithPayload, EmplaceMemberFunction, Organizer (+47 more)
 
 ### Community 809 - "nk_mouse"
-Cohesion: 0.04
-Nodes (59): Functionalities, Order, string_view, entt::type_name<float>, TEST(), TypeId, TypeIndex, DockSettingsHandler_DockNodeToSettings() (+51 more)
+Cohesion: 0.40
+Nodes (3): test, callback, v
 
 ### Community 810 - "nk_tt_aligned_quad"
-Cohesion: 0.20
-Nodes (10): AttachThen, Functor, CustomAllocator, Functionalities, Swap, failed_process, TEST(), Scheduler (+2 more)
+Cohesion: 0.52
+Nodes (6): main(), test_orientation(), test_rotate(), test_rotateX(), test_rotateY(), test_rotateZ()
 
 ### Community 811 - "TEST"
 Cohesion: 0.25
@@ -4548,8 +4505,8 @@ Cohesion: 0.25
 Nodes (8): nk_tt_pack_range, array_of_unicode_codepoints, chardata_for_range, first_unicode_codepoint_in_range, font_size, h_oversample, num_chars, v_oversample
 
 ### Community 820 - "Phase 8 W1 — second cold-review repair (2026-08-04)"
-Cohesion: 0.27
-Nodes (6): Action, handleWatchID(), main(), string, WatchID, UpdateListener
+Cohesion: 0.11
+Nodes (17): Action, handleWatchID(), main(), string, WatchID, UpdateListener, Crash Course: events, signals and everything in between, Delegate (+9 more)
 
 ### Community 821 - "basic_object"
 Cohesion: 0.28
@@ -4564,8 +4521,8 @@ Cohesion: 0.25
 Nodes (7): About Gamma Correct Blending, Colorful glyphs/emojis, Comparaison, imgui_freetype, Known issues, Testbed for toying with settings (for developers), Usage
 
 ### Community 824 - "NK_INTERN"
-Cohesion: 0.26
-Nodes (10): emplace(), Arg, is_constructible_v, pair, value_type, insert(), insert_or_assign(), insert_or_do_nothing() (+2 more)
+Cohesion: 0.33
+Nodes (5): GPUPunctualLight, color_intensity, cone, direction_type, position_range
 
 ### Community 825 - "process.md"
 Cohesion: 0.29
@@ -4592,8 +4549,8 @@ Cohesion: 0.20
 Nodes (12): VkBuffer, VkBufferUsageFlagBits, VkDeviceMemory, VkDeviceSize, CreateOrResizeBuffer(), ImGui_ImplVulkanH_FrameRenderBuffers, IndexBuffer, IndexBufferMemory (+4 more)
 
 ### Community 831 - "NRIHelper.h"
-Cohesion: 0.22
-Nodes (6): allocator_type, delta_type, foo_process, on_aborted, on_update, succeeded_process
+Cohesion: 0.40
+Nodes (5): Allocator, initializer_list, It, value_type, ordered_map
 
 ### Community 832 - "strings.lua"
 Cohesion: 0.33
@@ -4604,8 +4561,8 @@ Cohesion: 0.12
 Nodes (17): DeferredRebind, DirectRebind, Loop, RangeRO, RangeRW, RO, Clear, Constructors (+9 more)
 
 ### Community 834 - "path"
-Cohesion: 0.16
-Nodes (11): binding, binding_base, data, data_, binding_data_equals, binding_data, F, string_view (+3 more)
+Cohesion: 0.20
+Nodes (8): binding, binding_base, data, data_, binding_data_equals, binding_data, F, unique_ptr
 
 ### Community 835 - "tdualquat"
 Cohesion: 0.18
@@ -4648,16 +4605,16 @@ Cohesion: 0.38
 Nodes (3): f(), g(), oneless()
 
 ### Community 848 - "nk_command_rect_filled"
-Cohesion: 0.04
-Nodes (60): main(), test_mix(), main(), test_comp(), main(), test_rotate(), test_scale(), test_translate() (+52 more)
+Cohesion: 0.03
+Nodes (88): main(), test_mat_memcpy(), test_quat_memcpy(), test_vec_memcpy(), main(), test_exp(), test_exp2(), test_inversesqrt() (+80 more)
 
 ### Community 849 - "nk_configuration_stacks"
 Cohesion: 0.29
 Nodes (5): table, this_state, open_mylib(), some_class, bark
 
 ### Community 850 - "nk_style_chart"
-Cohesion: 0.24
-Nodes (9): F, stack_reference, modify_unique_usertype(), modify_unique_usertype_as(), undefined_metatable, key, L, on_new_table (+1 more)
+Cohesion: 0.15
+Nodes (14): clear(), F, reference, stack_reference, stateless_reference, stateless_stack_reference, modify_unique_usertype(), modify_unique_usertype_as() (+6 more)
 
 ### Community 851 - "nk_tt__active_edge"
 Cohesion: 0.33
@@ -4668,8 +4625,8 @@ Cohesion: 0.29
 Nodes (3): ship, bullets, life
 
 ### Community 853 - "nk_tt_pack_range"
-Cohesion: 0.22
-Nodes (6): Code, string, T, Result, error, value
+Cohesion: 0.33
+Nodes (4): T, Result, error, value
 
 ### Community 854 - "core_setup_force_size_t_length.cpp"
 Cohesion: 0.43
@@ -4680,8 +4637,8 @@ Cohesion: 0.20
 Nodes (10): 1. Compile-time key exhaustiveness, 2. Executable kill-set, 3. Non-attesting path index, Gate evidence (measured 2026-08-16, both Release and Debug except where noted), Material Duplicate ownership lifecycle (E-D4a), Phase 8 W3 S6 — automatic override marking verification report (2026-08-16), Preview publish/router seam (E-D4b), Structural regression (E-D6) (+2 more)
 
 ### Community 856 - "NGX_VULKAN_CREATE_DLSSD_EXT1"
-Cohesion: 0.20
-Nodes (6): input_it, m_, n_, value_, int_shim, x_
+Cohesion: 0.13
+Nodes (9): const_iterator, size_t, input_it, m_, n_, value_, int_shim, x_ (+1 more)
 
 ### Community 857 - "type"
 Cohesion: 0.33
@@ -4800,8 +4757,8 @@ Cohesion: 0.18
 Nodes (10): AudioSource, bufferView, extensions, extensions_json_string, extras, extras_json_string, mimeType, name (+2 more)
 
 ### Community 886 - "SceneHierarchy.cpp"
-Cohesion: 0.04
-Nodes (40): GLM_DEFAULT, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, vec<1, T, Q>, GLM_CONSTEXPR, operator++, main() (+32 more)
+Cohesion: 0.02
+Nodes (61): is_int<int16>, is_int<int64>, is_int<int8>, is_int<uint16>, is_int<uint64>, is_int<uint8>, main(), test_mat2x2() (+53 more)
 
 ### Community 887 - "A"
 Cohesion: 0.47
@@ -4812,8 +4769,8 @@ Cohesion: 0.33
 Nodes (5): For /graphify explain, For /graphify path, graphify reference: query, path, explain, Step 0 — Constrained query expansion (REQUIRED before traversal), Step 1 — Traversal
 
 ### Community 889 - "Phase7W4Tests.cpp"
-Cohesion: 0.18
-Nodes (10): Skin, extensions, extensions_json_string, extras, extras_json_string, inverseBindMatrices, joints, name (+2 more)
+Cohesion: 0.33
+Nodes (6): get_size_hint(), Al, C, vector, reserve(), Tr
 
 ### Community 890 - "meta_template.cpp"
 Cohesion: 0.47
@@ -4832,8 +4789,8 @@ Cohesion: 0.33
 Nodes (5): Enable Cpp17, EnTT and Unreal Engine, EnTT as a third party module, Include EnTT, Table of Contents
 
 ### Community 895 - "ImGui_ImplVulkanH_WindowRenderBuffers"
-Cohesion: 0.22
-Nodes (9): Func, Iterable, time_point, generic_with(), iterate_with(), pathological_with(), timer, start (+1 more)
+Cohesion: 0.47
+Nodes (5): Func, Iterable, generic_with(), iterate_with(), pathological_with()
 
 ### Community 896 - "ImGui_ImplVulkanH_FrameRenderBuffers"
 Cohesion: 0.33
@@ -4844,16 +4801,16 @@ Cohesion: 0.40
 Nodes (5): Test, StorageUtility, TYPED_TEST(), StorageFor, StorageType
 
 ### Community 898 - "nk_tt_vertex"
-Cohesion: 0.22
-Nodes (9): VkFormatFeatureFlags, VkFormatProperties, VkFormatProperties2, formatProperties, pNext, sType, bufferFeatures, linearTilingFeatures (+1 more)
+Cohesion: 0.40
+Nodes (5): Async import merge, glTF Path (.gltf / .glb), Import (merge into existing scene), OBJ Path (.obj + .mtl), Scene Loading
 
 ### Community 899 - "<a name="section3_11"></a> 3.11. Quaternion functions"
 Cohesion: 0.22
 Nodes (8): GLM_DEFAULT, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, qua, GLM_CONSTEXPR, GLM_EXPLICIT, qua
 
 ### Community 900 - "bug_ms_vec_static.cpp"
-Cohesion: 0.20
-Nodes (5): ActionState, IInputService, string, vec2, NullInputService
+Cohesion: 0.40
+Nodes (5): proxy_key_t, get_or(), D, T, operator[]()
 
 ### Community 901 - "GPUMeshGeometry"
 Cohesion: 0.33
@@ -4864,16 +4821,16 @@ Cohesion: 0.33
 Nodes (5): lua_State, table, this_state, luaopen_my_object(), open_my_object()
 
 ### Community 905 - "BLASInstance"
-Cohesion: 0.11
-Nodes (15): string, Uint64, System, getMaxFD, getProcessPath, maxFD, sleep, string (+7 more)
+Cohesion: 0.09
+Nodes (18): Atomic, set_, T, string, Uint64, System, getMaxFD, getProcessPath (+10 more)
 
 ### Community 906 - "BLASGeometry"
 Cohesion: 0.33
 Nodes (3): Vector, x, y
 
 ### Community 907 - "Phase 2 - Scene-building ergonomics and viewport tools"
-Cohesion: 0.29
-Nodes (6): LinearToSRGB(), LinearToSRGB8(), ComponentCount(), vector, PackRGB32FTopDown(), PackRGBA8TopDown()
+Cohesion: 0.40
+Nodes (4): time_point, timer, start, system_clock
 
 ### Community 908 - "Phase 3 - Command system, undo, and redo"
 Cohesion: 0.33
@@ -4940,8 +4897,8 @@ Cohesion: 0.47
 Nodes (3): toggleFolder(), toggleLevel(), updateStripes()
 
 ### Community 924 - "premake5.lua"
-Cohesion: 0.25
-Nodes (8): PFN_vkDebugReportCallbackEXT, VkDebugReportFlagsEXT, VkDebugReportCallbackCreateInfoEXT, flags, pfnCallback, pNext, pUserData, sType
+Cohesion: 0.40
+Nodes (3): state, register_lua(), main()
 
 ### Community 925 - "EnttConan"
 Cohesion: 0.47
@@ -4952,8 +4909,8 @@ Cohesion: 0.33
 Nodes (5): FAQ (Frequenty Asked Questions), Index, Q&A: Community, Q: How can I help?, [Return to Index](#index)
 
 ### Community 927 - "AccelerationStructure.cpp"
-Cohesion: 0.07
-Nodes (27): environment, CopySandboxLibrary(), DenySandboxGlobal(), lua_Debug, lua_State, state_view, InstallSandbox(), InstallSandboxDenials() (+19 more)
+Cohesion: 0.17
+Nodes (9): check_f_env, penv_f, plua, check_g_env, penv_g, plua, check_h_env, plua (+1 more)
 
 ### Community 928 - "TYPED_TEST"
 Cohesion: 0.29
@@ -5000,12 +4957,12 @@ Cohesion: 0.20
 Nodes (10): VkDeviceGroupPresentModeFlagsKHR, VkDeviceGroupPresentCapabilitiesKHR, modes, pNext, presentMask, sType, VkDeviceGroupSwapchainCreateInfoKHR, modes (+2 more)
 
 ### Community 939 - "OptionalVulkanFeatureDiagnostic"
-Cohesion: 0.36
-Nodes (5): It, iterator, sentinel, iterable_adaptor, last
+Cohesion: 0.50
+Nodes (4): state_view, string, main(), test_environment()
 
 ### Community 940 - "TEST"
-Cohesion: 0.07
-Nodes (56): AppendObjCorner(), AppendObjTexturesAndBind(), AssignObjTextureIndex(), AssetDiagnostic, entity, material_t, Model, ObjTextureRole (+48 more)
+Cohesion: 0.08
+Nodes (50): AppendObjCorner(), AppendObjTexturesAndBind(), AssignObjTextureIndex(), AssetDiagnostic, entity, material_t, Model, ObjTextureRole (+42 more)
 
 ### Community 941 - "type_ptr.hpp"
 Cohesion: 0.40
@@ -5016,20 +4973,20 @@ Cohesion: 0.40
 Nodes (4): Introduction, Similar projects, Similar projects, Table of Contents
 
 ### Community 943 - "T"
-Cohesion: 0.20
-Nodes (8): stack_object, string, this_state, unordered_map, DynamicObject, dynamic_props, PropertySet, props
+Cohesion: 0.67
+Nodes (3): basic_entt_traits<entity_traits>, entt::entt_traits<test::entity>, page_size
 
 ### Community 944 - "Test"
-Cohesion: 0.22
-Nodes (9): AssetWatchOperationKind, path, string, OperationCase, destination, expectedPathCount, kind, SourceSlice() (+1 more)
+Cohesion: 0.33
+Nodes (6): AssetWatchOperationKind, path, OperationCase, destination, expectedPathCount, kind
 
 ### Community 945 - "ApplicationSpecification"
 Cohesion: 0.50
 Nodes (4): entity, registry, shadow, target
 
 ### Community 946 - "ObjReaderConfig"
-Cohesion: 0.20
-Nodes (6): non_copyable, test, b, NoCopy, _haha_you_cant_copy_me, _you_can_copy_me
+Cohesion: 0.70
+Nodes (4): main(), test_dvec(), test_mat(), test_vec()
 
 ### Community 948 - "Getting Started"
 Cohesion: 0.40
@@ -5040,16 +4997,12 @@ Cohesion: 0.50
 Nodes (3): main(), vars, boop
 
 ### Community 950 - "nk_command_polygon"
-Cohesion: 0.22
-Nodes (7): A, a, B, a_list, vector, returns_callable, ptr
+Cohesion: 0.70
+Nodes (4): main(), test_angle(), test_orientedAngle_vec2(), test_orientedAngle_vec3()
 
 ### Community 951 - "nk_command_polyline"
-Cohesion: 0.33
-Nodes (5): ImGuiDockContextPruneNodeData, CountChildNodes, CountChildWindows, CountWindows, RootId
-
-### Community 954 - "nk_menu_state"
-Cohesion: 0.27
-Nodes (7): connection, disconnect, signal, delegate, release(), scoped_connection, conn
+Cohesion: 0.50
+Nodes (3): state_view, state, unique_ptr<lua_State, detail::state_deleter>
 
 ### Community 959 - "gtx_matrix_interpolation.cpp"
 Cohesion: 0.40
@@ -5068,16 +5021,16 @@ Cohesion: 0.40
 Nodes (3): table, foo, id
 
 ### Community 965 - "maybe_as_usertype_storage_base"
-Cohesion: 0.17
-Nodes (5): unique_ptr, delegate_functor, data_member, static_value, move_only_type()
+Cohesion: 0.40
+Nodes (3): delegate_functor, data_member, static_value
 
 ### Community 966 - "Cross-phase architecture contracts"
 Cohesion: 0.70
 Nodes (4): main(), test_mat(), test_qua(), test_vec()
 
 ### Community 967 - "GPU Data Layout"
-Cohesion: 0.20
-Nodes (5): Allocator, Ret, signal_type, sink<sigh<Ret(Args...), Allocator>>, signal
+Cohesion: 0.50
+Nodes (4): nk_page, next, size, win
 
 ### Community 968 - "operator[]"
 Cohesion: 0.50
@@ -5088,8 +5041,8 @@ Cohesion: 0.40
 Nodes (5): VKAPI_ATTR, ValidationCallback(), VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT, VkDebugUtilsMessengerCallbackDataEXT
 
 ### Community 971 - "lua_bind_traits"
-Cohesion: 0.28
-Nodes (7): vertex, basic_organizer, builder, vertices, flow, vector, vertex_data
+Cohesion: 0.50
+Nodes (4): nk_page_element, data, next, prev
 
 ### Community 973 - "Options"
 Cohesion: 0.50
@@ -5100,8 +5053,8 @@ Cohesion: 0.40
 Nodes (5): nk_text_undo_record, char_storage, delete_length, insert_length, where
 
 ### Community 976 - "imgui_impl_glfw.cpp"
-Cohesion: 0.22
-Nodes (5): main(), main(), main(), my_class, a
+Cohesion: 0.67
+Nodes (3): add(), genType, main()
 
 ### Community 977 - "FontInfo"
 Cohesion: 0.40
@@ -5154,10 +5107,6 @@ Nodes (4): Configuration, How to Build, On Ubuntu 14.04+ and macOS, On Windows w
 ### Community 989 - "usertypes.member_variables.cpp"
 Cohesion: 0.50
 Nodes (4): CR_EXPORT, cr_op, cr_plugin, cr_main()
-
-### Community 990 - "overloading.cpp"
-Cohesion: 0.10
-Nodes (24): path, string, ReadFileBytes(), SaveThenRewrite(), UniqueTempDir(), WriteFileBytes(), BuildPhase4Fixture(), IUuidProvider (+16 more)
 
 ### Community 991 - "my_type"
 Cohesion: 0.50
@@ -5216,12 +5165,12 @@ Cohesion: 0.67
 Nodes (3): state, create_namespace_sf(), main()
 
 ### Community 1015 - "ImGui_ImplVulkanH_WindowRenderBuffers"
-Cohesion: 0.22
-Nodes (9): stbtt_aligned_quad, stbtt_bakedchar, stbtt_packedchar, my_stbtt_initfont(), my_stbtt_print(), stbtt_BakeFontBitmap(), stbtt_GetBakedQuad(), stbtt_GetPackedQuad() (+1 more)
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
 
 ### Community 1016 - "camera"
-Cohesion: 0.33
-Nodes (6): AoS, A, B, C, D, vec2
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
 
 ### Community 1017 - "basic_lua_table"
 Cohesion: 0.25
@@ -5232,20 +5181,20 @@ Cohesion: 0.50
 Nodes (3): CC, CXX, preparation.linux.sh script
 
 ### Community 1019 - "core_type_aligned.cpp"
-Cohesion: 0.31
-Nodes (8): ImGuiStyleVar, GetStyleVarInfo(), ImGui::PopStyleVar(), ImGui::PushStyleVar(), ImGuiStyleVarInfo, Count, Offset, Type
+Cohesion: 0.83
+Nodes (3): main(), test_linearGradient(), test_radialGradient()
 
 ### Community 1022 - "index_call_storage"
-Cohesion: 0.29
-Nodes (8): index_call_function, index_call_storage, binding_data, index, new_index, new_index_call_storage, new_binding_data, self_index_call()
+Cohesion: 0.83
+Nodes (3): main(), test_lMaxNorm(), test_lxNorm()
 
 ### Community 1023 - "ImGui::GetAllocatorFunctions"
-Cohesion: 0.60
-Nodes (4): glm_uvec4, glm_i128_interleave(), glm_i128_interleave2(), GLM_FUNC_QUALIFIER
+Cohesion: 0.83
+Nodes (3): main(), test_mat(), test_vec()
 
 ### Community 1024 - "Ray Queries from Compute"
 Cohesion: 0.02
-Nodes (87): genTypeEnum, compute_equal, GLM_CONSTEXPR, GLM_FUNC_QUALIFIER, T, genTypeTrait, genTypeTrait<mat<C, R, T> >, GENTYPE (+79 more)
+Nodes (79): genTypeEnum, compute_equal, GLM_CONSTEXPR, GLM_FUNC_QUALIFIER, T, genTypeTrait, genTypeTrait<mat<C, R, T> >, GENTYPE (+71 more)
 
 ### Community 1025 - "Shader and Pipeline Interfaces"
 Cohesion: 0.50
@@ -5257,11 +5206,11 @@ Nodes (8): GPUMeshGeometry, indices, materialIndex, materialIndices, normals, ta
 
 ### Community 1027 - "AoS"
 Cohesion: 0.50
-Nodes (4): nk_keyboard, keys, text, text_len
+Nodes (3): ImGuiPlotArrayGetterData, Stride, Values
 
 ### Community 1028 - "benchmark.cpp"
-Cohesion: 0.32
-Nodes (8): optional, ScriptComponent, string, NormalizeAndValidateScriptComponent(), ScriptComponentCanonicalEqual(), string_view, IsValidScriptFieldName(), IsWellFormedUtf8()
+Cohesion: 0.50
+Nodes (4): VKAPI_ATTR, VkDebugReportFlagsEXT, VkDebugReportObjectTypeEXT, debug_report()
 
 ### Community 1029 - "TEST"
 Cohesion: 0.50
@@ -5300,16 +5249,16 @@ Cohesion: 0.25
 Nodes (8): dense_map, id_type, identity, unique_ptr, meta_context, value, meta_ctx, meta_type_node
 
 ### Community 1038 - "FakeClock"
-Cohesion: 0.32
-Nodes (6): entity, It, storage, Test, insert_instance(), StorageNoInstance
+Cohesion: 0.67
+Nodes (3): CustomIdentifier, Example, TEST()
 
 ### Community 1039 - "goto.lua"
-Cohesion: 0.22
-Nodes (5): LPDIDEVICEIMAGEINFO, LPDIDEVICEINSTANCE_DX3, LPDIDEVICEOBJECTINSTANCE, LPDIDEVICEOBJECTINSTANCE_DX3, DECL_WINELIB_TYPE_AW()
+Cohesion: 0.67
+Nodes (3): OnEntity, meta_any, present_element()
 
 ### Community 1040 - "luaopen_lib21"
-Cohesion: 0.25
-Nodes (4): const_nonconst_noexcept, cnt, u, v
+Cohesion: 0.67
+Nodes (3): ResourceLoader, Functionalities, TEST()
 
 ### Community 1041 - "CONTRIBUTING.md"
 Cohesion: 0.50
@@ -5329,15 +5278,15 @@ Nodes (3): Files to Modify, New Files, Resources and C++ Ownership
 
 ### Community 1050 - "PrefabEditorPresentation.cpp"
 Cohesion: 0.67
-Nodes (3): entity, registry, RemoveChildFromParent()
+Nodes (3): basic_any_storage<0u, Align>, has_buffer, instance
 
 ### Community 1051 - "ProjectContext"
-Cohesion: 0.22
-Nodes (7): difference_type, pointer, ptrdiff_t, reference, operator-(), table_iterator, it
+Cohesion: 0.50
+Nodes (3): difference_type, pointer, reference
 
 ### Community 1056 - "group_descriptor"
-Cohesion: 0.33
-Nodes (7): entity, storage, create_from_constructor, child, update_from_destructor, storage, target
+Cohesion: 0.67
+Nodes (3): get(), id_type, index_sequence
 
 ### Community 1059 - "PropertySet"
 Cohesion: 0.67
@@ -5375,17 +5324,9 @@ Nodes (3): Fixes:, [GLM 0.9.7.3](https://github.com/g-truc/glm/releases/tag/0.9.
 Cohesion: 0.67
 Nodes (3): Fixes:, [GLM 0.9.7.1](https://github.com/g-truc/glm/releases/tag/0.9.7.1) - 2015-09-07, Improvements:
 
-### Community 1382 - "setter_getter"
-Cohesion: 0.40
-Nodes (5): Allocator, initializer_list, It, value_type, ordered_map
-
 ### Community 1383 - "optional.hpp"
-Cohesion: 0.25
-Nodes (4): optional_delete_ctor_base, optional_delete_ctor_base<T, false, false>, optional_delete_ctor_base<T, false, true>, optional_delete_ctor_base<T, true, false>
-
-### Community 1384 - "protect_t"
-Cohesion: 0.43
-Nodes (7): c_lua_next(), find_lua_next_function(), lua_State, optional, protected_function, maybe_push_lua_next_function(), readonly_pairs()
+Cohesion: 0.67
+Nodes (3): entt::component_traits<int>, in_place_delete, page_size
 
 ### Community 1385 - "single.py"
 Cohesion: 0.36
@@ -5393,15 +5334,11 @@ Nodes (6): direct_error_tag, error, error_exception, what_reason, string, runtim
 
 ### Community 1386 - "Options"
 Cohesion: 0.06
-Nodes (55): array_t, boolean_t, else, ENUM_TYPE, ExceptionType, friend, JSON_HEDLEY_RETURNS_NON_NULL, NLOHMANN_BASIC_JSON_TPL (+47 more)
+Nodes (51): CompatibleType, else, ExceptionType, JSON_HEDLEY_RETURNS_NON_NULL, JsonRef, output_adapter, priority_tag, ReferenceType (+43 more)
 
 ### Community 1387 - "RecordingBridge"
 Cohesion: 0.24
 Nodes (8): core::ISceneRenderBridge, GPUSceneData, RecordingBridge, fullSync, materialSync, renderRequests, temporalReset, transformSync
-
-### Community 1388 - "Layer"
-Cohesion: 0.29
-Nodes (7): funcType, regTest(), setTestSuite(), TestCase::operator<(), TestCase::TestCase(), TestCase, TestSuite
 
 ### Community 1389 - "ManifestHeader"
 Cohesion: 0.33
@@ -5411,17 +5348,13 @@ Nodes (6): ManifestHeader, crc, generation, length, magic, version
 Cohesion: 0.29
 Nodes (6): 2026-08-31 measured correction, 2026-08-31 review-fixup correction, Allocation and descriptor budget, Ownership and reset rules, RR-neutral guide resource and semantic ledger, Semantic and synchronization contract
 
-### Community 1391 - "woof"
-Cohesion: 0.36
-Nodes (8): computeTangent(), vec2, vec4, packNormal(), packPosition(), packUV(), toVec2(), toVec3()
-
 ### Community 1392 - "as_args.hpp"
-Cohesion: 0.12
-Nodes (25): begin(), components(), end(), genType, length_t, Q, T, vec (+17 more)
+Cohesion: 0.32
+Nodes (11): main(), test_make_pointer_mat(), test_make_pointer_vec(), test_make_vec1(), test_make_vec2(), test_make_vec3(), test_make_vec4(), test_value_ptr_mat() (+3 more)
 
 ### Community 1393 - "function_result.hpp"
-Cohesion: 0.33
-Nodes (6): EditorSelection, mat4, vec2, MakeIcon(), TestUuid(), TestViewProj()
+Cohesion: 0.67
+Nodes (3): Lib, Registry, TEST()
 
 ### Community 1394 - "coroutines.cpp"
 Cohesion: 0.29
@@ -5432,44 +5365,28 @@ Cohesion: 0.40
 Nodes (5): nk_colorf, a, b, g, r
 
 ### Community 1396 - "nk_recti"
-Cohesion: 0.05
-Nodes (48): main(), test_packDouble2x32(), test_packHalf2x16(), test_packSnorm2x16(), test_packSnorm4x8(), test_packUnorm2x16(), test_packUnorm4x8(), main() (+40 more)
+Cohesion: 0.04
+Nodes (63): main(), test_packDouble2x32(), test_packHalf2x16(), test_packSnorm2x16(), test_packSnorm4x8(), test_packUnorm2x16(), test_packUnorm4x8(), main() (+55 more)
 
 ### Community 1397 - "gtx_string_cast.cpp"
 Cohesion: 0.25
 Nodes (6): DirectValue, EmptyRange, Iterator, testing::Test, MetaRange, TEST_F()
 
 ### Community 1398 - "MetaRange"
-Cohesion: 0.25
-Nodes (6): MetaCustomDeathTest, Custom, testing::Test, ENTT_DEBUG_TEST_F(), MetaCustom, TEST_F()
-
-### Community 1399 - "ImGui::GetNavInputAmount2d"
-Cohesion: 0.43
-Nodes (6): SceneDocument, string, string_view, DescribePrefabEntity(), OverrideLabel(), PrefabOverrideTooltip()
+Cohesion: 0.04
+Nodes (51): invoke_type, MetaCustomDeathTest, base(), basic_meta_factory, bucket, ctx, invoke, parent (+43 more)
 
 ### Community 1400 - "userdata"
 Cohesion: 0.29
 Nodes (7): AssetDiagnostic, shared_ptr, vector, ProjectContext, database, project, scanDiagnostics
 
-### Community 1401 - "test_stack_guard"
-Cohesion: 0.09
-Nodes (18): AllowDeleteContentBrowser(), CanOperateContentBrowser(), ContentBrowserDispatchContext, assetRoot, error, report, suppressionRegistry, AssetWatchOperationKind (+10 more)
-
 ### Community 1402 - "CheckedTempDir"
 Cohesion: 0.25
 Nodes (8): ContentBrowserDependant, entityName, entityUuid, kind, sourceKey, sourcePath, AssetKind, string
 
-### Community 1403 - "ResolveVisibility"
-Cohesion: 0.38
-Nodes (5): Allocator, delta_type, Func, process_adaptor, func
-
-### Community 1404 - "nk_list_view"
-Cohesion: 0.29
-Nodes (5): string, free_function(), move_only, secret_code, object
-
 ### Community 1406 - "nk_table"
-Cohesion: 0.05
-Nodes (66): nk_hash, nk_add_value(), nk_combo_begin_image_label(), nk_combo_begin_symbol_label(), nk_edit_state, active, cursor, mode (+58 more)
+Cohesion: 0.06
+Nodes (58): nk_hash, nk_uint, nk_add_value(), nk_combo_begin_image_label(), nk_combo_begin_symbol_label(), nk_find_value(), nk_find_window(), nk_group_begin() (+50 more)
 
 ### Community 1407 - "Phase8W0PrefabKindTests.cpp"
 Cohesion: 0.29
@@ -5487,25 +5404,9 @@ Nodes (7): bind_traits<Signature>, size_t, lua_bind_traits, arity, free_arity, t
 Cohesion: 0.50
 Nodes (3): basic_bytecode, string_view, vector<std::byte, Allocator>
 
-### Community 1411 - "entt::entt_traits<my_entity>"
-Cohesion: 0.25
-Nodes (3): bark, var, var2
-
-### Community 1412 - "nk_recti"
-Cohesion: 0.43
-Nodes (7): optional, T, maybe_as_usertype_storage_base(), maybe_get_usertype_storage(), maybe_get_usertype_storage_base(), maybe_get_usertype_storage_base_inside(), usertype_storage
-
 ### Community 1413 - "gtx_range.cpp"
-Cohesion: 0.03
-Nodes (14): main(), test(), main(), test_linearGradient(), test_radialGradient(), main(), test_intersectLineTriangle(), test_intersectRayPlane() (+6 more)
-
-### Community 1414 - "entt::entt_traits<test::entity>"
-Cohesion: 0.33
-Nodes (6): string, InputBindingConflict, bindingDescription, conflictingMappingName, contextId, mappingName
-
-### Community 1416 - "stbtt__run_charstring"
-Cohesion: 0.33
-Nodes (5): check(), Handler, lua_State, record, qualified_checker
+Cohesion: 0.60
+Nodes (5): main(), test_isIdentity(), test_isNormalized(), test_isNull(), test_isOrthogonal()
 
 ### Community 1417 - "cr_main"
 Cohesion: 0.29
@@ -5520,76 +5421,52 @@ Cohesion: 0.40
 Nodes (5): nk_color, a, b, g, r
 
 ### Community 1420 - "Vec"
-Cohesion: 0.06
-Nodes (74): Memcontrol, cast(), remove_const_t, alloc_count(), alloc_failnext(), badexit(), buildop(), CallInfo (+66 more)
+Cohesion: 0.04
+Nodes (114): Memcontrol, cast(), remove_const_t, lua_getallocf(), lua_pushinteger(), lua_pushlightuserdata(), lua_pushnil(), lua_pushstring() (+106 more)
 
 ### Community 1421 - "SignalDefs"
 Cohesion: 0.60
 Nodes (4): camera(), mat4, vec2, main()
 
 ### Community 1422 - "userdata"
-Cohesion: 0.25
-Nodes (7): ZFPCompressionParam, __pad0, __pad1, precision, rate, tolerance, type
+Cohesion: 0.07
+Nodes (40): FP16, FP32, AllocateImage(), CompressRle(), CompressZfp(), ComputeChannelLayout(), cpy8(), DecodeChunk() (+32 more)
 
 ### Community 1423 - "Editor settings, recovery, and session lifecycle (Phase 1B)"
 Cohesion: 0.29
 Nodes (7): Editor settings, recovery, and session lifecycle (Phase 1B), EditorSettingsStore, Production user-data locations, Project context (Phase 7 W4), SceneRecoveryService, UnsavedChangesCoordinator, Window-close integration
 
 ### Community 1424 - "BuildSliceFixture"
-Cohesion: 0.29
-Nodes (7): NonEmpty, NonMovable, Empty, VoidType, TYPED_TEST(), SelfContained, TraitsBased
+Cohesion: 0.08
+Nodes (22): NonEmpty, NonMovable, non_movable, value, Empty, VoidType, entt::component_traits<traits_based, Entity>, in_place_delete (+14 more)
 
 ### Community 1425 - "ISceneRenderBridge"
 Cohesion: 0.29
 Nodes (6): ISceneRenderBridge, FullSync, MaterialSync, RequestRender, ResetTemporalState, TransformSync
 
-### Community 1426 - "nk_cursor"
-Cohesion: 0.29
-Nodes (5): assure_loop, assure_loop_mixin, entt::storage_type<test::assure_loop, Entity>, any, Type
-
 ### Community 1427 - ".push"
-Cohesion: 0.50
-Nodes (3): operator==(), throwing_type, trigger
-
-### Community 1429 - "nk_page_element"
-Cohesion: 0.33
-Nodes (6): nk_recti, h, w, x, y, nk_rectiv()
-
-### Community 1430 - "dump_types"
-Cohesion: 0.60
-Nodes (5): main(), test_perspective(), test_pick(), test_translate(), test_tweakedInfinitePerspective()
+Cohesion: 0.38
+Nodes (4): operator==(), throwing_type, throwing_type_exception, trigger
 
 ### Community 1431 - "protect_t"
 Cohesion: 0.40
 Nodes (5): DisabledEntity, my_entity, Example, is_disabled(), TEST()
 
 ### Community 1432 - "ext_vector_int2_sized.cpp"
-Cohesion: 0.07
-Nodes (25): dense_set, basic_meta_associative_container_traits, key_only, basic_meta_sequence_container_traits, extent, fixed_size, dense_map, deque (+17 more)
-
-### Community 1433 - "type"
-Cohesion: 0.50
-Nodes (4): genType, type, Return, Value
+Cohesion: 0.06
+Nodes (34): basic_meta_associative_container_traits, key_only, basic_meta_sequence_container_traits, extent, fixed_size, dense_map, deque, iterator (+26 more)
 
 ### Community 1434 - "Phase 7 W7 verification report (2026-08-01)"
 Cohesion: 0.33
 Nodes (6): Discrimination proofs, Interactive acceptance, Known host-dispatch limitation, Measured gates, Phase 7 W7 verification report (2026-08-01), W7 follow-up — content-browser popup scope (2026-08-01)
-
-### Community 1435 - "TEST"
-Cohesion: 0.40
-Nodes (5): ECS Components, ECSScene, MeshRegistry, Scene Representation, SceneDocument (authoring + runtime unit)
-
-### Community 1436 - "TEST"
-Cohesion: 0.40
-Nodes (5): ForWhat, XmlEncode, m_forWhat, m_str, XmlEncode::XmlEncode()
 
 ### Community 1437 - "TEST"
 Cohesion: 0.33
 Nodes (5): DecideScriptFileChange(), SceneRunState, ScriptFileChangeAction, invalidateFieldRegistry, reloadScript
 
 ### Community 1438 - "entity_id"
-Cohesion: 0.50
-Nodes (4): nk_rp__findresult, prev_link, x, y
+Cohesion: 0.04
+Nodes (57): va_list, nk_cursor, img, offset, size, nk_input, keyboard, mouse (+49 more)
 
 ### Community 1439 - "present_element"
 Cohesion: 0.33
@@ -5603,13 +5480,9 @@ Nodes (5): EmissiveTextureOccupancy, blockHeight, blockWidth, summedArea, vector
 Cohesion: 0.53
 Nodes (5): lua_State, R, T, make_reference(), make_reference_userdata()
 
-### Community 1444 - "conf.py"
-Cohesion: 0.47
-Nodes (5): generate_doxygen_xml(), Run the cmake command to get the doxygen sources, Run the doxygen make commands if we're on the ReadTheDocs server, run_cmake_doxygen(), setup()
-
 ### Community 1445 - "has_traits_at_test"
-Cohesion: 0.03
-Nodes (58): F0, F1, u, GLM_CONSTEXPR vec(), E0, E1, E2, E3 (+50 more)
+Cohesion: 0.04
+Nodes (34): GLM_CONSTEXPR vec(), E0, E1, GLM_DEFAULT, GLM_DEFAULT_CTOR, GLM_FUNC_DECL, length_type, Q (+26 more)
 
 ### Community 1446 - "read_only.cpp"
 Cohesion: 0.33
@@ -5619,41 +5492,13 @@ Nodes (3): lua_State, deny(), object
 Cohesion: 0.33
 Nodes (4): reference, lua_reference_func, key, value
 
-### Community 1448 - ".get"
-Cohesion: 0.53
-Nodes (4): lua_State, T, unique_usertype_traits<std::weak_ptr<T>>, weak_ptr
-
 ### Community 1449 - "SkyMotionTests.cpp"
 Cohesion: 0.40
 Nodes (4): GPUTriangleLight, emission_area, ids, uvec4
 
-### Community 1450 - "VkDrawIndexedIndirectCommand"
-Cohesion: 0.33
-Nodes (6): VkDrawIndexedIndirectCommand, firstIndex, firstInstance, indexCount, instanceCount, vertexOffset
-
 ### Community 1451 - "ENTT_DEBUG_TEST"
 Cohesion: 0.50
 Nodes (4): dot(), Graph, ostream, Writer
-
-### Community 1452 - "type_name"
-Cohesion: 0.50
-Nodes (5): BinOpr, UnOpr, getbinopr(), getunopr(), subexpr()
-
-### Community 1453 - "clazz"
-Cohesion: 0.40
-Nodes (3): clazz, i, j
-
-### Community 1454 - "RelaxAntilagSettings"
-Cohesion: 0.40
-Nodes (4): lua_State, reference, my_custom_next(), my_custom_pairs()
-
-### Community 1456 - "_EXRBox2i"
-Cohesion: 0.40
-Nodes (5): _EXRBox2i, max_x, max_y, min_x, min_y
-
-### Community 1457 - "cocoa_window.m"
-Cohesion: 0.40
-Nodes (5): PIZChannelData, nx, ny, start, ys
 
 ### Community 1459 - "has_traits_set_test"
 Cohesion: 0.50
@@ -5663,14 +5508,6 @@ Nodes (3): 2026-09-01 decisive-review fixup, Reproducible gates, RR-neutral guid
 Cohesion: 0.40
 Nodes (3): init_wgpu(), print_wgpu_error(), WGPUErrorType
 
-### Community 1461 - "ImGuiResizeGripDef"
-Cohesion: 0.12
-Nodes (15): ImGuiDockPreviewData, DropRectsDraw, FutureNode, IsCenterAvailable, IsDropAllowed, IsSidesAvailable, IsSplitDirExplicit, SplitDir (+7 more)
-
-### Community 1462 - "Hierarchy"
-Cohesion: 0.50
-Nodes (4): vector, Hierarchy, children, parent
-
 ### Community 1463 - "operator|"
 Cohesion: 0.50
 Nodes (4): enable_if_t, enum_as_bitmask_v, Type, operator|()
@@ -5678,14 +5515,6 @@ Nodes (4): enable_if_t, enum_as_bitmask_v, Type, operator|()
 ### Community 1464 - "component_traits"
 Cohesion: 0.50
 Nodes (4): component_traits, in_place_delete, page_size, size_t
-
-### Community 1465 - "basic_vtable"
-Cohesion: 0.50
-Nodes (4): Sample, b, g, r
-
-### Community 1466 - "gtc_noise.cpp"
-Cohesion: 0.05
-Nodes (29): is_int<uint16>, is_int<uint64>, is_int<uint8>, main(), test_comp(), main(), test_comp(), main() (+21 more)
 
 ### Community 1467 - "entity_traits"
 Cohesion: 0.50
@@ -5715,14 +5544,6 @@ Nodes (4): entity_type, entity_traits, entity_mask, version_mask
 Cohesion: 0.50
 Nodes (4): DWORD, SignalDefs, id, name
 
-### Community 1474 - "ReblurHitDistanceParameters"
-Cohesion: 0.50
-Nodes (4): nullptr_t, T, toStreamLit(), toString()
-
-### Community 1475 - "SigmaSettings"
-Cohesion: 0.50
-Nodes (4): nk_mouse_button, clicked, clicked_pos, down
-
 ### Community 1477 - "list_headers.py"
 Cohesion: 0.83
 Nodes (3): main(), test_comp(), test_size()
@@ -5744,20 +5565,8 @@ Cohesion: 0.83
 Nodes (3): main(), test_comp(), test_size()
 
 ### Community 1483 - "ImGui::TableSetBgColor"
-Cohesion: 0.67
-Nodes (3): A, B, operator()()
-
-### Community 1484 - "ext_matrix_int2x4_sized.cpp"
-Cohesion: 0.67
-Nodes (3): nk_input, keyboard, mouse
-
-### Community 1485 - "Destroy"
-Cohesion: 0.67
-Nodes (3): nk_key, clicked, down
-
-### Community 1486 - "GetBLASAddress"
-Cohesion: 0.67
-Nodes (3): nk_tt__point, x, y
+Cohesion: 0.05
+Nodes (35): get_is_primitive<T, meta::meta_detail::is_adl_sol_lua_get_v<T>, meta::meta_detail::is_adl_sol_lua_get_v<meta::unqualified_t<T>>>, neg<std::is_reference<decltype(sol_lua_get(types<meta::unqualified_t<T>>(), nullptr, -1, std::declval<stack::record&>()))>>, neg<std::is_reference<decltype(sol_lua_get(types<T>(), nullptr, -1, std::declval<stack::record&>()))>>, as_pointer_tag, as_reference_tag, as_table_tag, as_unique_tag, as_value_tag (+27 more)
 
 ### Community 1497 - "LoadImageDataOption"
 Cohesion: 0.67
@@ -5768,24 +5577,24 @@ Cohesion: 0.40
 Nodes (5): nk_tt__bitmap, h, pixels, stride, w
 
 ## Knowledge Gaps
-- **10211 isolated node(s):** `$schema`, `.opencode/plugins/graphify.js`, `graphifyy`, `position`, `forward` (+10206 more)
+- **10219 isolated node(s):** `$schema`, `.opencode/plugins/graphify.js`, `graphifyy`, `position`, `forward` (+10214 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **70 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **74 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `array` connect `nuklear.h` to `TEST`, `GLM_CONSTEXPR vec`, `lua_nil_t`, `ImGuiViewport`, `ext_matrix_relational.cpp`, `imgui_widgets.cpp`, `meta_base.cpp`, `SubtreeEntityRecord`, `pup`, `type_traits.hpp`, `CommonSettings`, `present_element`, `_glfwInputError`, `application.cpp`, `registry.hpp`, `multi_custom`, `NK_LIB`, `ReblurSettings`, `meta_any`, `utest.h`, `ttUSHORT`, `lua.h`, `ext_scalar_common.cpp`, `FileWatcherKqueue`, `PropertySet`, `expdesc`, `RendererGPU`, `false_type`, `ProjectDocument`, `bind_traits.hpp`, `vec3`, `coroutine.lua`, `ImGui_ImplDX10_Data`, `single.py`, `Options`, `function_result.hpp`, `nk_recti`, `vec_swizzle.hpp`, `TwoMatObjFixture`, `tracked_memory_resource`, `Phase8W0PrefabKindTests.cpp`?**
-  _High betweenness centrality (0.058) - this node is a cross-community bridge._
-- **Why does `UUID` connect `ext_matrix_relational.cpp` to `imgui_impl_allegro5.cpp`, `nuklear.h`, `lua_nil_t`, `SceneMaterial`, `imgui_draw.cpp`, `basic_sparse_set`, `nk_vec2`, `Runtime frame-order contract`, `TEST`, `stbi__context`, `FileWatcherGeneric`, `SceneEditorUI`, `entt.hpp`, `stack_push.hpp`, `type_trait.hpp`, `SubtreeEntityRecord`, `CommonSettings`, `sol.hpp`, `basic_continuous_loader`, `type`, `locals.lua`, `texture_option_t`, `ImGuiLayout`, `RT2Layer`, `TEST`, `IEditorCommand`, `nk_style_edit`, `utest.h`, `protected_function.hpp`, `_glfw_calloc`, `ImGuiWindowSettings`, `TransformGizmoResult`, `ResolveScriptAssetPath`, `stb_image.h`, `state_view`, `expdesc`, `false_type`, `Release notes`, `stack`, `lobject.c`, `TEST`, `main.cpp`, `basic_runtime_view`, `overloading.cpp`, `egl_context.c`, `nk_style_scrollbar`, `tinfl_decompressor_tag`, `The Registry, the Entity and the Component`, `function_result.hpp`, `lua_pushvalue`, `RasterPass`, `singleton.cpp`, `imgui_impl_vulkan.cpp`, `W3 step 6 grounded implementation plan — textures cut over last`, `CheckedTempDir`, `TEST`, `ImGui::GetNavInputAmount2d`?**
-  _High betweenness centrality (0.036) - this node is a cross-community bridge._
-- **Why does `object()` connect `lua_State` to `ImGuiViewport`, `PrefabPropagationComponentDelta`, `TextureAssetLoadContext`, `load_result`, `OS`, `liolib.c`, `imgui_impl_dx9.cpp`, `nk_text_undo_record`, `binary_to_compressed_c.cpp`, `Camera`, `T`, `loslib.c`, `ltable.c`, `usertypes.constructors.cpp`, `_vectorize.hpp`, `TEST`, `Definitions`, `path`, `basic_scheduler`, `.RT2Layer`, `mat<2, 3, T, Q>`, `<a name="section3_3"></a> 3.3. Vector types`, `T`, `usertype_storage_base`, `sol_lua_check`, `RTDispatch`, `Options`, `glfw3.h`?**
-  _High betweenness centrality (0.027) - this node is a cross-community bridge._
+- **Why does `array` connect `nuklear.h` to `GLM_CONSTEXPR vec`, `lua_nil_t`, `GpuTimestampProfiler`, `ext_matrix_relational.cpp`, `imgui_widgets.cpp`, `VkSparseImageFormatProperties`, `stack_push.hpp`, `meta_base.cpp`, `WatcherWin32`, `json.hpp`, `ext_vector_int2_sized.cpp`, `SubtreeEntityRecord`, `pup`, `type_traits.hpp`, `CommonSettings`, `present_element`, `TEST`, `application.cpp`, `_glfwInputError`, `registry.hpp`, `multi_custom`, `NK_LIB`, `nk_command_rect`, `ReblurSettings`, `meta_any`, `utest.h`, `ImGuiWindowSettings`, `ttUSHORT`, `ext_scalar_common.cpp`, `PropertySet`, `expdesc`, `false_type`, `GPUPunctualLight`, `ProjectDocument`, `bind_traits.hpp`, `Phase 7 W4–W5 — project ownership and schema-v4 migration (implementation spec)`, `vec3`, `coroutine.lua`, `ImGui_ImplDX10_Data`, `single.py`, `Options`, `basic_handle`, `nk_recti`, `vec_swizzle.hpp`, `nk_command_rect_multi_color`, `TwoMatObjFixture`, `Phase8W0PrefabKindTests.cpp`?**
+  _High betweenness centrality (0.064) - this node is a cross-community bridge._
+- **Why does `UUID` connect `ext_matrix_relational.cpp` to `imgui_impl_allegro5.cpp`, `nuklear.h`, `lua_nil_t`, `SceneMaterial`, `imgui_draw.cpp`, `nk_vec2`, `TEST`, `stbi__context`, `AccelerationStructure.cpp`, `FileWatcherGeneric`, `SceneEditorUI`, `type_trait.hpp`, `stack_push.hpp`, `SubtreeEntityRecord`, `VkPipelineViewportStateCreateInfo`, `CommonSettings`, `basic_continuous_loader`, `type`, `locals.lua`, `texture_option_t`, `nk_command_rect`, `pairs_iterator`, `ImGuiLayout`, `TEST`, `IEditorCommand`, `nk_style_edit`, `utest.h`, `protected_function.hpp`, `_glfw_calloc`, `imgui_impl_opengl3.cpp`, `FileWatcherKqueue`, `ResolveScriptAssetPath`, `stb_image.h`, `state_view`, `expdesc`, `false_type`, `Release notes`, `stack`, `lobject.c`, `TEST`, `basic_runtime_view`, `TwoMatObjFixture`, `egl_context.c`, `lua_pushvalue`, `RasterPass`, `singleton.cpp`, `nk_command_rect_multi_color`, `imgui_impl_vulkan.cpp`, `W3 step 6 grounded implementation plan — textures cut over last`, `CheckedTempDir`, `ImGuiDockRequest`, `TEST`?**
+  _High betweenness centrality (0.026) - this node is a cross-community bridge._
+- **Why does `tuple` connect `nuklear.h` to `wl_init.c`, `<a name="section3_7"></a> 3.7. Matrix types with precision qualifiers`, `stbi__context`, `Walnut::CreateApplication`, `Phase 3 - Command system, undo, and redo`, `DesktopInputPollList`, `stack_push.hpp`, `operator==`, `json.hpp`, `tiny_obj_loader.h`, `overloading_with_fallback.cpp`, `triangle-vulkan.c`, `_glfwInputError`, `NK_LIB`, `ImGui_ImplVulkan_Data`, `Phase 4 â€” Edit/Play/Pause lifecycle (completion, implemented)`, `_glfw_calloc`, `VkExternalFenceProperties`, `FieldDiagnostic`, `ldump.c`, `FileWatcherInotify`, `stack_pop.hpp`, `basic_common_view`, `GPUPunctualLight`, `Definitions`, `ImGui::TableSetBgColor`, `VkSubmitInfo`, `group_handler`, `TEST`, `AudioEmitter`, `coroutine.lua`, `OptAttrib`, `common.h`, `nk_style_combo`, `Options`, `EditorSettingsStore`, `basic_hashed_string`, `mat<4, 4, T, Q>`, `glfwGetTime`, `MetaRange`, `nk_text_edit`?**
+  _High betweenness centrality (0.022) - this node is a cross-community bridge._
 - **Are the 12 inferred relationships involving `UUID` (e.g. with `PruneMissingMembers` and `MakeSetVisibilityCommandIfEffective()`) actually correct?**
   _`UUID` has 12 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `$schema`, `.opencode/plugins/graphify.js`, `graphifyy` to the rest of the system?**
-  _10211 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _10219 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `imgui.cpp` be split into smaller, more focused modules?**
-  _Cohesion score 0.008713753853133882 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.006252069851328733 - nodes in this community are weakly interconnected._
 - **Should `imgui_tables.cpp` be split into smaller, more focused modules?**
-  _Cohesion score 0.026714370900417412 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.02897291032884253 - nodes in this community are weakly interconnected._

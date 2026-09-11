@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Bounded GPU/headless differential checks for camera-owned tone mapping.
 
-Compares headless RT2App captures (PNG display output + PFM scene-linear
-source) against an independent CPU port of ToneMapMath, kept in lockstep
-with RT2App/src/ToneMapMath.h by construction (same constants and order;
-float64 here, so <=1 code value of slack is expected).
+Compares headless RT2App captures (production C++ PNG display output, GPU
+post-dispatch display image, PFM scene-linear source) across AgX, Reinhard
+and ACES looks with exposure changes on native RGBA32F and RR RGBA16F paths.
 
 Checks:
-  parity Bowie  : PNG bytes vs CPU(PFM pixels) for each variant (max<=1).
+  parity        : PNG bytes vs CPU(PFM pixels) for each variant (max<=1).
+  display-parity: GPU display rows vs CPU(PFM pixels) per variant (max<=1).
+  display-vs-png: GPU display rows directly vs the production C++ PNG from
+                  the same completed frame (every channel within 1). Python
+                  decodes/compares images here but performs no tone mapping,
+                  so this is the production-C++ oracle for the GPU output.
+  format        : RR source is half-quantized, native source is not (proves
+                  which input-format path each variant exercised).
   isolation     : PFM sources byte-identical across operators (same seed,
                   frames and transport; only the look differs).
   effect        : PNGs differ across operators/EV (the look takes effect).
@@ -221,7 +227,8 @@ def main():
             failures.append(label)
 
     variants = {"agx": ("agx", 0.0), "reinhard": ("reinhard", 0.0), "aces": ("aces", 2.0),
-                "native": ("agx", 0.0)}
+                "native": ("agx", 0.0), "reinhard_native": ("reinhard", 0.0),
+                "aces_native": ("aces", 2.0), "evneg": ("agx", -2.0)}
     pngs, pfms = {}, {}
     w = h = 0
     for name in variants:
@@ -261,6 +268,28 @@ def main():
         mean = total / max(n, 1)
         note(maxdiff <= 1, "display-parity-%s" % name, "max=%d mean=%.4f" % (maxdiff, mean))
 
+    # Production-oracle check: each GPU display PNG directly against the
+    # production C++ --output PNG from the same completed frame. Python
+    # decodes and compares images here but performs no tone mapping; both
+    # sides derive from the completed pair, so a skipped GPU exposure or
+    # operator shows up as display-vs-PNG divergence even when the two
+    # Python-reference checks agree.
+    for name in variants:
+        dw, dh, drows = read_png_rgba8("%s/display_%s.png" % (workdir, name))
+        prow = pngs[name]
+        # UNORM round-to-nearest-even vs CPU round-half-up at .5 boundaries
+        # plus float32/float64 ulps can separate the two by a code value;
+        # the gate is per-pixel closeness (every channel within 1), not
+        # identity. Count pixels with any channel >1 apart.
+        bad = 0
+        for y in range(dh):
+            for x in range(dw):
+                for c in range(4):
+                    if abs(drows[y][x * 4 + c] - prow[y][x * 4 + c]) > 1:
+                        bad += 1
+                        break
+        note(bad == 0, "display-vs-png-%s" % name, "%d pixels beyond 1 code" % bad)
+
     # Format proof: the nominal RR source is half-quantized (every finite
     # sample has zero low 13 mantissa bits), the native source is not.
     _, _, rrRaw = read_pfm_raw_u32("%s/agx.pfm" % workdir)
@@ -297,6 +326,8 @@ def main():
          "differing bytes=%d" % diff_count("agx", "reinhard"))
     note(diff_count("agx", "aces") > 1000, "effect-aces",
          "differing bytes=%d" % diff_count("agx", "aces"))
+    note(diff_count("agx", "evneg") > 1000, "effect-ev",
+         "differing bytes=%d" % diff_count("agx", "evneg"))
 
     # Debug bypass: diagnostic PNGs ignore the camera look.
     _, _, dbg_agx = read_png_rgba8("%s/debug_agx.png" % workdir)

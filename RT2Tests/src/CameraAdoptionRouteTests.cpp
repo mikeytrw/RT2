@@ -205,8 +205,7 @@ TEST_CASE("F2 bookmark recall without transport change is presentation-only")
 }
 
 TEST_CASE("F2 stale second scene replaces complete lens and look at adoption")
-{
-    const auto dir = std::filesystem::temp_directory_path() / "rt2_f2_stale";
+{    const auto dir = std::filesystem::temp_directory_path() / "rt2_f2_stale";
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     std::filesystem::create_directories(dir, ec);
@@ -250,4 +249,112 @@ TEST_CASE("F2 stale second scene replaces complete lens and look at adoption")
     CHECK(adoptedB.focusDistance == doctest::Approx(1.0f));
     CHECK(adoptedB.presentation == DefaultCameraPresentation());
     std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("R2 seed applied before adoption loses, applied after wins")
+{
+    // The killed pre-completion ordering: a CLI pose overlay applied to the
+    // pre-adoption camera is overwritten by the async file camera. The
+    // production sequence applies the seed after adoption completes.
+    SceneCamera file;
+    file.position = { 4.0f, 5.0f, 6.0f };
+    file.verticalFOV = 70.0f;
+    file.presentation.toneMap = ToneMapOperator::ACESFitted;
+
+    CLICameraSeed seed;
+    seed.hasPosition = true;
+    seed.position = { 9.0f, 8.0f, 7.0f };
+    seed.hasToneMap = true;
+    seed.toneMap = ToneMapOperator::Reinhard;
+
+    // Fault shape: seed first, adoption second — the seed is lost.
+    EditorCameraPose early = MakePose();
+    CLICameraSeed earlySeed = seed;
+    REQUIRE(TryApplyCameraSeed(early, earlySeed));
+    EditorCameraPose clobbered;
+    REQUIRE(TryBuildAuthoringAdoptionPose(file, early, clobbered));
+    CHECK(clobbered.position == file.position);
+    CHECK(clobbered.presentation.toneMap == ToneMapOperator::ACESFitted);
+
+    // Fixed order: adoption first, seed second — every present axis wins.
+    EditorCameraPose late = MakePose();
+    EditorCameraPose adopted;
+    REQUIRE(TryBuildAuthoringAdoptionPose(file, late, adopted));
+    CLICameraSeed lateSeed = seed;
+    REQUIRE(TryApplyCameraSeed(adopted, lateSeed));
+    CHECK(adopted.position == glm::vec3(9.0f, 8.0f, 7.0f));
+    CHECK(adopted.verticalFOV == doctest::Approx(70.0f));
+    CHECK(adopted.presentation.toneMap == ToneMapOperator::Reinhard);
+    CHECK_FALSE(HasPendingCameraSeed(lateSeed));
+}
+
+TEST_CASE("R2 consumed seed never reapplies on later scene opens")
+{
+    SceneCamera sceneB;
+    sceneB.position = { 1.0f, 2.0f, 3.0f };
+
+    // First open: adoption, then the one-shot seed, which is consumed.
+    EditorCameraPose first = MakePose();
+    EditorCameraPose adoptedA;
+    SceneCamera sceneA;
+    sceneA.position = { 4.0f, 5.0f, 6.0f };
+    REQUIRE(TryBuildAuthoringAdoptionPose(sceneA, first, adoptedA));
+    CLICameraSeed seed;
+    seed.hasExposureEV = true;
+    seed.exposureEV = -2.0f;
+    REQUIRE(TryApplyCameraSeed(adoptedA, seed));
+    CHECK(adoptedA.presentation.exposureEV == doctest::Approx(-2.0f));
+
+    // Second open: the consumed seed is inert, the fresh scene wins fully.
+    EditorCameraPose adoptedB;
+    REQUIRE(TryBuildAuthoringAdoptionPose(sceneB, adoptedA, adoptedB));
+    const EditorCameraPose beforeSecondSeed = adoptedB;
+    CHECK_FALSE(TryApplyCameraSeed(adoptedB, seed));
+    CHECK(adoptedB.position == beforeSecondSeed.position);
+    CHECK(adoptedB.presentation == DefaultCameraPresentation());
+}
+
+TEST_CASE("R2 seed axes are independent and invalid seeds hold")
+{
+    EditorCameraPose base = MakePose();
+
+    // Position-only keeps the resolved look; look-only keeps the pose.
+    CLICameraSeed posOnly;
+    posOnly.hasPosition = true;
+    posOnly.position = { 7.0f, 7.0f, 7.0f };
+    EditorCameraPose moved = base;
+    REQUIRE(TryApplyCameraSeed(moved, posOnly));
+    CHECK(moved.position == glm::vec3(7.0f, 7.0f, 7.0f));
+    CHECK(moved.presentation == base.presentation);
+
+    CLICameraSeed lookOnly;
+    lookOnly.hasToneMap = true;
+    lookOnly.toneMap = ToneMapOperator::Reinhard;
+    EditorCameraPose relooked = base;
+    REQUIRE(TryApplyCameraSeed(relooked, lookOnly));
+    CHECK(relooked.position == base.position);
+    CHECK(relooked.presentation.toneMap == ToneMapOperator::Reinhard);
+
+    // Empty seed is a no-op returning false.
+    CLICameraSeed empty;
+    EditorCameraPose untouched = base;
+    CHECK_FALSE(TryApplyCameraSeed(untouched, empty));
+    CHECK(untouched.position == base.position);
+
+    // Degenerate forward and out-of-range EV fail without touching pose
+    // or consuming the seed.
+    CLICameraSeed badForward;
+    badForward.hasForward = true;
+    badForward.forward = glm::vec3(0.0f);
+    EditorCameraPose held = base;
+    CHECK_FALSE(TryApplyCameraSeed(held, badForward));
+    CHECK(held.forward == base.forward);
+    CHECK(badForward.hasForward);
+
+    CLICameraSeed badEv;
+    badEv.hasExposureEV = true;
+    badEv.exposureEV = 20.0f;
+    CHECK_FALSE(TryApplyCameraSeed(held, badEv));
+    CHECK(held.presentation == base.presentation);
+    CHECK(badEv.hasExposureEV);
 }

@@ -20,14 +20,22 @@
 //     agx_mat_inv, min/max EV, all seven sigmoid coefficients, the 2.2
 //     EOTF exponent and the MSE figure are identical to the tables below.
 //     The post changelog (through 2025.04.20) touches only saturation
-//     ordering and the license header, not the pinned constants. The one
+//     ordering and the license header, not the pinned constants. The post
+//     is a dated blog page with no versioned revision; the pin is the URL
+//     plus this verification record (author, MIT license, AGX_LOOK 0,
+//     MSE 3.6705141e-06, changelog dates as observed 2026-09-11).
+//     The one
 //     deliberate deviation: small negative sigmoid residues are clamped
 //     before pow() (the reference can feed pow() a negative base).
 //   - ACES Fitted: Stephen Hill's BakingLab ACES.hlsl
 //     (https://github.com/TheRealMJP/BakingLab/blob/master/BakingLab/ACES.hlsl),
-//     MIT License. Retrieved 2026-09-11 from upstream master and verified
-//     constant-identical: all 18 input/output matrix entries and all five
-//     fit coefficients match the tables below. Uses the complete
+//     MIT License. Immutable pin: file last touched by upstream commit
+//     0f66f50398a372ea27ba0e4d95379d32c83d2e8a ("Initial commit",
+//     2016-10-10, MJP); git blob SHA
+//     0f8476af81988408484528ec36e44f39447cb985 (1322 bytes), retrieved
+//     2026-09-11 and verified constant-identical against the tables below
+//     (all 18 input/output matrix entries, all five fit coefficients).
+//     Uses the complete
 //     ACESInputMat -> RRTAndODTFit -> ACESOutputMat path — NOT the distinct
 //     five-coefficient per-channel approximation sometimes given the same name.
 //     The input matrix performs the required sRGB/Rec.709-linear to AP1-like
