@@ -50,7 +50,8 @@ defined in `Scene.h`.
 | `Hierarchy` | parent (entity), children (vector<entity>) | Parent-child relationship for scene graph |
 | `MeshRef` | meshIndex (uint32), materialIndex (int, -1 = use per-triangle material indices) | Reference to MeshRegistry entry + material |
 | `LightComponent` | color, intensity, range, direction, innerCone, outerCone | Point/spot light (CPU-side, not emissive triangles) |
-| `CameraComponent` | verticalFOV, aperture, focusDistance, forwardDirection | Camera metadata for scene file round-tripping |
+| `CameraComponent` | verticalFOV, aperture, focusDistance, forwardDirection, presentation (toneMap, exposureEV) | Camera
+metadata for scene file round-tripping |
 | `NameComponent` | name (string) | Entity name for outliner display |
 | `VisibleComponent` | (empty) | Marker: entity should be rendered |
 
@@ -253,7 +254,8 @@ Programmatic editor-camera changes are atomic `EditorCameraPose` cuts. Frame,
 focus, bookmark recall, View Through Camera, and numeric pose/optics edits all
 use the same application path. A successful cut resets accumulation/NRD and
 invalidates ReSTIR DI and GI history exactly once; it does not dirty the scene
-or invoke a scene GPU sync.
+or invoke a scene GPU sync. Presentation-only updates (tone-map operator,
+exposure EV) apply directly with no cut and no reset.
 
 Frame Selected uses cached object-space `MeshData` bounds transformed to world
 space. It unions selected hierarchy roots and all descendants even when hidden.
@@ -262,9 +264,12 @@ so an empty-only selection remains finite. Frame fits both projection axes;
 Focus rotates in place. Shortcuts are `F` / `Shift+F`.
 
 Nine editor-only bookmark slots store position, forward, vertical FOV,
-aperture, focus distance, and far clip. `Ctrl+1..9` recalls and
-`Ctrl+Shift+1..9` stores. They are cleared on document adoption and are not
-part of `.rt2scene`; camera movement speed is also session-only.
+aperture, focus distance, far clip, and the display look (tone-map operator +
+exposure EV). `Ctrl+1..9` recalls and `Ctrl+Shift+1..9` stores. They are
+cleared on document adoption and are not
+part of `.rt2scene`; camera movement speed is also session-only. A recall
+whose transport matches the live camera applies the look with no temporal
+reset; any transport difference is a real cut.
 
 Authored camera entities use `Transform` as the authoritative pose.
 `CameraComponent::forwardDirection` remains serialized for v2 compatibility

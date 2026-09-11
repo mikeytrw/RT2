@@ -19,9 +19,11 @@ used by the render-comparison harness and performance benchmark runner.
 `--frames`, it renders one frame. With no output option, it writes
 `screenshot.png`; use an explicit ignored `artifacts/` path instead.
 
-`--output` writes a Reinhard-tonemapped sRGB PNG. `--output-hdr` writes the
-linear beauty output as `.exr` or `.pfm`; PFM is the preferred format for the
-Python comparison harness.
+`--output` writes the display PNG through the active camera's look (tone-map
+operator + exposure EV, AgX at 0 EV by default; data-oriented debug views keep
+their legacy Reinhard mapping). `--output-hdr` writes the scene-linear beauty
+output as `.exr` or `.pfm` — no display exposure or tone mapping, suitable for
+analysis; PFM is the preferred format for the Python comparison harness.
 
 ## Scene, render, and denoiser options
 
@@ -43,7 +45,7 @@ Python comparison harness.
 | `--nrd-responsive-roughness <R>` | Override responsive-history roughness. |
 | `--nrd-responsive-min-frames <N>` | Override responsive minimum history. |
 | `--no-accumulate` | Disable non-NRD beauty accumulation. |
-| `--gbuffer-debug <N>` | Select a G-buffer debug mode. |
+| `--gbuffer-debug <N>` | Select a G-buffer debug view; keeps the legacy Reinhard diagnostic mapping regardless of the camera look. |
 
 The seed selects a deterministic random stream. Frame index stays separate, so
 the same seed reproduces a sequence instead of repeating identical noise.
@@ -72,10 +74,20 @@ For an A/B comparison, set ReSTIR mode and candidate counts explicitly.
 | `--camera-sweep-mode <lateral\|forward\|yaw>` | Choose lateral (default), forward, or yaw motion. Yaw amplitude is radians. |
 | `--camera-sweep-cycles <N>` | Run N cycles, return to base pose, then hold. `0` repeats. |
 | `--capture-every <N>` | Save sequence outputs every N motion/hold frames. |
+| `--tone-map <agx\|aces\|reinhard>` | Override the active camera tone-map operator for this invocation. |
+| `--exposure-ev <EV>` | Override the active camera exposure in EV stops (`-8..+8`). |
 
 With a finite cycle count, sequence files gain `_still`, `_move_####`, or
 `_hold_####` suffixes. The un-suffixed output is also saved at the end. This
 keeps moving-camera failures distinct from the final stationary image.
+
+Each camera owns its display look (tone-map operator + exposure EV, AgX at
+0 EV by default). `--tone-map` and `--exposure-ev` have independent
+presence — supplying one keeps the camera value for the other — and override
+the active camera for the invocation only, without changing saved scene data.
+Interactively they seed the editor camera once and are consumed, so later UI
+edits win. Invalid values exit nonzero before rendering. EXR/PFM output is
+always scene-linear and ignores both flags.
 
 ## Benchmark and diagnostic options
 

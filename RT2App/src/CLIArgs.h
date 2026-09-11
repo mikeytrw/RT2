@@ -5,9 +5,11 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
+#include <cmath>
 #include <optional>
 #include "RRGuideContract.h"
 #include "DenoiserMode.h"
+#include "CameraPresentation.h"
 
 // Resolved denoiser selection: the single mapping from compatibility and
 // public CLI spellings onto the authored enum. Explicit --denoiser-mode
@@ -133,6 +135,17 @@ struct CLIArgs
 	bool hasCameraForward = false;
 	float cameraPosition[3] = {};
 	float cameraForward[3] = {};
+	// Camera-owned display look overrides (each flag has independent
+	// presence: EV alone keeps the camera operator and vice versa).
+	// Interactively they seed the editor camera once and are consumed, so
+	// later UI edits win; headless they overlay the resolved camera for the
+	// invocation without changing saved scene data. Invalid values set
+	// presentationError and exit nonzero before rendering/output.
+	bool hasToneMap = false;
+	ToneMapOperator toneMap = ToneMapOperator::AgX;
+	bool hasExposureEV = false;
+	float exposureEV = 0.0f;
+	std::string presentationError;
 	float cameraSweepAmplitude = 0.0f; // world-space left/right amplitude
 	int cameraSweepMode = 0;           // 0=lateral, 1=forward, 2=yaw (amplitude=radians)
 	int cameraSweepWarmup = 0;         // stationary frames before motion
@@ -252,6 +265,48 @@ struct CLIArgs
 			for (int c = 0; c < 3; c++)
 				if (const char* v = next()) args.cameraForward[c] = (float)std::atof(v);
 			args.hasCameraForward = true;
+		}
+		else if (strcmp(a, "--tone-map") == 0)
+		{
+			if (const char* v = next())
+			{
+				ToneMapOperator op = ToneMapOperator::AgX;
+				if (!TryParseToneMapOperator(v, op))
+				{
+					if (args.presentationError.empty())
+						args.presentationError = std::string("unknown --tone-map '") + v +
+							"' (want agx|aces|reinhard)";
+				}
+				else
+				{
+					args.toneMap = op;
+					args.hasToneMap = true;
+				}
+			}
+			else if (args.presentationError.empty())
+				args.presentationError = "missing value for --tone-map (want agx|aces|reinhard)";
+		}
+		else if (strcmp(a, "--exposure-ev") == 0)
+		{
+			if (const char* v = next())
+			{
+				char* end = nullptr;
+				const double parsed = std::strtod(v, &end);
+				if (end == v || *end != '\0' || !std::isfinite(parsed) ||
+				    parsed < kMinCameraExposureEV || parsed > kMaxCameraExposureEV)
+				{
+					if (args.presentationError.empty())
+						args.presentationError = std::string("invalid --exposure-ev '") + v +
+							"' (want a finite number in [-8,+8])";
+				}
+				else
+				{
+					args.exposureEV = static_cast<float>(parsed);
+					args.hasExposureEV = true;
+				}
+			}
+			else if (args.presentationError.empty())
+				args.presentationError = "missing value for --exposure-ev (want a finite number in [-8,+8])";
 		}
 		else if (strcmp(a, "--camera-sweep") == 0)
 		{
@@ -374,8 +429,8 @@ struct CLIArgs
 				printf("  --scene <path>       Load scene (.glb/.gltf/.obj) on startup\n");
 				printf("  --project <path>     Load a portable .rt2proj project\n");
 				printf("  --env <path>         Load HDR env map (.hdr/.exr) on startup\n");
-			printf("  --output <path>      Save tonemapped PNG after rendering\n");
-			printf("  --output-hdr <path>  Save linear HDR output (.exr or .pfm)\n");
+		printf("  --output <path>      Save tonemapped PNG after rendering\n");
+		printf("  --output-hdr <path>  Save scene-linear HDR output without display exposure/tone mapping (.exr or .pfm)\n");
 			printf("  --rr-guide-report <path>  Save checked RR-neutral guide readback JSON\n");
 			printf("  --rr-guide-pair <path>    Write/read independent canonical checksum manifest\n");
 			printf("  --rr-guide-scenario <controlled-material-motion>  Declare a checked RR guide case\n");
@@ -405,6 +460,10 @@ struct CLIArgs
 		printf("  --gbuffer-debug <N>  G-buffer debug view mode\n");
 		printf("  --camera-pos <x> <y> <z>      Override loaded camera position\n");
 		printf("  --camera-forward <x> <y> <z>  Override loaded camera direction\n");
+		printf("  --tone-map <agx|aces|reinhard>  Override the active camera tone-map operator\n");
+		printf("  --exposure-ev <EV>  Override the active camera exposure in EV stops (-8..+8)\n");
+		printf("      Tone/exposure flags overlay the camera for this invocation only; interactively\n");
+		printf("      they seed the editor camera once and later UI edits win; EXR/PFM stay scene-linear\n");
 		printf("  --camera-sweep <amplitude> <warmup> <period>  Headless left/right motion\n");
 		printf("  --camera-sweep-mode <lateral|forward|yaw>  Sweep direction (yaw amplitude is radians)\n");
 		printf("  --camera-sweep-cycles <N>  Sweep N cycles, then return to the base pose and hold\n");
@@ -463,6 +522,9 @@ struct CLIArgs
 		printf("[CLI] rrGuidePair = %s\n", rrGuidePair.empty() ? "(none)" : rrGuidePair.c_str());
 		printf("[CLI] rrGuideScenario = %s\n", RRGuideScenarioName(rrGuideScenario));
 		printf("[CLI] seed      = %u\n", sceneSeed);
+		printf("[CLI] tone-map  = %s%s\n", hasToneMap ? ToneMapOperatorName(toneMap) : "(camera)",
+		       presentationError.empty() ? "" : " (error)");
+		printf("[CLI] exposure  = %s\n", hasExposureEV ? std::to_string(exposureEV).c_str() : "(camera)");
 		printf("[CLI] frames    = %d\n", frames);
 		printf("[CLI] %dx%d  spp=%d  bounces=%d  nrd=%d  headless=%d\n",
 		       width, height, spp, bounces, nrd, headless);

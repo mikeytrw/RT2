@@ -124,6 +124,26 @@ inline bool TryCanonicalizeCameraPresentation(CameraPresentation& value)
     return true;
 }
 
+// One-shot CLI seed overlay: each present flag replaces its own axis while
+// absent flags keep the resolved camera value. Canonicalizes the result.
+// Returns false (leaving `out` untouched) on invalid input; callers consume
+// the seed only on success so a failed seed can never defeat later UI edits.
+inline bool TryApplyPresentationSeed(const CameraPresentation& current,
+                                     bool hasToneMap, ToneMapOperator toneMap,
+                                     bool hasExposureEV, float exposureEV,
+                                     CameraPresentation& out)
+{
+    CameraPresentation seeded = current;
+    if (hasToneMap)
+        seeded.toneMap = toneMap;
+    if (hasExposureEV)
+        seeded.exposureEV = exposureEV;
+    if (!TryCanonicalizeCameraPresentation(seeded))
+        return false;
+    out = seeded;
+    return true;
+}
+
 // Manual display exposure: scene-linear multiplier applied BEFORE the
 // display transform. Valid range cannot overflow finite HDR inputs:
 // exp2(+8) is 256x, and float range covers any sane renderer output.

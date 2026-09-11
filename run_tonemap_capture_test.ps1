@@ -83,6 +83,30 @@ $code = Render-Variant (Join-Path $work "agx.rt2scene") $work $null @("--frames"
 if ($code -eq 0) { Write-Host "[Tonemap] FAIL: unwritable output exited 0"; exit 1 }
 Write-Host "[Tonemap] write failure exits nonzero (code $code)"
 
+# CLI overrides overlay the scene look for the invocation only: an AgX
+# scene with explicit flags must match the equivalent authored scene
+# byte-for-byte, and invalid values must exit nonzero before rendering.
+$code = Render-Variant (Join-Path $work "agx.rt2scene") (Join-Path $work "cli_reinhard.png") $null @("--tone-map", "reinhard", "--exposure-ev", "0")
+if ($code -ne 0) { Write-Host "[Tonemap] FAIL: CLI override render exited $code"; exit 1 }
+$code = Render-Variant (Join-Path $work "agx.rt2scene") (Join-Path $work "cli_aces.png") $null @("--tone-map", "aces", "--exposure-ev", "2")
+if ($code -ne 0) { Write-Host "[Tonemap] FAIL: CLI aces render exited $code"; exit 1 }
+if ((Get-FileHash (Join-Path $work "cli_reinhard.png")).Hash -ne (Get-FileHash (Join-Path $work "reinhard.png")).Hash) {
+    Write-Host "[Tonemap] FAIL: CLI override PNG differs from the authored-look PNG"; exit 1 }
+if ((Get-FileHash (Join-Path $work "cli_aces.png")).Hash -ne (Get-FileHash (Join-Path $work "aces.png")).Hash) {
+    Write-Host "[Tonemap] FAIL: CLI aces PNG differs from the authored-look PNG"; exit 1 }
+Write-Host "[Tonemap] CLI overrides match authored looks"
+
+foreach ($bad in @(@("--tone-map", "hdr"), @("--exposure-ev", "99"), @("--tone-map"), @("--exposure-ev", "abc"))) {
+    $code = Render-Variant (Join-Path $work "agx.rt2scene") (Join-Path $work "bad.png") $null $bad
+    if ($code -eq 0) { Write-Host "[Tonemap] FAIL: invalid CLI ($bad) exited 0"; exit 1 }
+}
+Write-Host "[Tonemap] invalid CLI values exit nonzero"
+
+& $exe --help > "$work/help.txt" 2>&1
+$help = Get-Content "$work/help.txt" -Raw
+if ($help -notmatch "--tone-map" -or $help -notmatch "--exposure-ev") {
+    Write-Host "[Tonemap] FAIL: --help omits the presentation flags"; exit 1 }
+
 python scripts/compare_tonemap_captures.py $work
 if ($LASTEXITCODE -ne 0) { Write-Host "[Tonemap] FAIL: differential comparison failed"; exit 1 }
 

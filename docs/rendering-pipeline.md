@@ -274,17 +274,25 @@ a separate pass (Step K).
 ## Step K: Tonemap Pass
 
 ```
-vkCmdBindPipeline (tonemap.comp)
-vkCmdDispatch (width / 8, height / 8, 1)
+vkCmdPushConstants (TonemapPushConstants: operator + exposure multiplier)
+vkCmdBindPipeline (tonemap.comp / tonemap_rr.comp)
+vkCmdDispatch (width / 16, height / 16, 1)
 ```
 
 A dedicated compute dispatch reads the linear HDR output image and writes
-Reinhard-tone-mapped, exact sRGB-encoded color to the UNORM display image.
+camera-look display color, exact sRGB-encoded, to the UNORM display image.
+Each camera owns its look (tone-map operator + exposure EV, AgX at 0 EV by
+default); the active camera's resolved presentation travels as 16 bytes of
+push constants. Both storage-format variants (native RGBA32F, RR RGBA16F)
+share one implementation (`shaders/tonemap_shared.glsl`): AgX neutral, ACES
+Fitted, and legacy per-channel Reinhard. Data-oriented debug views resolve
+to the legacy Reinhard-at-0EV mapping and bypass the camera look.
 Encoding explicitly is required because the display image is a storage image;
 the ImGui/swapchain path expects nonlinear sRGB byte values. The CPU headless
-readback uses the same Reinhard and piecewise sRGB transfer. Splitting tonemap from
-compose keeps the linear output available for debug views and future
-upscalers (FSR 2 / DLSS) that operate on linear HDR input.
+readback converts through the same reference (`ToneMapMath.h`) using the
+fence-completed capture's presentation; raw EXR/PFM stays scene-linear.
+Splitting tonemap from compose keeps the linear output available for debug
+views and reconstruction (RR) that operate on linear HDR input.
 
 ## Step L: Output Transition
 
@@ -325,12 +333,13 @@ output image. Two execution paths exist:
   ReSTIR DI (temporal + spatial) → ReSTIR GI (temporal + history) → debug
   dispatch. ReSTIR runs before the debug dispatch because the reservoir debug
   views need reservoirs to exist. This path replaces RT shading + NRD +
-  Compose + Tonemap.
+  Compose; the tone-map stage still runs but resolves the legacy
+  Reinhard-at-0EV diagnostic mapping, bypassing the camera look.
 
 - **Modes 19-21** (packed NRD inputs): the pipeline runs Raster → ReSTIR →
   RT shading → debug dispatch. These modes inspect diff/spec radiance after
   the RT dispatch writes them, so they require the RT pass to run first.
-  Replaces NRD + Compose + Tonemap.
+  Replaces NRD + Compose; tone mapping is the same legacy diagnostic mapping.
 
 Mode index reference (defined in `gbuffer_debug.comp`):
 

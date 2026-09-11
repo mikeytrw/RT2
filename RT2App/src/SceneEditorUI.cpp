@@ -2398,6 +2398,18 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	float verticalFOV = cam->verticalFOV;
 	float aperture = cam->aperture;
 	float focusDistance = cam->focusDistance;
+	// Camera-owned display look (scene camera). Indices match the Tone Map
+	// Operator numbering (0 AgX, 1 ACES Fitted, 2 Reinhard); the widgets
+	// below map explicitly so the order is never implicit.
+	int toneMapIndex = 0;
+	switch (cam->presentation.toneMap)
+	{
+	case ToneMapOperator::ACESFitted: toneMapIndex = 1; break;
+	case ToneMapOperator::Reinhard:   toneMapIndex = 2; break;
+	case ToneMapOperator::AgX:
+	default:                         toneMapIndex = 0; break;
+	}
+	float exposureEV = cam->presentation.exposureEV;
 	ImGui::BeginDisabled(!m_Editable);
 
 	bool cancelPending = false;
@@ -2459,6 +2471,24 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 		return ImGui::DragFloat("Focus Distance", &focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
 	});
 
+	ImGui::Text("Display Look (Scene Camera)");
+	drawCameraWidget("Tone Mapping", [&]() {
+		const char* operators[] = { "AgX", "ACES Fitted", "Reinhard (Legacy)" };
+		return ImGui::Combo("Tone Mapping", &toneMapIndex, operators, IM_ARRAYSIZE(operators));
+	});
+	drawCameraWidget("Exposure (EV)", [&]() {
+		return ImGui::DragFloat("Exposure (EV)", &exposureEV, 0.05f,
+			kMinCameraExposureEV, kMaxCameraExposureEV, "%.2f");
+	});
+	drawCameraWidget("Reset Exposure", [&]() {
+		if (ImGui::Button("Reset Exposure to 0 EV"))
+		{
+			exposureEV = 0.0f;
+			return true;
+		}
+		return false;
+	});
+
 	const bool viewPressed = ImGui::Button("View Through Camera");
 	ImGui::SameLine();
 	const bool alignPressed = ImGui::Button("Align Camera to View");
@@ -2466,8 +2496,19 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	ImGui::EndDisabled();
 
 	bool changed = false;
+	CameraPresentation editedPresentation = cam->presentation;
+	switch (toneMapIndex)
+	{
+	case 1:  editedPresentation.toneMap = ToneMapOperator::ACESFitted; break;
+	case 2:  editedPresentation.toneMap = ToneMapOperator::Reinhard; break;
+	case 0:
+	default: editedPresentation.toneMap = ToneMapOperator::AgX; break;
+	}
+	editedPresentation.exposureEV = exposureEV;
 	if (cam->verticalFOV != verticalFOV || cam->aperture != aperture ||
-	    cam->focusDistance != focusDistance)
+	    cam->focusDistance != focusDistance ||
+	    cam->presentation.toneMap != editedPresentation.toneMap ||
+	    cam->presentation.exposureEV != editedPresentation.exposureEV)
 	{
 		changed = true;
 	}
@@ -2482,6 +2523,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 		editedCamera.verticalFOV = verticalFOV;
 		editedCamera.aperture = aperture;
 		editedCamera.focusDistance = focusDistance;
+		editedCamera.presentation = editedPresentation;
 		PublishCompositePreviewAndRoute(
 			[&]() { return m_CameraSession.Preview(*m_SceneMgr,
 				PrefabValuePayload{ editedCamera }); },

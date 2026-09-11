@@ -6295,6 +6295,21 @@ document is a period record of a superseded state.**
 > authoritative current baseline; all older baseline rows remain period
 > records.
 
+> **Updated 2026-09-11 — camera-owned filmic tone mapping closure
+> measurement (supersedes the 976/976 note above).** Full measured runs from
+> the repository root on branch camera-owned-filmic-tone-mapping after the
+> batch-4 UI/CLI/adoption/docs closure landed. Both configurations measure
+> **1200 run / 1200 passed / 0 failed / 0 skipped; 157,614 assertions**. The
+> increase over S6 (976/976, 153,157 assertions) is **+224 cases / +4,457
+> assertions** from the camera-presentation batches (vocabulary, transport,
+> persistence, capture, CLI). One transient single-case failure was observed
+> in an early full Release run and did not reproduce in any subsequent run
+> (recorded in the completion note at the document end, not investigated
+> further as a proportionate call). The fixture was restored to its tracked
+> blob after every mutating suite; `git diff --check` is clean. This is the
+> authoritative current baseline; all older baseline rows remain period
+> records.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -16033,3 +16048,65 @@ also passed. Graphify was refreshed after the final code at 36,457 nodes,
 77,344 edges, and 1,451 communities. The tracked vertical-slice fixture was
 restored byte-for-byte and the authored diff, temporary-state, and process
 audits were clean before commit.
+
+---
+
+## Camera-owned filmic tone mapping and exposure — completion note (2026-09-11, off-roadmap; not a Phase)
+
+Off-roadmap rendering work per the reviewed technical plan (traycer artifact
+camera-owned-filmic-tone-mapping-technical-plan, READY re-review recorded in
+camera-owned-filmic-tone-mapping-plan-review). Implemented in four bounded
+batches on branch camera-owned-filmic-tone-mapping as commits dc35cb9
+(CPU vocabulary/transport/tests), 5381b38 (serialization/authoring),
+3f4b98d (GPU/headless core) and the batch-4 UI/CLI/adoption/docs closure.
+No merge or push; branch left clean for review.
+
+What was built: every camera (entity CameraComponent, global SceneCamera,
+editor EditorCameraPose, runtime Camera) owns its display look
+(ToneMapOperator AgX/ACES Fitted/Reinhard + manual exposure EV in [-8,+8],
+AgX/0 defaults). Shared CPU vocabulary, validation and -0.0f
+canonicalization in RT2App/src/CameraPresentation.h with the AgX (Wrensch
+neutral) and ACES Fitted (Hill) reference math in RT2App/src/ToneMapMath.h.
+Additive scene/prefab fields (toneMap, exposureEV; no schema bump) with
+transactional absent-migrates/invalid-rejects parsing shared by global and
+entity decoders. Whole-Camera prefab override unit; camera commands,
+equality, canonicalization and stale-before lists extended. GPU: one shared
+GLSL implementation (shaders/tonemap_shared.glsl) for native RGBA32F and RR
+RGBA16F variants driven by 16-byte push constants; checked
+TonemapPass/FrameRenderer failure propagation; fence-completed capture
+snapshot pairing each submitted HDR source with its recorded presentation
+(PNG converts the pair, raw EXR/PFM stays scene-linear, resize/discard never
+publish). Debug views keep the legacy Reinhard-at-0EV mapping on both GPU
+and CPU paths. UI: scene-camera inspector and editor-view Presentation
+controls with S6-C preview/commit/cancel and one history entry per gesture;
+Performance window shows the completed look; --tone-map/--exposure-ev CLI
+flags with independent presence, strict nonzero-exit diagnostics, help, and
+one-shot editor-camera seeding. Adoption: native open, recovery, import and
+startup seeding copy the look without transport resets; presentation-only
+bookmark/pose applications bypass ApplyEditorCameraCut while real cuts keep
+their reset. Deferred per plan: auto exposure, bloom, grading/LUTs, white
+balance, HDR output, post stack, Lua/glTF presentation channels.
+
+What was measured (all from the repository root): full RT2Tests green in
+Release and Debug at 1200 run / 1200 passed / 0 failed / 0 skipped with
+157,614 assertions in both configurations (Test baseline note below);
+Release+Debug RT2App and Release RT2SliceRunner link clean; both tone-map
+SPIR-V variants rebuilt; run_slice_test.ps1, run_script_test.ps1 and
+run_recovery_test.ps1 pass; run_tonemap_capture_test.ps1 ALL PASS on RTX
+3090 (NGX RR active) — GPU/CPU parity max=0 code values exact on AgX,
+Reinhard, ACES and native-32F captures, PFM byte-identical across operators,
+operator/EV effect, debug-bypass identity, opaque alpha, CLI
+override-equivalence, invalid-CLI and unwritable-output nonzero exits.
+Forced-validation render reported no push-constant/descriptor VUIDs (only
+pre-existing compute-derivative capability notices on unrelated modules).
+One transient single-case failure was observed in an early full Release run
+and did not reproduce in any subsequent run (recorded, not investigated
+further as a toy-engine proportionate call).
+
+Residual limitations: NGX
+InPreExposure/InExposureScale unchanged (display EV applies after
+reconstruction); interactive acceptance of the new inspector/editor controls
+is manual-only (RT2Tests cannot link the ImGui/Walnut hosts); the completed
+look, not the live setting, is what PNG captures convert (one intentional
+in-flight frame of viewport/PNG divergence); interactive framing still does
+not adopt file lens on open (position/forward/look only) by decision.

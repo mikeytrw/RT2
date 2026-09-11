@@ -794,6 +794,38 @@ public:
 			editorPose.aperture = 0.0f;
 			cameraPoseChanged = true;
 		}
+		// Camera-owned display look for this editor view (never a global
+		// render preference). Presentation-only edits apply without
+		// resetting temporal history (see ApplyEditorCameraPose).
+		ImGui::Text("Display Look (Editor View)");
+		int toneMapIndex = 0;
+		switch (editorPose.presentation.toneMap)
+		{
+		case ToneMapOperator::ACESFitted: toneMapIndex = 1; break;
+		case ToneMapOperator::Reinhard:   toneMapIndex = 2; break;
+		case ToneMapOperator::AgX:
+		default:                         toneMapIndex = 0; break;
+		}
+		const char* operators[] = { "AgX", "ACES Fitted", "Reinhard (Legacy)" };
+		if (ImGui::Combo("Tone Mapping (Editor View)", &toneMapIndex, operators, IM_ARRAYSIZE(operators)))
+		{
+			switch (toneMapIndex)
+			{
+			case 1:  editorPose.presentation.toneMap = ToneMapOperator::ACESFitted; break;
+			case 2:  editorPose.presentation.toneMap = ToneMapOperator::Reinhard; break;
+			case 0:
+			default: editorPose.presentation.toneMap = ToneMapOperator::AgX; break;
+			}
+			cameraPoseChanged = true;
+		}
+		if (ImGui::DragFloat("Exposure EV (Editor View)", &editorPose.presentation.exposureEV,
+			0.05f, kMinCameraExposureEV, kMaxCameraExposureEV, "%.2f"))
+			cameraPoseChanged = true;
+		if (ImGui::Button("Reset Exposure to 0 EV"))
+		{
+			editorPose.presentation.exposureEV = 0.0f;
+			cameraPoseChanged = true;
+		}
 		if (cameraPoseChanged)
 			ApplyEditorCameraPose(editorPose);
 		if (ImGui::Button("Frame Selected")) FrameEditorSelection(true);
@@ -846,6 +878,16 @@ public:
 	{
 		const auto& completed = m_RendererGPU.GetLastCompleted();
 		ImGui::Text("Denoiser: %s", CompletedDenoiserName(completed.denoiser));
+		// Completed-frame display look (camera-owned filmic tone mapping):
+		// the operator/EV of the fence-proven capture the PNG path converts,
+		// never the live UI setting (which may already target the next frame).
+		if (m_RendererGPU.HasCompletedCapture())
+		{
+			const auto& capture = m_RendererGPU.GetLastCompletedCapture();
+			ImGui::Text("Display: %s EV %+.2f%s", ToneMapOperatorLabel(capture.presentation.toneMap),
+				(double)capture.presentation.exposureEV,
+				capture.diagnosticView ? " (diagnostic)" : "");
+		}
 		if (!completed.fallbackReason.empty() &&
 			(completed.denoiser == CompletedDenoiser::NRDFallback ||
 				completed.backend == RRBackend::ActiveNativeNRD))
@@ -2239,11 +2281,10 @@ public:
 					// Upload to GPU
 					if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
 						UploadMeshToGPU();
-					m_RendererGPU.ResetAccumulation();
-					// Adopt the scene camera
-					const auto& cam = m_SceneMgr.GetECS().camera;
-					m_Cam.SetPosition(cam.position);
-					m_Cam.SetForwardDirection(cam.forwardDirection);
+				m_RendererGPU.ResetAccumulation();
+				// Adopt the scene camera (position, forward and look; a
+				// pending CLI presentation seed overlays and is consumed).
+				AdoptAuthoringCameraView();
 
 					// Stop offering this record during this process, but deliberately
 					// keep it on disk until explicit Save or Discard.
@@ -2955,6 +2996,20 @@ private:
 	{
 		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit)
 			return false;
+		// Presentation-only updates never reset temporal history: when the
+		// transport state matches the live editor camera, apply the look
+		// directly instead of routing through ApplyEditorCameraCut (which
+		// resets accumulation, ReSTIR, NRD/RR and recreates RR features).
+		// Real transport changes keep the existing cut behavior below.
+		if (EditorCameraTransportEqual(m_Cam.GetEditorPose(), pose))
+		{
+			if (!m_Cam.SetPresentation(pose.presentation))
+			{
+				m_LastStatusMsg = "Camera presentation is invalid";
+				return false;
+			}
+			return true;
+		}
 		bool applied = false;
 		if (m_RendererGPU.IsAvailable())
 		{
@@ -3309,6 +3364,11 @@ private:
 			if (glm::dot(forward, forward) > 1e-8f)
 				m_Cam.SetForwardDirection(glm::normalize(forward));
 		}
+		// One-shot presentation seed. Skipped while background scene adoption
+		// is still in flight: the adoption site applies (and consumes) it
+		// once the camera is stable, so the seed always overlays the adopted
+		// look instead of being clobbered by it.
+		ApplyCLIPresentationSeed();
 
 		if (g_CLI.rasterFirst)
 			m_Cam.m_Aperture = 0.0f;
@@ -4018,9 +4078,10 @@ private:
 				}
 			}
 
-			const auto& cam = m_SceneMgr.GetECS().camera;
-			m_Cam.SetPosition(cam.position);
-			m_Cam.SetForwardDirection(cam.forwardDirection);
+			// Adopt the scene camera (position, forward and look; imported
+			// interchange files carry no presentation channel, so the
+			// loader-defaulted AgX/0 look is adopted).
+			AdoptAuthoringCameraView();
 
 			// Imported interchange files become an untitled native authoring
 			// document. They must be explicitly saved as .rt2scene.
@@ -5341,25 +5402,9 @@ public:
 				fflush(stdout);
 			}
 
-			m_RendererGPU.ResetAccumulation();
+		m_RendererGPU.ResetAccumulation();
 
-			// Adopt the scene camera. Position/forward adoption is the existing
-			// behavior; presentation (tone operator + exposure) is adopted through
-			// the non-transport setter so a newly opened scene cannot retain the
-			// previous scene's look and no temporal history is reset. Lens
-			// adoption (FOV/aperture/focus) and the remaining View Through /
-			// Align / bookmark / Play / CLI sites belong to camera-controls work.
-			const auto& cam = m_SceneMgr.GetECS().camera;
-			m_Cam.SetPosition(cam.position);
-			m_Cam.SetForwardDirection(cam.forwardDirection);
-			if (!m_Cam.SetPresentation(cam.presentation))
-			{
-				RT_LOG("[Scene] opened scene has an invalid camera presentation; kept the editor look");
-				printf("[Scene] WARNING: opened scene has an invalid camera presentation; kept the editor look\n");
-			}
-			printf("[Scene] adopted camera presentation op=%s ev=%.2f\n",
-				ToneMapOperatorName(m_Cam.GetPresentation().toneMap),
-				(double)m_Cam.GetPresentation().exposureEV);
+		AdoptAuthoringCameraView();
 
 			// Update recents.
 			if (m_Settings2)
@@ -5375,6 +5420,67 @@ public:
 			else
 				m_LastStatusMsg = "Opened";
 		});
+	}
+
+	// Adopt the authoring scene camera into the editor view. Position and
+	// forward adoption is the long-standing behavior; presentation (tone
+	// operator + exposure) rides along through the non-transport setter so
+	// a newly adopted scene cannot retain the previous scene's look and no
+	// temporal history is reset. Lens adoption (FOV/aperture/focus) stays
+	// out: framing follows explicit View Through / Align gestures. Any
+	// pending one-shot CLI presentation seed overlays the adopted look and
+	// is consumed, so later UI edits remain authoritative.
+	void AdoptAuthoringCameraView()
+	{
+		const auto& cam = m_SceneMgr.GetECS().camera;
+		m_Cam.SetPosition(cam.position);
+		m_Cam.SetForwardDirection(cam.forwardDirection);
+		if (!m_Cam.SetPresentation(cam.presentation))
+		{
+			RT_LOG("[Scene] adopted scene has an invalid camera presentation; kept the editor look");
+			printf("[Scene] WARNING: adopted scene has an invalid camera presentation; kept the editor look\n");
+		}
+		ApplyCLIPresentationSeed();
+		printf("[Scene] adopted camera presentation op=%s ev=%.2f\n",
+			ToneMapOperatorName(m_Cam.GetPresentation().toneMap),
+			(double)m_Cam.GetPresentation().exposureEV);
+		fflush(stdout);
+	}
+
+	// One-shot CLI presentation seed (--tone-map / --exposure-ev). Each
+	// present flag overlays the resolved editor camera for this invocation
+	// only, without touching saved scene data. Consumed on first
+	// application: a later UI edit (or a later adoption) cannot be defeated
+	// by a stale seed. Skipped while background adoption is still in flight;
+	// the adoption site applies it once the camera is stable instead.
+	void ApplyCLIPresentationSeed()
+	{
+		if (!g_CLI.hasToneMap && !g_CLI.hasExposureEV)
+			return;
+		if (IsBackgroundBusy())
+			return;
+		CameraPresentation seeded = m_Cam.GetPresentation();
+		if (!TryApplyPresentationSeed(seeded, g_CLI.hasToneMap, g_CLI.toneMap,
+		                              g_CLI.hasExposureEV, g_CLI.exposureEV, seeded))
+		{
+			RT_LOG("[CLI] presentation seed is invalid; kept the editor look");
+			return;
+		}
+		if (m_Cam.SetPresentation(seeded))
+		{
+			printf("[CLI] presentation seed: %s op=%s ev=%.2f (owner=%s)\n",
+				(g_CLI.hasToneMap && g_CLI.hasExposureEV) ? "tone-map+exposure-ev" :
+				(g_CLI.hasToneMap ? "tone-map" : "exposure-ev"),
+				ToneMapOperatorName(seeded.toneMap), (double)seeded.exposureEV,
+				g_CLI.headless ? "headless-editor" : "editor");
+			fflush(stdout);
+		}
+		else
+		{
+			RT_LOG("[CLI] presentation seed is invalid; kept the editor look");
+		}
+		g_CLI.hasToneMap = false;
+		g_CLI.hasExposureEV = false;
 	}
 
 	void SaveRt2Scene()
@@ -5638,6 +5744,12 @@ private:
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 {
 	g_CLI = CLIArgs::Parse(argc, argv);
+	if (!g_CLI.presentationError.empty())
+	{
+		fprintf(stderr, "[CLI] %s\n", g_CLI.presentationError.c_str());
+		fflush(stderr);
+		std::exit(EXIT_FAILURE);
+	}
 
 	Walnut::ApplicationSpecification spec;
 	spec.Name = "RT2";
