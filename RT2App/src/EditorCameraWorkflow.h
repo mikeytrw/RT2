@@ -60,6 +60,30 @@ bool TryNormalizeEditorCameraPose(EditorCameraPose& pose);
 bool EditorCameraTransportEqual(const EditorCameraPose& a, const EditorCameraPose& b);
 bool TryCameraRotationFromForward(const glm::vec3& forward, glm::quat& rotation);
 
+// Pose-application policy for editor-camera updates (bookmark recall,
+// numeric edits, View Through, focus/frame results). Transport-equal
+// updates — including identical poses and presentation-only changes — apply
+// the look directly and must never reset temporal history; transport
+// differences keep the cut path with its single reset.
+enum class PoseApplyAction { PresentationOnly, Cut };
+inline PoseApplyAction ResolvePoseApplyAction(const EditorCameraPose& current,
+                                             const EditorCameraPose& requested)
+{
+    return EditorCameraTransportEqual(current, requested)
+               ? PoseApplyAction::PresentationOnly
+               : PoseApplyAction::Cut;
+}
+
+// Builds the complete editor-camera adoption pose from an authoring
+// SceneCamera (native open, recovery, interchange import, headless load):
+// position, forward, FOV, aperture, focus distance and presentation.
+// SceneCamera owns no far clip, so the current far clip is retained.
+// Returns false (leaving `out` untouched) when the scene camera is not a
+// valid pose; callers keep the prior editor camera and fail loudly.
+bool TryBuildAuthoringAdoptionPose(const SceneCamera& scene,
+                                   const EditorCameraPose& current,
+                                   EditorCameraPose& out);
+
 // Applies one complete editor-camera cut through the supplied host sink, then
 // resets renderer history exactly once. The sink keeps this CPU-only module
 // independent of Walnut's Camera/Input implementation and is recordable in

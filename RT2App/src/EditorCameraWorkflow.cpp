@@ -146,6 +146,23 @@ bool EditorCameraTransportEqual(const EditorCameraPose& a, const EditorCameraPos
            lhs.farClip == rhs.farClip;
 }
 
+bool TryBuildAuthoringAdoptionPose(const SceneCamera& scene,
+                                    const EditorCameraPose& current,
+                                    EditorCameraPose& out)
+{
+    EditorCameraPose built;
+    built.position = scene.position;
+    built.forward = scene.forwardDirection;
+    built.verticalFOV = scene.verticalFOV;
+    built.aperture = scene.aperture;
+    built.focusDistance = scene.focusDistance;
+    built.farClip = current.farClip;
+    built.presentation = scene.presentation;
+    if (!TryNormalizeEditorCameraPose(built)) return false;
+    out = built;
+    return true;
+}
+
 bool TryCameraRotationFromForward(const glm::vec3& requestedForward,
                                   glm::quat& rotation)
 {

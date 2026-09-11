@@ -6310,6 +6310,17 @@ document is a period record of a superseded state.**
 > authoritative current baseline; all older baseline rows remain period
 > records.
 
+> **Updated 2026-09-11 — final-review repair measurement (supersedes the
+> 1200/1200 note above).** Full measured runs from the repository root after
+> the F1–F5 repair closure landed. Both configurations now measure **1215
+> run / 1215 passed / 0 failed / 0 skipped; 158,005 assertions**. The
+> increase over the batch-4 baseline (1200/1200, 157,614 assertions) is
+> **+15 cases / +391 assertions** from the inspector-gesture probe,
+> adoption-route, finite-math and CLI-seed coverage. The 1200/1200 figure
+> above is the recorded batch-4 measurement before the repair and is
+> superseded by the 1215/1215 figures. All older baseline rows remain period
+> records.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -16110,3 +16121,39 @@ is manual-only (RT2Tests cannot link the ImGui/Walnut hosts); the completed
 look, not the live setting, is what PNG captures convert (one intentional
 in-flight frame of viewport/PNG divergence); interactive framing still does
 not adopt file lens on open (position/forward/look only) by decision.
+
+> **Supersession 2026-09-11 — final correctness review closure.** The final
+> review (NOT CLEAN) overturned two claims recorded above, and both are
+> corrected by repair work, not by rewriting this record:
+>
+> - The "GPU/CPU parity max=0" claim measured the CPU readback conversion
+>   against a Python port of the same math; it never sampled the GPU
+>   tone-map output. The gate now captures the actual post-dispatch RGBA8
+>   display image (`--output-display`) and compares it against the C++
+>   reference per operator/EV on both RGBA32F and RGBA16F paths (max=1,
+>   the UNORM rounding slack), with half-quantization proof that the RR
+>   path was exercised. The old max=0 figures above describe the CPU/CPU
+>   comparison and are superseded for any GPU-equivalence reading.
+> - "Does not adopt file lens on open by decision" was not an available
+>   decision: the governing plan requires complete adoption. Native open,
+>   recovery, interchange import and headless load now adopt the complete
+>   pose (position, forward, FOV, aperture, focus distance, presentation;
+>   far clip retained) with CLI override precedence and the no-reset
+>   presentation policy preserved. The inspector Combo/reset gestures likewise
+>   commit discrete whole-camera commands (the drag-session wiring canceled
+>   popup selections and restored resets). Extreme-HDR arithmetic is bounded
+>   identically in CPU/GLSL (finite-in/finite-out at every allowed EV) and
+>   the AgX log domain is guarded before log2 on both sides; reference
+>   provenance was re-verified against live upstream sources (all AgX/ACES
+>   constants identical) and is pinned in the source headers.
+>
+> Repair evidence (repository root unless noted): full RT2Tests 1215/1215
+> with 158,005 assertions in Release and Debug; Release+Debug RT2App and
+> Release RT2SliceRunner link clean; both SPIR-V rebuilt and spirv-val
+> clean — tonemap.spv
+> SHA256 8090da88374530d98750db61d06860ddc44c12c09b065a6c4c0622fab4144ac2,
+> tonemap_rr.spv SHA256
+> ffb81c666f4d4745445f34d6474ba36515da789181a9672bea889e2f27abbe40;
+> run_tonemap_capture_test.ps1 ALL PASS including the new display-parity,
+> format-proof, CLI-display and bypass checks; slice/script/recovery gates
+> pass; forced-validation render reports no push-constant/descriptor VUIDs.

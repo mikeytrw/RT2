@@ -34,6 +34,7 @@ analysis; PFM is the preferred format for the Python comparison harness.
 | `--env <path>`, `-e <path>` | Load an HDR or EXR environment map. |
 | `--output <path>`, `-o <path>` | Save the display PNG. |
 | `--output-hdr <path>` | Save the linear HDR image as EXR or PFM. |
+| `--output-display <path>` | Save the post-dispatch GPU display image (tone-map shader output) as PNG. |
 | `--frames <N>`, `-f <N>` | Number of frames to render. |
 | `--width <N>`, `-w <N>` / `--height <N>`, `-h <N>` | Headless render resolution. |
 | `--spp <N>` | Samples-per-pixel setting. |
@@ -88,6 +89,11 @@ the active camera for the invocation only, without changing saved scene data.
 Interactively they seed the editor camera once and are consumed, so later UI
 edits win. Invalid values exit nonzero before rendering. EXR/PFM output is
 always scene-linear and ignores both flags.
+
+`--output-display` samples `m_DisplayImage` after the tone-map dispatch, so
+it is the GPU tone-map output itself; `--output` converts the completed HDR
+source through the C++ reference. The display-parity gate compares the two
+per operator/EV on both storage formats.
 
 ## Benchmark and diagnostic options
 

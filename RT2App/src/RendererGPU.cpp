@@ -333,7 +333,8 @@ void RendererGPU::CreateOutputImage()
 
 	GpuResources::CreateImage(m_Device, m_OutputExtent.Width(), m_OutputExtent.Height(),
 		VK_FORMAT_R8G8B8A8_UNORM,
-		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+		VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_DisplayImage);
 
 	// Create output sampler (clamp + extended lod range for ImGui display)
@@ -1890,6 +1891,104 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 	outHeight = source.extent.Height();
 	RT_LOG("[ReadbackLinear] captured %ux%u from %s (%d) → %zu floats", outWidth, outHeight,
 		source.name, (int)source.format, outPixelsRGBA32F.size());
+	return true;
+}
+
+// Reads back the actual post-dispatch RGBA8 display image written by the
+// tone-map shader (both native and RR variants). Checked like the other
+// readbacks: after the idle wait the newest proven capture must exist, so
+// these bytes are the GPU tone-map output for the completed pair — the
+// input the display-parity gate compares against the C++ reference.
+bool RendererGPU::ReadbackDisplayOutput(std::vector<uint8_t>& outPixelsRGBA8,
+                                        uint32_t& outWidth, uint32_t& outHeight)
+{
+	if (!m_Initialized || !m_DisplayImage.IsValid())
+		return false;
+	VkDevice device = m_Device.device;
+
+	vkDeviceWaitIdle(device);
+	if (!PromoteCompletedCaptures())
+	{
+		RT_LOG("[ReadbackDisplay] no completed capture available");
+		return false;
+	}
+
+	const uint32_t width = m_DisplayImage.width;
+	const uint32_t height = m_DisplayImage.height;
+	if (width == 0 || height == 0 ||
+	    m_DisplayImage.format != VK_FORMAT_R8G8B8A8_UNORM)
+		return false;
+
+	VkBuffer stagingBuffer;
+	VkDeviceMemory stagingMemory;
+	const VkDeviceSize imageSize = (VkDeviceSize)width * height * 4u;
+	GpuResources::CreateBuffer(m_Device, imageSize,
+	             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             stagingBuffer, stagingMemory);
+
+	// The wait above already proved every in-flight frame; use
+	// ImmediateSubmit for the copy.
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		VkImageMemoryBarrier toTransfer = {};
+		toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toTransfer.image = m_DisplayImage.image;
+		toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		toTransfer.subresourceRange.levelCount = 1;
+		toTransfer.subresourceRange.baseArrayLayer = 0;
+		toTransfer.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+		                     0, nullptr, 0, nullptr, 1, &toTransfer);
+
+		VkBufferImageCopy region = {};
+		region.bufferOffset = 0;
+		region.bufferRowLength = 0;
+		region.bufferImageHeight = 0;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = 0;
+		region.imageSubresource.baseArrayLayer = 0;
+		region.imageSubresource.layerCount = 1;
+		region.imageOffset = { 0, 0, 0 };
+		region.imageExtent = { width, height, 1 };
+		vkCmdCopyImageToBuffer(cmd, m_DisplayImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
+
+		VkImageMemoryBarrier toGeneral = toTransfer;
+		toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0,
+		                     0, nullptr, 0, nullptr, 1, &toGeneral);
+	});
+
+	void* mapped = nullptr;
+	VkResult err = vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped);
+	if (err != VK_SUCCESS || !mapped)
+	{
+		RT_LOG("[ReadbackDisplay] vkMapMemory failed: %d", (int)err);
+		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
+		return false;
+	}
+
+	outPixelsRGBA8.resize((size_t)width * height * 4u);
+	std::memcpy(outPixelsRGBA8.data(), mapped, (size_t)imageSize);
+
+	vkUnmapMemory(device, stagingMemory);
+	GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
+
+	outWidth = width;
+	outHeight = height;
+	const auto& capture = m_LastCompletedCapture;
+	RT_LOG("[ReadbackDisplay] captured %ux%u op=%d mult=%.3f diagnostic=%d", outWidth, outHeight,
+		capture.valid ? static_cast<int>(capture.presentation.toneMap) : -1,
+		capture.valid ? (double)CameraExposureMultiplier(capture.presentation.exposureEV) : 0.0,
+		(capture.valid && capture.diagnosticView) ? 1 : 0);
 	return true;
 }
 

@@ -212,6 +212,12 @@ public:
 	// Read back the output image to CPU as RGBA8 (tonemapped+sRGB). Returns false on failure.
 	bool ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight);
 
+	// Read back the actual post-dispatch RGBA8 display image written by the
+	// tone-map shader. Returns false on failure (including no completed
+	// capture). This is the GPU tone-map output the display-parity gate
+	// compares against the C++ reference.
+	bool ReadbackDisplayOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight);
+
 	// Read back the output image to CPU as RGBA32F linear HDR. Returns false on failure.
 	bool ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uint32_t& outWidth, uint32_t& outHeight);
 	bool WriteRRGuideReport(const std::string& path,

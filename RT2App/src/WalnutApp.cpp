@@ -3001,7 +3001,8 @@ private:
 		// directly instead of routing through ApplyEditorCameraCut (which
 		// resets accumulation, ReSTIR, NRD/RR and recreates RR features).
 		// Real transport changes keep the existing cut behavior below.
-		if (EditorCameraTransportEqual(m_Cam.GetEditorPose(), pose))
+		if (ResolvePoseApplyAction(m_Cam.GetEditorPose(), pose) ==
+		    PoseApplyAction::PresentationOnly)
 		{
 			if (!m_Cam.SetPresentation(pose.presentation))
 			{
@@ -3562,6 +3563,44 @@ private:
 			return true;
 		};
 
+		// Saves the actual post-dispatch GPU display image (tone-map shader
+		// output) for the display-parity gate. Unlike saveOutput, which
+		// converts the HDR source on the CPU, this samples m_DisplayImage.
+		auto saveDisplayOutput = [&](const std::string& path) -> bool {
+			std::error_code directoryError;
+			const std::filesystem::path outputPath(path);
+			if (outputPath.has_parent_path())
+				std::filesystem::create_directories(outputPath.parent_path(), directoryError);
+			if (directoryError)
+			{
+				RT_LOG("[Headless] failed to create output directory for %s: %s", path.c_str(), directoryError.message().c_str());
+				return false;
+			}
+			std::vector<uint8_t> pixels;
+			uint32_t w, h;
+			if (!m_RendererGPU.ReadbackDisplayOutput(pixels, w, h))
+			{
+				RT_LOG("[Headless] ReadbackDisplayOutput failed");
+				return false;
+			}
+
+			std::vector<uint8_t> topDown;
+			if (!HeadlessImageOutput::PackRGBA8TopDown(pixels, w, h, topDown))
+			{
+				RT_LOG("[Headless] invalid RGBA8 display extent for %s", path.c_str());
+				return false;
+			}
+
+			if (!stbi_write_png(path.c_str(), w, h, 4, topDown.data(), w * 4))
+			{
+				RT_LOG("[Headless] stbi_write_png failed for %s", path.c_str());
+				return false;
+			}
+
+			printf("[Headless] saved display output: %s (%ux%u)\n", path.c_str(), w, h);
+			return true;
+		};
+
 		// Pair validation deliberately spans two process invocations.  A
 		// no-report run writes this manifest; the report run consumes it and
 		// compares its independently rendered canonical bytes.
@@ -3706,7 +3745,8 @@ private:
 			fflush(stdout);
 
 			if (g_CLI.captureEvery > 0 && ShouldCommitHeadlessOutput(
-				!g_CLI.outputPath.empty() || !g_CLI.outputHDRPath.empty(),
+				!g_CLI.outputPath.empty() || !g_CLI.outputHDRPath.empty() ||
+				!g_CLI.outputDisplayPath.empty(),
 				m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
 				lastRenderOutcome.captureAllowed, renderFailure))
 			{
@@ -3721,6 +3761,8 @@ private:
 						!saveOutput(sequencePath(g_CLI.outputPath, "still", -1)) || outputPersistenceFailure;
 					if (!g_CLI.outputHDRPath.empty()) outputPersistenceFailure =
 						!saveHDROutput(sequencePath(g_CLI.outputHDRPath, "still", -1)) || outputPersistenceFailure;
+					if (!g_CLI.outputDisplayPath.empty()) outputPersistenceFailure =
+						!saveDisplayOutput(sequencePath(g_CLI.outputDisplayPath, "still", -1)) || outputPersistenceFailure;
 				}
 				else if (periodicFrame)
 				{
@@ -3729,6 +3771,8 @@ private:
 						!saveOutput(sequencePath(g_CLI.outputPath, tag, i + 1)) || outputPersistenceFailure;
 					if (!g_CLI.outputHDRPath.empty()) outputPersistenceFailure =
 						!saveHDROutput(sequencePath(g_CLI.outputHDRPath, tag, i + 1)) || outputPersistenceFailure;
+					if (!g_CLI.outputDisplayPath.empty()) outputPersistenceFailure =
+						!saveDisplayOutput(sequencePath(g_CLI.outputDisplayPath, tag, i + 1)) || outputPersistenceFailure;
 				}
 			}
 		}
@@ -3785,6 +3829,12 @@ private:
 			outputPersistenceFailure = !saveHDROutput(g_CLI.outputHDRPath) || outputPersistenceFailure;
 		else if (renderFailure)
 			discardOutput(g_CLI.outputHDRPath);
+		if (ShouldCommitHeadlessOutput(!g_CLI.outputDisplayPath.empty(),
+			m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
+			lastRenderOutcome.captureAllowed, renderFailure))
+			outputPersistenceFailure = !saveDisplayOutput(g_CLI.outputDisplayPath) || outputPersistenceFailure;
+		else if (renderFailure)
+			discardOutput(g_CLI.outputDisplayPath);
 		if (!g_CLI.rrGuidePair.empty() && g_CLI.rrGuideReport.empty())
 		{
 			std::vector<float> pairPixels;
@@ -5432,18 +5482,26 @@ public:
 	// is consumed, so later UI edits remain authoritative.
 	void AdoptAuthoringCameraView()
 	{
-		const auto& cam = m_SceneMgr.GetECS().camera;
-		m_Cam.SetPosition(cam.position);
-		m_Cam.SetForwardDirection(cam.forwardDirection);
-		if (!m_Cam.SetPresentation(cam.presentation))
+		// Adopt the complete authoring camera: position, forward, lens
+		// (FOV/aperture/focus) and presentation. SceneCamera owns no far
+		// clip, so the live far clip is retained. A complete adoption cannot
+		// retain a previous scene's lens or look. Invalid scene cameras keep
+		// the prior editor camera and fail loudly.
+		EditorCameraPose adopted;
+		if (!TryBuildAuthoringAdoptionPose(m_SceneMgr.GetECS().camera,
+		                                   m_Cam.GetEditorPose(), adopted) ||
+		    !m_Cam.SetEditorPose(adopted))
 		{
-			RT_LOG("[Scene] adopted scene has an invalid camera presentation; kept the editor look");
-			printf("[Scene] WARNING: adopted scene has an invalid camera presentation; kept the editor look\n");
+			RT_LOG("[Scene] adopted scene has an invalid camera; kept the editor camera");
+			printf("[Scene] WARNING: adopted scene has an invalid camera; kept the editor camera\n");
+			fflush(stdout);
+			return;
 		}
 		ApplyCLIPresentationSeed();
-		printf("[Scene] adopted camera presentation op=%s ev=%.2f\n",
-			ToneMapOperatorName(m_Cam.GetPresentation().toneMap),
-			(double)m_Cam.GetPresentation().exposureEV);
+		const auto& applied = m_Cam.GetPresentation();
+		printf("[Scene] adopted camera fov=%.1f aperture=%.3f focus=%.2f op=%s ev=%.2f\n",
+			m_Cam.GetVerticalFOV(), m_Cam.m_Aperture, m_Cam.m_FocusDistance,
+			ToneMapOperatorName(applied.toneMap), (double)applied.exposureEV);
 		fflush(stdout);
 	}
 

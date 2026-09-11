@@ -2470,24 +2470,67 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	drawCameraWidget("Focus Distance", [&]() {
 		return ImGui::DragFloat("Focus Distance", &focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
 	});
-
-	ImGui::Text("Display Look (Scene Camera)");
-	drawCameraWidget("Tone Mapping", [&]() {
-		const char* operators[] = { "AgX", "ACES Fitted", "Reinhard (Legacy)" };
-		return ImGui::Combo("Tone Mapping", &toneMapIndex, operators, IM_ARRAYSIZE(operators));
-	});
 	drawCameraWidget("Exposure (EV)", [&]() {
 		return ImGui::DragFloat("Exposure (EV)", &exposureEV, 0.05f,
 			kMinCameraExposureEV, kMaxCameraExposureEV, "%.2f");
 	});
-	drawCameraWidget("Reset Exposure", [&]() {
-		if (ImGui::Button("Reset Exposure to 0 EV"))
+
+	ImGui::Text("Display Look (Scene Camera)");
+	// Discrete gesture: Combo popup opening deactivates the widget without
+	// an edit and a later selection arrives without activation, so a
+	// drag-style preview session would cancel the eventual selection. Issue
+	// a checked whole-camera command instead, after closing any prior
+	// preview (which finalizes/records it first).
+	const char* operators[] = { "AgX", "ACES Fitted", "Reinhard (Legacy)" };
+	const bool comboChanged = ImGui::Combo("Tone Mapping", &toneMapIndex, operators, IM_ARRAYSIZE(operators));
+	if (ResolveCameraDiscreteCommit(comboChanged) == CameraDiscreteCommit::Commit)
+	{
+		ToneMapOperator selected = ToneMapOperator::AgX;
+		switch (toneMapIndex)
 		{
-			exposureEV = 0.0f;
-			return true;
+		case 1:  selected = ToneMapOperator::ACESFitted; break;
+		case 2:  selected = ToneMapOperator::Reinhard; break;
+		case 0:
+		default: selected = ToneMapOperator::AgX; break;
 		}
-		return false;
-	});
+		if (ClosePreviewBeforeDiscrete(PreviewSessionKind::Camera,
+			m_CameraSession, m_CameraSessionOwningWidgetId))
+		{
+			const auto* live = reg.valid(entity.id)
+				? reg.try_get<CameraComponent>(entity.id) : nullptr;
+			if (live)
+			{
+				if (auto cmd = MakeSetCameraPresentationCommandIfEffective(
+					targetUuid, *live, selected, std::nullopt))
+				{
+					ApplyMutation(ExecuteCommandThroughHistory(
+						m_CommandHistory, *m_SceneMgr, std::move(cmd)));
+				}
+			}
+		}
+	}
+	// Discrete gesture: Button release reports plain deactivation, so the
+	// drag-session close path would restore (cancel) the published zero. A
+	// null factory result keeps reset-at-zero silent with no history entry.
+	const bool resetClicked = ImGui::Button("Reset Exposure to 0 EV");
+	if (ResolveCameraDiscreteCommit(resetClicked) == CameraDiscreteCommit::Commit)
+	{
+		if (ClosePreviewBeforeDiscrete(PreviewSessionKind::Camera,
+			m_CameraSession, m_CameraSessionOwningWidgetId))
+		{
+			const auto* live = reg.valid(entity.id)
+				? reg.try_get<CameraComponent>(entity.id) : nullptr;
+			if (live)
+			{
+				if (auto cmd = MakeSetCameraPresentationCommandIfEffective(
+					targetUuid, *live, std::nullopt, 0.0f))
+				{
+					ApplyMutation(ExecuteCommandThroughHistory(
+						m_CommandHistory, *m_SceneMgr, std::move(cmd)));
+				}
+			}
+		}
+	}
 
 	const bool viewPressed = ImGui::Button("View Through Camera");
 	ImGui::SameLine();
@@ -2496,19 +2539,13 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	ImGui::EndDisabled();
 
 	bool changed = false;
-	CameraPresentation editedPresentation = cam->presentation;
-	switch (toneMapIndex)
-	{
-	case 1:  editedPresentation.toneMap = ToneMapOperator::ACESFitted; break;
-	case 2:  editedPresentation.toneMap = ToneMapOperator::Reinhard; break;
-	case 0:
-	default: editedPresentation.toneMap = ToneMapOperator::AgX; break;
-	}
-	editedPresentation.exposureEV = exposureEV;
+	// Tone Mapping (Combo) and Reset Exposure commit discrete whole-camera
+	// commands above; only drag widgets publish through the preview session
+	// below. Exposure keeps drag preview; the operator/reset paths never
+	// enter the activation-gated session lifecycle.
 	if (cam->verticalFOV != verticalFOV || cam->aperture != aperture ||
 	    cam->focusDistance != focusDistance ||
-	    cam->presentation.toneMap != editedPresentation.toneMap ||
-	    cam->presentation.exposureEV != editedPresentation.exposureEV)
+	    cam->presentation.exposureEV != exposureEV)
 	{
 		changed = true;
 	}
@@ -2523,7 +2560,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 		editedCamera.verticalFOV = verticalFOV;
 		editedCamera.aperture = aperture;
 		editedCamera.focusDistance = focusDistance;
-		editedCamera.presentation = editedPresentation;
+		editedCamera.presentation.exposureEV = exposureEV;
 		PublishCompositePreviewAndRoute(
 			[&]() { return m_CameraSession.Preview(*m_SceneMgr,
 				PrefabValuePayload{ editedCamera }); },

@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace
 {
@@ -387,4 +388,101 @@ TEST_CASE("align camera to view carries presentation into the component")
     EditorCameraPose readBack;
     REQUIRE(TryGetCameraEntityPose(manager.AuthoringDoc(), cameraUuid, MakePose(), readBack));
     CHECK(readBack.presentation == stored.presentation);
+}
+
+TEST_CASE("F4 extreme finite HDR stays finite through every operator and EV")
+{
+    using namespace ToneMapMath;
+    const float huge[] = {
+        1.0e10f, 1.0e20f, 1.0e30f, 1.0e37f,
+        std::numeric_limits<float>::max(),
+    };
+    const ToneMapOperator ops[] = {
+        ToneMapOperator::AgX, ToneMapOperator::ACESFitted,
+        ToneMapOperator::Reinhard,
+    };
+    for (float v : huge)
+    {
+        for (ToneMapOperator op : ops)
+        {
+            for (float ev : {-8.0f, 0.0f, 8.0f})
+            {
+                float r = 0.0f, g = 0.0f, b = 0.0f;
+                INFO("op=" << static_cast<int>(op) << " v=" << v << " ev=" << ev);
+                REQUIRE(ToneMapPixel(v, v, v, op, CameraExposureMultiplier(ev), r, g, b));
+                CHECK(std::isfinite(r));
+                CHECK(std::isfinite(g));
+                CHECK(std::isfinite(b));
+                uint8_t out[4] = {};
+                REQUIRE(ConvertHdrPixelToDisplay8(v, v, v, 1.0f, op,
+                    CameraExposureMultiplier(ev), out));
+            }
+        }
+    }
+    // Saturated white: extreme brights land on display white (255) on
+    // every channel instead of failing.
+    uint8_t white[4] = {};
+    REQUIRE(ConvertHdrPixelToDisplay8(std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+        1.0f, ToneMapOperator::Reinhard, 256.0f, white));
+    CHECK(white[0] == 255);
+    CHECK(white[1] == 255);
+    CHECK(white[2] == 255);
+    uint8_t hugeWhite[4] = {};
+    REQUIRE(ConvertHdrPixelToDisplay8(1.0e37f, 1.0e37f, 1.0e37f, 1.0f,
+        ToneMapOperator::ACESFitted, 256.0f, hugeWhite));
+    CHECK(hugeWhite[0] == 255);
+    CHECK(hugeWhite[1] == 255);
+    CHECK(hugeWhite[2] == 255);
+}
+
+TEST_CASE("F4 ACES fit saturates invisibly at the high-range bound")
+{
+    using namespace ToneMapMath;
+    // Inputs above the bound clamp to it: identical bytes, still near-white.
+    uint8_t atBound[4] = {}, aboveBound[4] = {};
+    REQUIRE(ConvertHdrPixelToDisplay8(1.0e6f, 1.0e6f, 1.0e6f, 1.0f,
+        ToneMapOperator::ACESFitted, 1.0f, atBound));
+    REQUIRE(ConvertHdrPixelToDisplay8(1.0e7f, 1.0e7f, 1.0e7f, 1.0f,
+        ToneMapOperator::ACESFitted, 1.0f, aboveBound));
+    CHECK(atBound[0] == aboveBound[0]);
+    CHECK(atBound[1] == aboveBound[1]);
+    CHECK(atBound[2] == aboveBound[2]);
+    // Just below the bound the unclamped path stays within a wide visual
+    // tolerance of the bound value, so normal-range output is unchanged.
+    uint8_t below[4] = {};
+    REQUIRE(ConvertHdrPixelToDisplay8(1.0e5f, 1.0e5f, 1.0e5f, 1.0f,
+        ToneMapOperator::ACESFitted, 1.0f, below));
+    CHECK(std::abs(static_cast<int>(below[0]) - static_cast<int>(atBound[0])) <= 30);
+}
+
+TEST_CASE("F5 AgX black is exact and the log floor preserves the toe")
+{
+    using namespace ToneMapMath;
+    // The pinned floor equals exp2 of the toe bound (bit-verified literal).
+    CHECK(static_cast<double>(std::exp2(static_cast<double>(Detail::kAgXMinEV))) ==
+          doctest::Approx(static_cast<double>(Detail::kAgXLogFloor)));
+    CHECK(Detail::kAgXLogFloor > 0.0f);
+
+    // Black converts to exact black through AgX at 0 EV on every channel.
+    uint8_t black[4] = {};
+    REQUIRE(ConvertHdrPixelToDisplay8(0.0f, 0.0f, 0.0f, 1.0f,
+        ToneMapOperator::AgX, 1.0f, black));
+    CHECK(black[0] == 0);
+    CHECK(black[1] == 0);
+    CHECK(black[2] == 0);
+    CHECK(black[3] == 255);
+
+    // Floor-neighborhood inputs stay finite and dark, never NaN.
+    for (float v : {1.0e-10f, 1.0e-6f, Detail::kAgXLogFloor, 1.0e-3f})
+    {
+        float r = 0.0f, g = 0.0f, b = 0.0f;
+        INFO("v=" << v);
+        REQUIRE(ToneMapPixel(v, v, v, ToneMapOperator::AgX, 1.0f, r, g, b));
+        CHECK(std::isfinite(r));
+        uint8_t out[4] = {};
+        REQUIRE(ConvertHdrPixelToDisplay8(v, v, v, 1.0f,
+            ToneMapOperator::AgX, 1.0f, out));
+        CHECK(out[0] <= 8);
+    }
 }

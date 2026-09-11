@@ -94,6 +94,7 @@ struct CLIArgs
 	std::string envMapPath;
 	std::string outputPath;       // screenshot PNG path
 	std::string outputHDRPath;    // linear HDR output (.exr or .pfm)
+	std::string outputDisplayPath; // post-dispatch GPU display image PNG (tone-map output)
 	std::string rrGuideReport;    // checked native RR-neutral guide readback JSON
 	std::string rrGuidePair;      // independent no-report checksum manifest
 	RRGuideScenario rrGuideScenario = RRGuideScenario::Unspecified;
@@ -157,7 +158,7 @@ struct CLIArgs
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasProject() const { return !projectPath.empty(); }
 	bool hasEnvMap() const { return !envMapPath.empty(); }
-	bool hasOutput() const { return !outputPath.empty() || !outputHDRPath.empty(); }
+	bool hasOutput() const { return !outputPath.empty() || !outputHDRPath.empty() || !outputDisplayPath.empty(); }
 
 	static CLIArgs Parse(int argc, char** argv)
 	{
@@ -187,10 +188,14 @@ struct CLIArgs
 			{
 				if (const char* v = next()) args.outputPath = v;
 			}
-			else if (strcmp(a, "--output-hdr") == 0)
-			{
-				if (const char* v = next()) args.outputHDRPath = v;
-			}
+		else if (strcmp(a, "--output-hdr") == 0)
+		{
+			if (const char* v = next()) args.outputHDRPath = v;
+		}
+		else if (strcmp(a, "--output-display") == 0)
+		{
+			if (const char* v = next()) args.outputDisplayPath = v;
+		}
 			else if (strcmp(a, "--rr-guide-report") == 0)
 			{
 				if (const char* v = next()) args.rrGuideReport = v;
@@ -431,6 +436,7 @@ struct CLIArgs
 				printf("  --env <path>         Load HDR env map (.hdr/.exr) on startup\n");
 		printf("  --output <path>      Save tonemapped PNG after rendering\n");
 		printf("  --output-hdr <path>  Save scene-linear HDR output without display exposure/tone mapping (.exr or .pfm)\n");
+		printf("  --output-display <path>  Save the post-dispatch GPU display image (tone-map output) as PNG\n");
 			printf("  --rr-guide-report <path>  Save checked RR-neutral guide readback JSON\n");
 			printf("  --rr-guide-pair <path>    Write/read independent canonical checksum manifest\n");
 			printf("  --rr-guide-scenario <controlled-material-motion>  Declare a checked RR guide case\n");
@@ -518,6 +524,7 @@ struct CLIArgs
 		printf("[CLI] env       = %s\n", envMapPath.empty() ? "(none)" : envMapPath.c_str());
 		printf("[CLI] output    = %s\n", outputPath.empty() ? "(none)" : outputPath.c_str());
 		printf("[CLI] outputHDR = %s\n", outputHDRPath.empty() ? "(none)" : outputHDRPath.c_str());
+		printf("[CLI] outputDisplay = %s\n", outputDisplayPath.empty() ? "(none)" : outputDisplayPath.c_str());
 		printf("[CLI] rrGuideReport = %s\n", rrGuideReport.empty() ? "(none)" : rrGuideReport.c_str());
 		printf("[CLI] rrGuidePair = %s\n", rrGuidePair.empty() ? "(none)" : rrGuidePair.c_str());
 		printf("[CLI] rrGuideScenario = %s\n", RRGuideScenarioName(rrGuideScenario));

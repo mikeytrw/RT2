@@ -541,6 +541,24 @@ std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	return cmd;
 }
 
+std::unique_ptr<IEditorCommand> MakeSetCameraPresentationCommandIfEffective(
+	rt2::core::UUID target,
+	const CameraComponent& live,
+	std::optional<ToneMapOperator> toneMap,
+	std::optional<float> exposureEV)
+{
+	if (!toneMap && !exposureEV) return nullptr;
+	CameraComponent after = live;
+	if (toneMap) after.presentation.toneMap = *toneMap;
+	if (exposureEV) after.presentation.exposureEV = *exposureEV;
+	after.presentation = CanonicalCameraPresentation(after.presentation);
+	if (CameraEqual(live, after)) return nullptr;
+	// Invalid values are NOT suppressed here: the command is returned so
+	// Execute surfaces the manager's actionable S5 failure without
+	// recording, matching the SetScript after-state policy above.
+	return std::make_unique<SetCameraCommand>(target, live, after);
+}
+
 std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<ScriptComponent> beforeValue,

@@ -38,7 +38,11 @@ void main()
         exposureMultiplier = 1.0;
     }
 
-    vec3 exposed = max(hdr.rgb, vec3(0.0)) * exposureMultiplier;
+    // Clamp exposure products to FLT_MAX: min() maps +Inf from extreme HDR
+    // at maximum exposure onto FLT_MAX, which every operator below
+    // saturates to white (same as the CPU reference).
+    vec3 exposed = min(max(hdr.rgb, vec3(0.0)) * exposureMultiplier,
+                       vec3(uintBitsToFloat(0x7F7FFFFFu)));
     vec3 mapped = tonemapDisplay(exposed, toneOperator);
     float alpha = (isnan(hdr.a) || isinf(hdr.a)) ? 1.0 : clamp(hdr.a, 0.0, 1.0);
     imageStore(displayOutput, pixel, vec4(linearToSRGB(mapped), alpha));

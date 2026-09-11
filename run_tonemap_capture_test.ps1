@@ -4,12 +4,16 @@
 #
 # Renders a small deterministic scene headlessly under three camera looks
 # (AgX/0 old-file migration, Reinhard/0, ACES/+2), plus diagnostic-view and
-# native-path variants, then compares PNG display output against the PFM
-# scene-linear source through scripts/compare_tonemap_captures.py:
+# native-path variants, capturing the CPU-converted PNG, the PFM
+# scene-linear source, and the post-dispatch GPU display image per variant,
+# then compares through scripts/compare_tonemap_captures.py:
 #   - GPU/CPU parity (<=1 code value) per operator,
+#   - display-image parity per operator/EV on both storage formats, with
+#     half-quantization proof that the RR path was exercised,
 #   - raw PFM isolation across operators,
 #   - operator/EV effect on the display output,
 #   - diagnostic-view bypass of the camera look,
+#   - CLI override-equivalence and strict nonzero exits,
 #   - unwritable-output nonzero exit.
 #
 # Usage: powershell -File run_tonemap_capture_test.ps1
@@ -31,10 +35,15 @@ if (-not (Test-Path $source)) { Write-Host "ERROR: scene not found at $source"; 
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 function Render-Variant($scene, $png, $pfm, $extraArgs) {
+    Render-VariantFull $scene $png $pfm $null $extraArgs
+}
+
+function Render-VariantFull($scene, $png, $pfm, $displayPng, $extraArgs) {
     $args = @("--headless", "--scene", $scene, "--frames", $frames,
               "--width", $width, "--height", $height) + $extraArgs
     if ($png) { $args += @("--output", $png) }
     if ($pfm) { $args += @("--output-hdr", $pfm) }
+    if ($displayPng) { $args += @("--output-display", $displayPng) }
     & $exe @args > "$work/last.log" 2>&1
     return $LASTEXITCODE
 }
@@ -57,11 +66,11 @@ Copy-Item $source (Join-Path $work "agx.rt2scene") -Force
 $reinhardScene = Inject-Look "reinhard" "reinhard" 0.0
 $acesScene     = Inject-Look "aces" "aces" 2.0
 
-$code = Render-Variant (Join-Path $work "agx.rt2scene") (Join-Path $work "agx.png") (Join-Path $work "agx.pfm") @()
+$code = Render-VariantFull (Join-Path $work "agx.rt2scene") (Join-Path $work "agx.png") (Join-Path $work "agx.pfm") (Join-Path $work "display_agx.png") @()
 if ($code -ne 0) { Write-Host "[Tonemap] FAIL: agx render exited $code"; exit 1 }
-$code = Render-Variant $reinhardScene (Join-Path $work "reinhard.png") (Join-Path $work "reinhard.pfm") @()
+$code = Render-VariantFull $reinhardScene (Join-Path $work "reinhard.png") (Join-Path $work "reinhard.pfm") (Join-Path $work "display_reinhard.png") @()
 if ($code -ne 0) { Write-Host "[Tonemap] FAIL: reinhard render exited $code"; exit 1 }
-$code = Render-Variant $acesScene (Join-Path $work "aces.png") (Join-Path $work "aces.pfm") @()
+$code = Render-VariantFull $acesScene (Join-Path $work "aces.png") (Join-Path $work "aces.pfm") (Join-Path $work "display_aces.png") @()
 if ($code -ne 0) { Write-Host "[Tonemap] FAIL: aces render exited $code"; exit 1 }
 
 # Diagnostic views bypass the camera look (same mode, both looks).
@@ -73,7 +82,7 @@ if ($code -ne 0) { Write-Host "[Tonemap] FAIL: debug aces render exited $code"; 
 # Native path source selection (RGBA32F) alongside the default RR path.
 # Proof is content parity on the native pair (checked by the comparison),
 # not a log line: rt2_log.txt is truncated by every process start.
-$code = Render-Variant (Join-Path $work "agx.rt2scene") (Join-Path $work "native.png") (Join-Path $work "native.pfm") @("--denoiser-mode", "off")
+$code = Render-VariantFull (Join-Path $work "agx.rt2scene") (Join-Path $work "native.png") (Join-Path $work "native.pfm") (Join-Path $work "display_native.png") @("--denoiser-mode", "off")
 if ($code -ne 0) { Write-Host "[Tonemap] FAIL: native render exited $code"; exit 1 }
 if (-not (Test-Path (Join-Path $work "native.png"))) { Write-Host "[Tonemap] FAIL: no native screenshot"; exit 1 }
 if (-not (Test-Path (Join-Path $work "native.pfm"))) { Write-Host "[Tonemap] FAIL: no native HDR source"; exit 1 }

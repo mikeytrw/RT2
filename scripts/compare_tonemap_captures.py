@@ -100,6 +100,17 @@ def read_pfm_rgb(path):
     return w, h, rows
 
 
+def read_pfm_raw_u32(path):
+    with open(path, "rb") as f:
+        assert f.readline().strip() == b"PF"
+        w, h = [int(x) for x in f.readline().split()]
+        assert float(f.readline().strip()) < 0
+        n = w * h * 3
+        raw = f.read(n * 4)
+        assert len(raw) == n * 4
+        return w, h, struct.unpack("<%dI" % n, raw)
+
+
 # --- CPU reference port (lockstep with ToneMapMath.h) ---
 
 AGX_INSET = (
@@ -183,6 +194,23 @@ def convert(r, g, b, op, mult):
     return tuple(srgb8(v) for v in rgb)
 
 
+def pixel_diff(rows, frows, w, h, op, mult):
+    maxdiff, total, n = 0, 0, 0
+    for y in range(h):
+        prow, frow = rows[y], frows[y]
+        for x in range(w):
+            r, g, b = frow[x * 3], frow[x * 3 + 1], frow[x * 3 + 2]
+            ref = convert(r, g, b, op, mult)
+            if ref is None:
+                return None
+            for c in range(3):
+                d = abs(prow[x * 4 + c] - ref[c])
+                maxdiff = max(maxdiff, d)
+                total += d
+                n += 1
+    return maxdiff, total, n
+
+
 def main():
     workdir = sys.argv[1]
     failures = []
@@ -195,6 +223,7 @@ def main():
     variants = {"agx": ("agx", 0.0), "reinhard": ("reinhard", 0.0), "aces": ("aces", 2.0),
                 "native": ("agx", 0.0)}
     pngs, pfms = {}, {}
+    w = h = 0
     for name in variants:
         w, h, pngs[name] = read_png_rgba8("%s/%s.png" % (workdir, name))
         pw, ph, pfms[name] = read_pfm_rgb("%s/%s.pfm" % (workdir, name))
@@ -205,26 +234,47 @@ def main():
     # Parity: GPU PNG vs CPU reference over the completed PFM source.
     for name, (op, ev) in variants.items():
         mult = 2.0 ** ev
-        rows = pngs[name]
-        frows = pfms[name]
-        h = len(rows)
-        w = len(rows[0]) // 4
-        maxdiff, total, n = 0, 0, 0
-        for y in range(h):
-            prow, frow = rows[y], frows[y]
-            for x in range(w):
-                r, g, b = frow[x * 3], frow[x * 3 + 1], frow[x * 3 + 2]
-                ref = convert(r, g, b, op, mult)
-                if ref is None:
-                    note(False, "parity-finite", "%s has nonfinite HDR at %d,%d" % (name, x, y))
-                    return 1
-                for c in range(3):
-                    d = abs(prow[x * 4 + c] - ref[c])
-                    maxdiff = max(maxdiff, d)
-                    total += d
-                    n += 1
+        got = pixel_diff(pngs[name], pfms[name], w, h, op, mult)
+        if got is None:
+            note(False, "parity-finite", "%s has nonfinite HDR" % name)
+            return 1
+        maxdiff, total, n = got
         mean = total / max(n, 1)
         note(maxdiff <= 1, "parity-%s" % name, "max=%d mean=%.4f" % (maxdiff, mean))
+
+    # Display parity: the actual post-dispatch GPU display image versus the
+    # CPU reference over the same completed PFM source, per operator and EV
+    # on both the RR (RGBA16F) and native (RGBA32F) paths. This is the check
+    # that samples the tone-map shader output; the PNG checks above sample
+    # the CPU conversion of the same source.
+    for name, (op, ev) in variants.items():
+        mult = 2.0 ** ev
+        dw, dh, drows = read_png_rgba8("%s/display_%s.png" % (workdir, name))
+        if (dw, dh) != (w, h):
+            note(False, "display-extent-%s" % name, "%dx%d vs %dx%d" % (dw, dh, w, h))
+            return 1
+        got = pixel_diff(drows, pfms[name], w, h, op, mult)
+        if got is None:
+            note(False, "display-finite", "%s display run has nonfinite HDR" % name)
+            return 1
+        maxdiff, total, n = got
+        mean = total / max(n, 1)
+        note(maxdiff <= 1, "display-parity-%s" % name, "max=%d mean=%.4f" % (maxdiff, mean))
+
+    # Format proof: the nominal RR source is half-quantized (every finite
+    # sample has zero low 13 mantissa bits), the native source is not.
+    _, _, rrRaw = read_pfm_raw_u32("%s/agx.pfm" % workdir)
+    rrExact = sum(1 for u in rrRaw
+                  if (u & 0x7F800000) != 0x7F800000 and (u & 0x1FFF) == 0)
+    rrTotal = sum(1 for u in rrRaw if (u & 0x7F800000) != 0x7F800000)
+    note(rrTotal > 0 and rrExact == rrTotal, "format-rr-half",
+         "%d/%d half-exact" % (rrExact, rrTotal))
+    _, _, natRaw = read_pfm_raw_u32("%s/native.pfm" % workdir)
+    natFull = sum(1 for u in natRaw
+                  if (u & 0x7F800000) != 0x7F800000 and (u & 0x1FFF) != 0)
+    natTotal = sum(1 for u in natRaw if (u & 0x7F800000) != 0x7F800000)
+    note(natTotal > 0 and natFull > natTotal // 100, "format-native-float",
+         "%d/%d full-precision" % (natFull, natTotal))
 
     # Isolation: the linear source is byte-identical across operators.
     base = open("%s/agx.pfm" % workdir, "rb").read()

@@ -465,6 +465,37 @@ std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	std::optional<MotionComponent> afterValue,
 	const PrefabCommandTransaction::ExplicitCapture* explicitCapture = nullptr);
 
+// Discrete inspector-gesture policy for camera presentation widgets (tone-map
+// Combo selection, exposure reset button). Maps a widget value change to a
+// whole-camera discrete commit. Unlike drag widgets, these gestures never
+// open a preview session: Combo popup opening deactivates the widget without
+// an edit (a later selection arrives with no activation), and Button release
+// reports plain deactivation (the drag-session close path would restore the
+// published value). Session-gating these gestures silently drops the
+// selection (F1); the inspector therefore commits them discretely after
+// closing any prior preview. Tested with real ImGui event streams in
+// CameraInspectorGestureTests.
+enum class CameraDiscreteCommit { None, Commit };
+inline CameraDiscreteCommit ResolveCameraDiscreteCommit(bool valueChanged)
+{
+	return valueChanged ? CameraDiscreteCommit::Commit : CameraDiscreteCommit::None;
+}
+
+// Discrete inspector presentation edit (tone-map Combo selection, exposure
+// reset button). Each present axis replaces the live value; absent axes are
+// preserved. Returns null when the result equals live state (no-op silence,
+// e.g. reset at 0 EV). Unlike drag widgets, Combo/Button gestures do not
+// produce activation-gated preview sessions: popup opening deactivates the
+// Combo without an edit, and Button release reports plain deactivation, so
+// routing them through the drag-session lifecycle silently cancels the
+// eventual selection. Callers close any prior preview first, then execute
+// the returned command through history for exactly one undo step.
+std::unique_ptr<IEditorCommand> MakeSetCameraPresentationCommandIfEffective(
+	rt2::core::UUID target,
+	const CameraComponent& live,
+	std::optional<ToneMapOperator> toneMap,
+	std::optional<float> exposureEV);
+
 // Returns null if both are absent OR both present and canonically equal
 // (same path, derived sourceKey, and exact typed field map). A present
 // before-state is validated/canonicalized first — an invalid before-snapshot
