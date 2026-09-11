@@ -3,3 +3,4 @@
 /RT2App/assets/rr-guide-controlled.rt2scene text eol=lf
 /RT2App/shaders/secondary_raygen.rgen text eol=lf
 /docs/rr-guide-report-*.json text eol=lf
+/docs/agx-minimal-wrensch-source.glsl text eol=lf
