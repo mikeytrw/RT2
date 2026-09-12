@@ -125,7 +125,15 @@
 
     filter "configurations:Debug"
        defines { "WL_DEBUG" }
-       runtime "Debug"
+       -- Amendment F (T1 Debug CRT alignment): runtime "Release" (/MD), not
+       -- "Debug" (/MDd). The single shared Bullet Debug static libraries
+       -- build /MD per W1 (matching RT2App, which must stay /MD for the
+       -- prebuilt NRD/NRI libs); one static lib per config cannot serve a
+       -- /MD and a /MDd consumer simultaneously (LNK2038/LNK1319). This
+       -- deliberately loses /MDd iterator-debugging and the debug heap in
+       -- this target, but preserves the exactly-three-StaticLib graph and
+       -- full Debug code/test coverage. Symbols stay on, optimization off.
+       runtime "Release"
        symbols "On"
 
     filter { "configurations:Debug", "files:../RT2App/src/SceneLoader.cpp" }

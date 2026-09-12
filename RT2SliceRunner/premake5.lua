@@ -116,7 +116,11 @@ project "RT2SliceRunner"
 
     filter "configurations:Debug"
        defines { "WL_DEBUG" }
-       runtime "Debug"
+       -- Amendment F (T1 Debug CRT alignment): same /MD compromise as
+       -- RT2Tests (see its premake5.lua). The shared Bullet Debug libraries
+       -- are /MD-only; linking them from a /MDd consumer fails with
+       -- LNK2038/LNK1319. Symbols stay on, optimization off.
+       runtime "Release"
        symbols "On"
 
     filter { "configurations:Debug", "files:../RT2App/src/SceneLoader.cpp" }
