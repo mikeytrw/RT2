@@ -55,6 +55,12 @@ project "RT2App"
         "vendor/efsw/.ecode/**",
         "vendor/efsw/.github/**",
         "vendor/efsw/src/efsw/platform/posix/**",  -- Windows only
+        -- T1 Bullet core: compiled once via the dedicated LinearMath /
+        -- BulletCollision / BulletDynamics StaticLib projects. Without this
+        -- exclusion the vendor/** catch-all above would compile the whole
+        -- Bullet tree a second time into RT2App (duplicate symbols at link).
+        "vendor/bullet/**.cpp",
+        "vendor/bullet/**.c",
     }
 
     -- Shader source files (compiled via custom build rules below)
@@ -229,6 +235,7 @@ project "RT2App"
     includedirs
     {
        "vendor",
+       "vendor/bullet/src",          -- T1: pinned Bullet core (src include root only)
        "vendor/tinygltf",
        "vendor/stb",
        "vendor/entt/src",
@@ -258,9 +265,15 @@ project "RT2App"
        "vendor/DLSS/lib/Windows_x86_64/khr/x64",
    }
 
-   links
-   {
-       "Walnut",
+    links
+    {
+        "Walnut",
+        -- T1: pinned Bullet core. Explicit link order BulletDynamics,
+        -- BulletCollision, LinearMath; every consumer links all three (no
+        -- transitive-static-link assumptions).
+        "BulletDynamics",
+        "BulletCollision",
+        "LinearMath",
        "vendor/NRD/Lib/NRD.lib",
        "vendor/NRD/Lib/ShaderMakeBlob.lib",
        "vendor/NRI/Lib/NRI.lib",

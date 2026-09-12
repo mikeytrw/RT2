@@ -89,6 +89,7 @@ project "RT2SliceRunner"
     {
         "../RT2App/src",
         "../RT2App/vendor",
+        "../RT2App/vendor/bullet/src",   -- T1: pinned Bullet core (src include root only)
         "../RT2App/vendor/tinygltf",
         "../RT2App/vendor/entt/src",
         "../RT2App/vendor/sol2/include",   -- Phase 6C/W7: sol2 header-only bindings
@@ -99,6 +100,15 @@ project "RT2SliceRunner"
 
     targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
     objdir ("../bin-int/" .. outputdir .. "/%{prj.name}")
+
+    -- T1: pinned Bullet core (same explicit three-library link as RT2App and
+    -- RT2Tests; no Vulkan/ImGui/Walnut includes are added with it).
+    links
+    {
+        "BulletDynamics",
+        "BulletCollision",
+        "LinearMath",
+    }
 
     filter "system:windows"
        systemversion "latest"

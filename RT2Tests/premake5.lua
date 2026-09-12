@@ -97,6 +97,7 @@
        "../Walnut/vendor/glm",
        "../Walnut/vendor/stb_image",
        "../RT2App/vendor",
+       "../RT2App/vendor/bullet/src",   -- T1: pinned Bullet core (src include root only)
        "../RT2App/vendor/tinygltf",
        "../RT2App/vendor/entt/src",
        "../RT2App/vendor/sol2/include",   -- Phase 6: sol2 header-only bindings
@@ -106,6 +107,18 @@
 
     targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
     objdir ("../bin-int/" .. outputdir .. "/%{prj.name}")
+
+    -- T1: pinned Bullet core. Explicit link order BulletDynamics,
+    -- BulletCollision, LinearMath; every consumer links all three (no
+    -- transitive-static-link assumptions). The BulletVendoringTests
+    -- translation unit references one symbol from each library, so removing
+    -- any entry here fails the link loudly.
+    links
+    {
+        "BulletDynamics",
+        "BulletCollision",
+        "LinearMath",
+    }
 
     filter "system:windows"
        systemversion "latest"
