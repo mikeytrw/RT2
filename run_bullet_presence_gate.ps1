@@ -41,6 +41,7 @@ $requiredCases = @(
     "T2 physics prefab wires are non-overridable and carry no propagation adapter",
     "T2 scene load rejects a prefab override naming a physics wire",
     "T2 malformed v8 physics blocks fail loudly with entity identity",
+    "T2 nested asset fields and float overflow fail loudly with wire path",
     "T2 both persisted collision refs are visited unconditionally",
     "T2 save rejects a physics ref with a path but no asset kind"
 )

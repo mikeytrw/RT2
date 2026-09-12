@@ -1053,6 +1053,39 @@ TEST_CASE("T2 malformed v8 physics blocks fail loudly with entity identity")
                            "physicsSlider");
 }
 
+TEST_CASE("T2 nested asset fields and float overflow fail loudly with wire path")
+{
+    // Fixup P1.1 (narrowed): the shared asset decoder silently discards a
+    // present kind/path/sourceKey unless it is a string, and finite doubles
+    // outside the float domain narrow to infinity. Both gaps reproduced as
+    // successful SliceRunner loads; both are now transactional Parse
+    // failures naming the entity UUID and the complete physics wire path.
+    ExpectPhysicsParseFail("shape-path-number",
+                           R"("physicsShape": {"shape": "convexHull", "hull": {"kind": "model", "path": 123, "sourceKey": "obj:whole-model"}})",
+                           "physicsShape.hull.path");
+    ExpectPhysicsParseFail("shape-sourcekey-number",
+                           R"("physicsShape": {"triMesh": {"kind": "model", "path": "colliders/ramp.obj", "sourceKey": 7}})",
+                           "physicsShape.triMesh.sourceKey");
+    ExpectPhysicsParseFail("shape-kind-number",
+                           R"("physicsShape": {"hull": {"kind": 42, "path": "colliders/hull.obj"}})",
+                           "physicsShape.hull.kind");
+    ExpectPhysicsParseFail("shape-assetid-number",
+                           R"("physicsShape": {"hull": {"kind": "model", "path": "colliders/hull.obj", "assetId": 9}})",
+                           "physicsShape.hull.assetId");
+    ExpectPhysicsParseFail("shape-importsettings-flag",
+                           R"("physicsShape": {"hull": {"kind": "model", "path": "colliders/hull.obj", "importSettings": {"triangulate": "yes"}}})",
+                           "physicsShape.hull");
+    ExpectPhysicsParseFail("shape-unknown-kind",
+                           R"("physicsShape": {"hull": {"kind": "unknown", "path": "colliders/orphan.obj"}})",
+                           "physicsShape.hull");
+    ExpectPhysicsParseFail("body-mass-overflow",
+                           R"("physicsBody": {"mass": 1e39})",
+                           "physicsBody");
+    ExpectPhysicsParseFail("hinge-pivot-overflow",
+                           R"("physicsHinge": {"ownerPivot": [1e39, 0, 0]})",
+                           "physicsHinge");
+}
+
 TEST_CASE("T2 both persisted collision refs are visited unconditionally")
 {
     // Fixup P1.2: the visitor emits BOTH stored AssetReferences of every

@@ -1571,12 +1571,19 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             return false;
         }
         const double d = v.get<double>();
-        if (!std::isfinite(d))
+        // Representability in the destination float is validated BEFORE
+        // narrowing: a finite double outside the float domain (e.g. 1e39)
+        // would otherwise become an infinite authored value, defeating the
+        // exact finite-value persistence claim at the next save/runtime
+        // boundary instead of failing here.
+        const float f = static_cast<float>(d);
+        if (!std::isfinite(d) || !std::isfinite(f))
         {
-            failPhysics(block, std::string(key) + " must be finite");
+            failPhysics(block, std::string(key) +
+                        " must be a finite float-representable number");
             return false;
         }
-        out = static_cast<float>(d);
+        out = f;
         return true;
     };
 
@@ -1627,16 +1634,28 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
                         " must be an array of exactly 3 numbers");
             return false;
         }
-        for (const auto& c : v)
+        float components[3];
+        for (int i = 0; i < 3; ++i)
         {
-            if (!c.is_number() || !std::isfinite(c.get<double>()))
+            const auto& c = v[static_cast<json::size_type>(i)];
+            if (!c.is_number())
             {
                 failPhysics(block, std::string(key) +
                             " must be an array of exactly 3 numbers");
                 return false;
             }
+            // Same pre-narrowing representability rule as checkFloat: each
+            // component must survive the double->float conversion finite.
+            const float f = static_cast<float>(c.get<double>());
+            if (!std::isfinite(c.get<double>()) || !std::isfinite(f))
+            {
+                failPhysics(block, std::string(key) +
+                            " must be an array of exactly 3 numbers");
+                return false;
+            }
+            components[i] = f;
         }
-        out = {v[0].get<float>(), v[1].get<float>(), v[2].get<float>()};
+        out = {components[0], components[1], components[2]};
         return true;
     };
 
@@ -1709,12 +1728,33 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
                         " asset reference must be an object");
             return false;
         }
+        // Strict nested-field validation BEFORE the shared decoder runs.
+        // The shared JsonToAssetReference silently ignores a present kind,
+        // path, or sourceKey unless it is a string, which would discard a
+        // malformed value (e.g. "path":123) and load a default reference.
+        // Every supported nested field is type-checked here, so the decoder
+        // below provably cannot throw on physics input and every failure
+        // carries the complete block/wire/key path.
+        const std::string wire = std::string(block) + "." + key;
+        auto checkNestedString = [&](const char* field) {
+            if (!v.contains(field))
+                return true;
+            if (!v[field].is_string())
+            {
+                failPhysics(block, wire + "." + field + " must be a string");
+                return false;
+            }
+            return true;
+        };
+        if (!checkNestedString("kind") || !checkNestedString("path") ||
+            !checkNestedString("sourceKey") || !checkNestedString("assetId"))
+            return false;
         if (v.contains("importSettings"))
         {
             const auto& settings = v["importSettings"];
             if (!settings.is_object())
             {
-                failPhysics(block, std::string(key) +
+                failPhysics(block, wire +
                             " importSettings must be an object");
                 return false;
             }
@@ -1724,7 +1764,7 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             {
                 if (settings.contains(flag) && !settings[flag].is_boolean())
                 {
-                    failPhysics(block, std::string(key) + " importSettings." +
+                    failPhysics(block, wire + " importSettings." +
                                 flag + " must be a boolean");
                     return false;
                 }
@@ -1735,9 +1775,12 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             v, schemaVersion, report, r.uuid, r.name, assetError);
         if (!assetError.IsOk())
         {
-            err = assetError;
+            // Full wire path survives: entity UUID plus the exact physics
+            // block/wire/key that owns the failing reference.
+            err.code = assetError.code;
             err.path = r.uuid.ToString();
-            err.detail = "entity " + r.uuid.ToString() + " " + err.detail;
+            err.detail = "entity " + r.uuid.ToString() + " " + wire + " " +
+                         assetError.detail;
             return false;
         }
         if (!decoded.path.empty() && decoded.kind != AssetKind::Model)
