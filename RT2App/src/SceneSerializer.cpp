@@ -1550,12 +1550,17 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
     // by the per-record try/catch in Load below).
     // The entity UUID goes in BOTH path and detail: Load overwrites path
     // with the file path on record failure, so detail is the durable
-    // carrier of the offending entity identity.
-    auto failPhysics = [&](const char* block, const std::string& detail) {
+    // carrier of the offending entity identity. The field path is always
+    // one complete dotted wire (e.g. "physicsBody.mass",
+    // "physicsShape.hull.importSettings.triangulate") built from the single
+    // wire value at each site — never a block prefix plus a second copy of
+    // the block, and never space-separated segments.
+    auto failPhysics = [&](const std::string& fieldPath,
+                           const std::string& detail) {
         err.code = Error::Parse;
         err.path = r.uuid.ToString();
-        err.detail = "entity " + r.uuid.ToString() + " " +
-                     std::string(block) + " " + detail;
+        err.detail = "entity " + r.uuid.ToString() + " " + fieldPath + " " +
+                     detail;
     };
 
     // Strict field readers. Absent key = keep the default (true); present
@@ -1567,20 +1572,33 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         const auto& v = o[key];
         if (!v.is_number())
         {
-            failPhysics(block, std::string(key) + " must be a number");
+            failPhysics(std::string(block) + "." + key, "must be a number");
             return false;
         }
         const double d = v.get<double>();
-        // Representability in the destination float is validated BEFORE
-        // narrowing: a finite double outside the float domain (e.g. 1e39)
-        // would otherwise become an infinite authored value, defeating the
-        // exact finite-value persistence claim at the next save/runtime
-        // boundary instead of failing here.
-        const float f = static_cast<float>(d);
-        if (!std::isfinite(d) || !std::isfinite(f))
+        // Representability is validated BEFORE narrowing: the finite JSON
+        // double is compared against the destination float domain first, and
+        // only a proven-in-range value is cast. Performing the narrowing
+        // conversion on an out-of-range finite source and inspecting the
+        // result afterward is not portably well-defined, so the range gate
+        // below is the load-bearing check; the post-cast finiteness check
+        // is retained as defense in depth.
+        // Parenthesized lowest()/max(): windows.h defines function-like
+        // max/min macros, and this TU includes it (see the same idiom used
+        // by the established float-range validation elsewhere in this file).
+        if (!std::isfinite(d) ||
+            d < (std::numeric_limits<float>::lowest)() ||
+            d > (std::numeric_limits<float>::max)())
         {
-            failPhysics(block, std::string(key) +
-                        " must be a finite float-representable number");
+            failPhysics(std::string(block) + "." + key,
+                        "must be a finite float-representable number");
+            return false;
+        }
+        const float f = static_cast<float>(d);
+        if (!std::isfinite(f))
+        {
+            failPhysics(std::string(block) + "." + key,
+                        "must be a finite float-representable number");
             return false;
         }
         out = f;
@@ -1594,7 +1612,7 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         const auto& v = o[key];
         if (!v.is_boolean())
         {
-            failPhysics(block, std::string(key) + " must be a boolean");
+            failPhysics(std::string(block) + "." + key, "must be a boolean");
             return false;
         }
         out = v.get<bool>();
@@ -1608,15 +1626,15 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         const auto& v = o[key];
         if (!v.is_number_unsigned())
         {
-            failPhysics(block, std::string(key) +
-                        " must be an unsigned integer");
+            failPhysics(std::string(block) + "." + key,
+                        "must be an unsigned integer");
             return false;
         }
         const uint64_t u = v.get<uint64_t>();
         if (u > max)
         {
-            failPhysics(block, std::string(key) + " is out of range (max " +
-                        std::to_string(max) + ")");
+            failPhysics(std::string(block) + "." + key,
+                        "is out of range (max " + std::to_string(max) + ")");
             return false;
         }
         out = u;
@@ -1630,8 +1648,8 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         const auto& v = o[key];
         if (!v.is_array() || v.size() != 3)
         {
-            failPhysics(block, std::string(key) +
-                        " must be an array of exactly 3 numbers");
+            failPhysics(std::string(block) + "." + key,
+                        "must be an array of exactly 3 numbers");
             return false;
         }
         float components[3];
@@ -1640,17 +1658,27 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             const auto& c = v[static_cast<json::size_type>(i)];
             if (!c.is_number())
             {
-                failPhysics(block, std::string(key) +
-                            " must be an array of exactly 3 numbers");
+                failPhysics(std::string(block) + "." + key,
+                            "must be an array of exactly 3 numbers");
                 return false;
             }
             // Same pre-narrowing representability rule as checkFloat: each
-            // component must survive the double->float conversion finite.
-            const float f = static_cast<float>(c.get<double>());
-            if (!std::isfinite(c.get<double>()) || !std::isfinite(f))
+            // component double is range-gated before the cast, with the
+            // post-cast finiteness check retained as defense in depth.
+            const double d = c.get<double>();
+            if (!std::isfinite(d) ||
+                d < (std::numeric_limits<float>::lowest)() ||
+                d > (std::numeric_limits<float>::max)())
             {
-                failPhysics(block, std::string(key) +
-                            " must be an array of exactly 3 numbers");
+                failPhysics(std::string(block) + "." + key,
+                            "must be an array of exactly 3 numbers");
+                return false;
+            }
+            const float f = static_cast<float>(d);
+            if (!std::isfinite(f))
+            {
+                failPhysics(std::string(block) + "." + key,
+                            "must be an array of exactly 3 numbers");
                 return false;
             }
             components[i] = f;
@@ -1690,7 +1718,7 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             err.code = Error::Parse;
             err.path = r.uuid.ToString();
             err.detail = "entity " + r.uuid.ToString() + " " +
-                         std::string(key) + " otherBody must be a string";
+                         std::string(key) + ".otherBody must be a string";
             return false;
         }
         const auto& text = c["otherBody"].get<std::string>();
@@ -1705,8 +1733,8 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             err.code = Error::Parse;
             err.path = r.uuid.ToString();
             err.detail = "entity " + r.uuid.ToString() + " " +
-                         std::string(key) + " otherBody is a malformed UUID: " +
-                         text;
+                         std::string(key) +
+                         ".otherBody is a malformed UUID: " + text;
             return false;
         }
         return true;
@@ -1722,10 +1750,10 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         if (!s.contains(key))
             return true;
         const auto& v = s[key];
+        const std::string wirePre = std::string(block) + "." + key;
         if (!v.is_object())
         {
-            failPhysics(block, std::string(key) +
-                        " asset reference must be an object");
+            failPhysics(wirePre, "asset reference must be an object");
             return false;
         }
         // Strict nested-field validation BEFORE the shared decoder runs.
@@ -1734,14 +1762,14 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         // malformed value (e.g. "path":123) and load a default reference.
         // Every supported nested field is type-checked here, so the decoder
         // below provably cannot throw on physics input and every failure
-        // carries the complete block/wire/key path.
-        const std::string wire = std::string(block) + "." + key;
+        // carries the complete dotted wire path.
+        const std::string& wire = wirePre;
         auto checkNestedString = [&](const char* field) {
             if (!v.contains(field))
                 return true;
             if (!v[field].is_string())
             {
-                failPhysics(block, wire + "." + field + " must be a string");
+                failPhysics(wire + "." + field, "must be a string");
                 return false;
             }
             return true;
@@ -1754,8 +1782,7 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             const auto& settings = v["importSettings"];
             if (!settings.is_object())
             {
-                failPhysics(block, wire +
-                            " importSettings must be an object");
+                failPhysics(wire + ".importSettings", "must be an object");
                 return false;
             }
             for (const char* flag :
@@ -1764,8 +1791,8 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             {
                 if (settings.contains(flag) && !settings[flag].is_boolean())
                 {
-                    failPhysics(block, wire + " importSettings." +
-                                flag + " must be a boolean");
+                    failPhysics(wire + ".importSettings." + flag,
+                                "must be a boolean");
                     return false;
                 }
             }
@@ -1785,8 +1812,8 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         }
         if (!decoded.path.empty() && decoded.kind != AssetKind::Model)
         {
-            failPhysics(block, std::string(key) +
-                        " must be a model asset reference");
+            failPhysics(wire + ".kind",
+                        "must be a model asset reference");
             return false;
         }
         out = std::move(decoded);
@@ -1803,13 +1830,13 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         {
             if (!(*b)["kind"].is_string())
             {
-                failPhysics("physicsBody", "kind must be a string");
+                failPhysics("physicsBody.kind", "must be a string");
                 return r;
             }
             PhysicsBodyKind kind = PhysicsBodyKind::Static;
             if (!PhysicsBodyKindFromName((*b)["kind"].get<std::string>(), kind))
             {
-                failPhysics("physicsBody", "unknown kind: " +
+                failPhysics("physicsBody.kind", "unknown kind: " +
                             (*b)["kind"].get<std::string>());
                 return r;
             }
@@ -1850,14 +1877,14 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         {
             if (!(*s)["shape"].is_string())
             {
-                failPhysics("physicsShape", "shape must be a string");
+                failPhysics("physicsShape.shape", "must be a string");
                 return r;
             }
             PhysicsShapeKind shape = PhysicsShapeKind::Sphere;
             if (!PhysicsShapeKindFromName((*s)["shape"].get<std::string>(),
                                           shape))
             {
-                failPhysics("physicsShape", "unknown shape: " +
+                failPhysics("physicsShape.shape", "unknown shape: " +
                             (*s)["shape"].get<std::string>());
                 return r;
             }

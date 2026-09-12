@@ -1010,47 +1010,47 @@ TEST_CASE("T2 malformed v8 physics blocks fail loudly with entity identity")
     // so malformed physics can neither silently default nor escape Load as
     // a JSON exception. One case per defect class per component.
     ExpectPhysicsParseFail("body-string", R"("physicsBody": "bad")",
-                           "physicsBody");
+                           "physicsBody block");
     ExpectPhysicsParseFail("body-scalar-type",
                            R"("physicsBody": {"mass": "heavy"})",
-                           "physicsBody");
+                           "physicsBody.mass");
     ExpectPhysicsParseFail("body-bool-type",
                            R"("physicsBody": {"ccdEnabled": "yes"})",
-                           "physicsBody");
+                           "physicsBody.ccdEnabled");
     ExpectPhysicsParseFail("body-layer-range",
                            R"("physicsBody": {"layer": 70000})",
-                           "physicsBody");
+                           "physicsBody.layer");
     ExpectPhysicsParseFail("body-mask-negative",
                            R"("physicsBody": {"mask": -1})",
-                           "physicsBody");
+                           "physicsBody.mask");
     ExpectPhysicsParseFail("body-kind-unknown",
                            R"("physicsBody": {"kind": "ethereal"})",
-                           "physicsBody");
+                           "physicsBody.kind");
     ExpectPhysicsParseFail("shape-array", R"("physicsShape": [1, 2])",
-                           "physicsShape");
+                           "physicsShape block");
     ExpectPhysicsParseFail("shape-short-vector",
                            R"("physicsShape": {"halfExtents": [1, 2]})",
-                           "physicsShape");
+                           "physicsShape.halfExtents");
     ExpectPhysicsParseFail("shape-nonnumeric-vector",
                            R"("physicsShape": {"halfExtents": [1, "x", 3]})",
-                           "physicsShape");
+                           "physicsShape.halfExtents");
     ExpectPhysicsParseFail("shape-hull-string",
                            R"("physicsShape": {"hull": "nope"})",
-                           "physicsShape");
+                           "physicsShape.hull asset reference");
     ExpectPhysicsParseFail("hinge-drivemode-range",
                            R"("physicsHinge": {"driveMode": 300})",
-                           "physicsHinge");
+                           "physicsHinge.driveMode");
     ExpectPhysicsParseFail("hinge-long-vector",
                            R"("physicsHinge": {"ownerPivot": [0, 0, 0, 1]})",
-                           "physicsHinge");
+                           "physicsHinge.ownerPivot");
     ExpectPhysicsParseFail("hinge-other-malformed",
                            R"("physicsHinge": {"otherBody": "not-a-uuid"})",
-                           "physicsHinge");
+                           "physicsHinge.otherBody");
     ExpectPhysicsParseFail("slider-number", R"("physicsSlider": 42)",
-                           "physicsSlider");
+                           "physicsSlider block");
     ExpectPhysicsParseFail("slider-nonnumeric-axis",
                            R"("physicsSlider": {"axis": [1, "y", 0]})",
-                           "physicsSlider");
+                           "physicsSlider.axis");
 }
 
 TEST_CASE("T2 nested asset fields and float overflow fail loudly with wire path")
@@ -1074,16 +1074,25 @@ TEST_CASE("T2 nested asset fields and float overflow fail loudly with wire path"
                            "physicsShape.hull.assetId");
     ExpectPhysicsParseFail("shape-importsettings-flag",
                            R"("physicsShape": {"hull": {"kind": "model", "path": "colliders/hull.obj", "importSettings": {"triangulate": "yes"}}})",
-                           "physicsShape.hull");
+                           "physicsShape.hull.importSettings.triangulate");
     ExpectPhysicsParseFail("shape-unknown-kind",
                            R"("physicsShape": {"hull": {"kind": "unknown", "path": "colliders/orphan.obj"}})",
-                           "physicsShape.hull");
+                           "physicsShape.hull unknown asset kind");
+    ExpectPhysicsParseFail("shape-nonmodel-kind",
+                           R"("physicsShape": {"hull": {"kind": "script", "path": "scripts/x.lua", "sourceKey": "lua:asset=scripts/x.lua"}})",
+                           "physicsShape.hull.kind");
     ExpectPhysicsParseFail("body-mass-overflow",
                            R"("physicsBody": {"mass": 1e39})",
-                           "physicsBody");
+                           "physicsBody.mass");
+    ExpectPhysicsParseFail("body-mass-negative-overflow",
+                           R"("physicsBody": {"mass": -1e39})",
+                           "physicsBody.mass");
     ExpectPhysicsParseFail("hinge-pivot-overflow",
                            R"("physicsHinge": {"ownerPivot": [1e39, 0, 0]})",
-                           "physicsHinge");
+                           "physicsHinge.ownerPivot");
+    ExpectPhysicsParseFail("slider-axis-negative-overflow",
+                           R"("physicsSlider": {"axis": [-1e39, 0, 0]})",
+                           "physicsSlider.axis");
 }
 
 TEST_CASE("T2 both persisted collision refs are visited unconditionally")
