@@ -47,20 +47,21 @@ std::vector<Slot> Collect(Document& document)
         if (auto* script =
                 document.ecs.registry.template try_get<ScriptComponent>(entity))
             result.push_back(Slot{&script->asset, id, name});
-        // T2 physics persistence foundation: the ACTIVE collision-geometry
-        // reference of a physics shape (hull for ConvexHull, triMesh for
-        // StaticTriMesh) so save/migration/watch policy sees physics refs.
-        // Only the active side is visited: a stale inactive ref stays
-        // exact-value payload until its shape kind is re-authored.
+        // T2 physics persistence foundation: BOTH stored collision-geometry
+        // references of a physics shape, unconditionally — matching
+        // imported/script/prefab reference behavior. Both fields are exact
+        // authored payload and both are serialized, so save validation
+        // (which rejects a non-empty path with an unknown kind),
+        // migration (assign/rebase/validate), and content-browser
+        // dependency protection must see them even when inactive, empty,
+        // or invalid. Filtering here would let Save succeed on a v8 file
+        // that Load refuses, and would hide a stale reference until a
+        // later shape-kind switch reveals it.
         if (auto* shape =
                 document.ecs.registry.template try_get<PhysicsShapeComponent>(entity))
         {
-            if (shape->shape == PhysicsShapeKind::ConvexHull &&
-                shape->hull.IsValid())
-                result.push_back(Slot{&shape->hull, id, name});
-            if (shape->shape == PhysicsShapeKind::StaticTriMesh &&
-                shape->triMesh.IsValid())
-                result.push_back(Slot{&shape->triMesh, id, name});
+            result.push_back(Slot{&shape->hull, id, name});
+            result.push_back(Slot{&shape->triMesh, id, name});
         }
         if (auto* instance =
                 document.ecs.registry.template try_get<PrefabInstanceComponent>(entity))

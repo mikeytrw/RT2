@@ -1538,107 +1538,123 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         }
     }
 
-    // T2 physics persistence foundation (scene schema v8). All four blocks
-    // are optional: v3-v7 input carries none of them and migrates to "no
-    // body". Present-but-malformed physics is a loud transactional failure
-    // (err.path names the entity UUID), never a silent default: a half-read
-    // constraint that silently drops its otherBody would connect across
-    // instances at Play.
-    if (j.contains("physicsBody"))
-    {
-        r.hasPhysicsBody = true;
-        const auto& b = j["physicsBody"];
-        if (b.contains("kind"))
-        {
-            if (!b["kind"].is_string())
-            {
-                err.code = Error::Parse;
-                err.path = r.uuid.ToString();
-                err.detail = "physicsBody kind must be a string";
-                return r;
-            }
-            PhysicsBodyKind kind = PhysicsBodyKind::Static;
-            if (!PhysicsBodyKindFromName(b["kind"].get<std::string>(), kind))
-            {
-                err.code = Error::Parse;
-                err.path = r.uuid.ToString();
-                err.detail = "unknown physicsBody kind: " +
-                             b["kind"].get<std::string>();
-                return r;
-            }
-            r.physicsBody.kind = kind;
-        }
-        if (b.contains("mass"))               r.physicsBody.mass = b["mass"].get<float>();
-        if (b.contains("friction"))           r.physicsBody.friction = b["friction"].get<float>();
-        if (b.contains("restitution"))        r.physicsBody.restitution = b["restitution"].get<float>();
-        if (b.contains("linearDamping"))      r.physicsBody.linearDamping = b["linearDamping"].get<float>();
-        if (b.contains("angularDamping"))     r.physicsBody.angularDamping = b["angularDamping"].get<float>();
-        if (b.contains("ccdEnabled"))         r.physicsBody.ccdEnabled = b["ccdEnabled"].get<bool>();
-        if (b.contains("ccdMotionThreshold")) r.physicsBody.ccdMotionThreshold = b["ccdMotionThreshold"].get<float>();
-        if (b.contains("ccdSweptRadius"))     r.physicsBody.ccdSweptRadius = b["ccdSweptRadius"].get<float>();
-        if (b.contains("startAsleep"))        r.physicsBody.startAsleep = b["startAsleep"].get<bool>();
-        if (b.contains("layer"))              r.physicsBody.layer = b["layer"].get<uint16_t>();
-        if (b.contains("mask"))               r.physicsBody.mask = b["mask"].get<uint16_t>();
-    }
+    // T2 physics persistence foundation (scene schema v8, strict form per
+    // fixup P1.1). All four blocks are optional: v3-v7 input carries none of
+    // them and migrates to "no body". A PRESENT block must be an object, and
+    // every scalar/enum/vector/asset field inside it is type- and
+    // range-checked before conversion. Present-but-malformed physics is a
+    // loud transactional Error::Parse naming the entity UUID — never a
+    // silent default (a half-read constraint that silently drops its
+    // otherBody would connect across instances at Play), and never a JSON
+    // exception escaping the bool+Error transaction (additionally contained
+    // by the per-record try/catch in Load below).
+    // The entity UUID goes in BOTH path and detail: Load overwrites path
+    // with the file path on record failure, so detail is the durable
+    // carrier of the offending entity identity.
+    auto failPhysics = [&](const char* block, const std::string& detail) {
+        err.code = Error::Parse;
+        err.path = r.uuid.ToString();
+        err.detail = "entity " + r.uuid.ToString() + " " +
+                     std::string(block) + " " + detail;
+    };
 
-    if (j.contains("physicsShape"))
-    {
-        r.hasPhysicsShape = true;
-        const auto& s = j["physicsShape"];
-        if (s.contains("shape"))
+    // Strict field readers. Absent key = keep the default (true); present
+    // key must satisfy the type/range contract (false + err set).
+    auto checkFloat = [&](const json& o, const char* block, const char* key,
+                          float& out) {
+        if (!o.contains(key))
+            return true;
+        const auto& v = o[key];
+        if (!v.is_number())
         {
-            if (!s["shape"].is_string())
-            {
-                err.code = Error::Parse;
-                err.path = r.uuid.ToString();
-                err.detail = "physicsShape shape must be a string";
-                return r;
-            }
-            PhysicsShapeKind shape = PhysicsShapeKind::Sphere;
-            if (!PhysicsShapeKindFromName(s["shape"].get<std::string>(), shape))
-            {
-                err.code = Error::Parse;
-                err.path = r.uuid.ToString();
-                err.detail = "unknown physicsShape shape: " +
-                             s["shape"].get<std::string>();
-                return r;
-            }
-            r.physicsShape.shape = shape;
+            failPhysics(block, std::string(key) + " must be a number");
+            return false;
         }
-        if (s.contains("radius"))      r.physicsShape.radius = s["radius"].get<float>();
-        if (s.contains("halfExtents")) r.physicsShape.halfExtents = JsonToVec3(s["halfExtents"]);
-        if (s.contains("isTrigger"))   r.physicsShape.isTrigger = s["isTrigger"].get<bool>();
-        if (s.contains("margin"))      r.physicsShape.collisionMargin = s["margin"].get<float>();
-        // Durable collision-geometry references through the shared asset
-        // codec. A non-empty path with a non-model kind is a loud failure
-        // (the T4 decoder only serves model subresources); an empty path is
-        // "no reference" regardless of the kind tag.
-        for (int side = 0; side < 2; ++side)
+        const double d = v.get<double>();
+        if (!std::isfinite(d))
         {
-            const char* key = (side == 0) ? "hull" : "triMesh";
-            if (!s.contains(key))
-                continue;
-            Error assetError;
-            AssetReference decoded = JsonToAssetReference(
-                s[key], schemaVersion, report, r.uuid, r.name, assetError);
-            if (!assetError.IsOk())
-            {
-                err = assetError;
-                err.path = r.uuid.ToString();
-                return r;
-            }
-            if (!decoded.path.empty() && decoded.kind != AssetKind::Model)
-            {
-                err.code = Error::Parse;
-                err.path = r.uuid.ToString();
-                err.detail = std::string("physicsShape ") + key +
-                             " must be a model asset reference";
-                return r;
-            }
-            if (side == 0) r.physicsShape.hull = std::move(decoded);
-            else           r.physicsShape.triMesh = std::move(decoded);
+            failPhysics(block, std::string(key) + " must be finite");
+            return false;
         }
-    }
+        out = static_cast<float>(d);
+        return true;
+    };
+
+    auto checkBool = [&](const json& o, const char* block, const char* key,
+                         bool& out) {
+        if (!o.contains(key))
+            return true;
+        const auto& v = o[key];
+        if (!v.is_boolean())
+        {
+            failPhysics(block, std::string(key) + " must be a boolean");
+            return false;
+        }
+        out = v.get<bool>();
+        return true;
+    };
+
+    auto checkUint = [&](const json& o, const char* block, const char* key,
+                         uint64_t max, uint64_t& out) {
+        if (!o.contains(key))
+            return true;
+        const auto& v = o[key];
+        if (!v.is_number_unsigned())
+        {
+            failPhysics(block, std::string(key) +
+                        " must be an unsigned integer");
+            return false;
+        }
+        const uint64_t u = v.get<uint64_t>();
+        if (u > max)
+        {
+            failPhysics(block, std::string(key) + " is out of range (max " +
+                        std::to_string(max) + ")");
+            return false;
+        }
+        out = u;
+        return true;
+    };
+
+    auto checkVec3 = [&](const json& o, const char* block, const char* key,
+                         glm::vec3& out) {
+        if (!o.contains(key))
+            return true;
+        const auto& v = o[key];
+        if (!v.is_array() || v.size() != 3)
+        {
+            failPhysics(block, std::string(key) +
+                        " must be an array of exactly 3 numbers");
+            return false;
+        }
+        for (const auto& c : v)
+        {
+            if (!c.is_number() || !std::isfinite(c.get<double>()))
+            {
+                failPhysics(block, std::string(key) +
+                            " must be an array of exactly 3 numbers");
+                return false;
+            }
+        }
+        out = {v[0].get<float>(), v[1].get<float>(), v[2].get<float>()};
+        return true;
+    };
+
+    auto checkBlockObject = [&](const char* key, const json*& out) {
+        if (!j.contains(key))
+        {
+            out = nullptr;
+            return true;
+        }
+        const auto& v = j[key];
+        if (!v.is_object())
+        {
+            failPhysics(key, "block must be an object");
+            return false;
+        }
+        out = &v;
+        return true;
+    };
 
     // Constraint identity: otherBody is "" (world anchor) or a canonical
     // UUID string. A malformed non-empty value is a loud failure — a
@@ -1654,7 +1670,8 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         {
             err.code = Error::Parse;
             err.path = r.uuid.ToString();
-            err.detail = std::string(key) + " otherBody must be a string";
+            err.detail = "entity " + r.uuid.ToString() + " " +
+                         std::string(key) + " otherBody must be a string";
             return false;
         }
         const auto& text = c["otherBody"].get<std::string>();
@@ -1668,45 +1685,213 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         {
             err.code = Error::Parse;
             err.path = r.uuid.ToString();
-            err.detail = std::string(key) + " otherBody is a malformed UUID: " +
+            err.detail = "entity " + r.uuid.ToString() + " " +
+                         std::string(key) + " otherBody is a malformed UUID: " +
                          text;
             return false;
         }
         return true;
     };
 
-    if (j.contains("physicsHinge"))
+    // Durable collision-geometry reference through the shared asset codec,
+    // with the asset block itself strictly validated first. A non-empty path
+    // with a non-model kind is a loud failure (the T4 decoder only serves
+    // model subresources); an empty path is "no reference" regardless of the
+    // kind tag. Known importSettings keys must be booleans when present.
+    auto parseCollisionRef = [&](const json& s, const char* block,
+                                 const char* key, AssetReference& out) {
+        if (!s.contains(key))
+            return true;
+        const auto& v = s[key];
+        if (!v.is_object())
+        {
+            failPhysics(block, std::string(key) +
+                        " asset reference must be an object");
+            return false;
+        }
+        if (v.contains("importSettings"))
+        {
+            const auto& settings = v["importSettings"];
+            if (!settings.is_object())
+            {
+                failPhysics(block, std::string(key) +
+                            " importSettings must be an object");
+                return false;
+            }
+            for (const char* flag :
+                 {"triangulate", "generateNormals", "mergeMegaMesh",
+                  "assumeDielectricWithoutMetalRough"})
+            {
+                if (settings.contains(flag) && !settings[flag].is_boolean())
+                {
+                    failPhysics(block, std::string(key) + " importSettings." +
+                                flag + " must be a boolean");
+                    return false;
+                }
+            }
+        }
+        Error assetError;
+        AssetReference decoded = JsonToAssetReference(
+            v, schemaVersion, report, r.uuid, r.name, assetError);
+        if (!assetError.IsOk())
+        {
+            err = assetError;
+            err.path = r.uuid.ToString();
+            err.detail = "entity " + r.uuid.ToString() + " " + err.detail;
+            return false;
+        }
+        if (!decoded.path.empty() && decoded.kind != AssetKind::Model)
+        {
+            failPhysics(block, std::string(key) +
+                        " must be a model asset reference");
+            return false;
+        }
+        out = std::move(decoded);
+        return true;
+    };
+
+    const json* b = nullptr;
+    if (!checkBlockObject("physicsBody", b))
+        return r;
+    if (b != nullptr)
     {
-        r.hasPhysicsHinge = true;
-        const auto& h = j["physicsHinge"];
-        if (!parseConstraintOther(h, "physicsHinge", r.physicsHinge.otherBody))
+        r.hasPhysicsBody = true;
+        if (b->contains("kind"))
+        {
+            if (!(*b)["kind"].is_string())
+            {
+                failPhysics("physicsBody", "kind must be a string");
+                return r;
+            }
+            PhysicsBodyKind kind = PhysicsBodyKind::Static;
+            if (!PhysicsBodyKindFromName((*b)["kind"].get<std::string>(), kind))
+            {
+                failPhysics("physicsBody", "unknown kind: " +
+                            (*b)["kind"].get<std::string>());
+                return r;
+            }
+            r.physicsBody.kind = kind;
+        }
+        uint64_t layer = r.physicsBody.layer;
+        uint64_t mask = r.physicsBody.mask;
+        if (!checkFloat(*b, "physicsBody", "mass", r.physicsBody.mass) ||
+            !checkFloat(*b, "physicsBody", "friction", r.physicsBody.friction) ||
+            !checkFloat(*b, "physicsBody", "restitution",
+                        r.physicsBody.restitution) ||
+            !checkFloat(*b, "physicsBody", "linearDamping",
+                        r.physicsBody.linearDamping) ||
+            !checkFloat(*b, "physicsBody", "angularDamping",
+                        r.physicsBody.angularDamping) ||
+            !checkBool(*b, "physicsBody", "ccdEnabled",
+                       r.physicsBody.ccdEnabled) ||
+            !checkFloat(*b, "physicsBody", "ccdMotionThreshold",
+                        r.physicsBody.ccdMotionThreshold) ||
+            !checkFloat(*b, "physicsBody", "ccdSweptRadius",
+                        r.physicsBody.ccdSweptRadius) ||
+            !checkBool(*b, "physicsBody", "startAsleep",
+                       r.physicsBody.startAsleep) ||
+            !checkUint(*b, "physicsBody", "layer", 0xFFFFu, layer) ||
+            !checkUint(*b, "physicsBody", "mask", 0xFFFFu, mask))
             return r;
-        if (h.contains("ownerPivot"))          r.physicsHinge.ownerPivot = JsonToVec3(h["ownerPivot"]);
-        if (h.contains("ownerAxis"))           r.physicsHinge.ownerAxis = JsonToVec3(h["ownerAxis"]);
-        if (h.contains("otherPivot"))          r.physicsHinge.otherPivot = JsonToVec3(h["otherPivot"]);
-        if (h.contains("otherAxis"))           r.physicsHinge.otherAxis = JsonToVec3(h["otherAxis"]);
-        if (h.contains("minAngle"))            r.physicsHinge.minAngleLimit = h["minAngle"].get<float>();
-        if (h.contains("maxAngle"))            r.physicsHinge.maxAngleLimit = h["maxAngle"].get<float>();
-        if (h.contains("driveMode"))           r.physicsHinge.driveMode = h["driveMode"].get<uint8_t>();
-        if (h.contains("motorTargetVelocity")) r.physicsHinge.motorTargetVelocity = h["motorTargetVelocity"].get<float>();
-        if (h.contains("motorMaxImpulse"))     r.physicsHinge.motorMaxImpulse = h["motorMaxImpulse"].get<float>();
-        if (h.contains("motorEnabled"))        r.physicsHinge.motorEnabled = h["motorEnabled"].get<bool>();
-        if (h.contains("restAngle"))           r.physicsHinge.restAngle = h["restAngle"].get<float>();
+        r.physicsBody.layer = static_cast<uint16_t>(layer);
+        r.physicsBody.mask = static_cast<uint16_t>(mask);
     }
 
-    if (j.contains("physicsSlider"))
+    const json* s = nullptr;
+    if (!checkBlockObject("physicsShape", s))
+        return r;
+    if (s != nullptr)
+    {
+        r.hasPhysicsShape = true;
+        if (s->contains("shape"))
+        {
+            if (!(*s)["shape"].is_string())
+            {
+                failPhysics("physicsShape", "shape must be a string");
+                return r;
+            }
+            PhysicsShapeKind shape = PhysicsShapeKind::Sphere;
+            if (!PhysicsShapeKindFromName((*s)["shape"].get<std::string>(),
+                                          shape))
+            {
+                failPhysics("physicsShape", "unknown shape: " +
+                            (*s)["shape"].get<std::string>());
+                return r;
+            }
+            r.physicsShape.shape = shape;
+        }
+        if (!checkFloat(*s, "physicsShape", "radius", r.physicsShape.radius) ||
+            !checkVec3(*s, "physicsShape", "halfExtents",
+                       r.physicsShape.halfExtents) ||
+            !checkBool(*s, "physicsShape", "isTrigger",
+                       r.physicsShape.isTrigger) ||
+            !checkFloat(*s, "physicsShape", "margin",
+                        r.physicsShape.collisionMargin) ||
+            !parseCollisionRef(*s, "physicsShape", "hull",
+                               r.physicsShape.hull) ||
+            !parseCollisionRef(*s, "physicsShape", "triMesh",
+                               r.physicsShape.triMesh))
+            return r;
+    }
+
+    const json* h = nullptr;
+    if (!checkBlockObject("physicsHinge", h))
+        return r;
+    if (h != nullptr)
+    {
+        r.hasPhysicsHinge = true;
+        if (!parseConstraintOther(*h, "physicsHinge",
+                                  r.physicsHinge.otherBody))
+            return r;
+        uint64_t driveMode = r.physicsHinge.driveMode;
+        if (!checkVec3(*h, "physicsHinge", "ownerPivot",
+                       r.physicsHinge.ownerPivot) ||
+            !checkVec3(*h, "physicsHinge", "ownerAxis",
+                       r.physicsHinge.ownerAxis) ||
+            !checkVec3(*h, "physicsHinge", "otherPivot",
+                       r.physicsHinge.otherPivot) ||
+            !checkVec3(*h, "physicsHinge", "otherAxis",
+                       r.physicsHinge.otherAxis) ||
+            !checkFloat(*h, "physicsHinge", "minAngle",
+                        r.physicsHinge.minAngleLimit) ||
+            !checkFloat(*h, "physicsHinge", "maxAngle",
+                        r.physicsHinge.maxAngleLimit) ||
+            !checkUint(*h, "physicsHinge", "driveMode", 0xFFu, driveMode) ||
+            !checkFloat(*h, "physicsHinge", "motorTargetVelocity",
+                        r.physicsHinge.motorTargetVelocity) ||
+            !checkFloat(*h, "physicsHinge", "motorMaxImpulse",
+                        r.physicsHinge.motorMaxImpulse) ||
+            !checkBool(*h, "physicsHinge", "motorEnabled",
+                       r.physicsHinge.motorEnabled) ||
+            !checkFloat(*h, "physicsHinge", "restAngle",
+                        r.physicsHinge.restAngle))
+            return r;
+        r.physicsHinge.driveMode = static_cast<uint8_t>(driveMode);
+    }
+
+    const json* sl = nullptr;
+    if (!checkBlockObject("physicsSlider", sl))
+        return r;
+    if (sl != nullptr)
     {
         r.hasPhysicsSlider = true;
-        const auto& s = j["physicsSlider"];
-        if (!parseConstraintOther(s, "physicsSlider", r.physicsSlider.otherBody))
+        if (!parseConstraintOther(*sl, "physicsSlider",
+                                  r.physicsSlider.otherBody))
             return r;
-        if (s.contains("axis"))                r.physicsSlider.axis = JsonToVec3(s["axis"]);
-        if (s.contains("lowerLimit"))          r.physicsSlider.lowerLimit = s["lowerLimit"].get<float>();
-        if (s.contains("upperLimit"))          r.physicsSlider.upperLimit = s["upperLimit"].get<float>();
-        if (s.contains("targetPosition"))      r.physicsSlider.targetPosition = s["targetPosition"].get<float>();
-        if (s.contains("motorTargetVelocity")) r.physicsSlider.motorTargetVelocity = s["motorTargetVelocity"].get<float>();
-        if (s.contains("motorMaxForce"))       r.physicsSlider.motorMaxForce = s["motorMaxForce"].get<float>();
-        if (s.contains("motorEnabled"))        r.physicsSlider.motorEnabled = s["motorEnabled"].get<bool>();
+        if (!checkVec3(*sl, "physicsSlider", "axis", r.physicsSlider.axis) ||
+            !checkFloat(*sl, "physicsSlider", "lowerLimit",
+                        r.physicsSlider.lowerLimit) ||
+            !checkFloat(*sl, "physicsSlider", "upperLimit",
+                        r.physicsSlider.upperLimit) ||
+            !checkFloat(*sl, "physicsSlider", "targetPosition",
+                        r.physicsSlider.targetPosition) ||
+            !checkFloat(*sl, "physicsSlider", "motorTargetVelocity",
+                        r.physicsSlider.motorTargetVelocity) ||
+            !checkFloat(*sl, "physicsSlider", "motorMaxForce",
+                        r.physicsSlider.motorMaxForce) ||
+            !checkBool(*sl, "physicsSlider", "motorEnabled",
+                       r.physicsSlider.motorEnabled))
+            return r;
     }
 
     return r;
@@ -2688,7 +2873,23 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
     {
         for (const auto& ej : root["entities"])
         {
-            EntityRecord r = JsonToEntityRecord(ej, version, err, &report);
+            // T2 fixup P1.1: contain any JSON conversion exception inside
+            // the transactional bool+Error API. A malformed value must fail
+            // this load with Error::Parse — never escape as a process-level
+            // exception past the caller that was promised a bool.
+            EntityRecord r;
+            try
+            {
+                r = JsonToEntityRecord(ej, version, err, &report);
+            }
+            catch (const std::exception& e)
+            {
+                err.code = Error::Parse;
+                err.path = path.string();
+                err.detail =
+                    std::string("entity record conversion threw: ") + e.what();
+                return false;
+            }
             if (!err.IsOk())
             {
                 err.path = path.string();

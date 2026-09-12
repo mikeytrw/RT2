@@ -44,6 +44,7 @@
 #include "core/Error.h"
 #include "json.hpp"
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -476,6 +477,11 @@ TEST_CASE("T2 GREEN_PhysicsCodecCoverage: all persisted components survive every
     }
 
     // Path 3: subtree snapshot capture, exact removal, verbatim restore.
+    // Fixup P2.1: the exact-match comparisons are proven live per physics
+    // component. Mutating any one live component after capture must make
+    // RemoveSubtreesExact fail atomically (entity retained); restoring the
+    // captured value re-arms success. Deleting any one of the four
+    // EntityMatchesRecord physics comparisons therefore turns this red.
     {
         const auto snapshot =
             f.manager.CaptureSubtreeSnapshot({covered});
@@ -484,6 +490,44 @@ TEST_CASE("T2 GREEN_PhysicsCodecCoverage: all persisted components survive every
         CHECK(snapshot.entities.front().hasPhysicsShape);
         CHECK(snapshot.entities.front().hasPhysicsHinge);
         CHECK(snapshot.entities.front().hasPhysicsSlider);
+        auto live = f.manager.FindEntityByUuid(covered);
+        REQUIRE(static_cast<uint32_t>(live) !=
+                static_cast<uint32_t>(entt::null));
+        auto& liveRegistry = f.manager.GetECS().registry;
+
+        auto mutateOne = [&](const char* which) {
+            if (std::strcmp(which, "body") == 0)
+                liveRegistry.get<PhysicsBodyComponent>(live).mass += 1.0f;
+            else if (std::strcmp(which, "shape") == 0)
+                liveRegistry.get<PhysicsShapeComponent>(live).radius += 1.0f;
+            else if (std::strcmp(which, "hinge") == 0)
+                liveRegistry.get<PhysicsHingeComponent>(live).restAngle += 1.0f;
+            else
+                liveRegistry.get<PhysicsSliderComponent>(live).upperLimit +=
+                    1.0f;
+        };
+        auto restoreOne = [&](const char* which) {
+            const auto& recorded = snapshot.entities.front();
+            if (std::strcmp(which, "body") == 0)
+                liveRegistry.emplace_or_replace<PhysicsBodyComponent>(
+                    live, recorded.physicsBody);
+            else if (std::strcmp(which, "shape") == 0)
+                liveRegistry.emplace_or_replace<PhysicsShapeComponent>(
+                    live, recorded.physicsShape);
+            else if (std::strcmp(which, "hinge") == 0)
+                liveRegistry.emplace_or_replace<PhysicsHingeComponent>(
+                    live, recorded.physicsHinge);
+            else
+                liveRegistry.emplace_or_replace<PhysicsSliderComponent>(
+                    live, recorded.physicsSlider);
+        };
+        for (const char* which : {"body", "shape", "hinge", "slider"})
+        {
+            mutateOne(which);
+            CHECK_FALSE(f.manager.RemoveSubtreesExact(snapshot).success);
+            CHECK(f.Alive(covered));
+            restoreOne(which);
+        }
         REQUIRE(f.manager.RemoveSubtreesExact(snapshot).success);
         CHECK_FALSE(f.Alive(covered));
         REQUIRE(f.manager.RestoreSubtrees(snapshot).success);
@@ -906,8 +950,118 @@ TEST_CASE("T2 scene load rejects a prefab override naming a physics wire")
     std::filesystem::remove_all(dir);
 }
 
-TEST_CASE("T2 collision geometry refs are visited; inactive sides are not")
+namespace
 {
+
+// Minimal v8 entity carrying one raw physics fragment. The fragment is
+// spliced verbatim so malformed JSON shapes reach the codec exactly as a
+// hostile/hand-edited file would carry them.
+std::string MalformedPhysicsDoc(const std::string& uuid,
+                                const std::string& physicsFragment)
+{
+    return std::string(R"({
+  "version": 8,
+  "metadata": {"name": "malformed-physics"},
+  "entities": [{
+    "uuid": ")") + uuid + R"(",
+    "name": "Suspicious",
+    "parent": "",
+    "visible": true,
+    "transform": {"translation": [0,0,0], "rotation": [0,0,0,1],
+                  "scale": [1,1,1]},
+    )" + physicsFragment + R"(
+  }],
+  "materials": [], "textures": [],
+  "camera": {"position": [0,0,0], "forward": [0,0,-1], "fov": 45},
+  "envMap": {"kind": "unknown", "path": "", "sourceKey": ""}
+})";
+}
+
+void ExpectPhysicsParseFail(const std::string& tag,
+                            const std::string& physicsFragment,
+                            const std::string& componentWire)
+{
+    const std::string uuid = "11111111-1111-4111-8111-111111111111";
+    const auto dir = UniqueTempDir("t2_malformed_" + tag);
+    const auto path = dir / "malformed.rt2scene";
+    WriteFileBinary(path, MalformedPhysicsDoc(uuid, physicsFragment));
+    SceneDocument loaded;
+    Error err;
+    CHECK_FALSE_MESSAGE(SceneSerializer::Load(loaded, path, err),
+                        "fragment " << tag << " loaded but must be rejected");
+    CHECK(err.code == Error::Parse);
+    // The entity UUID survives in the diagnostic even though Load reports
+    // the file path in err.path.
+    CHECK_MESSAGE(err.detail.find(uuid) != std::string::npos,
+                  "fragment " << tag << " diagnostic names no entity: "
+                              << err.detail);
+    CHECK_MESSAGE(err.detail.find(componentWire) != std::string::npos,
+                  "fragment " << tag << " diagnostic names no block: "
+                              << err.detail);
+    std::filesystem::remove_all(dir);
+}
+
+} // namespace
+
+TEST_CASE("T2 malformed v8 physics blocks fail loudly with entity identity")
+{
+    // Fixup P1.1: every present block must be an object; every scalar, enum,
+    // vector, and asset field is type- and range-checked before conversion,
+    // so malformed physics can neither silently default nor escape Load as
+    // a JSON exception. One case per defect class per component.
+    ExpectPhysicsParseFail("body-string", R"("physicsBody": "bad")",
+                           "physicsBody");
+    ExpectPhysicsParseFail("body-scalar-type",
+                           R"("physicsBody": {"mass": "heavy"})",
+                           "physicsBody");
+    ExpectPhysicsParseFail("body-bool-type",
+                           R"("physicsBody": {"ccdEnabled": "yes"})",
+                           "physicsBody");
+    ExpectPhysicsParseFail("body-layer-range",
+                           R"("physicsBody": {"layer": 70000})",
+                           "physicsBody");
+    ExpectPhysicsParseFail("body-mask-negative",
+                           R"("physicsBody": {"mask": -1})",
+                           "physicsBody");
+    ExpectPhysicsParseFail("body-kind-unknown",
+                           R"("physicsBody": {"kind": "ethereal"})",
+                           "physicsBody");
+    ExpectPhysicsParseFail("shape-array", R"("physicsShape": [1, 2])",
+                           "physicsShape");
+    ExpectPhysicsParseFail("shape-short-vector",
+                           R"("physicsShape": {"halfExtents": [1, 2]})",
+                           "physicsShape");
+    ExpectPhysicsParseFail("shape-nonnumeric-vector",
+                           R"("physicsShape": {"halfExtents": [1, "x", 3]})",
+                           "physicsShape");
+    ExpectPhysicsParseFail("shape-hull-string",
+                           R"("physicsShape": {"hull": "nope"})",
+                           "physicsShape");
+    ExpectPhysicsParseFail("hinge-drivemode-range",
+                           R"("physicsHinge": {"driveMode": 300})",
+                           "physicsHinge");
+    ExpectPhysicsParseFail("hinge-long-vector",
+                           R"("physicsHinge": {"ownerPivot": [0, 0, 0, 1]})",
+                           "physicsHinge");
+    ExpectPhysicsParseFail("hinge-other-malformed",
+                           R"("physicsHinge": {"otherBody": "not-a-uuid"})",
+                           "physicsHinge");
+    ExpectPhysicsParseFail("slider-number", R"("physicsSlider": 42)",
+                           "physicsSlider");
+    ExpectPhysicsParseFail("slider-nonnumeric-axis",
+                           R"("physicsSlider": {"axis": [1, "y", 0]})",
+                           "physicsSlider");
+}
+
+TEST_CASE("T2 both persisted collision refs are visited unconditionally")
+{
+    // Fixup P1.2: the visitor emits BOTH stored AssetReferences of every
+    // physics shape — active or inactive, valid or empty — matching
+    // imported/script/prefab reference behavior. Both fields are exact
+    // authored payload and both are serialized, so save validation,
+    // migration, and dependency protection must see them. A malformed
+    // stored ref (non-empty path, unknown kind) is therefore caught by the
+    // save gate instead of sailing into a v8 file that Load refuses.
     PhysicsFixture f;
     const auto hullEntity = f.CreateEmpty("Hull");
     const auto rampEntity = f.CreateEmpty("Ramp");
@@ -918,7 +1072,7 @@ TEST_CASE("T2 collision geometry refs are visited; inactive sides are not")
     hullShape.hull.kind = AssetKind::Model;
     hullShape.hull.path = "colliders/hull.obj";
     hullShape.hull.sourceKey = "obj:whole-model";
-    // Stale inactive side: must NOT be visited while the shape is a hull.
+    // Inactive side is still visited (stale refs stay protected).
     hullShape.triMesh.kind = AssetKind::Model;
     hullShape.triMesh.path = "colliders/stale.obj";
     hullShape.triMesh.sourceKey = "obj:whole-model";
@@ -931,7 +1085,7 @@ TEST_CASE("T2 collision geometry refs are visited; inactive sides are not")
     rampShape.triMesh.sourceKey = "obj:whole-model";
     registry.emplace_or_replace<PhysicsShapeComponent>(
         f.Handle(rampEntity), rampShape);
-    // Sphere with an (inactive) hull path set: not visited either.
+    // Sphere with an inactive hull path set: also visited.
     PhysicsShapeComponent sphereShape;
     sphereShape.hull.kind = AssetKind::Model;
     sphereShape.hull.path = "colliders/unused.obj";
@@ -943,14 +1097,54 @@ TEST_CASE("T2 collision geometry refs are visited; inactive sides are not")
         CollectSceneAssetReferences(f.manager.AuthoringDoc());
     bool sawHull = false;
     bool sawRamp = false;
+    bool sawStale = false;
+    bool sawUnused = false;
+    std::size_t physicsSlots = 0;
     for (const auto& slot : slots)
     {
         REQUIRE(slot.reference);
         if (slot.reference->path == "colliders/hull.obj") sawHull = true;
         if (slot.reference->path == "colliders/ramp.obj") sawRamp = true;
-        CHECK(slot.reference->path != "colliders/stale.obj");
-        CHECK(slot.reference->path != "colliders/unused.obj");
+        if (slot.reference->path == "colliders/stale.obj") sawStale = true;
+        if (slot.reference->path == "colliders/unused.obj") sawUnused = true;
     }
     CHECK(sawHull);
     CHECK(sawRamp);
+    CHECK(sawStale);
+    CHECK(sawUnused);
+    // Exactly two slots per physics shape (3 shapes x 2 refs), including
+    // the empty default refs.
+    for (const auto& slot : slots)
+    {
+        if (slot.entityUuid == hullEntity || slot.entityUuid == rampEntity ||
+            slot.entityUuid == plainEntity)
+            ++physicsSlots;
+    }
+    CHECK(physicsSlots == 6);
+}
+
+TEST_CASE("T2 save rejects a physics ref with a path but no asset kind")
+{
+    // Fixup P1.2 companion: the unconditional visitor feeds SaveInternal's
+    // existing unknown-kind gate, so a malformed stored physics ref fails
+    // the save loudly instead of producing a v8 file Load would refuse.
+    PhysicsFixture f;
+    const auto bad = f.CreateEmpty("Bad");
+    PhysicsShapeComponent shape;
+    shape.shape = PhysicsShapeKind::ConvexHull;
+    shape.hull.kind = AssetKind::Unknown;
+    shape.hull.path = "colliders/orphan.obj";
+    shape.hull.sourceKey = "obj:whole-model";
+    f.manager.GetECS().registry.emplace_or_replace<PhysicsShapeComponent>(
+        f.Handle(bad), shape);
+
+    const auto dir = UniqueTempDir("t2_save_reject_physics_ref");
+    const auto path = dir / "bad.rt2scene";
+    Error err;
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(
+        SceneSerializer::Save(f.manager.AuthoringDoc(), path, diagnostics,
+                              err));
+    CHECK(err.code == Error::InvalidArgument);
+    std::filesystem::remove_all(dir);
 }
