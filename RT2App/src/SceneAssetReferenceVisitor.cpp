@@ -47,6 +47,21 @@ std::vector<Slot> Collect(Document& document)
         if (auto* script =
                 document.ecs.registry.template try_get<ScriptComponent>(entity))
             result.push_back(Slot{&script->asset, id, name});
+        // T2 physics persistence foundation: the ACTIVE collision-geometry
+        // reference of a physics shape (hull for ConvexHull, triMesh for
+        // StaticTriMesh) so save/migration/watch policy sees physics refs.
+        // Only the active side is visited: a stale inactive ref stays
+        // exact-value payload until its shape kind is re-authored.
+        if (auto* shape =
+                document.ecs.registry.template try_get<PhysicsShapeComponent>(entity))
+        {
+            if (shape->shape == PhysicsShapeKind::ConvexHull &&
+                shape->hull.IsValid())
+                result.push_back(Slot{&shape->hull, id, name});
+            if (shape->shape == PhysicsShapeKind::StaticTriMesh &&
+                shape->triMesh.IsValid())
+                result.push_back(Slot{&shape->triMesh, id, name});
+        }
         if (auto* instance =
                 document.ecs.registry.template try_get<PrefabInstanceComponent>(entity))
             result.push_back(Slot{&instance->prefab, id, name});

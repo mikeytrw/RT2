@@ -164,6 +164,72 @@ inline bool PrefabCanonicalComponentEqual(const ScriptComponent& a,
 { return PrefabCanonicalAssetReferenceEqual(a.asset, b.asset) &&
          PrefabCanonicalScriptFieldsEqual(a.fieldValues, b.fieldValues); }
 
+// T2 physics persistence foundation: exact-value canonical equality over
+// durable authored fields only. Physics components carry no transient state
+// (no Bullet handles, no mesh-registry indices), so == is the canonical
+// comparison, spelled field-by-field here so a future transient field cannot
+// silently enter the comparison.
+inline bool PrefabCanonicalComponentEqual(const PhysicsBodyComponent& a,
+                                          const PhysicsBodyComponent& b) noexcept
+{
+    return a.kind == b.kind &&
+           PrefabCanonicalFloatEqual(a.mass, b.mass) &&
+           PrefabCanonicalFloatEqual(a.friction, b.friction) &&
+           PrefabCanonicalFloatEqual(a.restitution, b.restitution) &&
+           PrefabCanonicalFloatEqual(a.linearDamping, b.linearDamping) &&
+           PrefabCanonicalFloatEqual(a.angularDamping, b.angularDamping) &&
+           a.ccdEnabled == b.ccdEnabled &&
+           PrefabCanonicalFloatEqual(a.ccdMotionThreshold,
+                                     b.ccdMotionThreshold) &&
+           PrefabCanonicalFloatEqual(a.ccdSweptRadius, b.ccdSweptRadius) &&
+           a.startAsleep == b.startAsleep && a.layer == b.layer &&
+           a.mask == b.mask;
+}
+
+inline bool PrefabCanonicalComponentEqual(const PhysicsShapeComponent& a,
+                                          const PhysicsShapeComponent& b) noexcept
+{
+    return a.shape == b.shape &&
+           PrefabCanonicalFloatEqual(a.radius, b.radius) &&
+           PrefabCanonicalVec3Equal(a.halfExtents, b.halfExtents) &&
+           PrefabCanonicalAssetReferenceEqual(a.hull, b.hull) &&
+           PrefabCanonicalAssetReferenceEqual(a.triMesh, b.triMesh) &&
+           a.isTrigger == b.isTrigger &&
+           PrefabCanonicalFloatEqual(a.collisionMargin, b.collisionMargin);
+}
+
+inline bool PrefabCanonicalComponentEqual(const PhysicsHingeComponent& a,
+                                          const PhysicsHingeComponent& b) noexcept
+{
+    return a.otherBody == b.otherBody &&
+           PrefabCanonicalVec3Equal(a.ownerPivot, b.ownerPivot) &&
+           PrefabCanonicalVec3Equal(a.ownerAxis, b.ownerAxis) &&
+           PrefabCanonicalVec3Equal(a.otherPivot, b.otherPivot) &&
+           PrefabCanonicalVec3Equal(a.otherAxis, b.otherAxis) &&
+           PrefabCanonicalFloatEqual(a.minAngleLimit, b.minAngleLimit) &&
+           PrefabCanonicalFloatEqual(a.maxAngleLimit, b.maxAngleLimit) &&
+           a.driveMode == b.driveMode &&
+           PrefabCanonicalFloatEqual(a.motorTargetVelocity,
+                                     b.motorTargetVelocity) &&
+           PrefabCanonicalFloatEqual(a.motorMaxImpulse, b.motorMaxImpulse) &&
+           a.motorEnabled == b.motorEnabled &&
+           PrefabCanonicalFloatEqual(a.restAngle, b.restAngle);
+}
+
+inline bool PrefabCanonicalComponentEqual(const PhysicsSliderComponent& a,
+                                          const PhysicsSliderComponent& b) noexcept
+{
+    return a.otherBody == b.otherBody &&
+           PrefabCanonicalVec3Equal(a.axis, b.axis) &&
+           PrefabCanonicalFloatEqual(a.lowerLimit, b.lowerLimit) &&
+           PrefabCanonicalFloatEqual(a.upperLimit, b.upperLimit) &&
+           PrefabCanonicalFloatEqual(a.targetPosition, b.targetPosition) &&
+           PrefabCanonicalFloatEqual(a.motorTargetVelocity,
+                                     b.motorTargetVelocity) &&
+           PrefabCanonicalFloatEqual(a.motorMaxForce, b.motorMaxForce) &&
+           a.motorEnabled == b.motorEnabled;
+}
+
 inline bool OptionalPrimitiveComponentCanonicalEqual(
     const std::optional<PrimitiveComponent>& a,
     const std::optional<PrimitiveComponent>& b) noexcept

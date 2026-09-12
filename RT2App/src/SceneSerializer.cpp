@@ -37,7 +37,7 @@ using json = nlohmann::json;
 
 namespace rt2::core {
 
-static_assert(PersistedComponents::Count == 13,
+static_assert(PersistedComponents::Count == 17,
               "Update EntityRecord serialization when authored component coverage changes");
 
 // ============================================================================
@@ -91,6 +91,48 @@ PrimitiveComponent::Kind PrimitiveKindFromName(const std::string& s)
     if (s == "sphere") return PrimitiveComponent::Sphere;
     if (s == "plane")  return PrimitiveComponent::Plane;
     return PrimitiveComponent::None;
+}
+
+// -- Physics kind mapping (T2 persistence foundation) --
+
+const char* PhysicsBodyKindName(PhysicsBodyKind k)
+{
+    switch (k)
+    {
+        case PhysicsBodyKind::Static:    return "static";
+        case PhysicsBodyKind::Dynamic:   return "dynamic";
+        case PhysicsBodyKind::Kinematic: return "kinematic";
+        default:                         return "unknown";
+    }
+}
+
+bool PhysicsBodyKindFromName(const std::string& s, PhysicsBodyKind& out)
+{
+    if (s == "static")      { out = PhysicsBodyKind::Static;    return true; }
+    if (s == "dynamic")     { out = PhysicsBodyKind::Dynamic;   return true; }
+    if (s == "kinematic")   { out = PhysicsBodyKind::Kinematic; return true; }
+    return false;
+}
+
+const char* PhysicsShapeKindName(PhysicsShapeKind k)
+{
+    switch (k)
+    {
+        case PhysicsShapeKind::Sphere:        return "sphere";
+        case PhysicsShapeKind::Box:           return "box";
+        case PhysicsShapeKind::ConvexHull:    return "convexHull";
+        case PhysicsShapeKind::StaticTriMesh: return "staticTriMesh";
+        default:                              return "unknown";
+    }
+}
+
+bool PhysicsShapeKindFromName(const std::string& s, PhysicsShapeKind& out)
+{
+    if (s == "sphere")        { out = PhysicsShapeKind::Sphere;        return true; }
+    if (s == "box")           { out = PhysicsShapeKind::Box;           return true; }
+    if (s == "staticTriMesh") { out = PhysicsShapeKind::StaticTriMesh; return true; }
+    if (s == "convexHull")    { out = PhysicsShapeKind::ConvexHull;    return true; }
+    return false;
 }
 
 // -- Material serialization --
@@ -634,6 +676,21 @@ struct EntityRecord
 
     bool hasPrefabMember = false;
     PrefabMemberComponent prefabMember{};
+
+    // T2 physics persistence foundation (scene schema v8). Plain authored
+    // data only: no Bullet handles, no transient mesh-registry indices.
+    // Absent on v3-v7 input (hasX stays false) which migrates to "no body".
+    bool hasPhysicsBody = false;
+    PhysicsBodyComponent physicsBody{};
+
+    bool hasPhysicsShape = false;
+    PhysicsShapeComponent physicsShape{};
+
+    bool hasPhysicsHinge = false;
+    PhysicsHingeComponent physicsHinge{};
+
+    bool hasPhysicsSlider = false;
+    PhysicsSliderComponent physicsSlider{};
 };
 
 std::vector<SerializedEntity> CollectEntitiesSorted(const entt::registry& reg)
@@ -741,6 +798,33 @@ EntityRecord BuildEntityRecord(const entt::registry& reg, entt::entity e, const 
     {
         r.hasPrefabMember = true;
         r.prefabMember    = *pmc;
+    }
+
+    // T2: carry authored physics through the in-memory record path shared by
+    // Save and CloneInMemory (Play preserves physics the same way it
+    // preserves scripts).
+    if (auto* pb = reg.try_get<PhysicsBodyComponent>(e))
+    {
+        r.hasPhysicsBody = true;
+        r.physicsBody    = *pb;
+    }
+
+    if (auto* ps = reg.try_get<PhysicsShapeComponent>(e))
+    {
+        r.hasPhysicsShape = true;
+        r.physicsShape    = *ps;
+    }
+
+    if (auto* ph = reg.try_get<PhysicsHingeComponent>(e))
+    {
+        r.hasPhysicsHinge = true;
+        r.physicsHinge    = *ph;
+    }
+
+    if (auto* psl = reg.try_get<PhysicsSliderComponent>(e))
+    {
+        r.hasPhysicsSlider = true;
+        r.physicsSlider    = *psl;
     }
 
     return r;
@@ -938,6 +1022,90 @@ std::optional<json> EntityRecordToJson(
             pm["overrides"] = std::move(ov);
         }
         j["prefabMember"] = std::move(pm);
+    }
+
+    // T2 physics persistence foundation (scene schema v8). Exact-value
+    // payloads: floats round-trip exactly (float<->double is lossless both
+    // ways for finite values), UUIDs as canonical strings, collision
+    // geometry as durable AssetReferences rebased exactly like
+    // importedSource above. No Bullet state is written: there is none here.
+    if (r.hasPhysicsBody)
+    {
+        json b;
+        b["kind"]               = PhysicsBodyKindName(r.physicsBody.kind);
+        b["mass"]               = r.physicsBody.mass;
+        b["friction"]           = r.physicsBody.friction;
+        b["restitution"]        = r.physicsBody.restitution;
+        b["linearDamping"]      = r.physicsBody.linearDamping;
+        b["angularDamping"]     = r.physicsBody.angularDamping;
+        b["ccdEnabled"]         = r.physicsBody.ccdEnabled;
+        b["ccdMotionThreshold"] = r.physicsBody.ccdMotionThreshold;
+        b["ccdSweptRadius"]     = r.physicsBody.ccdSweptRadius;
+        b["startAsleep"]        = r.physicsBody.startAsleep;
+        b["layer"]              = r.physicsBody.layer;
+        b["mask"]               = r.physicsBody.mask;
+        j["physicsBody"] = std::move(b);
+    }
+
+    if (r.hasPhysicsShape)
+    {
+        json s;
+        s["shape"]       = PhysicsShapeKindName(r.physicsShape.shape);
+        s["radius"]      = r.physicsShape.radius;
+        s["halfExtents"] = Vec3ToJson(r.physicsShape.halfExtents);
+        // Durable collision-geometry references, rebased like every other
+        // asset reference so the collision refs survive scene relocation.
+        AssetReference hullRef = r.physicsShape.hull;
+        const auto hullRebased =
+            RebasePath(hullRef.path, currentSceneDir, outputSceneDir);
+        AppendNonPortableDiagnostic(
+            r.physicsShape.hull, hullRebased, r.uuid, r.name, diagnostics);
+        hullRef.path = hullRebased.storedPath;
+        s["hull"] = AssetReferenceToJson(hullRef);
+        AssetReference triRef = r.physicsShape.triMesh;
+        const auto triRebased =
+            RebasePath(triRef.path, currentSceneDir, outputSceneDir);
+        AppendNonPortableDiagnostic(
+            r.physicsShape.triMesh, triRebased, r.uuid, r.name, diagnostics);
+        triRef.path = triRebased.storedPath;
+        s["triMesh"] = AssetReferenceToJson(triRef);
+        s["isTrigger"] = r.physicsShape.isTrigger;
+        s["margin"]    = r.physicsShape.collisionMargin;
+        j["physicsShape"] = std::move(s);
+    }
+
+    if (r.hasPhysicsHinge)
+    {
+        json h;
+        h["otherBody"] = r.physicsHinge.otherBody.IsNull()
+            ? "" : r.physicsHinge.otherBody.ToString();
+        h["ownerPivot"]          = Vec3ToJson(r.physicsHinge.ownerPivot);
+        h["ownerAxis"]           = Vec3ToJson(r.physicsHinge.ownerAxis);
+        h["otherPivot"]          = Vec3ToJson(r.physicsHinge.otherPivot);
+        h["otherAxis"]           = Vec3ToJson(r.physicsHinge.otherAxis);
+        h["minAngle"]            = r.physicsHinge.minAngleLimit;
+        h["maxAngle"]            = r.physicsHinge.maxAngleLimit;
+        h["driveMode"]           = r.physicsHinge.driveMode;
+        h["motorTargetVelocity"] = r.physicsHinge.motorTargetVelocity;
+        h["motorMaxImpulse"]     = r.physicsHinge.motorMaxImpulse;
+        h["motorEnabled"]        = r.physicsHinge.motorEnabled;
+        h["restAngle"]           = r.physicsHinge.restAngle;
+        j["physicsHinge"] = std::move(h);
+    }
+
+    if (r.hasPhysicsSlider)
+    {
+        json s;
+        s["otherBody"] = r.physicsSlider.otherBody.IsNull()
+            ? "" : r.physicsSlider.otherBody.ToString();
+        s["axis"]                = Vec3ToJson(r.physicsSlider.axis);
+        s["lowerLimit"]          = r.physicsSlider.lowerLimit;
+        s["upperLimit"]          = r.physicsSlider.upperLimit;
+        s["targetPosition"]      = r.physicsSlider.targetPosition;
+        s["motorTargetVelocity"] = r.physicsSlider.motorTargetVelocity;
+        s["motorMaxForce"]       = r.physicsSlider.motorMaxForce;
+        s["motorEnabled"]        = r.physicsSlider.motorEnabled;
+        j["physicsSlider"] = std::move(s);
     }
 
     return j;
@@ -1370,6 +1538,177 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         }
     }
 
+    // T2 physics persistence foundation (scene schema v8). All four blocks
+    // are optional: v3-v7 input carries none of them and migrates to "no
+    // body". Present-but-malformed physics is a loud transactional failure
+    // (err.path names the entity UUID), never a silent default: a half-read
+    // constraint that silently drops its otherBody would connect across
+    // instances at Play.
+    if (j.contains("physicsBody"))
+    {
+        r.hasPhysicsBody = true;
+        const auto& b = j["physicsBody"];
+        if (b.contains("kind"))
+        {
+            if (!b["kind"].is_string())
+            {
+                err.code = Error::Parse;
+                err.path = r.uuid.ToString();
+                err.detail = "physicsBody kind must be a string";
+                return r;
+            }
+            PhysicsBodyKind kind = PhysicsBodyKind::Static;
+            if (!PhysicsBodyKindFromName(b["kind"].get<std::string>(), kind))
+            {
+                err.code = Error::Parse;
+                err.path = r.uuid.ToString();
+                err.detail = "unknown physicsBody kind: " +
+                             b["kind"].get<std::string>();
+                return r;
+            }
+            r.physicsBody.kind = kind;
+        }
+        if (b.contains("mass"))               r.physicsBody.mass = b["mass"].get<float>();
+        if (b.contains("friction"))           r.physicsBody.friction = b["friction"].get<float>();
+        if (b.contains("restitution"))        r.physicsBody.restitution = b["restitution"].get<float>();
+        if (b.contains("linearDamping"))      r.physicsBody.linearDamping = b["linearDamping"].get<float>();
+        if (b.contains("angularDamping"))     r.physicsBody.angularDamping = b["angularDamping"].get<float>();
+        if (b.contains("ccdEnabled"))         r.physicsBody.ccdEnabled = b["ccdEnabled"].get<bool>();
+        if (b.contains("ccdMotionThreshold")) r.physicsBody.ccdMotionThreshold = b["ccdMotionThreshold"].get<float>();
+        if (b.contains("ccdSweptRadius"))     r.physicsBody.ccdSweptRadius = b["ccdSweptRadius"].get<float>();
+        if (b.contains("startAsleep"))        r.physicsBody.startAsleep = b["startAsleep"].get<bool>();
+        if (b.contains("layer"))              r.physicsBody.layer = b["layer"].get<uint16_t>();
+        if (b.contains("mask"))               r.physicsBody.mask = b["mask"].get<uint16_t>();
+    }
+
+    if (j.contains("physicsShape"))
+    {
+        r.hasPhysicsShape = true;
+        const auto& s = j["physicsShape"];
+        if (s.contains("shape"))
+        {
+            if (!s["shape"].is_string())
+            {
+                err.code = Error::Parse;
+                err.path = r.uuid.ToString();
+                err.detail = "physicsShape shape must be a string";
+                return r;
+            }
+            PhysicsShapeKind shape = PhysicsShapeKind::Sphere;
+            if (!PhysicsShapeKindFromName(s["shape"].get<std::string>(), shape))
+            {
+                err.code = Error::Parse;
+                err.path = r.uuid.ToString();
+                err.detail = "unknown physicsShape shape: " +
+                             s["shape"].get<std::string>();
+                return r;
+            }
+            r.physicsShape.shape = shape;
+        }
+        if (s.contains("radius"))      r.physicsShape.radius = s["radius"].get<float>();
+        if (s.contains("halfExtents")) r.physicsShape.halfExtents = JsonToVec3(s["halfExtents"]);
+        if (s.contains("isTrigger"))   r.physicsShape.isTrigger = s["isTrigger"].get<bool>();
+        if (s.contains("margin"))      r.physicsShape.collisionMargin = s["margin"].get<float>();
+        // Durable collision-geometry references through the shared asset
+        // codec. A non-empty path with a non-model kind is a loud failure
+        // (the T4 decoder only serves model subresources); an empty path is
+        // "no reference" regardless of the kind tag.
+        for (int side = 0; side < 2; ++side)
+        {
+            const char* key = (side == 0) ? "hull" : "triMesh";
+            if (!s.contains(key))
+                continue;
+            Error assetError;
+            AssetReference decoded = JsonToAssetReference(
+                s[key], schemaVersion, report, r.uuid, r.name, assetError);
+            if (!assetError.IsOk())
+            {
+                err = assetError;
+                err.path = r.uuid.ToString();
+                return r;
+            }
+            if (!decoded.path.empty() && decoded.kind != AssetKind::Model)
+            {
+                err.code = Error::Parse;
+                err.path = r.uuid.ToString();
+                err.detail = std::string("physicsShape ") + key +
+                             " must be a model asset reference";
+                return r;
+            }
+            if (side == 0) r.physicsShape.hull = std::move(decoded);
+            else           r.physicsShape.triMesh = std::move(decoded);
+        }
+    }
+
+    // Constraint identity: otherBody is "" (world anchor) or a canonical
+    // UUID string. A malformed non-empty value is a loud failure — a
+    // silently-nilled reference would re-anchor a mechanism to the world.
+    auto parseConstraintOther = [&](const json& c, const char* key,
+                                    rt2::core::UUID& out) {
+        if (!c.contains("otherBody"))
+        {
+            out = rt2::core::UUID::Nil();
+            return true;
+        }
+        if (!c["otherBody"].is_string())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = std::string(key) + " otherBody must be a string";
+            return false;
+        }
+        const auto& text = c["otherBody"].get<std::string>();
+        if (text.empty())
+        {
+            out = rt2::core::UUID::Nil();
+            return true;
+        }
+        out = rt2::core::UUID::Parse(text);
+        if (out.IsNull())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = std::string(key) + " otherBody is a malformed UUID: " +
+                         text;
+            return false;
+        }
+        return true;
+    };
+
+    if (j.contains("physicsHinge"))
+    {
+        r.hasPhysicsHinge = true;
+        const auto& h = j["physicsHinge"];
+        if (!parseConstraintOther(h, "physicsHinge", r.physicsHinge.otherBody))
+            return r;
+        if (h.contains("ownerPivot"))          r.physicsHinge.ownerPivot = JsonToVec3(h["ownerPivot"]);
+        if (h.contains("ownerAxis"))           r.physicsHinge.ownerAxis = JsonToVec3(h["ownerAxis"]);
+        if (h.contains("otherPivot"))          r.physicsHinge.otherPivot = JsonToVec3(h["otherPivot"]);
+        if (h.contains("otherAxis"))           r.physicsHinge.otherAxis = JsonToVec3(h["otherAxis"]);
+        if (h.contains("minAngle"))            r.physicsHinge.minAngleLimit = h["minAngle"].get<float>();
+        if (h.contains("maxAngle"))            r.physicsHinge.maxAngleLimit = h["maxAngle"].get<float>();
+        if (h.contains("driveMode"))           r.physicsHinge.driveMode = h["driveMode"].get<uint8_t>();
+        if (h.contains("motorTargetVelocity")) r.physicsHinge.motorTargetVelocity = h["motorTargetVelocity"].get<float>();
+        if (h.contains("motorMaxImpulse"))     r.physicsHinge.motorMaxImpulse = h["motorMaxImpulse"].get<float>();
+        if (h.contains("motorEnabled"))        r.physicsHinge.motorEnabled = h["motorEnabled"].get<bool>();
+        if (h.contains("restAngle"))           r.physicsHinge.restAngle = h["restAngle"].get<float>();
+    }
+
+    if (j.contains("physicsSlider"))
+    {
+        r.hasPhysicsSlider = true;
+        const auto& s = j["physicsSlider"];
+        if (!parseConstraintOther(s, "physicsSlider", r.physicsSlider.otherBody))
+            return r;
+        if (s.contains("axis"))                r.physicsSlider.axis = JsonToVec3(s["axis"]);
+        if (s.contains("lowerLimit"))          r.physicsSlider.lowerLimit = s["lowerLimit"].get<float>();
+        if (s.contains("upperLimit"))          r.physicsSlider.upperLimit = s["upperLimit"].get<float>();
+        if (s.contains("targetPosition"))      r.physicsSlider.targetPosition = s["targetPosition"].get<float>();
+        if (s.contains("motorTargetVelocity")) r.physicsSlider.motorTargetVelocity = s["motorTargetVelocity"].get<float>();
+        if (s.contains("motorMaxForce"))       r.physicsSlider.motorMaxForce = s["motorMaxForce"].get<float>();
+        if (s.contains("motorEnabled"))        r.physicsSlider.motorEnabled = s["motorEnabled"].get<bool>();
+    }
+
     return r;
 }
 
@@ -1534,6 +1873,20 @@ bool BuildDocumentFromRecords(SceneDocument& doc,
 
         if (r.hasPrefabMember)
             doc.ecs.registry.emplace<PrefabMemberComponent>(e, r.prefabMember);
+
+        // T2 physics persistence foundation (v8): authored data only, so
+        // load and CloneInMemory share this path by construction.
+        if (r.hasPhysicsBody)
+            doc.ecs.registry.emplace<PhysicsBodyComponent>(e, r.physicsBody);
+
+        if (r.hasPhysicsShape)
+            doc.ecs.registry.emplace<PhysicsShapeComponent>(e, r.physicsShape);
+
+        if (r.hasPhysicsHinge)
+            doc.ecs.registry.emplace<PhysicsHingeComponent>(e, r.physicsHinge);
+
+        if (r.hasPhysicsSlider)
+            doc.ecs.registry.emplace<PhysicsSliderComponent>(e, r.physicsSlider);
     }
 
     // --- Pass 2: resolve parent UUIDs to Hierarchy ---
@@ -1667,6 +2020,14 @@ EntityRecord ToSceneRecord(const SubtreeEntityRecord& s)
     r.motion         = s.motion;
     r.hasScript      = s.hasScript;
     r.script         = s.script;
+    r.hasPhysicsBody   = s.hasPhysicsBody;
+    r.physicsBody      = s.physicsBody;
+    r.hasPhysicsShape  = s.hasPhysicsShape;
+    r.physicsShape     = s.physicsShape;
+    r.hasPhysicsHinge  = s.hasPhysicsHinge;
+    r.physicsHinge     = s.physicsHinge;
+    r.hasPhysicsSlider = s.hasPhysicsSlider;
+    r.physicsSlider    = s.physicsSlider;
     return r;
 }
 
@@ -1697,6 +2058,14 @@ SubtreeEntityRecord ToSubtreeRecord(const EntityRecord& r)
     s.motion         = r.motion;
     s.hasScript      = r.hasScript;
     s.script         = r.script;
+    s.hasPhysicsBody   = r.hasPhysicsBody;
+    s.physicsBody      = r.physicsBody;
+    s.hasPhysicsShape  = r.hasPhysicsShape;
+    s.physicsShape     = r.physicsShape;
+    s.hasPhysicsHinge  = r.hasPhysicsHinge;
+    s.physicsHinge     = r.physicsHinge;
+    s.hasPhysicsSlider = r.hasPhysicsSlider;
+    s.physicsSlider    = r.physicsSlider;
     return s;
 }
 

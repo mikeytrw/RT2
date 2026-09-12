@@ -499,7 +499,7 @@ TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (up
 }
 
 // ---------------------------------------------------------------------------
-// 1. All 13 persisted components have a wire key, and the table's order
+// 1. All 17 persisted components (T2: +4 physics) have a wire key, and the table's order
 //    matches PersistedComponents::ForEach order ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â driven by an actual ForEach
 //    visitor, not a hand-written list that could drift the same way.
 //
@@ -519,20 +519,22 @@ TEST_CASE("Phase 8 W3: prefab key table matches PersistedComponents::ForEach")
     // Table size mirrors the frozen Count rather than trusting the visitor
     // alone (the visitor could have been extended to agree with an oversized
     // table). This is the runtime shadow of static_assert 1.
+    // T2: four non-overridable physics components join the table (13 -> 17).
     CHECK(kPrefabTable.size() == PersistedComponents::Count);
-    CHECK(kPrefabTable.size() == 13);
+    CHECK(kPrefabTable.size() == 17);
 }
 
 // ---------------------------------------------------------------------------
-// 2. Exactly 9 are overridable, and each of the 4 excluded components is
-//    rejected by name.
+// 2. Exactly 9 are overridable, and each of the 8 excluded components is
+//    rejected by name (T2: the four physics components join the excluded
+//    set; the overridable total stays 9).
 //
 //    Discrimination faults:
 //      a) flip NameComponent's bit to false in kPrefabTable -> count drops to
 //         8 and the "name" by-name check fails -> RED.
 //    Revert the fault -> GREEN.
 // ---------------------------------------------------------------------------
-TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 4 excluded by name")
+TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 8 excluded by name")
 {
     std::size_t overridable = 0;
     for (const auto& key : kPrefabTable)
@@ -557,12 +559,20 @@ TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 4 excluded by name")
     REQUIRE_FALSE(IsOverridable<ImportedMeshSourceComponent>());
     REQUIRE_FALSE(IsOverridable<PrefabInstanceComponent>());
     REQUIRE_FALSE(IsOverridable<PrefabMemberComponent>());
+    // T2: the four physics components are scene-serializable but excluded
+    // from prefab propagation/override wires.
+    REQUIRE_FALSE(IsOverridable<PhysicsBodyComponent>());
+    REQUIRE_FALSE(IsOverridable<PhysicsShapeComponent>());
+    REQUIRE_FALSE(IsOverridable<PhysicsHingeComponent>());
+    REQUIRE_FALSE(IsOverridable<PhysicsSliderComponent>());
 
     // Rejection by name (boundary): a wire name of an excluded component must
     // resolve to a non-overridable classification, not fall through to a
     // permissive default.
     const char* excluded[] = { "meshRef", "importedSource",
-                               "prefabInstance", "prefabMember" };
+                               "prefabInstance", "prefabMember",
+                               "physicsBody", "physicsShape",
+                               "physicsHinge", "physicsSlider" };
     for (const char* wire : excluded)
     {
         const auto key = FindComponentByWire(wire);
@@ -582,14 +592,15 @@ TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 4 excluded by name")
 }
 
 // ---------------------------------------------------------------------------
-// 3. Wire key <-> name round-trips for all 13: every specialized type's wire
+// 3. Wire key <-> name round-trips for all 17 (T2: +4 physics): every
+//    specialized type's wire
 //    resolves back to the classification that produced it, and no two table
 //    rows share a wire (a duplicated wire would make one component's override
 //    ambiguous and the reverse lookup would return the wrong row).
 //
 //    Discrimination faults:
 //      a) give CameraComponent the same wire as ScriptComponent in the table
-//         -> the wire set has 12 distinct members instead of 13, and the
+//         -> the wire set has 16 distinct members instead of 17, and the
 //         round-trip for the duplicated row resolves to the earlier one ->
 //         RED.
 //      b) rename a wire constant in the specialization only (e.g.
@@ -597,7 +608,7 @@ TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 4 excluded by name")
 //         keeps "motion" -> the ForEach round-trip fails -> RED.
 //    Revert both -> GREEN.
 // ---------------------------------------------------------------------------
-TEST_CASE("Phase 8 W3: wire key <-> name round-trips for all 13 components")
+TEST_CASE("Phase 8 W3: wire key <-> name round-trips for all 17 components")
 {
     std::size_t index = 0;
     PersistedComponents::ForEach([&](auto tag) {
@@ -622,7 +633,7 @@ TEST_CASE("Phase 8 W3: wire key <-> name round-trips for all 13 components")
     });
     REQUIRE(index == PersistedComponents::Count);
 
-    // No two rows share a wire: 13 distinct wires for 13 rows.
+    // No two rows share a wire: 17 distinct wires for 17 rows.
     std::size_t distinct = 0;
     for (std::size_t i = 0; i < kPrefabTable.size(); ++i)
     {
@@ -634,7 +645,7 @@ TEST_CASE("Phase 8 W3: wire key <-> name round-trips for all 13 components")
         if (!seen) ++distinct;
     }
     CHECK(distinct == kPrefabTable.size());
-    CHECK(distinct == 13);
+    CHECK(distinct == 17);
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,7 +1351,8 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // Phase 8 W3, S4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â duplicating an instance creates a NEW instance identity
 // (implementation spec, W3-D8; Work step S4).
 //
-// CopyAuthoredComponents copies all 13 persisted components verbatim, so a
+// CopyAuthoredComponents copies all 17 persisted components verbatim (T2:
+// +4 physics), so a
 // copy of an instance shares the SOURCE's instanceId. W3 groups overrides by
 // instanceId; two instances sharing one id would merge into a single override
 // group (W3-D8). S4 runs the plan -> reserve -> apply pipeline (PlanCopiedPrefabLinks,
