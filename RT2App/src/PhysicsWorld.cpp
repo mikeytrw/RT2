@@ -213,37 +213,6 @@ bool PhysicsWorld::SetBodyLinearVelocity(const UUID& id,
     return true;
 }
 
-bool PhysicsWorld::TryWriteBodyPose(const UUID& id, const glm::vec3& position,
-                                    const glm::quat& rotation)
-{
-    PhysicsBodyRecord* rec = FindBodyMut(m_BodyIndex, id);
-    if (rec == nullptr || rec->kind == PhysicsBodyKind::Static)
-        return false;
-    const btTransform t(
-        btQuaternion(rotation.x, rotation.y, rotation.z, rotation.w),
-        btVector3(position.x, position.y, position.z));
-    if (rec->body != nullptr)
-    {
-        rec->body->setWorldTransform(t);
-        if (rec->motion != nullptr)
-            rec->motion->setWorldTransform(t);
-        rec->body->setInterpolationWorldTransform(t);
-        rec->body->setLinearVelocity(btVector3(0, 0, 0));
-        rec->body->setAngularVelocity(btVector3(0, 0, 0));
-        rec->body->clearForces();
-        rec->body->activate();
-    }
-    else if (rec->ghost != nullptr)
-    {
-        rec->ghost->setWorldTransform(t);
-    }
-    else
-    {
-        return false;
-    }
-    return true;
-}
-
 void PhysicsWorld::PreStepSync(SceneDocument& runtime)
 {
     auto& reg = runtime.ecs.registry;

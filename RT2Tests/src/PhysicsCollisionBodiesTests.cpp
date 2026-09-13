@@ -25,6 +25,8 @@
 #include "RuntimeLifecycleObserver.h"
 #include "SceneGraph.h"
 #include "SceneManager.h"
+#include "ScriptSystem.h"
+#include "TransformEditing.h"
 #include "EditorCommandHistory.h"
 #include "EditorPropertyCommands.h"
 #include "ECSComponents.h"
@@ -688,33 +690,81 @@ TEST_CASE("T4 RED_OversizeCollisionAssetRefusesPlay: oversize geometry refuses P
     T4CheckCleanRefusal(ctrl, bridge, obs, err, id);
 }
 
-TEST_CASE("T4 RED_StaticSetPositionRefused: Static bodies refuse pose writes")
+TEST_CASE("T4 RED_StaticSetPositionRefused: runtime position setter on Static/Dynamic returns false; Kinematic succeeds")
 {
+    // Approved contract (plan:613): the production RuntimeCommandSink —
+    // the exact entry point Lua entity:set_position calls — refuses pose
+    // writes on Static and Dynamic without mutation, accepts Kinematic pose
+    // writes, and refuses scale writes on every physics-owned body (shape
+    // extents are baked once at Play).
     T4Fixture f;
     const UUID statik = f.Create("Static");
     f.Registry().emplace<PhysicsBodyComponent>(f.Handle(statik), T4StaticBody());
     f.Registry().emplace<PhysicsShapeComponent>(f.Handle(statik), T4SphereShape());
-    const UUID mover = f.Create("Mover");
-    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(mover), T4DynamicBody());
-    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(mover), T4SphereShape());
+    const UUID dynamic = f.Create("Dynamic");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(dynamic), T4DynamicBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(dynamic), T4SphereShape());
+    const UUID kinematic = f.Create("Kinematic");
+    PhysicsBodyComponent kBody;
+    kBody.kind = PhysicsBodyKind::Kinematic;
+    kBody.mass = 0.0f;
+    kBody.layer = PhysicsLayer::Mechanism;
+    kBody.mask = PhysicsLayer::Dynamic;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(kinematic), kBody);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(kinematic), T4BoxShape());
+    const UUID plain = f.Create("Plain");
 
     T4NullBridge bridge;
     Error err;
     RuntimeSceneController ctrl;
     REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    RuntimeCommandSink sink(ctrl);
+
+    // Static refuses position and full-transform writes; ECS is untouched.
+    CHECK_FALSE(sink.SetPosition(statik, {9.0f, 9.0f, 9.0f}));
+    EditableTRS moved;
+    moved.translation = {9.0f, 9.0f, 9.0f};
+    moved.rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    moved.scale = {1.0f, 1.0f, 1.0f};
+    CHECK_FALSE(sink.SetLocalTransform(statik, moved));
+    glm::vec3 pos{0.0f, 0.0f, 0.0f};
+    REQUIRE(sink.GetPosition(statik, pos));
+    CHECK(pos.x == doctest::Approx(0.0f));
+    CHECK(pos.y == doctest::Approx(0.0f));
+    CHECK(pos.z == doctest::Approx(0.0f));
+
+    // Dynamic refuses the same way (Bullet owns Dynamic -> ECS).
+    CHECK_FALSE(sink.SetPosition(dynamic, {9.0f, 9.0f, 9.0f}));
+    CHECK_FALSE(sink.SetLocalTransform(dynamic, moved));
+    REQUIRE(sink.GetPosition(dynamic, pos));
+    CHECK(pos.x == doctest::Approx(0.0f));
+
+    // Kinematic accepts pose writes...
+    CHECK(sink.SetPosition(kinematic, {1.0f, 2.0f, 3.0f}));
+    REQUIRE(sink.GetPosition(kinematic, pos));
+    CHECK(pos.x == doctest::Approx(1.0f));
+    CHECK(pos.y == doctest::Approx(2.0f));
+    CHECK(pos.z == doctest::Approx(3.0f));
+    // ...but refuses scale writes without mutating anything else.
+    EditableTRS scaled = moved;
+    scaled.translation = {1.0f, 2.0f, 3.0f};
+    scaled.scale = {2.0f, 2.0f, 2.0f};
+    CHECK_FALSE(sink.SetLocalTransform(kinematic, scaled));
+    EditableTRS live;
+    REQUIRE(sink.GetLocalTransform(kinematic, live));
+    CHECK(live.translation.x == doctest::Approx(1.0f));
+    CHECK(live.scale.x == doctest::Approx(1.0f));
+
+    // Non-physics entities are unaffected; unknown UUIDs still fail.
+    CHECK(sink.SetPosition(plain, {4.0f, 5.0f, 6.0f}));
+    DeterministicUuidProvider ids;
+    CHECK_FALSE(sink.SetPosition(ids.CreateV4(), {0.0f, 0.0f, 0.0f}));
+
+    // Velocity remains a legal Dynamic control; Static refuses it.
     PhysicsWorld* world = ctrl.TryGetPhysicsWorldMut();
     REQUIRE(world != nullptr);
-
-    // Static refuses and mutates nothing; other kinds apply.
-    CHECK_FALSE(world->TryWriteBodyPose(statik, {9.0f, 9.0f, 9.0f},
-                                        glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
-    CHECK(world->TryWriteBodyPose(mover, {1.0f, 2.0f, 3.0f},
-                                  glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
-    CHECK_FALSE(world->SetBodyLinearVelocity(
-        statik, {1.0f, 0.0f, 0.0f}));
-    CHECK(world->SetBodyLinearVelocity(mover, {1.0f, 0.0f, 0.0f}));
-    CHECK_FALSE(world->TryWriteBodyPose(f.ids.CreateV4(), {0.0f, 0.0f, 0.0f},
-                                        glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
+    CHECK(world->SetBodyLinearVelocity(dynamic, {1.0f, 0.0f, 0.0f}));
+    CHECK_FALSE(world->SetBodyLinearVelocity(statik, {1.0f, 0.0f, 0.0f}));
 
     // Steps never move the baked Static pose.
     for (int i = 0; i < 10; ++i)
@@ -725,6 +775,94 @@ TEST_CASE("T4 RED_StaticSetPositionRefused: Static bodies refuse pose writes")
     CHECK(staticPos.y == doctest::Approx(0.0f));
     CHECK(staticPos.z == doctest::Approx(0.0f));
     ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T4 GREEN_LuaSetPositionAuthority: Lua set_position obeys per-kind authority")
+{
+    // End-to-end Lua proof of the same contract: every scripted body attempts
+    // entity:set_position({7,0,0}) in on_update. Static never moves, Dynamic
+    // never teleports (it only falls), Kinematic arrives.
+    const auto scriptDir =
+        std::filesystem::temp_directory_path() / "t4_lua_authority";
+    std::error_code ec;
+    std::filesystem::remove_all(scriptDir, ec);
+    std::filesystem::create_directories(scriptDir, ec);
+    T4WriteText(scriptDir / "authority.lua", R"LUA(
+function on_update(entity, dt, input, world)
+    entity:set_position({7, 0, 0})
+end
+)LUA");
+
+    DeterministicUuidProvider uuidProv;
+    SceneDocument doc;
+    doc.SetUuidProvider(&uuidProv);
+    doc.metadata.sourcePath = scriptDir / "fixture.rt2scene";
+    UUID ids[3];
+    const char* names[3] = {"S", "D", "K"};
+    // Separated spawns: co-located spheres would depenetrate on the first
+    // tick and pollute the x assertions below.
+    const glm::vec3 spawns[3] = {{-3.0f, 0.0f, 0.0f}, {0.0f, 3.0f, 0.0f}, {3.0f, 0.0f, 0.0f}};
+    for (int i = 0; i < 3; ++i)
+    {
+        entt::entity e = doc.ecs.registry.create();
+        doc.ecs.registry.emplace<NameComponent>(e, names[i]);
+        Transform& tf = doc.ecs.registry.emplace<Transform>(e);
+        tf.translation = spawns[i];
+        tf.dirty = true;
+        doc.ecs.registry.emplace<VisibleComponent>(e);
+        PhysicsBodyComponent body = i == 0 ? T4StaticBody()
+            : i == 1         ? T4DynamicBody()
+                             : PhysicsBodyComponent{};
+        if (i == 2)
+        {
+            body.kind = PhysicsBodyKind::Kinematic;
+            body.mass = 0.0f;
+            body.layer = PhysicsLayer::Mechanism;
+            body.mask = PhysicsLayer::Dynamic;
+        }
+        doc.ecs.registry.emplace<PhysicsBodyComponent>(e, body);
+        doc.ecs.registry.emplace<PhysicsShapeComponent>(e, T4SphereShape());
+        ScriptComponent sc;
+        sc.asset.kind = AssetKind::Script;
+        sc.asset.path = "authority.lua";
+        sc.asset.sourceKey = "lua:asset=authority.lua";
+        doc.ecs.registry.emplace<ScriptComponent>(e, sc);
+        doc.AssignNewUuid(e);
+        ids[i] = doc.ecs.registry.get<EntityIdComponent>(e).id;
+    }
+
+    T4NullBridge bridge;
+    AssetResolutionContext assetContext;
+    std::vector<AssetDiagnostic> assetDiagnostics;
+    ScriptSystem scriptSys(uuidProv, assetContext, assetDiagnostics);
+    RuntimeSceneController ctrl;
+    RuntimeCommandSink sink(ctrl);
+    ctrl.SetRuntimeUuidProvider(&uuidProv);
+    ctrl.SetLifecycleObserver(&scriptSys);
+    ctrl.SetScriptDispatch(&scriptSys);
+    ctrl.SetInputService(nullptr);
+    ctrl.SetRuntimeCommandSink(&sink);
+    assetContext.assetRoot = doc.metadata.sourcePath.parent_path();
+    assetContext.database = nullptr;
+    Error err;
+    REQUIRE(ctrl.Play(doc, bridge, err));
+
+    for (int i = 0; i < 3; ++i)
+        ctrl.Update(kFixedDt, bridge);
+
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    REQUIRE(runtime != nullptr);
+    auto readX = [&](const UUID& id) {
+        const auto e = runtime->FindByUuid(id);
+        const bool resolved = (e != entt::null);
+        REQUIRE(resolved);
+        return runtime->ecs.registry.get<Transform>(e).translation.x;
+    };
+    CHECK(readX(ids[0]) == doctest::Approx(-3.0f));
+    CHECK(readX(ids[1]) == doctest::Approx(0.0f));
+    CHECK(readX(ids[2]) == doctest::Approx(7.0f));
+    ctrl.Stop(doc, bridge);
+    std::filesystem::remove_all(scriptDir, ec);
 }
 
 TEST_CASE("T4 RED_PhysicsBodyValidationRejects: out-of-range authoring values fail atomically")

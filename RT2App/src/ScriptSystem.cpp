@@ -1489,6 +1489,30 @@ bool RuntimeCommandSink::SetLocalTransform(const UUID& uuid, const EditableTRS& 
     if (e == entt::null || !reg.valid(e)) return false;
     auto* tf = reg.try_get<Transform>(e);
     if (!tf) return false;
+    // Bullet T4 per-kind transform authority (plan section 2): Static bodies
+    // are baked once at Play and Dynamic bodies are owned Bullet -> ECS, so
+    // runtime pose writes to either refuse without mutation. Kinematic bodies
+    // accept pose writes (pushed ECS -> Bullet before the next step) but
+    // never scale writes: collision shape extents were baked once at Play
+    // from the single uniform world scale. Loud bool-refusal per the
+    // scripting convention (docs/scripting.md:97-111).
+    if (const auto* body = reg.try_get<PhysicsBodyComponent>(e))
+    {
+        if (body->kind != PhysicsBodyKind::Kinematic)
+        {
+            printf("[Script] SetLocalTransform refused for physics body %s "
+                   "(Static/Dynamic transforms are simulation-owned)\n",
+                   uuid.ToString().c_str());
+            return false;
+        }
+        if (trs.scale != tf->scale)
+        {
+            printf("[Script] SetLocalTransform refused scale write for physics body %s "
+                   "(collision scale is baked at Play)\n",
+                   uuid.ToString().c_str());
+            return false;
+        }
+    }
     tf->translation = trs.translation;
     tf->rotation = trs.rotation;
     tf->scale = trs.scale;

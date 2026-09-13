@@ -152,17 +152,13 @@ public:
     void PreStepSync(SceneDocument& runtime);
     void PostStepSync(SceneDocument& runtime);
 
-    // Explicit pose write used by future script reset paths (T7 owns the Lua
-    // binding; T4 owns the authority rule). Static bodies (and static ghosts)
-    // refuse with false and mutate nothing; Kinematic/Dynamic bodies and
-    // their ghosts apply atomically (Bullet + ECS pose, forces and velocities
-    // cleared, body reactivated). Unknown UUIDs return false.
-    bool TryWriteBodyPose(const UUID& id, const glm::vec3& position,
-                          const glm::quat& rotation);
-
     // Test/preset helper: linear velocity write for simulated rigid bodies.
     // Returns false (mutating nothing) for Static bodies, ghosts, and unknown
-    // UUIDs — the same authority rule as TryWriteBodyPose.
+    // UUIDs. Velocity (like impulse) is a legal Dynamic control — only pose
+    // writes are authority-gated — so Dynamic accepts and Static refuses.
+    // (The future T7 reset_body_pose arrives as a distinct explicit API; no
+    // generic C++ pose-write path exists, so Lua can only move bodies through
+    // the kind-gated RuntimeCommandSink.)
     bool SetBodyLinearVelocity(const UUID& id, const glm::vec3& velocity);
 
     // Bullet-side world position for tests (kinematic-push and CCD proofs).
