@@ -322,6 +322,9 @@ private:
     // construction; destroyed in Stop() before m_Runtime.reset(). Never
     // global, never surviving Stop.
     std::unique_ptr<PhysicsWorld> m_PhysicsWorld;
+    // T3: live-world baseline captured before candidate construction so Stop
+    // can assert the committed world was destroyed, not pointer-discarded.
+    size_t m_PhysicsLiveBaseline = 0;
     // T3: borrowed collision provider (host-owned; see SetCollisionProvider).
     IPhysicsCollisionAssetProvider* m_CollisionProvider = nullptr;
     SceneRunState m_State = SceneRunState::Edit;

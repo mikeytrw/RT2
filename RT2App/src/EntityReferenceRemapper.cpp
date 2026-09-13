@@ -114,8 +114,12 @@ bool ValidatePhysicsConstraintReferences(const SceneDocument& doc, Error& err)
     };
 
     // Hinges: owner must carry a body, then the reference must resolve.
-    for (const auto entity :
-         registry.view<PhysicsHingeComponent, EntityIdComponent>())
+    // Iterates the bare component view (never pre-filtered on identity) so
+    // the missing-ID diagnostic below is reachable for precisely the
+    // malformed owners it is intended to catch. Play-level validation
+    // (ValidatePhysicsForPlay) rejects such entities before cloning, so the
+    // ID-view clone collector can never silently omit them.
+    for (const auto entity : registry.view<PhysicsHingeComponent>())
     {
         UUID owner;
         if (!ownerUuid(entity, owner))
@@ -134,9 +138,8 @@ bool ValidatePhysicsConstraintReferences(const SceneDocument& doc, Error& err)
             return false;
     }
 
-    // Sliders: same contract.
-    for (const auto entity :
-         registry.view<PhysicsSliderComponent, EntityIdComponent>())
+    // Sliders: same contract (bare view; see the hinge note above).
+    for (const auto entity : registry.view<PhysicsSliderComponent>())
     {
         UUID owner;
         if (!ownerUuid(entity, owner))

@@ -58,12 +58,14 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     InitPrevTransforms();
 
     // T3 candidate-commit step 2: construct the PhysicsWorld completely in
-    // private and commit to ownership only on success. Rollback on any
-    // candidate failure: the candidate dies with the local, the clone is
+    // private against the refreshed runtime clone and commit to ownership
+    // only on success. Rollback on any candidate failure: the candidate dies
+    // with the local (full Bullet teardown of a live world), the clone is
     // reset, state stays Edit with a zero accumulator, and no bridge call
     // and no script callback have happened yet.
     {
-        auto candidate = PhysicsWorld::Create();
+        m_PhysicsLiveBaseline = PhysicsWorld::LiveWorldCount();
+        auto candidate = PhysicsWorld::Create(*m_Runtime);
         if (!candidate.IsOk())
         {
             err = candidate.error;
@@ -232,10 +234,14 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
         m_LifecycleObserver->OnSceneStop(*m_Runtime);
 
     // 3. Destroy the PhysicsWorld BEFORE the runtime clone goes away:
-    //    constraints, then ghosts/bodies, then shapes, then the world. Any
-    //    surviving Bullet handle after this is a hard error (leak counter in
-    //    tests observe zero through PhysicsTotalHandles).
+    //    constraints, then ghosts/bodies, then shapes, then the world. The
+    //    live-world census must return to the pre-Play baseline: a world
+    //    that is merely pointer-discarded (never destroyed) keeps the count
+    //    elevated, which this assert catches in debug (tests observe the
+    //    same census in release).
     m_PhysicsWorld.reset();
+    assert(PhysicsWorld::LiveWorldCount() == m_PhysicsLiveBaseline &&
+           "PhysicsWorld destroyed on Stop must restore the live baseline");
 
     // 4. Clear any pending operations (they are runtime-only).
     m_PendingOperations.clear();

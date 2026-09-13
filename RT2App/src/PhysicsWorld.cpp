@@ -24,6 +24,9 @@
 namespace rt2::core {
 
 bool PhysicsWorld::s_TestInjectCreateFailure = false;
+bool PhysicsWorld::s_TestPoseProbe = false;
+size_t PhysicsWorld::s_LiveWorlds = 0;
+std::vector<PhysicsWorld::ConstructionPose> PhysicsWorld::s_RecordedPoses;
 
 PhysicsWorld::PhysicsWorld()
     : m_Dispatcher(&m_CollisionConfiguration)
@@ -34,11 +37,13 @@ PhysicsWorld::PhysicsWorld()
     m_World.setGravity(btVector3(0.0f, -9.81f, 0.0f));
     m_Broadphase.getOverlappingPairCache()->setInternalGhostPairCallback(
         &m_GhostCallback);
+    ++s_LiveWorlds;
 }
 
 PhysicsWorld::~PhysicsWorld()
 {
     Shutdown();
+    --s_LiveWorlds;
 }
 
 void PhysicsWorld::Shutdown()
@@ -59,23 +64,65 @@ void PhysicsWorld::Shutdown()
     m_Shapes.clear();
 }
 
-Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create()
+Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
+    const SceneDocument& runtime)
 {
-    // Late-failure probe FIRST: no Bullet object is staged, so the candidate
-    // fails before any observable construction. The controller's rollback
-    // (destroy candidate, reset clone, Edit state, zero accumulator, no
-    // bridge call, no script callback) is what RED_PhysicsPlayConstructionIsAtomic
-    // observes.
+    // The candidate is FULLY constructed first: broadphase, dispatcher,
+    // solver, configuration, dynamics world, ghost-pair callback, gravity.
+    // A failure below therefore rolls back a live Bullet world through the
+    // complete Shutdown() teardown — never a pre-construction early-out.
+    std::unique_ptr<PhysicsWorld> world(new PhysicsWorld());
+
+    // Construction pose probe (test-only, gated): record what the candidate
+    // observes in the runtime clone at this exact point in the Play sequence.
+    // The controller calls Create() after InitPrevTransforms, so the probe
+    // sees refreshed world matrices; moving construction earlier observes
+    // stale clone state and the ordering test goes red.
+    if (s_TestPoseProbe)
+    {
+        std::vector<std::pair<UUID, entt::entity>> bodies;
+        auto bodyView = runtime.ecs.registry.view<PhysicsBodyComponent>();
+        for (auto e : bodyView)
+        {
+            const auto* idc =
+                runtime.ecs.registry.try_get<EntityIdComponent>(e);
+            if (idc != nullptr && !idc->id.IsNull())
+                bodies.emplace_back(idc->id, e);
+        }
+        std::sort(bodies.begin(), bodies.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& [uuid, entity] : bodies)
+        {
+            const auto* tf =
+                runtime.ecs.registry.try_get<Transform>(entity);
+            if (tf == nullptr)
+                continue;
+            ConstructionPose pose;
+            pose.id = uuid;
+            pose.translation = glm::vec3(tf->worldMatrix[3]);
+            s_RecordedPoses.push_back(pose);
+        }
+    }
+
+    // Late-failure probe: fires only after the live world above exists, so
+    // the returned local dies here and runs the real destructor rollback.
+    // The controller's catch (destroy candidate, reset clone, Edit state,
+    // zero accumulator, no bridge call, no script callback) is what
+    // RED_PhysicsPlayConstructionIsAtomic observes.
     if (s_TestInjectCreateFailure)
     {
         return Result<std::unique_ptr<PhysicsWorld>>::Fail(
             Error::InvalidRuntimeState, "",
             "PhysicsWorld::Create test-injected candidate failure "
-            "(atomicity probe; no world staged)");
+            "(live candidate rolled back; no world committed)");
     }
 
-    std::unique_ptr<PhysicsWorld> world(new PhysicsWorld());
     return Result<std::unique_ptr<PhysicsWorld>>::Ok(std::move(world));
+}
+
+size_t PhysicsWorld::LiveWorldCount()
+{
+    return s_LiveWorlds;
 }
 
 void PhysicsWorld::Step(float dt)
@@ -97,6 +144,23 @@ void PhysicsWorld::SetTestInjectCreateFailure(bool fail)
 bool PhysicsWorld::TestInjectCreateFailure()
 {
     return s_TestInjectCreateFailure;
+}
+
+void PhysicsWorld::SetTestPoseProbe(bool enabled)
+{
+    s_TestPoseProbe = enabled;
+    if (!enabled)
+        s_RecordedPoses.clear();
+}
+
+std::vector<PhysicsWorld::ConstructionPose> PhysicsWorld::TestRecordedPoses()
+{
+    return s_RecordedPoses;
+}
+
+void PhysicsWorld::ClearTestRecordedPoses()
+{
+    s_RecordedPoses.clear();
 }
 
 // ============================================================================
@@ -140,6 +204,32 @@ bool FailWith(Error& err, Error::Code code, const UUID& owner,
     return false;
 }
 
+// Pass-0 identity gate: the component must sit on an entity carrying an
+// authored EntityIdComponent. Iterates the bare component view — never
+// filtered on identity — so a malformed entity cannot evade the check and
+// silently vanish from the runtime clone (which collects from the ID view).
+// The path names the component wire (no UUID exists to name); the detail
+// identifies the registry entity and the required component.
+template <typename T>
+bool CheckComponentIds(const entt::registry& registry, const char* wire,
+                       Error& err)
+{
+    for (auto e : registry.view<T>())
+    {
+        const auto* idc = registry.try_get<EntityIdComponent>(e);
+        if (idc != nullptr && !idc->id.IsNull())
+            continue;
+        err.code = Error::InvalidEntity;
+        err.path = wire;
+        err.detail = std::string(wire) + " on scene entity " +
+                     std::to_string(static_cast<uint32_t>(e)) +
+                     " has no authored UUID (EntityIdComponent required; "
+                     "the entity would be omitted from the runtime clone)";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 bool ValidatePhysicsForPlay(const SceneDocument& doc,
@@ -149,19 +239,18 @@ bool ValidatePhysicsForPlay(const SceneDocument& doc,
     err = Error{};
     const auto& registry = doc.ecs.registry;
 
-    // Every physics entity must carry an authored UUID; without one no
-    // diagnostic can name it, so refuse loudly rather than skipping.
-    for (const auto& [uuid, entity] : CollectOrdered<PhysicsBodyComponent>(registry))
-    {
-        if (uuid.IsNull())
-        {
-            err.code = Error::InvalidEntity;
-            err.detail =
-                "physics body without authored UUID (cannot persist or diagnose)";
-            return false;
-        }
-        (void)entity;
-    }
+    // Pass 0: every physics component must carry an authored UUID. Without
+    // one no diagnostic can name the entity and the clone collector (which
+    // starts from the ID view) would silently omit it — the characteristic
+    // swallowed-data failure. Refuse loudly before anything is staged.
+    if (!CheckComponentIds<PhysicsBodyComponent>(registry, "PhysicsBodyComponent", err))
+        return false;
+    if (!CheckComponentIds<PhysicsShapeComponent>(registry, "PhysicsShapeComponent", err))
+        return false;
+    if (!CheckComponentIds<PhysicsHingeComponent>(registry, "PhysicsHingeComponent", err))
+        return false;
+    if (!CheckComponentIds<PhysicsSliderComponent>(registry, "PhysicsSliderComponent", err))
+        return false;
 
     // Constraint identity first: dangling or body-less otherBody,
     // self-constraint, and missing owner body refuse here with both UUIDs
@@ -252,15 +341,48 @@ bool ValidatePhysicsForPlay(const SceneDocument& doc,
                             "(dynamic triangle mesh is refused)");
         }
 
-        // Layers/masks: the four plan layers only (uint16 pair). A zero layer
-        // or any unknown bit is a loud refusal, never a silent default.
-        if (body.layer == 0 || (body.layer & ~kKnownPhysicsLayers) != 0 ||
-            (body.mask & ~kKnownPhysicsLayers) != 0)
+        // Settled collision policy (review fixup): layer is exactly one
+        // known bit — group bitsets are refused, never silently narrowed.
+        if (body.layer == 0 || (body.layer & (body.layer - 1)) != 0 ||
+            (body.layer & ~kKnownPhysicsLayers) != 0)
         {
             return FailWith(err, Error::InvalidArgument, uuid,
                             "entity " + uuid.ToString() +
-                            " has an invalid physics layer/mask pair "
-                            "(layers Dynamic|WorldStatic|Mechanism|Trigger only)");
+                            " has physics layer " + std::to_string(body.layer) +
+                            " (layer must be exactly one of Dynamic|WorldStatic|"
+                            "Mechanism|Trigger)");
+        }
+
+        // Mask is any nonzero subset of the known bits. Zero (collides with
+        // nothing) and unknown bits are loud refusals, never silent defaults.
+        if (body.mask == 0 || (body.mask & ~kKnownPhysicsLayers) != 0)
+        {
+            return FailWith(err, Error::InvalidArgument, uuid,
+                            "entity " + uuid.ToString() +
+                            " has physics mask " + std::to_string(body.mask) +
+                            " (mask must be a nonzero subset of Dynamic|"
+                            "WorldStatic|Mechanism|Trigger)");
+        }
+
+        // Trigger/layer consistency: ghost (trigger) shapes live on the
+        // Trigger layer so the solver and the event scrape agree on what is
+        // a trigger; solid shapes must not claim the Trigger layer.
+        if (shape != nullptr)
+        {
+            if (shape->isTrigger && body.layer != PhysicsLayer::Trigger)
+            {
+                return FailWith(err, Error::InvalidArgument, uuid,
+                                "entity " + uuid.ToString() +
+                                " has a trigger shape on a non-Trigger layer "
+                                "(trigger shapes require the Trigger layer)");
+            }
+            if (!shape->isTrigger && body.layer == PhysicsLayer::Trigger)
+            {
+                return FailWith(err, Error::InvalidArgument, uuid,
+                                "entity " + uuid.ToString() +
+                                " has a non-trigger shape on the Trigger layer "
+                                "(only trigger shapes may use it)");
+            }
         }
 
         // Single scale owner: the entity's uniform world scale composes once
