@@ -416,6 +416,36 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
                       "damping/CCD must all be finite)");
     }
 
+    // Enum boundary: raw registry mutation can forge values the authoring
+    // API and deserializer refuse, so Play staging re-validates both enums
+    // with UUID-bearing errors (an unknown shape must never reach the shape
+    // switch as a null dereference).
+    if (body.kind != PhysicsBodyKind::Static &&
+        body.kind != PhysicsBodyKind::Dynamic &&
+        body.kind != PhysicsBodyKind::Kinematic)
+    {
+        return T4Fail(err, uuid, name,
+                      "has an unknown body kind (Static/Dynamic/Kinematic only)");
+    }
+    if (shape->shape != PhysicsShapeKind::Sphere &&
+        shape->shape != PhysicsShapeKind::Box &&
+        shape->shape != PhysicsShapeKind::ConvexHull &&
+        shape->shape != PhysicsShapeKind::StaticTriMesh)
+    {
+        return T4Fail(err, uuid, name,
+                      "has an unknown shape kind "
+                      "(Sphere/Box/ConvexHull/StaticTriMesh only)");
+    }
+    // Coherent trigger authority: Static ghosts bake once, Kinematic ghosts
+    // push before the step; Dynamic triggers are refused (massless ghosts
+    // are never simulated, so no authority exists for them).
+    if (shape->isTrigger && body.kind == PhysicsBodyKind::Dynamic)
+    {
+        return T4Fail(err, uuid, name,
+                      "is a dynamic trigger (ghost triggers are never "
+                      "simulated; use a Static or Kinematic host)");
+    }
+
     // T4 units contract: Dynamic requires mass > 0 (kilograms);
     // Static/Kinematic require mass == 0. Inertia is computed only for
     // positive mass, after the uniform scale is applied.
@@ -590,6 +620,15 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
             world.m_TriangleMeshes.push_back(std::move(mesh));
             owned.reset(triShape);
             break;
+        }
+        default:
+        {
+            // Defensive: the enum boundary above makes this unreachable, but
+            // the switch must never fall through with a null shape (which
+            // would then be dereferenced by setMargin below).
+            return T4Fail(err, uuid, name,
+                          "has an unknown shape kind "
+                          "(Sphere/Box/ConvexHull/StaticTriMesh only)");
         }
     }
 

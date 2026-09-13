@@ -742,6 +742,118 @@ TEST_CASE("T4 GREEN_BodiesCollideUnderUnits: sphere and convex hull settle on st
     CHECK(ctrl.PhysicsTotalHandles() == 0);
 }
 
+TEST_CASE("T4 GREEN_TriggerAuthority: Static baked, Kinematic pushed, Dynamic refused")
+{
+    T4Fixture f;
+    // Static ghost: stages one ghost, never simulates, never writes back.
+    const UUID statik = f.Create("StaticGhost");
+    PhysicsBodyComponent sBody = T4StaticBody();
+    sBody.layer = PhysicsLayer::Trigger;
+    sBody.mask = PhysicsLayer::Dynamic;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(statik), sBody);
+    PhysicsShapeComponent sShape = T4SphereShape();
+    sShape.isTrigger = true;
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(statik), sShape);
+    // Kinematic ghost: pushed ECS -> Bullet before the step.
+    const UUID kinematic = f.Create("KinematicGhost");
+    PhysicsBodyComponent kBody;
+    kBody.kind = PhysicsBodyKind::Kinematic;
+    kBody.mass = 0.0f;
+    kBody.layer = PhysicsLayer::Trigger;
+    kBody.mask = PhysicsLayer::Dynamic;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(kinematic), kBody);
+    PhysicsShapeComponent kShape = T4SphereShape();
+    kShape.isTrigger = true;
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(kinematic), kShape);
+
+    T4NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    CHECK(ctrl.PhysicsBodyCount() == 0);
+    CHECK(ctrl.PhysicsGhostCount() == 2);
+    CHECK(ctrl.PhysicsShapeCount() == 2);
+
+    SceneDocument* runtime = ctrl.TryGetRuntimeSceneMut();
+    REQUIRE(runtime != nullptr);
+    {
+        const auto e = runtime->FindByUuid(kinematic);
+        const bool resolved = (e != entt::null);
+        REQUIRE(resolved);
+        runtime->ecs.registry.get<Transform>(e).translation = {2.0f, 0.0f, 0.0f};
+        SceneGraph::SetLocalDirty(runtime->ecs.registry, e);
+    }
+    for (int i = 0; i < 5; ++i)
+        ctrl.Update(kFixedDt, bridge);
+
+    glm::vec3 ghostPos{0.0f, 0.0f, 0.0f};
+    REQUIRE(ctrl.TryGetPhysicsWorld()->BodyWorldPosition(kinematic, ghostPos));
+    CHECK(ghostPos.x == doctest::Approx(2.0f));
+    // Static ghost keeps its baked pose; the ECS write-back never touches
+    // ghosts of any kind.
+    glm::vec3 staticPos{0.0f, 0.0f, 0.0f};
+    REQUIRE(ctrl.TryGetPhysicsWorld()->BodyWorldPosition(statik, staticPos));
+    CHECK(staticPos.x == doctest::Approx(0.0f));
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+}
+
+TEST_CASE("T4 RED_DynamicTriggerRefused: dynamic triggers refuse Play atomically")
+{
+    T4Fixture f;
+    const UUID id = f.Create("DynamicGhost");
+    // Forged past the authoring API (which refuses the same combination):
+    // proves the Play staging boundary independently.
+    PhysicsBodyComponent body = T4DynamicBody();
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+    PhysicsShapeComponent shape = T4SphereShape();
+    shape.isTrigger = true;
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), shape);
+    // Trigger layer agreement holds, so only the host-kind rule can refuse.
+    f.Registry().get<PhysicsBodyComponent>(f.Handle(id)).layer =
+        PhysicsLayer::Trigger;
+    f.Registry().get<PhysicsBodyComponent>(f.Handle(id)).mask =
+        PhysicsLayer::Dynamic;
+
+    T4NullBridge bridge;
+    T4NoopObserver obs;
+    Error err;
+    RuntimeSceneController ctrl;
+    ctrl.SetLifecycleObserver(&obs);
+    CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+    CHECK(err.code == Error::InvalidArgument);
+    T4CheckCleanRefusal(ctrl, bridge, obs, err, id);
+}
+
+TEST_CASE("T4 RED_InvalidPhysicsEnumRefused: forged body/shape kinds refuse Play atomically")
+{
+    // Forged past the CPU mutation boundary (which refuses the same values):
+    // proves Play staging re-validates enums with UUID-bearing errors and
+    // never dereferences a null shape.
+    for (int variant = 0; variant < 2; ++variant)
+    {
+        T4Fixture f;
+        const UUID id = f.Create(variant == 0 ? "BadKind" : "BadShape");
+        PhysicsBodyComponent body = T4StaticBody();
+        PhysicsShapeComponent shape = T4SphereShape();
+        if (variant == 0)
+            body.kind = (PhysicsBodyKind)99;
+        else
+            shape.shape = (PhysicsShapeKind)99;
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), shape);
+
+        T4NullBridge bridge;
+        T4NoopObserver obs;
+        Error err;
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK(err.code == Error::InvalidArgument);
+        T4CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+}
+
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")
 {
     T4Fixture f;
@@ -1066,6 +1178,9 @@ TEST_CASE("T4 RED_PhysicsBodyValidationRejects: out-of-range authoring values fa
     ccd.ccdEnabled = true;
     ccd.ccdMotionThreshold = 0.0f;
     expectBodyReject(ccd);
+    PhysicsBodyComponent unknownKind = T4DynamicBody();
+    unknownKind.kind = (PhysicsBodyKind)99;
+    expectBodyReject(unknownKind);
     // Unknown entity is InvalidEntity, not InvalidArgument.
     const auto missing =
         f.manager.SetPhysicsBodyState(f.ids.CreateV4(), T4DynamicBody());
@@ -1081,6 +1196,9 @@ TEST_CASE("T4 RED_PhysicsBodyValidationRejects: out-of-range authoring values fa
     PhysicsShapeComponent flat = T4SphereShape();
     flat.radius = 0.0f;
     expectShapeReject(flat);
+    PhysicsShapeComponent unknownShape = T4SphereShape();
+    unknownShape.shape = (PhysicsShapeKind)99;
+    expectShapeReject(unknownShape);
     PhysicsShapeComponent textured = T4SphereShape();
     textured.shape = PhysicsShapeKind::ConvexHull;
     textured.hull.kind = AssetKind::Texture;

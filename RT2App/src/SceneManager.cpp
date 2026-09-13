@@ -5556,6 +5556,13 @@ constexpr uint16_t kT4KnownLayers =
 
 bool T4BodyValueOk(const PhysicsBodyComponent& body, std::string& detail)
 {
+	if (body.kind != PhysicsBodyKind::Static &&
+	    body.kind != PhysicsBodyKind::Dynamic &&
+	    body.kind != PhysicsBodyKind::Kinematic)
+	{
+		detail = "unknown body kind (Static/Dynamic/Kinematic only)";
+		return false;
+	}
 	if (!std::isfinite(body.mass) || !std::isfinite(body.friction) ||
 	    !std::isfinite(body.restitution) ||
 	    !std::isfinite(body.linearDamping) ||
@@ -5632,6 +5639,9 @@ bool T4ShapeValueOk(const PhysicsShapeComponent& shape, std::string& detail)
 		case PhysicsShapeKind::ConvexHull:
 		case PhysicsShapeKind::StaticTriMesh:
 			break;
+		default:
+			detail = "unknown shape kind (Sphere/Box/ConvexHull/StaticTriMesh only)";
+			return false;
 	}
 	if (!std::isfinite(shape.collisionMargin) || shape.collisionMargin < 0.0f ||
 	    shape.collisionMargin > 1.0f)
@@ -5651,17 +5661,28 @@ bool T4ShapeValueOk(const PhysicsShapeComponent& shape, std::string& detail)
 	return true;
 }
 
-// Trigger/layer agreement (same rule Play enforces): ghost shapes live on
-// the Trigger layer; solid shapes never claim it.
-bool T4TriggerLayerOk(const PhysicsBodyComponent& body,
-                      const PhysicsShapeComponent& shape, std::string& detail)
+// Trigger/host agreement (same rules Play enforces): ghost shapes live on
+// the Trigger layer over a Static or Kinematic host; Dynamic triggers are
+// refused loudly (massless ghosts are never simulated, so a Dynamic trigger
+// has no coherent authority). Solid shapes never claim the Trigger layer.
+bool T4TriggerHostOk(const PhysicsBodyComponent& body,
+                     const PhysicsShapeComponent& shape, std::string& detail)
 {
-	if (shape.isTrigger && body.layer != PhysicsLayer::Trigger)
+	if (shape.isTrigger)
 	{
-		detail = "trigger shapes require the Trigger layer";
-		return false;
+		if (body.kind == PhysicsBodyKind::Dynamic)
+		{
+			detail = "dynamic triggers are refused (ghost triggers are never simulated)";
+			return false;
+		}
+		if (body.layer != PhysicsLayer::Trigger)
+		{
+			detail = "trigger shapes require the Trigger layer";
+			return false;
+		}
+		return true;
 	}
-	if (!shape.isTrigger && body.layer == PhysicsLayer::Trigger)
+	if (body.layer == PhysicsLayer::Trigger)
 	{
 		detail = "only trigger shapes may use the Trigger layer";
 		return false;
@@ -5699,7 +5720,7 @@ EditorMutationResult SceneManager::SetPhysicsBodyState(
 		if (const auto* shape =
 		        m_EcsScene.registry.try_get<PhysicsShapeComponent>(e))
 		{
-			if (!T4TriggerLayerOk(*value, *shape, detail))
+			if (!T4TriggerHostOk(*value, *shape, detail))
 			{
 				return EditorMutationResult::Failure(
 					rt2::core::Error::InvalidArgument, entity.ToString(),
@@ -5748,7 +5769,7 @@ EditorMutationResult SceneManager::SetPhysicsShapeState(
 		if (const auto* body =
 		        m_EcsScene.registry.try_get<PhysicsBodyComponent>(e))
 		{
-			if (!T4TriggerLayerOk(*body, *value, detail))
+			if (!T4TriggerHostOk(*body, *value, detail))
 			{
 				return EditorMutationResult::Failure(
 					rt2::core::Error::InvalidArgument, entity.ToString(),
