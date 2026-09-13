@@ -270,9 +270,11 @@ std::string T4TwoTriGltf()
     float pos1[9] = {10,0,0, 11,0,0, 10,1,0};
     uint16_t idx0[3] = {0,1,2};
     uint16_t idx1[3] = {0,1,2};
+    const unsigned char pad[2] = {0, 0};
     std::string raw;
     raw.append((const char*)pos0, sizeof(pos0));
     raw.append((const char*)idx0, sizeof(idx0));
+    raw.append((const char*)pad, sizeof(pad)); // keep pos1 4-aligned per spec
     raw.append((const char*)pos1, sizeof(pos1));
     raw.append((const char*)idx1, sizeof(idx1));
     const std::string b64 =
@@ -284,12 +286,12 @@ std::string T4TwoTriGltf()
         "\"meshes\":[{\"primitives\":["
         "{\"attributes\":{\"POSITION\":0},\"indices\":1},"
         "{\"attributes\":{\"POSITION\":2},\"indices\":3}]} ],"
-        "\"buffers\":[{\"byteLength\":84,\"uri\":\"data:application/octet-stream;base64,%s\"}],"
+        "\"buffers\":[{\"byteLength\":86,\"uri\":\"data:application/octet-stream;base64,%s\"}],"
         "\"bufferViews\":["
         "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
-        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6},"
-        "{\"buffer\":0,\"byteOffset\":42,\"byteLength\":36},"
-        "{\"buffer\":0,\"byteOffset\":78,\"byteLength\":6}],"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":8},"
+        "{\"buffer\":0,\"byteOffset\":44,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":80,\"byteLength\":6}],"
         "\"accessors\":["
         "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"max\":[1,1,0],\"min\":[0,0,0]},"
         "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"},"
@@ -341,6 +343,119 @@ TEST_CASE("T4 GREEN_CollisionCacheDedup: identical keys decode once and sourceKe
     CHECK(got1.value->vertices[0] == doctest::Approx(10.0f));
     CHECK(provider.DecodeCount() == 3);
     CHECK(provider.CacheEntryCount() == 3);
+}
+
+TEST_CASE("T4 RED_HostileGltfRefused: forged relationships and hostile accessor metadata fail loudly")
+{
+    // Each hostile document is decoded directly (no provider): every case
+    // must return a typed error quickly — never allocate from hostile counts,
+    // never read outside the buffer, and never select forged geometry.
+    T4TempAssets assets;
+    const std::string valid = T4TwoTriGltf();
+    auto writeVariant = [&](const std::string& name, const std::string& json) {
+        T4WriteText(assets.dir / name, json);
+        return assets.dir / name;
+    };
+    auto replace = [](std::string doc, const std::string& from,
+                      const std::string& to) {
+        const size_t at = doc.find(from);
+        REQUIRE(at != std::string::npos);
+        return doc.substr(0, at) + to + doc.substr(at + from.size());
+    };
+    ImportSettings settings;
+    auto expectRefusal = [&](const std::filesystem::path& path,
+                             const std::string& key, Error::Code code) {
+        const auto r =
+            DecodeCollisionGeometry(path, key, settings);
+        CHECK_FALSE(r.IsOk());
+        if (!r.IsOk())
+            CHECK(r.error.code == code);
+    };
+    const std::string key0 = "gltf:scene=0:node=0:mesh=0:primitive=0";
+    const std::string key1 = "gltf:scene=0:node=0:mesh=0:primitive=1";
+
+    // Forged scene relationship: node exists but is not in the named scene.
+    expectRefusal(writeVariant("noroot.gltf",
+                    replace(valid, "\"scenes\":[{\"nodes\":[0]}]",
+                            "\"scenes\":[{\"nodes\":[]}]")),
+                  key0, Error::InvalidArgument);
+    // Forged mesh relationship: node carries mesh 0, key names mesh 1 (which
+    // exists, so only the identity check can refuse).
+    std::string twoMesh = replace(
+        valid, "\"meshes\":[{\"primitives\":[",
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}],\"extra\":0},{\"primitives\":[");
+    expectRefusal(writeVariant("wrongmesh.gltf", twoMesh),
+                  "gltf:scene=0:node=0:mesh=1:primitive=0",
+                  Error::InvalidArgument);
+    // Non-triangle primitive mode.
+    expectRefusal(writeVariant("points.gltf",
+                    replace(valid, "{\"attributes\":{\"POSITION\":0},\"indices\":1}",
+                            "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"mode\":0}")),
+                  key0, Error::InvalidArgument);
+    // Sparse accessor (unsupported, never silently ignored).
+    expectRefusal(writeVariant("sparse.gltf",
+                    replace(valid, "\"max\":[1,1,0],\"min\":[0,0,0]}",
+                            "\"max\":[1,1,0],\"min\":[0,0,0],\"sparse\":{\"count\":1,\"indices\":{\"bufferView\":1,\"byteOffset\":0,\"componentType\":5123},\"values\":{\"bufferView\":1,\"byteOffset\":0}}}")),
+                  key0, Error::InvalidArgument);
+    // Overflowed count: capped before allocation (returns fast, no giant vector).
+    expectRefusal(writeVariant("hugecount.gltf",
+                    replace(valid, "{\"bufferView\":0,\"componentType\":5126,\"count\":3,",
+                            "{\"bufferView\":0,\"componentType\":5126,\"count\":1000000000,")),
+                  key0, Error::InvalidArgument);
+    // Short buffer view: accessor span escapes the view.
+    expectRefusal(writeVariant("shortview.gltf",
+                    replace(valid, "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}",
+                            "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":10}")),
+                  key0, Error::Parse);
+    // Undersized stride: byteStride smaller than one element.
+    expectRefusal(writeVariant("shortstride.gltf",
+                    replace(valid, "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}",
+                            "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36,\"byteStride\":4}")),
+                  key0, Error::Parse);
+    // Misaligned accessor base.
+    expectRefusal(writeVariant("misaligned.gltf",
+                    replace(valid, "{\"buffer\":0,\"byteOffset\":44,\"byteLength\":36}",
+                            "{\"buffer\":0,\"byteOffset\":46,\"byteLength\":36}")),
+                  key1, Error::Parse);
+    // Index cardinality: 4 indices are not triangle soup (dedicated
+    // builder: prim1 carries four uint16 indices over a matching buffer).
+    {
+        float pos0[9] = {0,0,0, 1,0,0, 0,1,0};
+        float pos1[9] = {10,0,0, 11,0,0, 10,1,0};
+        uint16_t idx0[3] = {0,1,2};
+        uint16_t idx1[4] = {0,1,2,0};
+        const unsigned char pad[2] = {0, 0};
+        std::string raw;
+        raw.append((const char*)pos0, sizeof(pos0));
+        raw.append((const char*)idx0, sizeof(idx0));
+        raw.append((const char*)pad, sizeof(pad));
+        raw.append((const char*)pos1, sizeof(pos1));
+        raw.append((const char*)idx1, sizeof(idx1));
+        REQUIRE(raw.size() == 88);
+        const std::string b64 =
+            T4Base64((const unsigned char*)raw.data(), raw.size());
+        char json[4096];
+        std::snprintf(json, sizeof(json),
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+            "\"meshes\":[{\"primitives\":["
+            "{\"attributes\":{\"POSITION\":0},\"indices\":1},"
+            "{\"attributes\":{\"POSITION\":2},\"indices\":3}]} ],"
+            "\"buffers\":[{\"byteLength\":88,\"uri\":\"data:application/octet-stream;base64,%s\"}],"
+            "\"bufferViews\":["
+            "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+            "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":8},"
+            "{\"buffer\":0,\"byteOffset\":44,\"byteLength\":36},"
+            "{\"buffer\":0,\"byteOffset\":80,\"byteLength\":8}],"
+            "\"accessors\":["
+            "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+            "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"},"
+            "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+            "{\"bufferView\":3,\"componentType\":5123,\"count\":4,\"type\":\"SCALAR\"}]}",
+            b64.c_str());
+        expectRefusal(writeVariant("cardinality.gltf", json), key1,
+                      Error::Parse);
+    }
 }
 
 TEST_CASE("T4 GREEN_CollisionCacheRebuilds: changed files rebuild for the next Play")

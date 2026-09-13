@@ -226,76 +226,195 @@ bool ParseGltfSourceKey(const std::string& key, GltfSubresource& sub)
     return true;
 }
 
-bool ReadGltfVec3(const tinygltf::Model& model, int accessorIdx,
-                  std::vector<float>& out, std::string& detail)
+// Shared accessor-span validation. All metadata is attacker-influenced, so
+// every bound is checked with overflow-safe arithmetic BEFORE any allocation
+// or byte is touched:
+//   - non-negative offsets/counts and a known component layout,
+//   - sparse accessors are rejected (unsupported, never silently ignored),
+//   - count is capped before out.resize (allocation follows validation),
+//   - the buffer view lies inside its buffer, and the accessor span lies
+//     inside BOTH the view and the buffer,
+//   - stride covers at least one element and base/stride honor component
+//     alignment (glTF aligns accessors to the component width — 4 for float,
+//     2 for uint16 — not to the whole-element width; unaligned component
+//     reads are refused, not reinterpreted).
+struct GltfSpan
 {
+    const unsigned char* data = nullptr; // first element byte
+    size_t count = 0;                    // validated element count
+    size_t stride = 0;                   // validated bytes per element
+    size_t elemSize = 0;                 // bytes per tightly-packed element
+};
+
+size_t ComponentWidth(int componentType)
+{
+    switch (componentType)
+    {
+        case TINYGLTF_COMPONENT_TYPE_BYTE:
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: return 1;
+        case TINYGLTF_COMPONENT_TYPE_SHORT:
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: return 2;
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+        case TINYGLTF_COMPONENT_TYPE_FLOAT: return 4;
+        default: return 0;
+    }
+}
+
+size_t TypeComponents(int type)
+{
+    switch (type)
+    {
+        case TINYGLTF_TYPE_SCALAR: return 1;
+        case TINYGLTF_TYPE_VEC3: return 3;
+        default: return 0;
+    }
+}
+
+bool ValidateGltfSpan(const tinygltf::Model& model, int accessorIdx,
+                      int expectedType, const int* allowedComponents,
+                      size_t allowedCount, size_t maxCount,
+                      const char* what, GltfSpan& span, Error::Code& codeOut, std::string& detail)
+{
+    codeOut = Error::Parse;
     if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
     {
-        detail = "POSITION accessor index out of range";
+        detail = std::string(what) + " accessor index out of range";
         return false;
     }
     const tinygltf::Accessor& acc = model.accessors[(size_t)accessorIdx];
-    if (acc.type != TINYGLTF_TYPE_VEC3 ||
-        acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT)
+    if (acc.type != expectedType || TypeComponents(expectedType) == 0)
     {
-        detail = "POSITION accessor must be VEC3 float";
+        detail = std::string(what) + " accessor has the wrong type";
+        return false;
+    }
+    bool componentOk = false;
+    for (size_t i = 0; i < allowedCount; ++i)
+    {
+        if (acc.componentType == allowedComponents[i])
+            componentOk = true;
+    }
+    const size_t elemSize =
+        ComponentWidth(acc.componentType) * TypeComponents(expectedType);
+    if (!componentOk || elemSize == 0)
+    {
+        detail = std::string(what) + " accessor has an unsupported component type";
+        return false;
+    }
+    if (acc.sparse.isSparse)
+    {
+        codeOut = Error::InvalidArgument;
+        detail = std::string(what) +
+                 " uses a sparse accessor (unsupported for collision decode)";
+        return false;
+    }
+    if (acc.count <= 0)
+    {
+        detail = std::string(what) + " accessor is empty";
+        return false;
+    }
+    // Cap before allocation: attacker-controlled count never sizes a vector.
+    if ((uint64_t)acc.count > (uint64_t)maxCount)
+    {
+        codeOut = Error::InvalidArgument;
+        detail = std::string(what) + " accessor count exceeds the collision cap";
         return false;
     }
     if (acc.bufferView < 0 ||
         acc.bufferView >= (int)model.bufferViews.size())
     {
-        detail = "POSITION bufferView out of range";
+        detail = std::string(what) + " bufferView out of range";
         return false;
     }
     const tinygltf::BufferView& bv =
         model.bufferViews[(size_t)acc.bufferView];
     if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size())
     {
-        detail = "POSITION buffer out of range";
+        detail = std::string(what) + " buffer out of range";
         return false;
     }
     const tinygltf::Buffer& buf = model.buffers[(size_t)bv.buffer];
-    const size_t stride =
-        bv.byteStride != 0 ? (size_t)bv.byteStride : 3 * sizeof(float);
-    if (stride < 3 * sizeof(float))
+    if (bv.byteOffset < 0 || bv.byteLength < 0 || acc.byteOffset < 0)
     {
-        detail = "POSITION byteStride too small";
+        detail = std::string(what) + " has a negative offset/length";
         return false;
     }
-    if (acc.count <= 0)
+    const size_t stride = bv.byteStride != 0 ? (size_t)bv.byteStride : elemSize;
+    if (bv.byteStride != 0 && (bv.byteStride < 0 || (size_t)bv.byteStride < elemSize))
     {
-        detail = "POSITION accessor is empty";
+        detail = std::string(what) + " byteStride is smaller than one element";
         return false;
     }
-    const size_t base = (size_t)bv.byteOffset + (size_t)acc.byteOffset;
-    const size_t need = base + (size_t)(acc.count - 1) * stride + 3 * sizeof(float);
-    if (need > buf.data.size())
+    // View inside buffer, then span inside view and buffer. Subtraction form
+    // (remaining >= need) is overflow-safe for arbitrary hostile metadata.
+    const size_t bufSize = buf.data.size();
+    const size_t viewOff = (size_t)bv.byteOffset;
+    const size_t viewLen = (size_t)bv.byteLength;
+    const size_t accOff = (size_t)acc.byteOffset;
+    if (viewOff > bufSize || viewLen > bufSize - viewOff)
     {
-        detail = "POSITION accessor overruns its buffer";
+        detail = std::string(what) + " buffer view escapes its buffer";
         return false;
     }
-    out.resize((size_t)acc.count * 3);
-    for (int i = 0; i < acc.count; ++i)
+    if (accOff > viewLen)
+    {
+        detail = std::string(what) + " accessor offset escapes its view";
+        return false;
+    }
+    const uint64_t count = (uint64_t)acc.count;
+    const uint64_t spanNeed =
+        (count - 1) * (uint64_t)stride + (uint64_t)elemSize;
+    if (spanNeed > (uint64_t)(viewLen - accOff) ||
+        spanNeed > (uint64_t)(bufSize - (viewOff + accOff)))
+    {
+        detail = std::string(what) + " accessor span escapes its view/buffer";
+        return false;
+    }
+    const size_t base = viewOff + accOff;
+    const size_t compWidth = ComponentWidth(acc.componentType);
+    if (base % compWidth != 0 || stride % compWidth != 0)
+    {
+        detail = std::string(what) + " accessor is misaligned for its component type";
+        return false;
+    }
+    span.data = buf.data.data() + base;
+    span.count = (size_t)count;
+    span.stride = stride;
+    span.elemSize = elemSize;
+    return true;
+}
+
+bool ReadGltfVec3(const tinygltf::Model& model, int accessorIdx,
+                  std::vector<float>& out, Error::Code& codeOut, std::string& detail)
+{
+    static const int kFloat[] = {TINYGLTF_COMPONENT_TYPE_FLOAT};
+    GltfSpan span;
+    if (!ValidateGltfSpan(model, accessorIdx, TINYGLTF_TYPE_VEC3, kFloat, 1,
+                           kMaxCollisionVertices, "POSITION", span, codeOut,
+                           detail))
+        return false;
+    out.resize(span.count * 3);
+    for (size_t i = 0; i < span.count; ++i)
     {
         float x, y, z;
-        std::memcpy(&x, &buf.data[base + (size_t)i * stride], sizeof(float));
-        std::memcpy(&y, &buf.data[base + (size_t)i * stride + 4], sizeof(float));
-        std::memcpy(&z, &buf.data[base + (size_t)i * stride + 8], sizeof(float));
+        const unsigned char* p = span.data + i * span.stride;
+        std::memcpy(&x, p, sizeof(float));
+        std::memcpy(&y, p + 4, sizeof(float));
+        std::memcpy(&z, p + 8, sizeof(float));
         if (!IsFiniteFloat(x) || !IsFiniteFloat(y) || !IsFiniteFloat(z))
         {
             detail = "POSITION contains non-finite data";
             return false;
         }
-        out[(size_t)i * 3 + 0] = x;
-        out[(size_t)i * 3 + 1] = y;
-        out[(size_t)i * 3 + 2] = z;
+        out[i * 3 + 0] = x;
+        out[i * 3 + 1] = y;
+        out[i * 3 + 2] = z;
     }
     return true;
 }
 
 bool ReadGltfIndices(const tinygltf::Model& model,
                      const tinygltf::Primitive& prim, size_t vertexCount,
-                     std::vector<uint32_t>& out, std::string& detail)
+                     std::vector<uint32_t>& out, Error::Code& codeOut, std::string& detail)
 {
     if (prim.indices < 0)
     {
@@ -305,66 +424,44 @@ bool ReadGltfIndices(const tinygltf::Model& model,
             detail = "non-indexed primitive vertex count is not a multiple of 3";
             return false;
         }
+        if (vertexCount > kMaxCollisionIndices)
+        {
+            codeOut = Error::InvalidArgument;
+            detail = "non-indexed primitive exceeds the collision index cap";
+            return false;
+        }
         out.resize(vertexCount);
         for (size_t i = 0; i < vertexCount; ++i)
             out[i] = (uint32_t)i;
         return true;
     }
-    if (prim.indices >= (int)model.accessors.size())
-    {
-        detail = "index accessor out of range";
+    static const int kUint[] = {TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE,
+                                TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT,
+                                TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT};
+    GltfSpan span;
+    if (!ValidateGltfSpan(model, prim.indices, TINYGLTF_TYPE_SCALAR, kUint, 3,
+                           kMaxCollisionIndices, "index", span, codeOut,
+                           detail))
         return false;
-    }
+    // Element width follows the validated component type.
     const tinygltf::Accessor& acc =
         model.accessors[(size_t)prim.indices];
-    if (acc.type != TINYGLTF_TYPE_SCALAR ||
-        (acc.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE &&
-         acc.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT &&
-         acc.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT))
-    {
-        detail = "index accessor must be SCALAR uint8/uint16/uint32";
-        return false;
-    }
-    if (acc.bufferView < 0 ||
-        acc.bufferView >= (int)model.bufferViews.size())
-    {
-        detail = "index bufferView out of range";
-        return false;
-    }
-    const tinygltf::BufferView& bv =
-        model.bufferViews[(size_t)acc.bufferView];
-    if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size())
-    {
-        detail = "index buffer out of range";
-        return false;
-    }
-    const tinygltf::Buffer& buf = model.buffers[(size_t)bv.buffer];
     const size_t elemSize =
         acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE
             ? 1
         : acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT
             ? 2
             : 4;
-    const size_t stride =
-        bv.byteStride != 0 ? (size_t)bv.byteStride : elemSize;
-    const size_t base = (size_t)bv.byteOffset + (size_t)acc.byteOffset;
-    if (acc.count <= 0)
+    if (span.elemSize != elemSize)
     {
-        detail = "index accessor is empty";
+        detail = "index accessor width mismatch";
         return false;
     }
-    const size_t need =
-        base + (size_t)(acc.count - 1) * stride + elemSize;
-    if (need > buf.data.size())
-    {
-        detail = "index accessor overruns its buffer";
-        return false;
-    }
-    out.resize((size_t)acc.count);
-    for (int i = 0; i < acc.count; ++i)
+    out.resize(span.count);
+    for (size_t i = 0; i < span.count; ++i)
     {
         uint32_t v = 0;
-        const unsigned char* p = &buf.data[base + (size_t)i * stride];
+        const unsigned char* p = span.data + i * span.stride;
         if (elemSize == 1)
             v = *p;
         else if (elemSize == 2)
@@ -380,7 +477,13 @@ bool ReadGltfIndices(const tinygltf::Model& model,
             detail = "index out of range";
             return false;
         }
-        out[(size_t)i] = v;
+        out[i] = v;
+    }
+    // Triangle cardinality: indexed triangle soup comes in triples.
+    if (out.size() % 3 != 0)
+    {
+        detail = "indexed triangle count is not a multiple of 3";
+        return false;
     }
     return true;
 }
@@ -415,14 +518,11 @@ Result<CollisionGeometry> DecodeGltf(const std::filesystem::path& absolutePath,
                             absolutePath.string() + "': " + err);
     }
 
-    if (sub.scene >= (int)model.scenes.size())
+    if (sub.scene < 0 || sub.scene >= (int)model.scenes.size())
     {
         return FailWith(Error::InvalidArgument, absolutePath.string(),
                         "DecodeCollisionGeometry: glTF scene index out of range");
     }
-    // Node identity: validate the node index exists. Node hierarchy transforms
-    // are NOT baked here — the entity's uniform world scale applies at
-    // PhysicsWorld build (single scale owner, plan section 3).
     if (sub.node < 0 || sub.node >= (int)model.nodes.size())
     {
         return FailWith(Error::InvalidArgument, absolutePath.string(),
@@ -433,6 +533,49 @@ Result<CollisionGeometry> DecodeGltf(const std::filesystem::path& absolutePath,
         return FailWith(Error::InvalidArgument, absolutePath.string(),
                         "DecodeCollisionGeometry: glTF mesh index out of range");
     }
+    // Exact source identity: the named node must be reachable from the named
+    // scene (roots plus transitive children) AND carry the named mesh. A
+    // forged but in-range key that recombines unrelated scene/node/mesh
+    // indices selects geometry the importer never identified, so it is an
+    // unresolved-identity refusal, not a best-effort decode.
+    {
+        const tinygltf::Scene& scene = model.scenes[(size_t)sub.scene];
+        std::vector<int> stack = scene.nodes;
+        std::vector<char> seen(model.nodes.size(), 0);
+        bool reachable = false;
+        while (!stack.empty())
+        {
+            const int current = stack.back();
+            stack.pop_back();
+            if (current < 0 || current >= (int)model.nodes.size())
+                continue;
+            if (seen[(size_t)current])
+                continue;
+            seen[(size_t)current] = 1;
+            if (current == sub.node)
+            {
+                reachable = true;
+                break;
+            }
+            for (int child : model.nodes[(size_t)current].children)
+                stack.push_back(child);
+        }
+        if (!reachable)
+        {
+            return FailWith(Error::InvalidArgument, absolutePath.string(),
+                            "DecodeCollisionGeometry: glTF node is not reachable "
+                            "from the named scene (forged source relationship)");
+        }
+        if (model.nodes[(size_t)sub.node].mesh != sub.mesh)
+        {
+            return FailWith(Error::InvalidArgument, absolutePath.string(),
+                            "DecodeCollisionGeometry: glTF node does not carry "
+                            "the named mesh (forged source relationship)");
+        }
+    }
+    // Node hierarchy transforms are NOT baked here — the entity's uniform
+    // world scale applies at PhysicsWorld build (single scale owner, plan
+    // section 3).
     const tinygltf::Mesh& mesh = model.meshes[(size_t)sub.mesh];
     if (sub.primitive < 0 || sub.primitive >= (int)mesh.primitives.size())
     {
@@ -441,6 +584,15 @@ Result<CollisionGeometry> DecodeGltf(const std::filesystem::path& absolutePath,
     }
     const tinygltf::Primitive& prim =
         mesh.primitives[(size_t)sub.primitive];
+    // Triangle soup only. Mode -1 is tinygltf's absent-field value, which the
+    // glTF spec defines as TRIANGLES; every other non-triangle mode is a loud
+    // refusal (points/lines/strips/fans have no collision meaning).
+    if (prim.mode != TINYGLTF_MODE_TRIANGLES && prim.mode != -1)
+    {
+        return FailWith(Error::InvalidArgument, absolutePath.string(),
+                        "DecodeCollisionGeometry: glTF primitive is not triangles "
+                        "(collision decode requires TRIANGLES mode)");
+    }
     const auto posIt = prim.attributes.find("POSITION");
     if (posIt == prim.attributes.end())
     {
@@ -450,9 +602,10 @@ Result<CollisionGeometry> DecodeGltf(const std::filesystem::path& absolutePath,
 
     CollisionGeometry out;
     std::string detail;
-    if (!ReadGltfVec3(model, posIt->second, out.vertices, detail))
+    Error::Code readerCode = Error::Parse;
+    if (!ReadGltfVec3(model, posIt->second, out.vertices, readerCode, detail))
     {
-        return FailWith(Error::Parse, absolutePath.string(),
+        return FailWith(readerCode, absolutePath.string(),
                         "DecodeCollisionGeometry: glTF POSITION invalid (" +
                             detail + ")");
     }
@@ -466,9 +619,10 @@ Result<CollisionGeometry> DecodeGltf(const std::filesystem::path& absolutePath,
                 std::to_string(vertexCount) + " (cap " +
                 std::to_string(kMaxCollisionVertices) + ")");
     }
-    if (!ReadGltfIndices(model, prim, vertexCount, out.indices, detail))
+    if (!ReadGltfIndices(model, prim, vertexCount, out.indices, readerCode,
+                          detail))
     {
-        return FailWith(Error::Parse, absolutePath.string(),
+        return FailWith(readerCode, absolutePath.string(),
                         "DecodeCollisionGeometry: glTF indices invalid (" +
                             detail + ")");
     }
