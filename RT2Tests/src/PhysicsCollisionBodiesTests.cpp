@@ -910,21 +910,37 @@ TEST_CASE("T4 GREEN_InspectorWorkPolicy: clean resync, dirty conflict, reset, as
     work.Sync(target, live, liveShape);
     CHECK_FALSE(work.bodyDirty);
 
-    // Presence change reseeds unconditionally.
+    // A dirty copy survives a live presence change and conflicts until the
+    // user explicitly reverts; no unapplied edit is silently discarded.
     work.body->mass = 9.0f;
     work.bodyDirty = true;
     work.Sync(target, std::nullopt, liveShape);
+    REQUIRE(work.body.has_value());
+    CHECK(work.body->mass == doctest::Approx(9.0f));
+    CHECK(work.bodyDirty);
+    CHECK(work.bodyConflict);
+    work.RevertBody(std::nullopt);
     CHECK_FALSE(work.body.has_value());
     CHECK_FALSE(work.bodyDirty);
     CHECK_FALSE(work.bodyConflict);
 
-    // Applied advances the seed; selection change reseeds everything.
+    // Applying one side advances only that seed and preserves pending edits
+    // to the other component.
     work.Sync(target, live, liveShape);
     work.body->mass = 9.0f;
     work.bodyDirty = true;
-    work.Applied(live, liveShape);
+    work.shape->radius = 2.0f;
+    work.shapeDirty = true;
+    work.AppliedBody(live);
     CHECK_FALSE(work.bodyDirty);
     CHECK(work.body == live);
+    CHECK(work.shapeDirty);
+    CHECK(work.shape->radius == doctest::Approx(2.0f));
+    work.AppliedShape(liveShape);
+    CHECK_FALSE(work.shapeDirty);
+    CHECK(work.shape == liveShape);
+
+    // Selection change still reseeds everything.
     work.body->mass = 9.0f;
     work.bodyDirty = true;
     work.Sync(other, live, liveShape);

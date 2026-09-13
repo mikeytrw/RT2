@@ -18,8 +18,9 @@
 // after = working copy). This struct owns the resync/conflict/reset rules so
 // they are unit-tested without ImGui:
 //
-//   - Reseed on selection (target) change or when live presence changes
-//     (component added/removed out-of-band, e.g. by Undo/Redo).
+//   - Reseed on selection (target) change. A clean copy also follows live
+//     presence changes (component added/removed out-of-band); a dirty copy
+//     instead conflicts and remains available for an explicit Revert.
 //   - Clean-copy resync: a non-dirty copy whose live values drifted (Undo of
 //     an earlier edit while this entity stayed selected) is resynced to live,
 //     so the next edit-and-Apply cannot overwrite fields Undo restored.
@@ -67,12 +68,18 @@ struct PhysicsInspectorWork
         SyncSide(shape, seedShape, liveShape, shapeDirty, shapeConflict);
     }
 
-    // The working copy was applied (or explicitly reverted) to current live
-    // state: the seed advances and dirty/conflict clear.
-    void Applied(const std::optional<PhysicsBodyComponent>& liveBody,
-                 const std::optional<PhysicsShapeComponent>& liveShape)
+    // Applying one component must not discard pending edits to the other.
+    void AppliedBody(const std::optional<PhysicsBodyComponent>& liveBody)
     {
-        Reseed(liveBody, liveShape);
+        body = seedBody = liveBody;
+        bodyDirty = false;
+        bodyConflict = false;
+    }
+    void AppliedShape(const std::optional<PhysicsShapeComponent>& liveShape)
+    {
+        shape = seedShape = liveShape;
+        shapeDirty = false;
+        shapeConflict = false;
     }
 
     // Single-side revert (the other side's working state is preserved).
@@ -123,11 +130,15 @@ private:
     {
         if (work.has_value() != live.has_value())
         {
-            // Presence changed out-of-band: reseed unconditionally (a dirty
-            // add/remove was undone/redone; the copy cannot survive it).
+            // Preserve a dirty edit when Undo/Redo removes its component.
+            // The UI keeps rendering the working copy until explicit Revert.
+            if (dirty)
+            {
+                conflict = true;
+                return;
+            }
             work = live;
             seed = live;
-            dirty = false;
             conflict = false;
             return;
         }

@@ -1797,7 +1797,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		liveShape = *s;
 
 	// Working-copy lifecycle (PhysicsInspectorWork): reseed on selection
-	// change or live-presence change, resync clean copies after Undo/Redo,
+	// change, resync clean copies after Undo/Redo,
 	// and flag dirty/live conflicts instead of overwriting restored state.
 	// Exact before-states are still read fresh at Apply.
 	m_PhysicsWork.Sync(targetUuid, liveBody, liveShape);
@@ -1820,7 +1820,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	ImGui::BeginDisabled(!m_Editable || isPrefabMember);
 
 	// ---- Body ----
-	if (!liveBody.has_value())
+	if (!m_PhysicsWork.body.has_value())
 	{
 		if (ImGui::Button("Add Physics Body"))
 		{
@@ -1913,19 +1913,21 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 					before = *b;
 				auto cmd = MakeSetPhysicsBodyCommandIfEffective(
 					targetUuid, before, m_PhysicsWork.body);
+				bool applied = !cmd;
 				if (cmd)
 				{
 					const auto result = ExecuteCommandThroughHistory(
 						m_CommandHistory, *m_SceneMgr, std::move(cmd));
 					ApplyMutation(result);
+					applied = result.success;
 				}
-				std::optional<PhysicsBodyComponent> freshBody;
-				if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
-					freshBody = *b;
-				std::optional<PhysicsShapeComponent> freshShape;
-				if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
-					freshShape = *s;
-				m_PhysicsWork.Applied(freshBody, freshShape);
+				if (applied)
+				{
+					std::optional<PhysicsBodyComponent> freshBody;
+					if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+						freshBody = *b;
+					m_PhysicsWork.AppliedBody(freshBody);
+				}
 			}
 			ImGui::EndDisabled();
 			ImGui::SameLine();
@@ -1934,7 +1936,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 				m_PhysicsWork.RevertBody(liveBody);
 			}
 		}
-		if (ImGui::Button("Remove Physics Body"))
+		if (liveBody.has_value() && ImGui::Button("Remove Physics Body"))
 		{
 			std::optional<PhysicsBodyComponent> before;
 			if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
@@ -1946,19 +1948,14 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 				const auto result = ExecuteCommandThroughHistory(
 					m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
+				if (result.success)
+					m_PhysicsWork.AppliedBody(std::nullopt);
 			}
-			std::optional<PhysicsBodyComponent> freshBody;
-			if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
-				freshBody = *b;
-			std::optional<PhysicsShapeComponent> freshShape;
-			if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
-				freshShape = *s;
-			m_PhysicsWork.Applied(freshBody, freshShape);
 		}
 	}
 
 	// ---- Shape ----
-	if (!liveShape.has_value())
+	if (!m_PhysicsWork.shape.has_value())
 	{
 		if (ImGui::Button("Add Physics Shape"))
 		{
@@ -2083,19 +2080,21 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 					before = *s;
 				auto cmd = MakeSetPhysicsShapeCommandIfEffective(
 					targetUuid, before, m_PhysicsWork.shape);
+				bool applied = !cmd;
 				if (cmd)
 				{
 					const auto result = ExecuteCommandThroughHistory(
 						m_CommandHistory, *m_SceneMgr, std::move(cmd));
 					ApplyMutation(result);
+					applied = result.success;
 				}
-				std::optional<PhysicsBodyComponent> freshBody;
-				if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
-					freshBody = *b;
-				std::optional<PhysicsShapeComponent> freshShape;
-				if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
-					freshShape = *s;
-				m_PhysicsWork.Applied(freshBody, freshShape);
+				if (applied)
+				{
+					std::optional<PhysicsShapeComponent> freshShape;
+					if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+						freshShape = *s;
+					m_PhysicsWork.AppliedShape(freshShape);
+				}
 			}
 			ImGui::EndDisabled();
 			ImGui::SameLine();
@@ -2104,7 +2103,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 				m_PhysicsWork.RevertShape(liveShape);
 			}
 		}
-		if (ImGui::Button("Remove Physics Shape"))
+		if (liveShape.has_value() && ImGui::Button("Remove Physics Shape"))
 		{
 			std::optional<PhysicsShapeComponent> before;
 			if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
@@ -2116,14 +2115,9 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 				const auto result = ExecuteCommandThroughHistory(
 					m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
+				if (result.success)
+					m_PhysicsWork.AppliedShape(std::nullopt);
 			}
-			std::optional<PhysicsBodyComponent> freshBody;
-			if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
-				freshBody = *b;
-			std::optional<PhysicsShapeComponent> freshShape;
-			if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
-				freshShape = *s;
-			m_PhysicsWork.Applied(freshBody, freshShape);
 		}
 	}
 
