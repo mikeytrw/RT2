@@ -10,6 +10,7 @@
 #include "EditorPropertyCommands.h"
 #include "PropertyEditSession.h"
 #include "CompositePreviewSession.h"
+#include "PhysicsInspectorState.h"
 #include "PreviewSessionClose.h"
 #include "TransformEditing.h"
 #include "PrefabEditorPresentation.h"
@@ -446,16 +447,10 @@ private:
 	unsigned int m_MotionVelocitySessionOwningWidgetId = 0;
 	unsigned int m_ScriptFieldSessionOwningWidgetId = 0;
 
-	// Bullet T4 discrete physics working copies (Edit-state Inspector only).
-	// m_PhysicsWorkTarget names the entity the copies were taken from; a
-	// selection change (or a missing live component) re-seeds them. The dirty
-	// flags mean the copy differs from the last seeded live read — Apply is
-	// enabled only then, so history holds exactly one entry per Apply.
-	rt2::core::UUID m_PhysicsWorkTarget{};
-	std::optional<PhysicsBodyComponent> m_PhysicsWorkBody;
-	std::optional<PhysicsShapeComponent> m_PhysicsWorkShape;
-	bool m_PhysicsWorkBodyDirty = false;
-	bool m_PhysicsWorkShapeDirty = false;
+	// Bullet T4 discrete physics working state (Edit-state Inspector only).
+	// Policy (resync/conflict/reset/assetId) lives in PhysicsInspectorWork
+	// and is CPU-unit-tested; this member only carries it across frames.
+	PhysicsInspectorWork m_PhysicsWork;
 
 	// Pending-recovery surfacing (S6-C fixup P1 finding 2 / final closure P1
 	// finding 2): a live-preview session whose close failed against a still-live

@@ -1,4 +1,4 @@
-﻿#include "SceneEditorUI.h"
+#include "SceneEditorUI.h"
 #include "PrimitiveGeometry.h"
 #include "FileDialog.h"
 #include "ECSComponents.h"
@@ -154,7 +154,7 @@ bool SceneEditorUI::CanBeginPreview(PreviewSessionKind kind,
 	if (!session) return false;
 
 	// If this kind's session already owns THIS target, it is the ongoing
-	// gesture — do not re-begin it.
+	// gesture � do not re-begin it.
 	if (session->IsOpen() && session->Target() == target) return false;
 
 	// At most one preview: finalize any other-open session (different kind, or
@@ -462,7 +462,7 @@ void SceneEditorUI::Undo()
 	if (!m_CommandHistory || !m_SceneMgr) return;
 	// Two-phase-close every open live-preview session (abandon) before history
 	// moves. If any stays pending, abort the Undo so an applied preview is
-	// never orphaned — the persistent recovery bar stays surfaced (S6-C
+	// never orphaned � the persistent recovery bar stays surfaced (S6-C
 	// re-review, P1 finding 2).
 	if (!CloseAllPreviewSessionsForGlobalAction()) return;
 	// Abandon the non-composite record-on-release sessions (uncommitted widget
@@ -504,11 +504,11 @@ bool SceneEditorUI::CloseAllPreviewSessionsForAction(bool finalize)
 	// The product decision seam: the CPU-tested global-action reducer closes
 	// every open preview session (abandon/restore for Undo/Redo, record for
 	// discrete/global authoring admission) and clears owner IDs for the ones
-	// that close (S6-C final closure P1 finding 2 — wired here, not
+	// that close (S6-C final closure P1 finding 2 � wired here, not
 	// duplicated). The per-slot outcomes carry the owner/error/sync facts.
 	//
 	// Host-edge P1 finding 1: if recovery is ALREADY pending, ordinary admission
-	// and Undo/Redo short-circuit immediately WITHOUT invoking the reducer — no
+	// and Undo/Redo short-circuit immediately WITHOUT invoking the reducer � no
 	// implicit close retry, no idle re-run, no recovery-error overwrite, no
 	// scene sync, no UUID draw, no mutation. Only the explicit Retry action (and
 	// proven replacement/removal handling) re-runs a pending close.
@@ -710,6 +710,7 @@ void SceneEditorUI::DiscardAllPropertySessions()
 	m_MaterialPropertiesSession.Discard();
 	m_MotionVelocitySession.Discard();
 	m_ScriptFieldSession.Discard();
+	m_PhysicsWork.Clear();
 	// The previews are gone, so no recovery remains pending (ResetForDocument /
 	// confirmed document replacement is a valid discard path).
 	for (auto& state : m_PreviewRecoveryByKind)
@@ -1050,7 +1051,7 @@ void SceneEditorUI::RenderOutliner()
 		return;
 	}
 
-	// Add menu â€” disabled during Play
+	// Add menu — disabled during Play
 	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::Button("Add"))
 		ImGui::OpenPopup("AddEntity");
@@ -1070,7 +1071,7 @@ void SceneEditorUI::RenderOutliner()
 			// Punctual defaults. Point/spot intensity is candela and goes
 			// through inverse-square falloff, so 50 cd at a few metres reads
 			// as a normal room light. A directional light has no falloff at
-			// all — its intensity is the arriving radiance — which is why it
+			// all � its intensity is the arriving radiance � which is why it
 			// needs a far smaller number to sit at the same exposure.
 			if (ImGui::MenuItem("Point"))
 			{
@@ -1172,13 +1173,13 @@ void SceneEditorUI::RenderOutliner()
 		m_SearchBuffer, sizeof(m_SearchBuffer)))
 		m_State.SearchText() = m_SearchBuffer;
 
-	// Entity tree (root entities â†’ children)
+	// Entity tree (root entities → children)
 	size_t count = m_SceneMgr->GetEntityCount();
 	ImGui::Text("Entities: %d", (int)count);
 
 	if (count == 0)
 	{
-		ImGui::TextDisabled("  (empty â€” load a scene or add an entity)");
+		ImGui::TextDisabled("  (empty — load a scene or add an entity)");
 		RenderAssetDropTarget();
 		ImGui::End();
 		return;
@@ -1585,7 +1586,7 @@ void SceneEditorUI::RenderInspector()
 		ImGui::TextDisabled("Directly locked in the editor");
 	ImGui::BeginDisabled(directlyLocked);
 
-	// Name field — records on Enter or focus loss after edit (not per keystroke).
+	// Name field � records on Enter or focus loss after edit (not per keystroke).
 	char nameBuf[128];
 	snprintf(nameBuf, sizeof(nameBuf), "%s", name.c_str());
 	ImGui::Text("Name:");
@@ -1668,7 +1669,7 @@ void SceneEditorUI::RenderInspector()
 					motionCancelPending = true;
 				ImGui::EndDisabled();
 
-				// S6-C live preview through the composite — no direct mutation
+				// S6-C live preview through the composite � no direct mutation
 				// of `mc`; the working copy carries the edited velocity.
 				// Publish gate: the changed widget must own the session (trivial
 				// for the single motion field) and the frame is frozen while the
@@ -1795,27 +1796,11 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
 		liveShape = *s;
 
-	// Working-copy lifecycle: reseed on selection change, or when Undo/Redo
-	// changed live presence under us (exact before-states are read fresh at
-	// Apply, so the copies only carry the user's unapplied edits).
-	if (m_PhysicsWorkTarget != targetUuid)
-	{
-		m_PhysicsWorkTarget = targetUuid;
-		m_PhysicsWorkBody = liveBody;
-		m_PhysicsWorkBodyDirty = false;
-		m_PhysicsWorkShape = liveShape;
-		m_PhysicsWorkShapeDirty = false;
-	}
-	if (m_PhysicsWorkBody.has_value() != liveBody.has_value())
-	{
-		m_PhysicsWorkBody = liveBody;
-		m_PhysicsWorkBodyDirty = false;
-	}
-	if (m_PhysicsWorkShape.has_value() != liveShape.has_value())
-	{
-		m_PhysicsWorkShape = liveShape;
-		m_PhysicsWorkShapeDirty = false;
-	}
+	// Working-copy lifecycle (PhysicsInspectorWork): reseed on selection
+	// change or live-presence change, resync clean copies after Undo/Redo,
+	// and flag dirty/live conflicts instead of overwriting restored state.
+	// Exact before-states are still read fresh at Apply.
+	m_PhysicsWork.Sync(targetUuid, liveBody, liveShape);
 
 	ImGui::Separator();
 	ImGui::Text("Physics (Bullet)");
@@ -1852,41 +1837,36 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	}
 	else
 	{
-		if (!m_PhysicsWorkBody.has_value())
-		{
-			m_PhysicsWorkBody = liveBody;
-			m_PhysicsWorkBodyDirty = false;
-		}
-		auto& work = *m_PhysicsWorkBody;
+		auto& work = *m_PhysicsWork.body;
 		ImGui::Text("Body");
 		int kind = static_cast<int>(work.kind);
 		ImGui::SetNextItemWidth(140.0f);
 		if (ImGui::Combo("Kind", &kind, "Static\0Dynamic\0Kinematic\0"))
 		{
 			work.kind = static_cast<PhysicsBodyKind>(kind);
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		}
 		if (ImGui::DragFloat("Mass (kg)", &work.mass, 0.1f, 0.0f, 10000.0f, "%.3f"))
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		if (ImGui::DragFloat("Friction", &work.friction, 0.01f, 0.0f, 10.0f, "%.3f"))
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		if (ImGui::DragFloat("Restitution", &work.restitution, 0.01f, 0.0f, 1.0f, "%.3f"))
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		if (ImGui::DragFloat("Linear damping", &work.linearDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		if (ImGui::DragFloat("Angular damping", &work.angularDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		if (ImGui::Checkbox("CCD enabled", &work.ccdEnabled))
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		if (work.ccdEnabled)
 		{
 			if (ImGui::DragFloat("CCD threshold", &work.ccdMotionThreshold, 0.01f, 0.0f, 10.0f, "%.3f"))
-				m_PhysicsWorkBodyDirty = true;
+				m_PhysicsWork.bodyDirty = true;
 			if (ImGui::DragFloat("CCD swept radius", &work.ccdSweptRadius, 0.01f, 0.0f, 10.0f, "%.3f"))
-				m_PhysicsWorkBodyDirty = true;
+				m_PhysicsWork.bodyDirty = true;
 		}
 		if (ImGui::Checkbox("Start asleep", &work.startAsleep))
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		int layer = 0;
 		if (work.layer == PhysicsLayer::Dynamic) layer = 0;
 		else if (work.layer == PhysicsLayer::WorldStatic) layer = 1;
@@ -1898,7 +1878,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 			work.layer = layer == 0 ? PhysicsLayer::Dynamic
 				: layer == 1 ? PhysicsLayer::WorldStatic
 				: layer == 2 ? PhysicsLayer::Mechanism : PhysicsLayer::Trigger;
-			m_PhysicsWorkBodyDirty = true;
+			m_PhysicsWork.bodyDirty = true;
 		}
 		bool maskBits[4] = {
 			(work.mask & PhysicsLayer::Dynamic) != 0,
@@ -1918,41 +1898,40 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 			{
 				if (maskBits[i]) work.mask |= bit;
 				else work.mask &= (uint16_t)~bit;
-				m_PhysicsWorkBodyDirty = true;
+				m_PhysicsWork.bodyDirty = true;
 			}
 		}
-		if (m_PhysicsWorkBodyDirty)
+		if (m_PhysicsWork.bodyDirty)
 		{
+			if (m_PhysicsWork.bodyConflict)
+				ImGui::TextDisabled("Live state changed underneath (Undo/Redo): Revert to continue");
+			ImGui::BeginDisabled(m_PhysicsWork.bodyConflict);
 			if (ImGui::Button("Apply Body"))
 			{
 				std::optional<PhysicsBodyComponent> before;
 				if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
 					before = *b;
 				auto cmd = MakeSetPhysicsBodyCommandIfEffective(
-					targetUuid, before, m_PhysicsWorkBody);
+					targetUuid, before, m_PhysicsWork.body);
 				if (cmd)
 				{
 					const auto result = ExecuteCommandThroughHistory(
 						m_CommandHistory, *m_SceneMgr, std::move(cmd));
 					ApplyMutation(result);
 				}
-				else
-				{
-					// No-op (edited back to live): drop the working state
-					// without touching history.
-					m_PhysicsWorkBodyDirty = false;
-				}
+				std::optional<PhysicsBodyComponent> freshBody;
 				if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
-					m_PhysicsWorkBody = *b;
-				else
-					m_PhysicsWorkBody = std::nullopt;
-				m_PhysicsWorkBodyDirty = false;
+					freshBody = *b;
+				std::optional<PhysicsShapeComponent> freshShape;
+				if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+					freshShape = *s;
+				m_PhysicsWork.Applied(freshBody, freshShape);
 			}
+			ImGui::EndDisabled();
 			ImGui::SameLine();
 			if (ImGui::Button("Revert Body"))
 			{
-				m_PhysicsWorkBody = liveBody;
-				m_PhysicsWorkBodyDirty = false;
+				m_PhysicsWork.RevertBody(liveBody);
 			}
 		}
 		if (ImGui::Button("Remove Physics Body"))
@@ -1968,8 +1947,13 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 					m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
 			}
-			m_PhysicsWorkBody = std::nullopt;
-			m_PhysicsWorkBodyDirty = false;
+			std::optional<PhysicsBodyComponent> freshBody;
+			if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+				freshBody = *b;
+			std::optional<PhysicsShapeComponent> freshShape;
+			if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+				freshShape = *s;
+			m_PhysicsWork.Applied(freshBody, freshShape);
 		}
 	}
 
@@ -1991,12 +1975,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	}
 	else
 	{
-		if (!m_PhysicsWorkShape.has_value())
-		{
-			m_PhysicsWorkShape = liveShape;
-			m_PhysicsWorkShapeDirty = false;
-		}
-		auto& work = *m_PhysicsWorkShape;
+		auto& work = *m_PhysicsWork.shape;
 		ImGui::Text("Shape");
 		int shapeKind = static_cast<int>(work.shape);
 		ImGui::SetNextItemWidth(160.0f);
@@ -2004,17 +1983,17 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		                  "Sphere\0Box\0ConvexHull\0StaticTriMesh\0"))
 		{
 			work.shape = static_cast<PhysicsShapeKind>(shapeKind);
-			m_PhysicsWorkShapeDirty = true;
+			m_PhysicsWork.shapeDirty = true;
 		}
 		if (work.shape == PhysicsShapeKind::Sphere)
 		{
 			if (ImGui::DragFloat("Radius", &work.radius, 0.01f, 0.001f, 100.0f, "%.3f"))
-				m_PhysicsWorkShapeDirty = true;
+				m_PhysicsWork.shapeDirty = true;
 		}
 		else if (work.shape == PhysicsShapeKind::Box)
 		{
 			if (ImGui::DragFloat3("Half extents", &work.halfExtents[0], 0.01f, 0.001f, 100.0f, "%.3f"))
-				m_PhysicsWorkShapeDirty = true;
+				m_PhysicsWork.shapeDirty = true;
 		}
 		else
 		{
@@ -2035,12 +2014,11 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 			const bool pathEdited = ImGui::IsItemDeactivatedAfterEdit();
 			if (pathReturned || pathEdited)
 			{
-				if (ref->path != pathBuf)
-				{
-					ref->path = pathBuf;
-					ref->kind = ref->path.empty() ? AssetKind::Unknown : AssetKind::Model;
-					m_PhysicsWorkShapeDirty = true;
-				}
+				// A new path drops the previous file's asset ID (ID-first
+				// resolution would otherwise conflict); identity is
+				// repaired later by save/migration.
+				if (PhysicsInspectorWork::NoteCollisionPathChanged(*ref, pathBuf))
+					m_PhysicsWork.shapeDirty = true;
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Browse..."))
@@ -2064,12 +2042,12 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 						if (!ec && !rel.empty() && !rel.is_absolute())
 							stored = rel.generic_string();
 					}
-					ref->path = stored;
-					ref->kind = AssetKind::Model;
+					if (PhysicsInspectorWork::NoteCollisionPathChanged(*ref, stored))
+						m_PhysicsWork.shapeDirty = true;
 					const std::string ext = pickedPath.extension().generic_string();
 					if (ext == ".obj" || ext == ".OBJ")
 						ref->sourceKey = "obj:whole-model";
-					m_PhysicsWorkShapeDirty = true;
+					m_PhysicsWork.shapeDirty = true;
 				}
 			}
 			char keyBuf[192];
@@ -2083,44 +2061,45 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 				if (ref->sourceKey != keyBuf)
 				{
 					ref->sourceKey = keyBuf;
-					m_PhysicsWorkShapeDirty = true;
+					m_PhysicsWork.shapeDirty = true;
 				}
 			}
 		}
 		if (ImGui::Checkbox("Trigger (ghost)", &work.isTrigger))
-			m_PhysicsWorkShapeDirty = true;
+			m_PhysicsWork.shapeDirty = true;
 		if (ImGui::DragFloat("Margin", &work.collisionMargin, 0.005f, 0.0f, 1.0f, "%.3f"))
-			m_PhysicsWorkShapeDirty = true;
-		if (m_PhysicsWorkShapeDirty)
+			m_PhysicsWork.shapeDirty = true;
+		if (m_PhysicsWork.shapeDirty)
 		{
+			if (m_PhysicsWork.shapeConflict)
+				ImGui::TextDisabled("Live state changed underneath (Undo/Redo): Revert to continue");
+			ImGui::BeginDisabled(m_PhysicsWork.shapeConflict);
 			if (ImGui::Button("Apply Shape"))
 			{
 				std::optional<PhysicsShapeComponent> before;
 				if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
 					before = *s;
 				auto cmd = MakeSetPhysicsShapeCommandIfEffective(
-					targetUuid, before, m_PhysicsWorkShape);
+					targetUuid, before, m_PhysicsWork.shape);
 				if (cmd)
 				{
 					const auto result = ExecuteCommandThroughHistory(
 						m_CommandHistory, *m_SceneMgr, std::move(cmd));
 					ApplyMutation(result);
 				}
-				else
-				{
-					m_PhysicsWorkShapeDirty = false;
-				}
+				std::optional<PhysicsBodyComponent> freshBody;
+				if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+					freshBody = *b;
+				std::optional<PhysicsShapeComponent> freshShape;
 				if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
-					m_PhysicsWorkShape = *s;
-				else
-					m_PhysicsWorkShape = std::nullopt;
-				m_PhysicsWorkShapeDirty = false;
+					freshShape = *s;
+				m_PhysicsWork.Applied(freshBody, freshShape);
 			}
+			ImGui::EndDisabled();
 			ImGui::SameLine();
 			if (ImGui::Button("Revert Shape"))
 			{
-				m_PhysicsWorkShape = liveShape;
-				m_PhysicsWorkShapeDirty = false;
+				m_PhysicsWork.RevertShape(liveShape);
 			}
 		}
 		if (ImGui::Button("Remove Physics Shape"))
@@ -2136,8 +2115,13 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 					m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
 			}
-			m_PhysicsWorkShape = std::nullopt;
-			m_PhysicsWorkShapeDirty = false;
+			std::optional<PhysicsBodyComponent> freshBody;
+			if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+				freshBody = *b;
+			std::optional<PhysicsShapeComponent> freshShape;
+			if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+				freshShape = *s;
+			m_PhysicsWork.Applied(freshBody, freshShape);
 		}
 	}
 
@@ -2390,7 +2374,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
 
 	ImGui::BeginDisabled(!m_Editable);
-	// Material index combo — record-on-release via a discrete commit
+	// Material index combo � record-on-release via a discrete commit
 	// (Combo returns true only on selection change, so one record per
 	// selection is natural).
 	const auto& materials = m_SceneMgr->GetMaterials();
@@ -2443,7 +2427,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		// after-override (no mutation), then let the command's composite
 		// replay do the index write + marker insertion + override swap
 		// atomically (construct-then-Execute; the 2026-08-03 material-index
-		// undo defect shape — before can no longer be inverted with after).
+		// undo defect shape � before can no longer be inverted with after).
 		auto beforeOverride = m_SceneMgr->GetMaterialOverride(targetUuid);
 		const auto staged = m_SceneMgr->StageMaterialIndex(targetUuid, current);
 		if (!staged.IsOk())
@@ -2534,7 +2518,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		if (pendingCloseWidgetId != 0 && m_MaterialPropertiesSession.IsOpen() &&
 		    m_MaterialPropertiesSessionOwningWidgetId == pendingCloseWidgetId)
 		{
-			// Construct-then-Execute: no mutation has happened yet — the
+			// Construct-then-Execute: no mutation has happened yet � the
 			// command's composite replay applies the material value write +
 			// imported-member override fan-out + marker insertion atomically.
 			auto rec = m_MaterialPropertiesSession.CloseDeferred(mat,
@@ -2965,7 +2949,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 }
 
 // ----------------------------------------------------------------------------
-// Phase 6B/W5 — Script component editor
+// Phase 6B/W5 � Script component editor
 // ----------------------------------------------------------------------------
 void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 {
@@ -3120,7 +3104,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 	}
 	ImGui::EndDisabled();
 
-	// Empty path → unbound component: no field widgets, no diagnostics.
+	// Empty path ? unbound component: no field widgets, no diagnostics.
 	if (scriptState->asset.path.empty())
 		return;
 
@@ -3172,7 +3156,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 		ImGui::Text("%s:", desc.name.c_str());
 		ImGui::SameLine();
 
-		// Find the stored entry. Do NOT auto-insert defaults into the map —
+		// Find the stored entry. Do NOT auto-insert defaults into the map �
 		// only insert when the widget actually changes a field, so untouched
 		// declared-but-unstored fields don't get persisted as authored data.
 		auto& fieldMap = scriptState->fieldValues;
@@ -3180,12 +3164,12 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 		const bool hasStored = it != fieldMap.end();
 
 		// Guard: if the stored type and declared type are incompatible (different
-		// variant arms), don't touch the value — the user needs to reload/reconcile.
+		// variant arms), don't touch the value � the user needs to reload/reconcile.
 		// Compatible types (vec3 <-> color, same arm) are safe to read/write.
 		if (hasStored && !rt2::core::ScriptFieldTypesCompatible(
 		        it->second.type, desc.type))
 		{
-			ImGui::TextDisabled("(declaration type changed — reopen to reconcile)");
+			ImGui::TextDisabled("(declaration type changed � reopen to reconcile)");
 			ImGui::PopID();
 			continue;
 		}
@@ -3434,7 +3418,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 //
 // Shown after the user picks a file from "Import Scene..." or "Load Mesh
 // File...". Collects import settings (currently just mergeMegaMesh for OBJ)
-// and dispatches via m_OnImportWithOptions. The modal is modal — the file
+// and dispatches via m_OnImportWithOptions. The modal is modal � the file
 // dialog cannot open while it is up, so a second pick before dismissing is
 // naturally blocked.
 // ----------------------------------------------------------------------------
@@ -3487,7 +3471,7 @@ void SceneEditorUI::DrawImportOptionsModal()
 				ImGui::SetTooltip(
 					"glTF defines an absent metallicFactor as 1.0, so a material\n"
 					"with no metallicRoughness texture and no authored factor is\n"
-					"fully metallic and fully rough by spec — a rough mirror that\n"
+					"fully metallic and fully rough by spec � a rough mirror that\n"
 					"renders as a grey patch which never converges.\n\n"
 					"Exporters hit this constantly by omitting the value and\n"
 					"assuming a dielectric default. When checked, such materials\n"

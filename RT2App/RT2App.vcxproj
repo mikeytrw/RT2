@@ -282,6 +282,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <!-- T4: shared CPU collision decode + host-owned immutable cache. -->
     <ClInclude Include="src\PhysicsCollisionAssetProvider.h" />
     <ClInclude Include="src\PhysicsCollisionGeometry.h" />
+    <ClInclude Include="src\PhysicsInspectorState.h" />
     <!-- T3: physics world lifecycle (CPU-only). -->
     <ClInclude Include="src\PhysicsWorld.h" />
     <ClInclude Include="src\PrefabCommandTransaction.h" />

@@ -18,6 +18,7 @@
 
 #include <doctest/doctest.h>
 #include "AssetDatabase.h"
+#include "PhysicsInspectorState.h"
 #include "PhysicsWorld.h"
 #include "IPhysicsCollisionAssetProvider.h"
 #include "PhysicsCollisionAssetProvider.h"
@@ -852,6 +853,108 @@ TEST_CASE("T4 RED_InvalidPhysicsEnumRefused: forged body/shape kinds refuse Play
         CHECK(err.code == Error::InvalidArgument);
         T4CheckCleanRefusal(ctrl, bridge, obs, err, id);
     }
+}
+
+TEST_CASE("T4 GREEN_InspectorWorkPolicy: clean resync, dirty conflict, reset, assetId rebind")
+{
+    // CPU proof of the Inspector working-copy policy (the ImGui layer only
+    // renders this state): apply -> undo -> same-selection edit can never
+    // overwrite fields Undo restored, and same-UUID document replacement
+    // cannot inherit values.
+    DeterministicUuidProvider ids;
+    const UUID target = ids.CreateV4();
+    const UUID other = ids.CreateV4();
+    PhysicsBodyComponent live = T4DynamicBody();
+    PhysicsShapeComponent liveShape = T4SphereShape();
+
+    PhysicsInspectorWork work;
+    CHECK_FALSE(work.HasTarget());
+
+    // Selection seeds clean copies.
+    work.Sync(target, live, liveShape);
+    CHECK(work.HasTarget());
+    CHECK(work.body == live);
+    CHECK_FALSE(work.bodyDirty);
+    CHECK_FALSE(work.bodyConflict);
+
+    // Clean copy resyncs when live drifts (Undo of an earlier edit while
+    // selected): the next edit starts from restored values.
+    PhysicsBodyComponent undone = live;
+    undone.friction = 0.1f;
+    work.Sync(target, undone, liveShape);
+    CHECK_FALSE(work.bodyDirty);
+    CHECK_FALSE(work.bodyConflict);
+    CHECK(work.body == undone);
+
+    // Dirty copy + live drift (Undo of another command) raises conflict and
+    // keeps the user's edits (nothing silently discarded).
+    work.body->mass = 9.0f;
+    work.bodyDirty = true;
+    work.Sync(target, live, liveShape);
+    CHECK(work.bodyDirty);
+    CHECK(work.bodyConflict);
+    CHECK(work.body->mass == doctest::Approx(9.0f));
+
+    // Revert reseeds from live and clears the conflict.
+    work.RevertBody(live);
+    CHECK_FALSE(work.bodyDirty);
+    CHECK_FALSE(work.bodyConflict);
+    CHECK(work.body == live);
+
+    // Dirty copy edited back to live values is not dirty (return-to-start
+    // needs no history entry).
+    work.body->friction = 0.9f;
+    work.bodyDirty = true;
+    work.Sync(target, live, liveShape);
+    work.body->friction = live.friction;
+    work.Sync(target, live, liveShape);
+    CHECK_FALSE(work.bodyDirty);
+
+    // Presence change reseeds unconditionally.
+    work.body->mass = 9.0f;
+    work.bodyDirty = true;
+    work.Sync(target, std::nullopt, liveShape);
+    CHECK_FALSE(work.body.has_value());
+    CHECK_FALSE(work.bodyDirty);
+    CHECK_FALSE(work.bodyConflict);
+
+    // Applied advances the seed; selection change reseeds everything.
+    work.Sync(target, live, liveShape);
+    work.body->mass = 9.0f;
+    work.bodyDirty = true;
+    work.Applied(live, liveShape);
+    CHECK_FALSE(work.bodyDirty);
+    CHECK(work.body == live);
+    work.body->mass = 9.0f;
+    work.bodyDirty = true;
+    work.Sync(other, live, liveShape);
+    CHECK(work.target == other);
+    CHECK_FALSE(work.bodyDirty);
+    CHECK(work.body == live);
+
+    // Document reset drops all state (same-UUID replacement is safe).
+    work.body->mass = 9.0f;
+    work.bodyDirty = true;
+    work.Clear();
+    CHECK_FALSE(work.HasTarget());
+    CHECK_FALSE(work.body.has_value());
+    CHECK_FALSE(work.shape.has_value());
+    CHECK_FALSE(work.bodyDirty);
+    CHECK_FALSE(work.shapeDirty);
+
+    // Collision path edits clear the stale asset ID; unchanged paths and
+    // sourceKey edits preserve identity.
+    AssetReference ref = T4ModelRef("old.obj", "obj:whole-model");
+    DeterministicUuidProvider ids2;
+    ref.assetId = ids2.CreateV4();
+    CHECK(PhysicsInspectorWork::NoteCollisionPathChanged(ref, "new.obj"));
+    CHECK(ref.path == "new.obj");
+    CHECK(ref.kind == AssetKind::Model);
+    CHECK(ref.assetId.IsNull());
+    ref.assetId = ids2.CreateV4();
+    CHECK_FALSE(
+        PhysicsInspectorWork::NoteCollisionPathChanged(ref, "new.obj"));
+    CHECK_FALSE(ref.assetId.IsNull());
 }
 
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")
