@@ -541,6 +541,101 @@ std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	return cmd;
 }
 
+// ---- Bullet T4 physics commands ----
+
+SetPhysicsBodyCommand::SetPhysicsBodyCommand(
+	rt2::core::UUID target,
+	std::optional<PhysicsBodyComponent> beforeValue,
+	std::optional<PhysicsBodyComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+{
+}
+
+EditorMutationResult SetPhysicsBodyCommand::Execute(SceneManager& scene)
+{
+	return scene.SetPhysicsBodyState(m_Target, m_AfterValue);
+}
+
+EditorMutationResult SetPhysicsBodyCommand::Undo(SceneManager& scene)
+{
+	return scene.SetPhysicsBodyState(m_Target, m_BeforeValue);
+}
+
+std::string SetPhysicsBodyCommand::Description() const
+{
+	if (!m_BeforeValue.has_value() && m_AfterValue.has_value())
+		return "Add Physics Body";
+	if (m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Remove Physics Body";
+	if (!m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Physics Body (no change)";
+	return "Edit Physics Body";
+}
+
+SetPhysicsShapeCommand::SetPhysicsShapeCommand(
+	rt2::core::UUID target,
+	std::optional<PhysicsShapeComponent> beforeValue,
+	std::optional<PhysicsShapeComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+{
+}
+
+EditorMutationResult SetPhysicsShapeCommand::Execute(SceneManager& scene)
+{
+	return scene.SetPhysicsShapeState(m_Target, m_AfterValue);
+}
+
+EditorMutationResult SetPhysicsShapeCommand::Undo(SceneManager& scene)
+{
+	return scene.SetPhysicsShapeState(m_Target, m_BeforeValue);
+}
+
+std::string SetPhysicsShapeCommand::Description() const
+{
+	if (!m_BeforeValue.has_value() && m_AfterValue.has_value())
+		return "Add Physics Shape";
+	if (m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Remove Physics Shape";
+	if (!m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Physics Shape (no change)";
+	return "Edit Physics Shape";
+}
+
+std::unique_ptr<IEditorCommand> MakeSetPhysicsBodyCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsBodyComponent> beforeValue,
+	std::optional<PhysicsBodyComponent> afterValue)
+{
+	const bool beforeHas = beforeValue.has_value();
+	const bool afterHas = afterValue.has_value();
+	if (!beforeHas && !afterHas) return nullptr;
+	if (beforeHas && afterHas && *beforeValue == *afterValue)
+		return nullptr;
+	// An invalid after-state is NOT suppressed: the command is returned so
+	// EditorCommandHistory::Execute surfaces the manager's actionable
+	// failure without recording (SetScript after-state policy).
+	return std::make_unique<SetPhysicsBodyCommand>(target,
+		std::move(beforeValue), std::move(afterValue));
+}
+
+std::unique_ptr<IEditorCommand> MakeSetPhysicsShapeCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsShapeComponent> beforeValue,
+	std::optional<PhysicsShapeComponent> afterValue)
+{
+	const bool beforeHas = beforeValue.has_value();
+	const bool afterHas = afterValue.has_value();
+	if (!beforeHas && !afterHas) return nullptr;
+	if (beforeHas && afterHas && *beforeValue == *afterValue)
+		return nullptr;
+	return std::make_unique<SetPhysicsShapeCommand>(target,
+		std::move(beforeValue), std::move(afterValue));
+}
+
 std::unique_ptr<IEditorCommand> MakeSetCameraPresentationCommandIfEffective(
 	rt2::core::UUID target,
 	const CameraComponent& live,

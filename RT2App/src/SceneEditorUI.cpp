@@ -1747,6 +1747,9 @@ void SceneEditorUI::RenderInspector()
 		}
 	}
 
+	// Bullet T4 minimal physics authoring (discrete working-copy editors).
+	RenderPhysicsEditor(entity);
+
 	// Script component editor (Phase 6B/W5)
 	if (m_SceneMgr->HasScript(entity))
 		RenderScriptEditor(entity);
@@ -1776,6 +1779,369 @@ void SceneEditorUI::RenderInspector()
 
 	ImGui::EndDisabled();
 	ImGui::End();
+}
+
+void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
+{
+	auto& reg = const_cast<entt::registry&>(m_SceneMgr->GetECS().registry);
+	if (!reg.valid(entity.id))
+		return;
+	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
+
+	std::optional<PhysicsBodyComponent> liveBody;
+	if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+		liveBody = *b;
+	std::optional<PhysicsShapeComponent> liveShape;
+	if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+		liveShape = *s;
+
+	// Working-copy lifecycle: reseed on selection change, or when Undo/Redo
+	// changed live presence under us (exact before-states are read fresh at
+	// Apply, so the copies only carry the user's unapplied edits).
+	if (m_PhysicsWorkTarget != targetUuid)
+	{
+		m_PhysicsWorkTarget = targetUuid;
+		m_PhysicsWorkBody = liveBody;
+		m_PhysicsWorkBodyDirty = false;
+		m_PhysicsWorkShape = liveShape;
+		m_PhysicsWorkShapeDirty = false;
+	}
+	if (m_PhysicsWorkBody.has_value() != liveBody.has_value())
+	{
+		m_PhysicsWorkBody = liveBody;
+		m_PhysicsWorkBodyDirty = false;
+	}
+	if (m_PhysicsWorkShape.has_value() != liveShape.has_value())
+	{
+		m_PhysicsWorkShape = liveShape;
+		m_PhysicsWorkShapeDirty = false;
+	}
+
+	ImGui::Separator();
+	ImGui::Text("Physics (Bullet)");
+
+	// Root rule (Play refuses parented bodies loudly; warn here, in Edit).
+	if (const auto* hier = reg.try_get<Hierarchy>(entity.id))
+	{
+		if (hier->parent != entt::null)
+			ImGui::TextDisabled("Warning: physics bodies must be unparented roots");
+	}
+	// Prefab enforcement is authoritative in the SetPhysics*State API (linked
+	// members refuse before mutation); the UI additionally disables editing so
+	// the refusal is not a surprise. UI disabling alone is never sufficient.
+	const bool isPrefabMember = reg.all_of<PrefabMemberComponent>(entity.id);
+	if (isPrefabMember)
+		ImGui::TextDisabled("Linked prefab member: physics is non-overridable");
+	ImGui::BeginDisabled(!m_Editable || isPrefabMember);
+
+	// ---- Body ----
+	if (!liveBody.has_value())
+	{
+		if (ImGui::Button("Add Physics Body"))
+		{
+			PhysicsBodyComponent after{};
+			auto cmd = MakeSetPhysicsBodyCommandIfEffective(
+				targetUuid, std::nullopt, after);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+			}
+		}
+	}
+	else
+	{
+		if (!m_PhysicsWorkBody.has_value())
+		{
+			m_PhysicsWorkBody = liveBody;
+			m_PhysicsWorkBodyDirty = false;
+		}
+		auto& work = *m_PhysicsWorkBody;
+		ImGui::Text("Body");
+		int kind = static_cast<int>(work.kind);
+		ImGui::SetNextItemWidth(140.0f);
+		if (ImGui::Combo("Kind", &kind, "Static\0Dynamic\0Kinematic\0"))
+		{
+			work.kind = static_cast<PhysicsBodyKind>(kind);
+			m_PhysicsWorkBodyDirty = true;
+		}
+		if (ImGui::DragFloat("Mass (kg)", &work.mass, 0.1f, 0.0f, 10000.0f, "%.3f"))
+			m_PhysicsWorkBodyDirty = true;
+		if (ImGui::DragFloat("Friction", &work.friction, 0.01f, 0.0f, 10.0f, "%.3f"))
+			m_PhysicsWorkBodyDirty = true;
+		if (ImGui::DragFloat("Restitution", &work.restitution, 0.01f, 0.0f, 1.0f, "%.3f"))
+			m_PhysicsWorkBodyDirty = true;
+		if (ImGui::DragFloat("Linear damping", &work.linearDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
+			m_PhysicsWorkBodyDirty = true;
+		if (ImGui::DragFloat("Angular damping", &work.angularDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
+			m_PhysicsWorkBodyDirty = true;
+		if (ImGui::Checkbox("CCD enabled", &work.ccdEnabled))
+			m_PhysicsWorkBodyDirty = true;
+		if (work.ccdEnabled)
+		{
+			if (ImGui::DragFloat("CCD threshold", &work.ccdMotionThreshold, 0.01f, 0.0f, 10.0f, "%.3f"))
+				m_PhysicsWorkBodyDirty = true;
+			if (ImGui::DragFloat("CCD swept radius", &work.ccdSweptRadius, 0.01f, 0.0f, 10.0f, "%.3f"))
+				m_PhysicsWorkBodyDirty = true;
+		}
+		if (ImGui::Checkbox("Start asleep", &work.startAsleep))
+			m_PhysicsWorkBodyDirty = true;
+		int layer = 0;
+		if (work.layer == PhysicsLayer::Dynamic) layer = 0;
+		else if (work.layer == PhysicsLayer::WorldStatic) layer = 1;
+		else if (work.layer == PhysicsLayer::Mechanism) layer = 2;
+		else if (work.layer == PhysicsLayer::Trigger) layer = 3;
+		ImGui::SetNextItemWidth(140.0f);
+		if (ImGui::Combo("Layer", &layer, "Dynamic\0WorldStatic\0Mechanism\0Trigger\0"))
+		{
+			work.layer = layer == 0 ? PhysicsLayer::Dynamic
+				: layer == 1 ? PhysicsLayer::WorldStatic
+				: layer == 2 ? PhysicsLayer::Mechanism : PhysicsLayer::Trigger;
+			m_PhysicsWorkBodyDirty = true;
+		}
+		bool maskBits[4] = {
+			(work.mask & PhysicsLayer::Dynamic) != 0,
+			(work.mask & PhysicsLayer::WorldStatic) != 0,
+			(work.mask & PhysicsLayer::Mechanism) != 0,
+			(work.mask & PhysicsLayer::Trigger) != 0,
+		};
+		const char* maskNames[4] = {"D", "W", "M", "T"};
+		ImGui::Text("Mask:");
+		for (int i = 0; i < 4; ++i)
+		{
+			ImGui::SameLine();
+			const uint16_t bit = i == 0 ? PhysicsLayer::Dynamic
+				: i == 1 ? PhysicsLayer::WorldStatic
+				: i == 2 ? PhysicsLayer::Mechanism : PhysicsLayer::Trigger;
+			if (ImGui::Checkbox(maskNames[i], &maskBits[i]))
+			{
+				if (maskBits[i]) work.mask |= bit;
+				else work.mask &= (uint16_t)~bit;
+				m_PhysicsWorkBodyDirty = true;
+			}
+		}
+		if (m_PhysicsWorkBodyDirty)
+		{
+			if (ImGui::Button("Apply Body"))
+			{
+				std::optional<PhysicsBodyComponent> before;
+				if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+					before = *b;
+				auto cmd = MakeSetPhysicsBodyCommandIfEffective(
+					targetUuid, before, m_PhysicsWorkBody);
+				if (cmd)
+				{
+					const auto result = ExecuteCommandThroughHistory(
+						m_CommandHistory, *m_SceneMgr, std::move(cmd));
+					ApplyMutation(result);
+				}
+				else
+				{
+					// No-op (edited back to live): drop the working state
+					// without touching history.
+					m_PhysicsWorkBodyDirty = false;
+				}
+				if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+					m_PhysicsWorkBody = *b;
+				else
+					m_PhysicsWorkBody = std::nullopt;
+				m_PhysicsWorkBodyDirty = false;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Revert Body"))
+			{
+				m_PhysicsWorkBody = liveBody;
+				m_PhysicsWorkBodyDirty = false;
+			}
+		}
+		if (ImGui::Button("Remove Physics Body"))
+		{
+			std::optional<PhysicsBodyComponent> before;
+			if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+				before = *b;
+			auto cmd = MakeSetPhysicsBodyCommandIfEffective(
+				targetUuid, before, std::nullopt);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+			}
+			m_PhysicsWorkBody = std::nullopt;
+			m_PhysicsWorkBodyDirty = false;
+		}
+	}
+
+	// ---- Shape ----
+	if (!liveShape.has_value())
+	{
+		if (ImGui::Button("Add Physics Shape"))
+		{
+			PhysicsShapeComponent after{};
+			auto cmd = MakeSetPhysicsShapeCommandIfEffective(
+				targetUuid, std::nullopt, after);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+			}
+		}
+	}
+	else
+	{
+		if (!m_PhysicsWorkShape.has_value())
+		{
+			m_PhysicsWorkShape = liveShape;
+			m_PhysicsWorkShapeDirty = false;
+		}
+		auto& work = *m_PhysicsWorkShape;
+		ImGui::Text("Shape");
+		int shapeKind = static_cast<int>(work.shape);
+		ImGui::SetNextItemWidth(160.0f);
+		if (ImGui::Combo("Shape", &shapeKind,
+		                  "Sphere\0Box\0ConvexHull\0StaticTriMesh\0"))
+		{
+			work.shape = static_cast<PhysicsShapeKind>(shapeKind);
+			m_PhysicsWorkShapeDirty = true;
+		}
+		if (work.shape == PhysicsShapeKind::Sphere)
+		{
+			if (ImGui::DragFloat("Radius", &work.radius, 0.01f, 0.001f, 100.0f, "%.3f"))
+				m_PhysicsWorkShapeDirty = true;
+		}
+		else if (work.shape == PhysicsShapeKind::Box)
+		{
+			if (ImGui::DragFloat3("Half extents", &work.halfExtents[0], 0.01f, 0.001f, 100.0f, "%.3f"))
+				m_PhysicsWorkShapeDirty = true;
+		}
+		else
+		{
+			// Collision-asset ref: path text plus Browse picker plus exact
+			// sourceKey text. Browse fills the path (scene-relative when the
+			// pick lands under the scene directory) and presets the OBJ
+			// whole-model key; glTF primitive keys are typed exactly.
+			AssetReference* ref = work.shape == PhysicsShapeKind::ConvexHull
+				? &work.hull : &work.triMesh;
+			const char* refLabel = work.shape == PhysicsShapeKind::ConvexHull
+				? "Hull asset" : "TriMesh asset";
+			char pathBuf[256];
+			snprintf(pathBuf, sizeof(pathBuf), "%s", ref->path.c_str());
+			ImGui::Text("%s:", refLabel);
+			ImGui::SetNextItemWidth(220.0f);
+			const bool pathReturned = ImGui::InputText("##PhysCollPath", pathBuf,
+				sizeof(pathBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+			const bool pathEdited = ImGui::IsItemDeactivatedAfterEdit();
+			if (pathReturned || pathEdited)
+			{
+				if (ref->path != pathBuf)
+				{
+					ref->path = pathBuf;
+					ref->kind = ref->path.empty() ? AssetKind::Unknown : AssetKind::Model;
+					m_PhysicsWorkShapeDirty = true;
+				}
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Browse..."))
+			{
+				const auto initialDirectory = m_DialogInitialDirectory
+					? m_DialogInitialDirectory() : std::filesystem::path{};
+				std::string picked = FileDialog::OpenFile(
+					L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0",
+					initialDirectory);
+				if (!picked.empty())
+				{
+					std::filesystem::path pickedPath(picked);
+					std::string stored = pickedPath.generic_string();
+					const std::filesystem::path sceneFile =
+						m_SceneMgr->AuthoringDoc().metadata.sourcePath;
+					if (!sceneFile.empty() && pickedPath.is_absolute())
+					{
+						std::error_code ec;
+						const auto rel = std::filesystem::relative(
+							pickedPath, sceneFile.parent_path(), ec);
+						if (!ec && !rel.empty() && !rel.is_absolute())
+							stored = rel.generic_string();
+					}
+					ref->path = stored;
+					ref->kind = AssetKind::Model;
+					const std::string ext = pickedPath.extension().generic_string();
+					if (ext == ".obj" || ext == ".OBJ")
+						ref->sourceKey = "obj:whole-model";
+					m_PhysicsWorkShapeDirty = true;
+				}
+			}
+			char keyBuf[192];
+			snprintf(keyBuf, sizeof(keyBuf), "%s", ref->sourceKey.c_str());
+			ImGui::SetNextItemWidth(220.0f);
+			const bool keyReturned = ImGui::InputText("##PhysCollKey", keyBuf,
+				sizeof(keyBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+			const bool keyEdited = ImGui::IsItemDeactivatedAfterEdit();
+			if (keyReturned || keyEdited)
+			{
+				if (ref->sourceKey != keyBuf)
+				{
+					ref->sourceKey = keyBuf;
+					m_PhysicsWorkShapeDirty = true;
+				}
+			}
+		}
+		if (ImGui::Checkbox("Trigger (ghost)", &work.isTrigger))
+			m_PhysicsWorkShapeDirty = true;
+		if (ImGui::DragFloat("Margin", &work.collisionMargin, 0.005f, 0.0f, 1.0f, "%.3f"))
+			m_PhysicsWorkShapeDirty = true;
+		if (m_PhysicsWorkShapeDirty)
+		{
+			if (ImGui::Button("Apply Shape"))
+			{
+				std::optional<PhysicsShapeComponent> before;
+				if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+					before = *s;
+				auto cmd = MakeSetPhysicsShapeCommandIfEffective(
+					targetUuid, before, m_PhysicsWorkShape);
+				if (cmd)
+				{
+					const auto result = ExecuteCommandThroughHistory(
+						m_CommandHistory, *m_SceneMgr, std::move(cmd));
+					ApplyMutation(result);
+				}
+				else
+				{
+					m_PhysicsWorkShapeDirty = false;
+				}
+				if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+					m_PhysicsWorkShape = *s;
+				else
+					m_PhysicsWorkShape = std::nullopt;
+				m_PhysicsWorkShapeDirty = false;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Revert Shape"))
+			{
+				m_PhysicsWorkShape = liveShape;
+				m_PhysicsWorkShapeDirty = false;
+			}
+		}
+		if (ImGui::Button("Remove Physics Shape"))
+		{
+			std::optional<PhysicsShapeComponent> before;
+			if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+				before = *s;
+			auto cmd = MakeSetPhysicsShapeCommandIfEffective(
+				targetUuid, before, std::nullopt);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+			}
+			m_PhysicsWorkShape = std::nullopt;
+			m_PhysicsWorkShapeDirty = false;
+		}
+	}
+
+	ImGui::EndDisabled();
 }
 
 void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)

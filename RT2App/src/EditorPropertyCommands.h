@@ -303,6 +303,55 @@ private:
 	PrefabCommandTransaction             m_Transaction;
 };
 
+// Bullet T4 physics commands: one class each covering add, remove, and value
+// edits via std::optional before/after (same shape as SetMotionCommand).
+// Unlike the overridable-wire commands above they carry NO
+// PrefabCommandTransaction: physics wires are non-overridable and have no
+// propagation adapters, so enforcement lives in the SetPhysics*State API,
+// which refuses linked members before mutation. Execute/Undo call the manager
+// directly and propagate its loud failure (a failed Execute records nothing).
+class SetPhysicsBodyCommand final : public IEditorCommand
+{
+public:
+	SetPhysicsBodyCommand(rt2::core::UUID target,
+	                      std::optional<PhysicsBodyComponent> beforeValue,
+	                      std::optional<PhysicsBodyComponent> afterValue);
+
+	const rt2::core::UUID& Target() const { return m_Target; }
+	const std::optional<PhysicsBodyComponent>& BeforeValue() const { return m_BeforeValue; }
+	const std::optional<PhysicsBodyComponent>& AfterValue() const { return m_AfterValue; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override;
+
+private:
+	rt2::core::UUID                          m_Target;
+	std::optional<PhysicsBodyComponent>      m_BeforeValue;
+	std::optional<PhysicsBodyComponent>      m_AfterValue;
+};
+
+class SetPhysicsShapeCommand final : public IEditorCommand
+{
+public:
+	SetPhysicsShapeCommand(rt2::core::UUID target,
+	                       std::optional<PhysicsShapeComponent> beforeValue,
+	                       std::optional<PhysicsShapeComponent> afterValue);
+
+	const rt2::core::UUID& Target() const { return m_Target; }
+	const std::optional<PhysicsShapeComponent>& BeforeValue() const { return m_BeforeValue; }
+	const std::optional<PhysicsShapeComponent>& AfterValue() const { return m_AfterValue; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override;
+
+private:
+	rt2::core::UUID                           m_Target;
+	std::optional<PhysicsShapeComponent>      m_BeforeValue;
+	std::optional<PhysicsShapeComponent>      m_AfterValue;
+};
+
 // SetScriptCommand covers add, remove, script-path replacement, and any typed
 // field-map change via std::optional<ScriptComponent> before/after. Add =
 // {nullopt, some}; Remove = {some, nullopt}; edit = {some, some}. The command
@@ -464,6 +513,20 @@ std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	std::optional<MotionComponent> beforeValue,
 	std::optional<MotionComponent> afterValue,
 	const PrefabCommandTransaction::ExplicitCapture* explicitCapture = nullptr);
+
+// Bullet T4: returns null when the edit is a canonical no-op (both nullopt,
+// or both present and exactly equal). Add = {nullopt, some}; Remove = {some,
+// nullopt}; edit = {some, some}. An invalid after-state is NOT suppressed:
+// the command is returned so history surfaces the manager's actionable
+// failure without recording.
+std::unique_ptr<IEditorCommand> MakeSetPhysicsBodyCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsBodyComponent> beforeValue,
+	std::optional<PhysicsBodyComponent> afterValue);
+std::unique_ptr<IEditorCommand> MakeSetPhysicsShapeCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsShapeComponent> beforeValue,
+	std::optional<PhysicsShapeComponent> afterValue);
 
 // Discrete inspector-gesture policy for camera presentation widgets (tone-map
 // Combo selection, exposure reset button). Maps a widget value change to a

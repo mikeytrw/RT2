@@ -5544,6 +5544,256 @@ EditorMutationResult SceneManager::SetMotionState(const rt2::core::UUID& entity,
 	return result;
 }
 
+// ---- Bullet T4 physics authoring -----------------------------------------
+
+namespace {
+// Settled layer policy mirror (plan section 3; Play enforces the same rule
+// in ValidatePhysicsForPlay): layer is exactly one known bit, mask is a
+// nonzero subset of the known bits.
+constexpr uint16_t kT4KnownLayers =
+	PhysicsLayer::Dynamic | PhysicsLayer::WorldStatic |
+	PhysicsLayer::Mechanism | PhysicsLayer::Trigger;
+
+bool T4BodyValueOk(const PhysicsBodyComponent& body, std::string& detail)
+{
+	if (!std::isfinite(body.mass) || !std::isfinite(body.friction) ||
+	    !std::isfinite(body.restitution) ||
+	    !std::isfinite(body.linearDamping) ||
+	    !std::isfinite(body.angularDamping) ||
+	    !std::isfinite(body.ccdMotionThreshold) ||
+	    !std::isfinite(body.ccdSweptRadius))
+	{
+		detail = "non-finite body parameters";
+		return false;
+	}
+	if (body.mass < 0.0f)
+	{
+		detail = "negative mass (mass is kilograms, >= 0; Dynamic requires > 0 at Play)";
+		return false;
+	}
+	if (body.friction < 0.0f)
+	{
+		detail = "negative friction";
+		return false;
+	}
+	if (body.restitution < 0.0f || body.restitution > 1.0f)
+	{
+		detail = "restitution outside [0,1]";
+		return false;
+	}
+	if (body.linearDamping < 0.0f || body.angularDamping < 0.0f)
+	{
+		detail = "negative damping";
+		return false;
+	}
+	if (body.ccdEnabled && (!(body.ccdMotionThreshold > 0.0f) ||
+	                        !(body.ccdSweptRadius > 0.0f)))
+	{
+		detail = "CCD enabled with a non-positive motion threshold or swept radius";
+		return false;
+	}
+	if (body.layer == 0 || (body.layer & (body.layer - 1)) != 0 ||
+	    (body.layer & ~kT4KnownLayers) != 0)
+	{
+		detail = "layer must be exactly one of Dynamic|WorldStatic|Mechanism|Trigger";
+		return false;
+	}
+	if (body.mask == 0 || (body.mask & ~kT4KnownLayers) != 0)
+	{
+		detail = "mask must be a nonzero subset of Dynamic|WorldStatic|Mechanism|Trigger";
+		return false;
+	}
+	return true;
+}
+
+bool T4ShapeValueOk(const PhysicsShapeComponent& shape, std::string& detail)
+{
+	switch (shape.shape)
+	{
+		case PhysicsShapeKind::Sphere:
+			if (!(shape.radius > 0.0f) || !std::isfinite(shape.radius))
+			{
+				detail = "non-positive sphere radius";
+				return false;
+			}
+			break;
+		case PhysicsShapeKind::Box:
+		{
+			const glm::vec3& h = shape.halfExtents;
+			if (!std::isfinite(h.x) || !std::isfinite(h.y) ||
+			    !std::isfinite(h.z) || h.x <= 0.0f || h.y <= 0.0f ||
+			    h.z <= 0.0f)
+			{
+				detail = "non-positive box half-extents";
+				return false;
+			}
+			break;
+		}
+		case PhysicsShapeKind::ConvexHull:
+		case PhysicsShapeKind::StaticTriMesh:
+			break;
+	}
+	if (!std::isfinite(shape.collisionMargin) || shape.collisionMargin < 0.0f ||
+	    shape.collisionMargin > 1.0f)
+	{
+		detail = "collision margin outside [0,1] world units";
+		return false;
+	}
+	const AssetReference* ref =
+		shape.shape == PhysicsShapeKind::ConvexHull ? &shape.hull : nullptr;
+	if (shape.shape == PhysicsShapeKind::StaticTriMesh)
+		ref = &shape.triMesh;
+	if (ref != nullptr && !ref->path.empty() && ref->kind != AssetKind::Model)
+	{
+		detail = "collision geometry refs must be Model assets";
+		return false;
+	}
+	return true;
+}
+
+// Trigger/layer agreement (same rule Play enforces): ghost shapes live on
+// the Trigger layer; solid shapes never claim it.
+bool T4TriggerLayerOk(const PhysicsBodyComponent& body,
+                      const PhysicsShapeComponent& shape, std::string& detail)
+{
+	if (shape.isTrigger && body.layer != PhysicsLayer::Trigger)
+	{
+		detail = "trigger shapes require the Trigger layer";
+		return false;
+	}
+	if (!shape.isTrigger && body.layer == PhysicsLayer::Trigger)
+	{
+		detail = "only trigger shapes may use the Trigger layer";
+		return false;
+	}
+	return true;
+}
+} // namespace
+
+EditorMutationResult SceneManager::SetPhysicsBodyState(
+	const rt2::core::UUID& entity,
+	const std::optional<PhysicsBodyComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetPhysicsBodyState: entity not present");
+	// Prefab enforcement before any validation write, revision, or history:
+	// physics wires are non-overridable, so linked members refuse loudly.
+	if (m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
+	{
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			entity.ToString(),
+			"SetPhysicsBodyState: entity is a linked prefab member "
+			"(physicsBody is non-overridable; edit the prefab source)");
+	}
+	if (value.has_value())
+	{
+		std::string detail;
+		if (!T4BodyValueOk(*value, detail))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetPhysicsBodyState: " + detail);
+		}
+		if (const auto* shape =
+		        m_EcsScene.registry.try_get<PhysicsShapeComponent>(e))
+		{
+			if (!T4TriggerLayerOk(*value, *shape, detail))
+			{
+				return EditorMutationResult::Failure(
+					rt2::core::Error::InvalidArgument, entity.ToString(),
+					"SetPhysicsBodyState: " + detail);
+			}
+		}
+		m_EcsScene.registry.emplace_or_replace<PhysicsBodyComponent>(e, *value);
+	}
+	else
+	{
+		if (m_EcsScene.registry.all_of<PhysicsBodyComponent>(e))
+			m_EcsScene.registry.remove<PhysicsBodyComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetPhysicsShapeState(
+	const rt2::core::UUID& entity,
+	const std::optional<PhysicsShapeComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetPhysicsShapeState: entity not present");
+	if (m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
+	{
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			entity.ToString(),
+			"SetPhysicsShapeState: entity is a linked prefab member "
+			"(physicsShape is non-overridable; edit the prefab source)");
+	}
+	if (value.has_value())
+	{
+		std::string detail;
+		if (!T4ShapeValueOk(*value, detail))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetPhysicsShapeState: " + detail);
+		}
+		if (const auto* body =
+		        m_EcsScene.registry.try_get<PhysicsBodyComponent>(e))
+		{
+			if (!T4TriggerLayerOk(*body, *value, detail))
+			{
+				return EditorMutationResult::Failure(
+					rt2::core::Error::InvalidArgument, entity.ToString(),
+					"SetPhysicsShapeState: " + detail);
+			}
+		}
+		m_EcsScene.registry.emplace_or_replace<PhysicsShapeComponent>(e, *value);
+	}
+	else
+	{
+		if (m_EcsScene.registry.all_of<PhysicsShapeComponent>(e))
+			m_EcsScene.registry.remove<PhysicsShapeComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+std::optional<PhysicsBodyComponent> SceneManager::GetPhysicsBody(
+	const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	if (const auto* body =
+	        m_EcsScene.registry.try_get<PhysicsBodyComponent>(e))
+		return *body;
+	return std::nullopt;
+}
+
+std::optional<PhysicsShapeComponent> SceneManager::GetPhysicsShape(
+	const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	if (const auto* shape =
+	        m_EcsScene.registry.try_get<PhysicsShapeComponent>(e))
+		return *shape;
+	return std::nullopt;
+}
+
 SceneManager::ScriptBindingStage SceneManager::StageScriptBinding(
 	const rt2::core::UUID& entity,
 	const std::optional<ScriptComponent>& value,

@@ -891,6 +891,30 @@ struct PrefabMaterialDuplicateStage
 		const rt2::core::UUID& entity) const;
 	EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
 	                                    const std::optional<MotionComponent>& value);
+	// Bullet T4: add, remove, or replace an entity's PhysicsBodyComponent /
+	// PhysicsShapeComponent. nullopt removes. SyncImpact is None — physics
+	// config needs no GPU sync until Play builds the world (mirrors
+	// SetMotionState). Out-of-range input (non-finite numerics, negative
+	// friction/damping, restitution outside [0,1], non-positive CCD
+	// thresholds when enabled, bad layer/mask, non-model collision refs) is
+	// rejected atomically with a diagnostic, never clamped silently.
+	//
+	// Prefab enforcement (plan section 3): physics components are
+	// scene-serializable but EXCLUDED from prefab propagation/override wires
+	// (overridable=false). Every call resolves the UUID and, when the entity
+	// carries PrefabMemberComponent, returns a loud non-overridable failure
+	// BEFORE any mutation, revision bump, or history change. Prefab sources
+	// remain editable; ordinary entities succeed.
+	EditorMutationResult SetPhysicsBodyState(const rt2::core::UUID& entity,
+	                                         const std::optional<PhysicsBodyComponent>& value);
+	EditorMutationResult SetPhysicsShapeState(const rt2::core::UUID& entity,
+	                                          const std::optional<PhysicsShapeComponent>& value);
+	// Read-back for inspector before-state capture and tests. nullopt when
+	// the entity is missing or carries no such component.
+	std::optional<PhysicsBodyComponent> GetPhysicsBody(
+		const rt2::core::UUID& entity) const;
+	std::optional<PhysicsShapeComponent> GetPhysicsShape(
+		const rt2::core::UUID& entity) const;
 	// Phase 6B/W0: add, remove, or replace an entity's ScriptComponent.
 	// nullopt removes. SyncImpact is None — script bindings and field values
 	// are authored/runtime state that never touches the GPU scene (see the

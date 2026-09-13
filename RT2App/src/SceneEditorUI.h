@@ -231,6 +231,13 @@ private:
 	void RenderLightEditor(SceneManager::EntityId entity);
 	void RenderCameraEditor(SceneManager::EntityId entity);
 	void RenderScriptEditor(SceneManager::EntityId entity);
+	// Bullet T4 minimal physics authoring (Edit state, discrete commands).
+	// Working-copy editors with one explicit Apply per component: widgets edit
+	// the copies below, Apply commits exactly one command (before = live at
+	// Apply time, after = working copy), Revert drops the copies. Add/Remove
+	// commit immediately. No live-preview sessions, no scene-view
+	// manipulators, no joint visual editor.
+	void RenderPhysicsEditor(SceneManager::EntityId entity);
 	void DrawImportOptionsModal();
 
 	void NotifySceneChanged();
@@ -438,6 +445,17 @@ private:
 	unsigned int m_MaterialPropertiesSessionOwningWidgetId = 0;
 	unsigned int m_MotionVelocitySessionOwningWidgetId = 0;
 	unsigned int m_ScriptFieldSessionOwningWidgetId = 0;
+
+	// Bullet T4 discrete physics working copies (Edit-state Inspector only).
+	// m_PhysicsWorkTarget names the entity the copies were taken from; a
+	// selection change (or a missing live component) re-seeds them. The dirty
+	// flags mean the copy differs from the last seeded live read — Apply is
+	// enabled only then, so history holds exactly one entry per Apply.
+	rt2::core::UUID m_PhysicsWorkTarget{};
+	std::optional<PhysicsBodyComponent> m_PhysicsWorkBody;
+	std::optional<PhysicsShapeComponent> m_PhysicsWorkShape;
+	bool m_PhysicsWorkBodyDirty = false;
+	bool m_PhysicsWorkShapeDirty = false;
 
 	// Pending-recovery surfacing (S6-C fixup P1 finding 2 / final closure P1
 	// finding 2): a live-preview session whose close failed against a still-live
