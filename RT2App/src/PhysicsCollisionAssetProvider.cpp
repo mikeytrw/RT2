@@ -7,6 +7,8 @@
 
 #include "PhysicsCollisionAssetProvider.h"
 
+#include <fstream>
+
 namespace rt2::core {
 namespace {
 
@@ -30,6 +32,36 @@ Error::Code SeverityToCode(AssetDiagnostic::Severity severity)
         case S::Conflict: return Error::InvalidArgument;
         default: return Error::MissingAsset;
     }
+}
+
+// Raw-byte content fingerprint: FNV-1a over the file bytes. Cheap (no parse)
+// and sensitive to every content change, including same-size rewrites with a
+// preserved or coarse timestamp that mtime/size comparison alone would miss.
+bool FingerprintFile(const std::filesystem::path& path, uint64_t& hashOut,
+                     std::string& detailOut)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        detailOut = "collision asset '" + path.string() + "' is not readable";
+        return false;
+    }
+    uint64_t hash = 1469598103934665603ULL;
+    char chunk[65536];
+    while (in.good())
+    {
+        in.read(chunk, sizeof(chunk));
+        const std::streamsize n = in.gcount();
+        if (n > 0)
+            hash = FnV1a64(chunk, (size_t)n, hash);
+    }
+    if (in.bad())
+    {
+        detailOut = "collision asset '" + path.string() + "' failed while reading";
+        return false;
+    }
+    hashOut = hash;
+    return true;
 }
 
 } // namespace
@@ -67,28 +99,30 @@ Result<const CollisionGeometry*> PhysicsCollisionAssetProvider::GetCollisionGeom
             "entity " + uuidText + " ('" + entityName + "') " + detail);
     }
 
-    // Cache key: effective ID or canonical fallback path + sourceKey +
-    // geometry settings. Never path alone.
-    std::string key;
-    if (!resolved.effectiveId.IsNull())
-        key = "id:" + resolved.effectiveId.ToString();
-    else
-        key = "path:" + CanonicalAssetPath(resolved.resolvedPath).string();
-    key += "|sk:" + ref.sourceKey + "|" + GeometrySettingsKey(ref.importSettings);
+    // Cache key: effective ID AND canonical resolved path + sourceKey +
+    // geometry settings. An asset ID retargeted to a different file misses
+    // the old key by construction instead of reusing its entry.
+    const std::string canonical =
+        CanonicalAssetPath(resolved.resolvedPath).generic_string();
+    const std::string idPart = resolved.effectiveId.IsNull()
+                                   ? "id:nil"
+                                   : "id:" + resolved.effectiveId.ToString();
+    const std::string key = idPart + "|path:" + canonical +
+                            "|sk:" + ref.sourceKey + "|" +
+                            GeometrySettingsKey(ref.importSettings);
 
-    std::error_code ec;
-    auto currentSize =
-        std::filesystem::file_size(resolved.resolvedPath, ec);
-    if (ec)
-        currentSize = 0;
-    auto currentMtime =
-        std::filesystem::last_write_time(resolved.resolvedPath, ec);
-    if (ec)
-        currentMtime = std::filesystem::file_time_type{};
+    uint64_t rawHash = 0;
+    std::string fpDetail;
+    if (!FingerprintFile(resolved.resolvedPath, rawHash, fpDetail))
+    {
+        return Result<const CollisionGeometry*>::Fail(
+            Error::MissingAsset, uuidText,
+            "entity " + uuidText + " ('" + entityName + "'): " + fpDetail);
+    }
 
     auto it = m_Cache.find(key);
-    if (it != m_Cache.end() && it->second.size == currentSize &&
-        it->second.mtime == currentMtime)
+    if (it != m_Cache.end() && it->second.rawContentHash == rawHash &&
+        it->second.canonicalPath == canonical)
     {
         return Result<const CollisionGeometry*>::Ok(&it->second.geometry);
     }
@@ -107,8 +141,8 @@ Result<const CollisionGeometry*> PhysicsCollisionAssetProvider::GetCollisionGeom
 
     CacheEntry entry;
     entry.geometry = std::move(decoded.value);
-    entry.mtime = currentMtime;
-    entry.size = currentSize;
+    entry.rawContentHash = rawHash;
+    entry.canonicalPath = canonical;
     auto inserted = m_Cache.insert_or_assign(key, std::move(entry));
     ++m_DecodeCount;
     return Result<const CollisionGeometry*>::Ok(&inserted.first->second.geometry);

@@ -24,13 +24,15 @@
 // Play session and owns only the Bullet shapes built from them. Stop never
 // destroys the provider; only Play-session borrows and Bullet shapes end.
 //
-// Cache key (plan section 3): effective asset ID or canonical fallback path,
-// sourceKey, and the geometry-affecting ImportSettings subset — never path
-// alone, never a transient MeshRef::meshIndex. Same key decodes once;
-// same-file/different-sourceKey entries are isolated. A changed file
-// (mtime/size/content hash) rebuilds the entry; the running Play session
-// keeps its borrowed views (Bullet shapes are already built), so the rebuild
-// takes effect at the next Play — never mid-Play.
+// Cache key (plan section 3): effective asset ID AND canonical resolved
+// path, sourceKey, and the geometry-affecting ImportSettings subset — never
+// path alone, never a transient MeshRef::meshIndex. Same key decodes once;
+// same-file/different-sourceKey entries are isolated; an ID retargeted to a
+// different file naturally misses the old key. A changed file (observed via
+// a raw-byte content fingerprint, not just mtime/size) rebuilds the entry;
+// the running Play session keeps its borrowed views (Bullet shapes are
+// already built), so the rebuild takes effect at the next Play — never
+// mid-Play.
 //
 // CPU-only: AssetResolver + filesystem + decoder only. Links into RT2Tests
 // and RT2SliceRunner unchanged.
@@ -63,8 +65,12 @@ private:
     struct CacheEntry
     {
         CollisionGeometry geometry;
-        std::filesystem::file_time_type mtime{};
-        uintmax_t size = 0;
+        // Raw-byte content fingerprint of the file the geometry was decoded
+        // from, plus the canonical path that produced it. A hit requires
+        // both to match current state: same-size/same-mtime rewrites and
+        // ID retargets therefore rebuild instead of serving stale geometry.
+        uint64_t rawContentHash = 0;
+        std::string canonicalPath;
     };
 
     AssetResolutionContext m_Context;

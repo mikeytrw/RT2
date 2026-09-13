@@ -17,6 +17,7 @@
 // ============================================================================
 
 #include <doctest/doctest.h>
+#include "AssetDatabase.h"
 #include "PhysicsWorld.h"
 #include "IPhysicsCollisionAssetProvider.h"
 #include "PhysicsCollisionAssetProvider.h"
@@ -358,20 +359,77 @@ TEST_CASE("T4 GREEN_CollisionCacheRebuilds: changed files rebuild for the next P
     const float v0 = before.value->vertices[0];
     CHECK(provider.DecodeCount() == 1);
 
-    // Rewrite with doubled geometry and force a fresh mtime (same byte size
-    // is possible, so the stale check must observe the timestamp, not just
-    // the size). The next lookup rebuilds; the running view is untouched.
-    T4WriteText(assets.dir / "morph.obj", T4CubeObj(2.0f));
+    // Same-size rewrite (single-digit coordinates keep every line width, so
+    // the byte size is identical) with the mtime forced back to the original
+    // stamp: mtime/size comparison alone would serve the stale entry. The
+    // raw-byte fingerprint still observes the change and rebuilds.
     std::error_code ec;
-    const auto bumped = std::filesystem::last_write_time(
-        assets.dir / "morph.obj", ec) + std::chrono::seconds(2);
-    std::filesystem::last_write_time(assets.dir / "morph.obj", bumped, ec);
+    const auto originalMtime = std::filesystem::last_write_time(
+        assets.dir / "morph.obj", ec);
+    REQUIRE(!ec);
+    const auto originalSize = std::filesystem::file_size(
+        assets.dir / "morph.obj", ec);
+    REQUIRE(!ec);
+    T4WriteText(assets.dir / "morph.obj", T4CubeObj(2.0f));
+    // Same byte size, same timestamp: only the content fingerprint observes
+    // the rewrite.
+    REQUIRE(std::filesystem::file_size(assets.dir / "morph.obj", ec) ==
+            originalSize);
+    REQUIRE(!ec);
+    std::filesystem::last_write_time(assets.dir / "morph.obj", originalMtime, ec);
+    REQUIRE(!ec);
 
     auto after = provider.GetCollisionGeometry(ref, entity, "Morph");
     REQUIRE(after.IsOk());
     CHECK(provider.DecodeCount() == 2);
     CHECK(provider.CacheEntryCount() == 1);
     CHECK(after.value->vertices[0] == doctest::Approx(2.0f * v0));
+}
+
+TEST_CASE("T4 GREEN_CollisionCacheRetarget: same asset ID on a new path decodes anew")
+{
+    T4TempAssets assets;
+    assets.MakeCube("a.obj", 1.0f);
+    assets.MakeCube("b.obj", 3.0f);
+
+    DeterministicUuidProvider ids;
+    const UUID assetId = ids.CreateV4();
+    const UUID entity = ids.CreateV4();
+    // Two database snapshots: the same ID first identifies a.obj, then (as
+    // after a host database refresh) b.obj. Swapping the provider context
+    // mirrors the host refreshing its value-held context before the next
+    // Play; the canonical path in the key misses the old entry instead of
+    // reusing stale geometry.
+    AssetDatabase dbA, dbB;
+    std::vector<AssetDatabaseDiagnostic> dbDiags;
+    AssetRecord recordA;
+    recordA.assetId = assetId;
+    recordA.sourcePath = "a.obj";
+    recordA.identityAuthority = AssetIdentityAuthority::Reference;
+    dbA.AddOrUpdate(recordA, dbDiags);
+    AssetRecord recordB;
+    recordB.assetId = assetId;
+    recordB.sourcePath = "b.obj";
+    recordB.identityAuthority = AssetIdentityAuthority::Reference;
+    dbB.AddOrUpdate(recordB, dbDiags);
+
+    PhysicsCollisionAssetProvider provider;
+    provider.SetContext(AssetResolutionContext{assets.dir, &dbA});
+    AssetReference ref = T4ModelRef("a.obj", "obj:whole-model");
+    ref.assetId = assetId;
+
+    auto first = provider.GetCollisionGeometry(ref, entity, "Retarget");
+    REQUIRE(first.IsOk());
+    CHECK(first.value->vertices[0] == doctest::Approx(-1.0f));
+    CHECK(provider.DecodeCount() == 1);
+
+    provider.SetContext(AssetResolutionContext{assets.dir, &dbB});
+    auto second = provider.GetCollisionGeometry(ref, entity, "Retarget");
+    REQUIRE(second.IsOk());
+    CHECK(second.value->vertices[0] == doctest::Approx(-3.0f));
+    CHECK(second.value != first.value);
+    CHECK(provider.DecodeCount() == 2);
+    CHECK(provider.CacheEntryCount() == 2);
 }
 
 TEST_CASE("T4 GREEN_CcdFastSphereStops: authored CCD stops the fast sphere")
