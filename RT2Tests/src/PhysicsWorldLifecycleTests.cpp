@@ -25,11 +25,18 @@
 //   interface-only in T3 (refs plus a provider Play clean with zero handles;
 //   decoding is T4).
 // - RED_MotionPlusBodyRefused / RED_ParentedBodyRefused /
-//   RED_DynamicTriMeshRefused / RED_BadLayerMaskRefused / RED_BadScaleRefused /
-//   RED_MissingCollisionProviderRefusesPlay / RED_BadConstraintIdentityRefusesPlay:
-//   every early invariant refuses Play loudly with the entity UUID named.
-// - RED_PhysicsPlayConstructionIsAtomic: a late candidate failure proves zero
-//   observable mutation, callback, or sync.
+//   RED_DynamicTriMeshRefused / RED_BadLayerMaskRefused (non-single layer,
+//   zero/unknown mask) / RED_TriggerLayerMismatchRefused /
+//   RED_MissingEntityIdRefused / RED_MissingCollisionProviderRefusesPlay /
+//   RED_BadConstraintIdentityRefusesPlay: every early invariant refuses Play
+//   loudly with the entity UUID (or component wire, when no UUID exists)
+//   named.
+// - GREEN_LayerMaskPolicyAccepted: the settled single-layer policy table
+//   Plays clean.
+// - RED_PhysicsPlayConstructionIsAtomic: a late candidate failure (after a
+//   live Bullet world exists) proves construction, destructor rollback, a
+//   refreshed construction-time pose observation, and zero observable
+//   mutation/callback/sync.
 //
 // Out of scope (T4+): collision-asset decoding, body creation, transform
 // simulation, constraints, events, Lua, editor controls, debug drawing.
@@ -117,8 +124,25 @@ public:
     int starts = 0;
     int stops  = 0;
 
+    // Optional production-seam capture: when wired to the controller under
+    // test, records what is still alive at OnSceneStop (which fires while
+    // the runtime document exists, before world teardown and clone reset).
+    const RuntimeSceneController* observed = nullptr;
+    bool worldAliveAtStop = false;
+    bool runtimeAliveAtStop = false;
+    size_t liveWorldsAtStop = 0;
+
     void OnSceneStart(const SceneDocument&) override { ++starts; }
-    void OnSceneStop(const SceneDocument&) override  { ++stops; }
+    void OnSceneStop(const SceneDocument&) override
+    {
+        ++stops;
+        if (observed != nullptr)
+        {
+            worldAliveAtStop = observed->TryGetPhysicsWorld() != nullptr;
+            runtimeAliveAtStop = observed->TryGetRuntimeScene() != nullptr;
+            liveWorldsAtStop = PhysicsWorld::LiveWorldCount();
+        }
+    }
 };
 
 // T3 keeps the collision-provider seam interface-only: a tag provider the
@@ -322,24 +346,40 @@ TEST_CASE("T3 GREEN_StopZeroHandles: repeated Play/Stop cycles leave zero handle
     UUID a, b;
     T3AttachValidPair(f, a, b);
     T3NullBridge bridge;
+    T3RecordingObserver obs;
     Error err;
 
+    const size_t baseline = PhysicsWorld::LiveWorldCount();
     RuntimeSceneController ctrl;
+    ctrl.SetLifecycleObserver(&obs);
+    obs.observed = &ctrl;
     for (int i = 0; i < 5; ++i)
     {
         REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
         CHECK(err.IsOk());
         REQUIRE(ctrl.TryGetPhysicsWorld() != nullptr);
+        // Nonzero live census while committed: a real world exists, not just
+        // a non-null pointer.
+        CHECK(PhysicsWorld::LiveWorldCount() == baseline + 1);
         CHECK(ctrl.PhysicsTotalHandles() == 0);
         for (int s = 0; s < 3; ++s)
             ctrl.Update(kFixedDt, bridge);
         // StepCount is per committed world (one Play session): three ticks.
         CHECK(ctrl.PhysicsStepCount() == 3);
         ctrl.Stop(f.Authoring(), bridge);
+        // Teardown bracket: at OnSceneStop (production seam) the world and
+        // the runtime clone are both still alive with a nonzero live census;
+        // after Stop the world is destroyed (not pointer-discarded) before
+        // the clone reset, restoring the baseline.
+        CHECK(obs.worldAliveAtStop);
+        CHECK(obs.runtimeAliveAtStop);
+        CHECK(obs.liveWorldsAtStop == baseline + 1);
         CHECK(ctrl.GetState() == SceneRunState::Edit);
         CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
         CHECK(ctrl.PhysicsTotalHandles() == 0);
+        CHECK(PhysicsWorld::LiveWorldCount() == baseline);
     }
+    CHECK(obs.stops == 5);
 }
 
 TEST_CASE("T3 GREEN_StopRestoresAuthoring: Play/Stop cycles leave authoring bytes identical")
@@ -387,8 +427,16 @@ TEST_CASE("T3 GREEN_NonIdentityTransformRefreshed: runtime worldMatrix matches n
     T3NullBridge bridge;
     Error err;
 
+    // The construction pose probe records what the candidate observed in the
+    // runtime clone at Create() time — not post-Play state. If construction
+    // moved before InitPrevTransforms, the clone still holds identity
+    // matrices and this goes red.
+    PhysicsWorld::SetTestPoseProbe(true);
     RuntimeSceneController ctrl;
     REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    auto poses = PhysicsWorld::TestRecordedPoses();
+    PhysicsWorld::SetTestPoseProbe(false);
+
     const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
     REQUIRE(runtime != nullptr);
 
@@ -401,6 +449,13 @@ TEST_CASE("T3 GREEN_NonIdentityTransformRefreshed: runtime worldMatrix matches n
     CHECK(tf.worldMatrix[3][2] == doctest::Approx(4.0f));
     // prevWorldMatrix was snapshotted from the refreshed world matrix.
     CHECK(tf.prevWorldMatrix == tf.worldMatrix);
+
+    REQUIRE(poses.size() == 1);
+    CHECK(poses[0].id == id);
+    CHECK(poses[0].translation.x == doctest::Approx(2.0f));
+    CHECK(poses[0].translation.y == doctest::Approx(3.0f));
+    CHECK(poses[0].translation.z == doctest::Approx(4.0f));
+    ctrl.Stop(f.Authoring(), bridge);
 }
 
 TEST_CASE("T3 GREEN_ProviderPresentLetsPlayProceed: collision refs with a provider Play clean")
@@ -478,7 +533,7 @@ TEST_CASE("T3 RED_DynamicTriMeshRefused: dynamic triangle mesh refuses Play")
     T3CheckCleanRefusal(ctrl, bridge, obs, err, id);
 }
 
-TEST_CASE("T3 RED_BadLayerMaskRefused: zero or unknown layer/mask bits refuse Play")
+TEST_CASE("T3 RED_BadLayerMaskRefused: non-single layer or bad mask refuses Play")
 {
     // Zero layer.
     {
@@ -486,6 +541,22 @@ TEST_CASE("T3 RED_BadLayerMaskRefused: zero or unknown layer/mask bits refuse Pl
         const UUID id = f.Create("NoLayer");
         PhysicsBodyComponent body = T3StaticBody();
         body.layer = 0;
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        T3CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+    // Multi-bit layer: a group bitset is refused, never silently narrowed.
+    {
+        T3Fixture f;
+        const UUID id = f.Create("GroupLayer");
+        PhysicsBodyComponent body = T3StaticBody();
+        body.layer = PhysicsLayer::Dynamic | PhysicsLayer::WorldStatic;
         f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
         T3NullBridge bridge;
         T3RecordingObserver obs;
@@ -511,6 +582,194 @@ TEST_CASE("T3 RED_BadLayerMaskRefused: zero or unknown layer/mask bits refuse Pl
         ctrl.SetLifecycleObserver(&obs);
         CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
         T3CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+    // Zero mask: collides with nothing, refused as a malformed policy.
+    {
+        T3Fixture f;
+        const UUID id = f.Create("EmptyMask");
+        PhysicsBodyComponent body = T3StaticBody();
+        body.mask = 0;
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        T3CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+}
+
+TEST_CASE("T3 RED_TriggerLayerMismatchRefused: trigger shapes and Trigger layer must agree")
+{
+    // Trigger shape on a non-Trigger layer.
+    {
+        T3Fixture f;
+        const UUID id = f.Create("Ghost");
+        PhysicsBodyComponent body = T3StaticBody();
+        body.layer = PhysicsLayer::WorldStatic;
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+        PhysicsShapeComponent shape = T3SphereShape();
+        shape.isTrigger = true;
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), shape);
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        T3CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+    // Solid shape claiming the Trigger layer.
+    {
+        T3Fixture f;
+        const UUID id = f.Create("SolidTrigger");
+        PhysicsBodyComponent body = T3StaticBody();
+        body.layer = PhysicsLayer::Trigger;
+        body.mask = PhysicsLayer::Dynamic;
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), T3SphereShape());
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        T3CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+}
+
+TEST_CASE("T3 GREEN_LayerMaskPolicyAccepted: settled single-layer policy Plays clean")
+{
+    struct AcceptedCase
+    {
+        const char* name;
+        uint16_t layer;
+        uint16_t mask;
+        bool isTrigger;
+    };
+    const AcceptedCase cases[] = {
+        {"Dynamic", PhysicsLayer::Dynamic, PhysicsLayer::WorldStatic | PhysicsLayer::Mechanism, false},
+        {"WorldStatic", PhysicsLayer::WorldStatic, PhysicsLayer::Dynamic, false},
+        {"Mechanism", PhysicsLayer::Mechanism, PhysicsLayer::Dynamic, false},
+        {"Trigger", PhysicsLayer::Trigger, PhysicsLayer::Dynamic, true},
+    };
+    for (const auto& accepted : cases)
+    {
+        T3Fixture f;
+        const UUID id = f.Create(accepted.name);
+        PhysicsBodyComponent body = T3StaticBody();
+        body.layer = accepted.layer;
+        body.mask = accepted.mask;
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+        PhysicsShapeComponent shape = T3SphereShape();
+        shape.isTrigger = accepted.isTrigger;
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), shape);
+        T3NullBridge bridge;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        CHECK(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK(err.IsOk());
+        CHECK(ctrl.PhysicsTotalHandles() == 0);
+        ctrl.Stop(f.Authoring(), bridge);
+        CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+    }
+}
+
+TEST_CASE("T3 RED_MissingEntityIdRefused: physics components without authored IDs refuse Play")
+{
+    // Body without EntityIdComponent: refused before clone can omit it.
+    {
+        T3Fixture f;
+        const auto e = f.Registry().create();
+        f.Registry().emplace<Transform>(e);
+        f.Registry().emplace<PhysicsBodyComponent>(e, T3StaticBody());
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK_FALSE(err.IsOk());
+        CHECK(err.code == Error::InvalidEntity);
+        CHECK(err.path == "PhysicsBodyComponent");
+        CHECK(err.detail.find("EntityIdComponent") != std::string::npos);
+        CHECK(ctrl.GetState() == SceneRunState::Edit);
+        CHECK(ctrl.TryGetRuntimeScene() == nullptr);
+        CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+        CHECK(bridge.Quiet());
+        CHECK(obs.starts == 0);
+        CHECK(obs.stops == 0);
+    }
+    // Shape without EntityIdComponent (and no body): the shape wire is named.
+    {
+        T3Fixture f;
+        const auto e = f.Registry().create();
+        f.Registry().emplace<Transform>(e);
+        f.Registry().emplace<PhysicsShapeComponent>(e, T3SphereShape());
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK_FALSE(err.IsOk());
+        CHECK(err.code == Error::InvalidEntity);
+        CHECK(err.path == "PhysicsShapeComponent");
+        CHECK(ctrl.TryGetRuntimeScene() == nullptr);
+        CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+        CHECK(bridge.Quiet());
+        CHECK(obs.starts == 0);
+    }
+    // Hinge without EntityIdComponent: the hinge wire is named (pass-0 runs
+    // before owner-body validation, so the missing ID is what refuses).
+    {
+        T3Fixture f;
+        const auto e = f.Registry().create();
+        f.Registry().emplace<Transform>(e);
+        f.Registry().emplace<PhysicsHingeComponent>(e, T3Hinge(UUID::Nil()));
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK_FALSE(err.IsOk());
+        CHECK(err.code == Error::InvalidEntity);
+        CHECK(err.path == "PhysicsHingeComponent");
+        CHECK(ctrl.TryGetRuntimeScene() == nullptr);
+        CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+        CHECK(bridge.Quiet());
+        CHECK(obs.starts == 0);
+    }
+    // Slider without EntityIdComponent: the slider wire is named.
+    {
+        T3Fixture f;
+        const auto e = f.Registry().create();
+        f.Registry().emplace<Transform>(e);
+        PhysicsSliderComponent slider;
+        f.Registry().emplace<PhysicsSliderComponent>(e, slider);
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK_FALSE(err.IsOk());
+        CHECK(err.code == Error::InvalidEntity);
+        CHECK(err.path == "PhysicsSliderComponent");
+        CHECK(ctrl.TryGetRuntimeScene() == nullptr);
+        CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+        CHECK(bridge.Quiet());
+        CHECK(obs.starts == 0);
     }
 }
 
@@ -649,7 +908,8 @@ TEST_CASE("T3 RED_PhysicsPlayConstructionIsAtomic: late candidate failure leaves
     UUID a, b;
     T3AttachValidPair(f, a, b);
     // Non-identity authored transform: the failed Play must not disturb it,
-    // and the retry below proves the pre-build refresh path is intact.
+    // and the construction probe below proves the candidate observed the
+    // refreshed (not stale-clone) value before rollback.
     f.Registry().get<Transform>(f.Handle(a)).translation = {2.0f, 3.0f, 4.0f};
     T3NullBridge bridge;
     T3RecordingObserver obs;
@@ -660,11 +920,15 @@ TEST_CASE("T3 RED_PhysicsPlayConstructionIsAtomic: late candidate failure leaves
     const std::string before = T3SaveAuthoringBytes(f.Authoring(), snapPath, err);
     REQUIRE(err.IsOk());
 
+    const size_t baseline = PhysicsWorld::LiveWorldCount();
     RuntimeSceneController ctrl;
     ctrl.SetLifecycleObserver(&obs);
+    PhysicsWorld::SetTestPoseProbe(true);
     PhysicsWorld::SetTestInjectCreateFailure(true);
     const bool played = ctrl.Play(f.Authoring(), bridge, err);
     PhysicsWorld::SetTestInjectCreateFailure(false);
+    auto poses = PhysicsWorld::TestRecordedPoses();
+    PhysicsWorld::SetTestPoseProbe(false);
 
     CHECK_FALSE(played);
     CHECK_FALSE(err.IsOk());
@@ -678,6 +942,29 @@ TEST_CASE("T3 RED_PhysicsPlayConstructionIsAtomic: late candidate failure leaves
     CHECK(obs.starts == 0);
     CHECK(obs.stops == 0);
 
+    // A live Bullet world was constructed and then destroyed: the census is
+    // back at baseline (a pre-construction early-out would also read zero
+    // here, but it could not have recorded the poses below).
+    CHECK(PhysicsWorld::LiveWorldCount() == baseline);
+
+    // The candidate observed the refreshed runtime clone before rollback:
+    // both bodies recorded at construction time with a's non-identity pose.
+    // A pre-construction failure records nothing; construction before
+    // InitPrevTransforms records stale identity matrices.
+    REQUIRE(poses.size() == 2);
+    bool sawA = false;
+    for (const auto& pose : poses)
+    {
+        if (pose.id == a)
+        {
+            sawA = true;
+            CHECK(pose.translation.x == doctest::Approx(2.0f));
+            CHECK(pose.translation.y == doctest::Approx(3.0f));
+            CHECK(pose.translation.z == doctest::Approx(4.0f));
+        }
+    }
+    CHECK(sawA);
+
     // Authoring is byte-identical after the failed Play.
     Error cmpErr;
     const std::string after = T3SaveAuthoringBytes(f.Authoring(), snapPath, cmpErr);
@@ -689,6 +976,7 @@ TEST_CASE("T3 RED_PhysicsPlayConstructionIsAtomic: late candidate failure leaves
     REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
     CHECK(err.IsOk());
     REQUIRE(ctrl.TryGetPhysicsWorld() != nullptr);
+    CHECK(PhysicsWorld::LiveWorldCount() == baseline + 1);
     const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
     REQUIRE(runtime != nullptr);
     const auto e = runtime->FindByUuid(a);
@@ -697,6 +985,7 @@ TEST_CASE("T3 RED_PhysicsPlayConstructionIsAtomic: late candidate failure leaves
     CHECK(runtime->ecs.registry.get<Transform>(e).worldMatrix[3][0] ==
           doctest::Approx(2.0f));
     ctrl.Stop(f.Authoring(), bridge);
+    CHECK(PhysicsWorld::LiveWorldCount() == baseline);
 
     std::error_code ec;
     std::filesystem::remove(snapPath, ec);
