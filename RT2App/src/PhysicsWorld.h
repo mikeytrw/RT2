@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -122,6 +123,15 @@ public:
     static void SetTestInjectCreateFailure(bool fail);
     static bool TestInjectCreateFailure();
 
+    // Test-only destruction probe, invoked by the REAL ~PhysicsWorld()
+    // when set (after Bullet teardown, before the live count decrements).
+    // Lets the Stop-order test observe the actual destruction boundary:
+    // the probe runs while Stop() still holds the runtime clone iff the
+    // world is destroyed before the clone reset. Null by default (zero
+    // production effect); tests set, read, then clear. Never set outside
+    // tests.
+    static void SetTestDestroyProbe(std::function<void()> probe);
+
     // Test-only construction pose probe. While enabled, Create() records one
     // ConstructionPose per runtime physics body (UUID order) at the moment
     // the candidate observes the runtime clone. Disabled by default (zero
@@ -141,6 +151,7 @@ private:
     static bool s_TestPoseProbe;
     static size_t s_LiveWorlds;
     static std::vector<ConstructionPose> s_RecordedPoses;
+    static std::function<void()> s_TestDestroyProbe;
 
     btDefaultCollisionConfiguration m_CollisionConfiguration;
     btCollisionDispatcher m_Dispatcher;

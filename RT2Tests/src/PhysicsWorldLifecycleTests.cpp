@@ -353,6 +353,11 @@ TEST_CASE("T3 GREEN_StopZeroHandles: repeated Play/Stop cycles leave zero handle
     RuntimeSceneController ctrl;
     ctrl.SetLifecycleObserver(&obs);
     obs.observed = &ctrl;
+    // Destruction-boundary probe: the real ~PhysicsWorld() records whether
+    // the runtime clone is still alive at the actual teardown point. Set
+    // around each Stop and cleared immediately after, so no probe outlives
+    // the observation it was installed for.
+    std::vector<int> destroySawRuntimeAlive;
     for (int i = 0; i < 5; ++i)
     {
         REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
@@ -366,7 +371,13 @@ TEST_CASE("T3 GREEN_StopZeroHandles: repeated Play/Stop cycles leave zero handle
             ctrl.Update(kFixedDt, bridge);
         // StepCount is per committed world (one Play session): three ticks.
         CHECK(ctrl.PhysicsStepCount() == 3);
+        PhysicsWorld::SetTestDestroyProbe(
+            [&ctrl, &destroySawRuntimeAlive]() {
+                destroySawRuntimeAlive.push_back(
+                    ctrl.TryGetRuntimeScene() != nullptr ? 1 : 0);
+            });
         ctrl.Stop(f.Authoring(), bridge);
+        PhysicsWorld::SetTestDestroyProbe(nullptr);
         // Teardown bracket: at OnSceneStop (production seam) the world and
         // the runtime clone are both still alive with a nonzero live census;
         // after Stop the world is destroyed (not pointer-discarded) before
@@ -380,6 +391,12 @@ TEST_CASE("T3 GREEN_StopZeroHandles: repeated Play/Stop cycles leave zero handle
         CHECK(PhysicsWorld::LiveWorldCount() == baseline);
     }
     CHECK(obs.stops == 5);
+    // Every Stop destroyed its world while the clone was still alive: five
+    // destruction-boundary observations, all alive. Reversing only the two
+    // resets in Stop() records zeros and turns this red.
+    REQUIRE(destroySawRuntimeAlive.size() == 5);
+    for (int alive : destroySawRuntimeAlive)
+        CHECK(alive == 1);
 }
 
 TEST_CASE("T3 GREEN_StopRestoresAuthoring: Play/Stop cycles leave authoring bytes identical")
@@ -558,6 +575,25 @@ TEST_CASE("T3 RED_BadLayerMaskRefused: non-single layer or bad mask refuses Play
         PhysicsBodyComponent body = T3StaticBody();
         body.layer = PhysicsLayer::Dynamic | PhysicsLayer::WorldStatic;
         f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+        T3NullBridge bridge;
+        T3RecordingObserver obs;
+        Error err;
+
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        T3CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+    // Unknown one-hot layer: nonzero and single-bit, so only the known-bit
+    // clause can refuse it. Otherwise-valid body and shape isolate that
+    // exact branch.
+    {
+        T3Fixture f;
+        const UUID id = f.Create("UnknownLayer");
+        PhysicsBodyComponent body = T3StaticBody();
+        body.layer = 0x10;
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), body);
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), T3SphereShape());
         T3NullBridge bridge;
         T3RecordingObserver obs;
         Error err;

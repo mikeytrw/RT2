@@ -27,6 +27,7 @@ bool PhysicsWorld::s_TestInjectCreateFailure = false;
 bool PhysicsWorld::s_TestPoseProbe = false;
 size_t PhysicsWorld::s_LiveWorlds = 0;
 std::vector<PhysicsWorld::ConstructionPose> PhysicsWorld::s_RecordedPoses;
+std::function<void()> PhysicsWorld::s_TestDestroyProbe;
 
 PhysicsWorld::PhysicsWorld()
     : m_Dispatcher(&m_CollisionConfiguration)
@@ -43,6 +44,11 @@ PhysicsWorld::PhysicsWorld()
 PhysicsWorld::~PhysicsWorld()
 {
     Shutdown();
+    // Destruction-boundary probe (test-only, null in production): observes
+    // the actual teardown point. In Stop() the runtime clone is still alive
+    // here iff the world is destroyed before the clone reset.
+    if (s_TestDestroyProbe)
+        s_TestDestroyProbe();
     --s_LiveWorlds;
 }
 
@@ -144,6 +150,11 @@ void PhysicsWorld::SetTestInjectCreateFailure(bool fail)
 bool PhysicsWorld::TestInjectCreateFailure()
 {
     return s_TestInjectCreateFailure;
+}
+
+void PhysicsWorld::SetTestDestroyProbe(std::function<void()> probe)
+{
+    s_TestDestroyProbe = std::move(probe);
 }
 
 void PhysicsWorld::SetTestPoseProbe(bool enabled)

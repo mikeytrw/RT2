@@ -238,7 +238,9 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
     //    live-world census must return to the pre-Play baseline: a world
     //    that is merely pointer-discarded (never destroyed) keeps the count
     //    elevated, which this assert catches in debug (tests observe the
-    //    same census in release).
+    //    same census in release). The real destructor is the destruction
+    //    boundary: it runs here, while m_Runtime is still alive — reversing
+    //    these two resets is caught by the Stop-order test's destroy probe.
     m_PhysicsWorld.reset();
     assert(PhysicsWorld::LiveWorldCount() == m_PhysicsLiveBaseline &&
            "PhysicsWorld destroyed on Stop must restore the live baseline");
