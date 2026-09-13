@@ -25,9 +25,18 @@
 // the same setter seam. Stop never destroys the provider; only Play-session
 // borrows and Bullet shapes end.
 //
-// This header is dependency-free (no Bullet, Vulkan, ImGui, Walnut, entt)
-// so it links into RT2Tests and RT2SliceRunner unchanged.
+// This header is CPU-only (AssetResolver + core types; no Bullet, Vulkan,
+// ImGui, Walnut, entt) so it links into RT2Tests and RT2SliceRunner unchanged.
 // ============================================================================
+
+#include "AssetReference.h"
+#include "AssetResolver.h"
+#include "PhysicsCollisionGeometry.h"
+#include "core/Error.h"
+#include "core/UUID.h"
+
+#include <cstddef>
+#include <string>
 
 namespace rt2::core {
 
@@ -35,6 +44,24 @@ class IPhysicsCollisionAssetProvider
 {
 public:
     virtual ~IPhysicsCollisionAssetProvider() = default;
+
+    // Host-session context, held by value-copy (never by reference into host
+    // internals). The host refreshes it immediately before Play beside the
+    // script context; CPU-only targets inject an explicit test value.
+    virtual void SetContext(const AssetResolutionContext& ctx) = 0;
+
+    // Resolve + decode-or-reuse the immutable geometry for one authored
+    // collision ref. Returns a borrowed view owned by the provider's
+    // host-session cache (valid until provider destruction or a stale-file
+    // rebuild of that entry); the caller must not mutate or retain it past
+    // the Play session. Typed loud failure naming the entity UUID.
+    virtual Result<const CollisionGeometry*> GetCollisionGeometry(
+        const AssetReference& ref, const UUID& entityUuid,
+        const std::string& entityName) = 0;
+
+    // Cache census for tests: entries held and total successful decodes.
+    virtual size_t CacheEntryCount() const = 0;
+    virtual size_t DecodeCount() const = 0;
 };
 
 } // namespace rt2::core

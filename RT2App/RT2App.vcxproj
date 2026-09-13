@@ -279,6 +279,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\PathTracePass.h" />
     <ClInclude Include="src\PersistedComponents.h" />
     <ClInclude Include="src\Phase1AFixtureGenerator.h" />
+    <!-- T4: shared CPU collision decode + host-owned immutable cache. -->
+    <ClInclude Include="src\PhysicsCollisionAssetProvider.h" />
+    <ClInclude Include="src\PhysicsCollisionGeometry.h" />
     <!-- T3: physics world lifecycle (CPU-only). -->
     <ClInclude Include="src\PhysicsWorld.h" />
     <ClInclude Include="src\PrefabCommandTransaction.h" />
@@ -661,6 +664,17 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\PathTracePass.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- T4: shared CPU collision decode + host-owned immutable cache. -->
+    <ClCompile Include="src\PhysicsCollisionAssetProvider.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PhysicsCollisionGeometry.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

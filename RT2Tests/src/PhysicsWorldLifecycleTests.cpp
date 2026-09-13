@@ -145,10 +145,22 @@ public:
     }
 };
 
-// T3 keeps the collision-provider seam interface-only: a tag provider the
-// tests inject. T4 extends the interface with the decoder and cache.
+// T3 keeps the collision-provider seam presence-only: a tag provider the
+// tests inject. T4 extends the interface with the decoder and cache; the
+// stub implements it with an empty context and loud absence (no geometry).
 struct T3StubProvider final : public IPhysicsCollisionAssetProvider
 {
+    void SetContext(const AssetResolutionContext&) override {}
+    Result<const CollisionGeometry*> GetCollisionGeometry(
+        const AssetReference&, const UUID& entityUuid,
+        const std::string&) override
+    {
+        return Result<const CollisionGeometry*>::Fail(
+            Error::MissingAsset, entityUuid.ToString(),
+            "T3StubProvider: no collision geometry (test seam)");
+    }
+    size_t CacheEntryCount() const override { return 0; }
+    size_t DecodeCount() const override { return 0; }
 };
 
 struct T3Fixture

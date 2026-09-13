@@ -126,6 +126,19 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- T4: shared CPU collision decode + host-owned immutable cache
+         (CPU-only; tinygltf/tinyobj declarations only — implementations link
+         from SceneLoader.cpp below). -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\PhysicsCollisionAssetProvider.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\PhysicsCollisionGeometry.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <!-- T3: physics world lifecycle (CPU-only; links the three pinned Bullet
          libraries like every other CPU consumer). -->
     <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\PhysicsWorld.cpp">
