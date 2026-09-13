@@ -1,13 +1,13 @@
 #!/usr/bin/env pwsh
-# run_bullet_presence_gate.ps1 - assert the named T1/T2/T3 Bullet cases exist
+# run_bullet_presence_gate.ps1 - assert the named T1/T2/T3/T4 Bullet cases exist
 # in the built RT2Tests executables.
 #
 # Usage: pwsh run_bullet_presence_gate.ps1 [-Configuration Release|Debug|Both]
 #
-# A zero exit from RT2Tests proves nothing about T1/T2/T3 when the tracked
+# A zero exit from RT2Tests proves nothing about T1/T2/T3/T4 when the tracked
 # Visual Studio projects silently omit their translation units (a 1218-case
 # false green passed while exercising none of the new tests). This gate
-# enumerates --list-test-cases and requires every named T1/T2/T3 case, so a
+# enumerates --list-test-cases and requires every named T1/T2/T3/T4 case, so a
 # build that drops them fails loudly instead of passing silently.
 #
 # Exits 0 when every named case is present in every checked binary, 1
@@ -62,6 +62,22 @@ $requiredCases = @(
     "T3 RED_MissingCollisionProviderRefusesPlay: refs without a provider refuse Play",
     "T3 RED_BadConstraintIdentityRefusesPlay: malformed constraint identities refuse Play",
     "T3 RED_PhysicsPlayConstructionIsAtomic: late candidate failure leaves zero observable mutation"
+    # T4: collision assets, rigid bodies, transform authority, authoring.
+    "T4 GREEN_CollisionCacheDedup: identical keys decode once and sourceKeys stay isolated",
+    "T4 GREEN_CollisionCacheRebuilds: changed files rebuild for the next Play",
+    "T4 GREEN_CcdFastSphereStops: authored CCD stops the fast sphere",
+    "T4 GREEN_KinematicEcsToBullet: kinematic pose pushes before the step",
+    "T4 GREEN_DynamicBulletToEcs: dynamic pose writes back after the step",
+    "T4 GREEN_BodiesCollideUnderUnits: sphere and convex hull settle on static ground",
+    "T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically",
+    "T4 RED_MissingCollisionAssetRefusesPlay: dangling hull path refuses Play atomically",
+    "T4 RED_MalformedCollisionAssetRefusesPlay: corrupt collision file refuses Play atomically",
+    "T4 RED_SourceKeyMismatchRefusesPlay: wrong sourceKey for the file refuses Play atomically",
+    "T4 RED_OversizeCollisionAssetRefusesPlay: oversize geometry refuses Play atomically",
+    "T4 RED_StaticSetPositionRefused: Static bodies refuse pose writes",
+    "T4 RED_PhysicsBodyValidationRejects: out-of-range authoring values fail atomically",
+    "T4 RED_PhysicsPrefabMemberEditRejected: linked members refuse every physics edit",
+    "T4 GREEN_PhysicsAuthoringUndoRedo: body and shape edits are exact with revision and no GPU sync"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
@@ -82,13 +98,13 @@ foreach ($config in $configs) {
         }
     }
     if ($missing.Count -gt 0) {
-        Write-Host "[$config] FAIL: $($missing.Count) named T1/T2/T3 cases absent from $exe" -ForegroundColor Red
+        Write-Host "[$config] FAIL: $($missing.Count) named T1/T2/T3/T4 cases absent from $exe" -ForegroundColor Red
         foreach ($case in $missing) {
             Write-Host "  missing: $case" -ForegroundColor Red
         }
         $failed++
     } else {
-        Write-Host "[$config] PASS: all $($requiredCases.Count) named T1/T2/T3 cases present" -ForegroundColor Green
+        Write-Host "[$config] PASS: all $($requiredCases.Count) named T1/T2/T3/T4 cases present" -ForegroundColor Green
     }
 }
 
