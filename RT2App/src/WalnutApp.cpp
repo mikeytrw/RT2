@@ -24,6 +24,7 @@
 #include "PrefabPropagationService.h"
 #include "PrefabPropagationLive.h"
 #include "RuntimeSceneController.h"
+#include "PhysicsCollisionAssetProvider.h"
 #include "ScriptSystem.h"
 #include "ScriptFieldRegistry.h"
 #include "ScriptFieldResolver.h"
@@ -4321,6 +4322,14 @@ private:
 	std::unique_ptr<rt2::core::ScriptSystem>         m_ScriptSystem;
 	std::unique_ptr<rt2::core::RuntimeCommandSink>   m_ScriptSink;
 
+	// Bullet T4: host-owned collision provider + stable value-held physics
+	// context (plan section 2, Sol B2). The provider lives for the host
+	// session; the context value is refreshed immediately before Play beside
+	// the script context and the controller borrows the provider for one
+	// Play session only. Created lazily by EnsurePhysicsProvider().
+	rt2::core::AssetResolutionContext               m_PhysicsAssetContext;
+	std::unique_ptr<rt2::core::PhysicsCollisionAssetProvider> m_PhysicsProvider;
+
 	// Phase 6B/W5: inspector-side field registry. Created at startup so the
 	// inspector can query declared fields while the editor is STOPPED (the
 	// ScriptSystem's registry is lazy-created at Play). Cleared on scene
@@ -4960,6 +4969,19 @@ private:
 		EnsureScriptRuntimeWired();
 		m_ScriptAssetDiagnostics.clear();
 		m_ScriptAssetContext = CurrentAssetContext();
+
+		// Bullet T4 (Sol B2): the host owns the collision provider for the
+		// host session and refreshes the stable value-held physics context
+		// immediately before Play beside the script context. The controller
+		// borrows the provider pointer for the Play session only; a project
+		// switch or database refresh mid-Play never affects the running
+		// session (the next Play picks it up). Stop never destroys it.
+		if (!m_PhysicsProvider)
+			m_PhysicsProvider =
+				std::make_unique<rt2::core::PhysicsCollisionAssetProvider>();
+		m_PhysicsAssetContext = CurrentAssetContext();
+		m_PhysicsProvider->SetContext(m_PhysicsAssetContext);
+		m_Runtime.SetCollisionProvider(m_PhysicsProvider.get());
 
 		// Phase 4: inject the production UUID provider so the runtime document
 		// can generate fresh UUIDs for deferred-create operations. The

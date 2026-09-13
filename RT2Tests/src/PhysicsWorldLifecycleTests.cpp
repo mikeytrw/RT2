@@ -46,6 +46,7 @@
 
 #include "PhysicsWorld.h"
 #include "IPhysicsCollisionAssetProvider.h"
+#include "PhysicsCollisionAssetProvider.h"
 #include "RuntimeSceneController.h"
 #include "RuntimeLifecycleObserver.h"
 #include "SceneManager.h"
@@ -378,7 +379,15 @@ TEST_CASE("T3 GREEN_StopZeroHandles: repeated Play/Stop cycles leave zero handle
         // Nonzero live census while committed: a real world exists, not just
         // a non-null pointer.
         CHECK(PhysicsWorld::LiveWorldCount() == baseline + 1);
-        CHECK(ctrl.PhysicsTotalHandles() == 0);
+        // T4 supersedes the T3 zero-handle expectation: the valid pair now
+        // stages two dynamic sphere bodies plus two shapes (constraints land
+        // in T5, so the hinge contributes no handle yet). Stop still returns
+        // every census to zero.
+        CHECK(ctrl.PhysicsBodyCount() == 2);
+        CHECK(ctrl.PhysicsShapeCount() == 2);
+        CHECK(ctrl.PhysicsGhostCount() == 0);
+        CHECK(ctrl.PhysicsConstraintCount() == 0);
+        CHECK(ctrl.PhysicsTotalHandles() == 4);
         for (int s = 0; s < 3; ++s)
             ctrl.Update(kFixedDt, bridge);
         // StepCount is per committed world (one Play session): three ticks.
@@ -492,20 +501,41 @@ TEST_CASE("T3 GREEN_ProviderPresentLetsPlayProceed: collision refs with a provid
     T3Fixture f;
     const UUID id = f.Create("Hull");
     f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T3StaticBody());
-    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), T3HullShape());
+    // T4 supersedes the T3 stub-provider form of this test: the seam now
+    // decodes through the provider, so the test writes a real minimal hull
+    // asset and serves it through a real provider with an explicit test
+    // context. The static hull stages one body plus one shape.
+    const auto assetDir =
+        std::filesystem::temp_directory_path() / "t3_hull_provider";
+    std::error_code ec;
+    std::filesystem::create_directories(assetDir, ec);
+    {
+        std::ofstream hull(assetDir / "hull.obj", std::ios::binary);
+        hull << "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\n"
+                "f 1 2 3\nf 1 2 4\nf 1 3 4\nf 2 3 4\n";
+    }
+    PhysicsShapeComponent hullShape;
+    hullShape.shape = PhysicsShapeKind::ConvexHull;
+    hullShape.hull.kind = AssetKind::Model;
+    hullShape.hull.path = "hull.obj";
+    hullShape.hull.sourceKey = "obj:whole-model";
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), hullShape);
     T3NullBridge bridge;
     Error err;
 
-    T3StubProvider provider;
+    PhysicsCollisionAssetProvider provider;
+    provider.SetContext(AssetResolutionContext{assetDir, nullptr});
     RuntimeSceneController ctrl;
     ctrl.SetCollisionProvider(&provider);
     REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
     CHECK(err.IsOk());
-    // T3 ships the seam only: no decoder runs, so zero handles are committed.
-    // T4 decodes these same refs through this same provider pointer.
-    CHECK(ctrl.PhysicsTotalHandles() == 0);
+    CHECK(ctrl.PhysicsBodyCount() == 1);
+    CHECK(ctrl.PhysicsShapeCount() == 1);
+    CHECK(ctrl.PhysicsTotalHandles() == 2);
     ctrl.Stop(f.Authoring(), bridge);
     CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+    std::filesystem::remove_all(assetDir, ec);
 }
 
 TEST_CASE("T3 RED_MotionPlusBodyRefused: MotionComponent plus physics body refuses Play")
@@ -722,7 +752,21 @@ TEST_CASE("T3 GREEN_LayerMaskPolicyAccepted: settled single-layer policy Plays c
         RuntimeSceneController ctrl;
         CHECK(ctrl.Play(f.Authoring(), bridge, err));
         CHECK(err.IsOk());
-        CHECK(ctrl.PhysicsTotalHandles() == 0);
+        // T4 supersedes the T3 zero-handle expectation: the accepted body now
+        // stages (solid: one body plus one shape; trigger: one ghost plus one
+        // shape). Stop still returns every census to zero.
+        if (accepted.isTrigger)
+        {
+            CHECK(ctrl.PhysicsBodyCount() == 0);
+            CHECK(ctrl.PhysicsGhostCount() == 1);
+        }
+        else
+        {
+            CHECK(ctrl.PhysicsBodyCount() == 1);
+            CHECK(ctrl.PhysicsGhostCount() == 0);
+        }
+        CHECK(ctrl.PhysicsShapeCount() == 1);
+        CHECK(ctrl.PhysicsTotalHandles() == 2);
         ctrl.Stop(f.Authoring(), bridge);
         CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
     }

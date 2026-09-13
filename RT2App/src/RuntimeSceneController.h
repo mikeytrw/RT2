@@ -294,9 +294,10 @@ private:
     // each simulation step.
     void SnapshotPrevTransforms();
 
-    // Run one fixed update tick (MotionSystem + exactly one PhysicsWorld
-    // step at kFixedDt). Does NOT drain the queue — the queue is drained at
-    // the safe point AFTER the fixed-step loop.
+    // Run one fixed update tick (MotionSystem + T4 kinematic pre-push +
+    // exactly one PhysicsWorld step at kFixedDt + T4 dynamic write-back).
+    // Does NOT drain the queue — the queue is drained at the safe point
+    // AFTER the fixed-step loop.
     void RunFixedTick(float dt);
 
     // Apply deferred structural changes at the safe point (after the fixed-

@@ -57,15 +57,18 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     // transform is refreshed BEFORE the physics candidate below observes it.
     InitPrevTransforms();
 
-    // T3 candidate-commit step 2: construct the PhysicsWorld completely in
-    // private against the refreshed runtime clone and commit to ownership
-    // only on success. Rollback on any candidate failure: the candidate dies
-    // with the local (full Bullet teardown of a live world), the clone is
-    // reset, state stays Edit with a zero accumulator, and no bridge call
-    // and no script callback have happened yet.
+    // T3 candidate-commit step 2 (+T4 body staging): construct the
+    // PhysicsWorld completely in private against the refreshed runtime clone
+    // and commit to ownership only on success. The borrowed collision
+    // provider rides the same candidate: geometry borrows live only for the
+    // Play session while Bullet shapes commit with the world. Rollback on any
+    // candidate failure: the candidate dies with the local (full Bullet
+    // teardown of a live world), the clone is reset, state stays Edit with a
+    // zero accumulator, and no bridge call and no script callback have
+    // happened yet.
     {
         m_PhysicsLiveBaseline = PhysicsWorld::LiveWorldCount();
-        auto candidate = PhysicsWorld::Create(*m_Runtime);
+        auto candidate = PhysicsWorld::Create(*m_Runtime, m_CollisionProvider);
         if (!candidate.IsOk())
         {
             err = candidate.error;
@@ -646,8 +649,18 @@ void RuntimeSceneController::RunFixedTick(float dt)
     // 0)); an entity can never carry both MotionComponent and a physics body
     // (Play refuses it), so motion integration and the physics step never
     // fight over one transform.
+    //
+    // T4 authority around the step: kinematic bodies push (ECS/script ->
+    // Bullet) before the step; simulated dynamic bodies write back (Bullet ->
+    // ECS, marked dirty for the single batched SceneGraph + TransformSync
+    // pass per presentation frame) after it. Static bodies are baked once at
+    // Play and never touched here.
     if (m_PhysicsWorld)
+    {
+        m_PhysicsWorld->PreStepSync(*m_Runtime);
         m_PhysicsWorld->Step(dt);
+        m_PhysicsWorld->PostStepSync(*m_Runtime);
+    }
 }
 
 } // namespace rt2::core

@@ -14,12 +14,16 @@
 #include "EntityReferenceRemapper.h"
 #include "IPhysicsCollisionAssetProvider.h"
 #include "SceneDocument.h"
+#include "SceneGraph.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <glm/gtc/quaternion.hpp>
 
 namespace rt2::core {
 
@@ -73,6 +77,13 @@ void PhysicsWorld::Shutdown()
 Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
     const SceneDocument& runtime)
 {
+    return Create(runtime, nullptr);
+}
+
+Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
+    const SceneDocument& runtime,
+    const IPhysicsCollisionAssetProvider* provider)
+{
     // The candidate is FULLY constructed first: broadphase, dispatcher,
     // solver, configuration, dynamics world, ghost-pair callback, gravity.
     // A failure below therefore rolls back a live Bullet world through the
@@ -110,6 +121,19 @@ Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
         }
     }
 
+    // T4: stage every authored body from the runtime clone (statics, then
+    // kinematics, then dynamics, then ghosts; UUID order within each group).
+    // Any failure returns a typed UUID-named Error and the half-staged
+    // candidate dies with the local through the full Shutdown() teardown.
+    {
+        Error buildErr;
+        if (!StageBodies(*world, runtime, provider, buildErr))
+        {
+            return Result<std::unique_ptr<PhysicsWorld>>::Fail(
+                buildErr.code, buildErr.path, buildErr.detail);
+        }
+    }
+
     // Late-failure probe: fires only after the live world above exists, so
     // the returned local dies here and runs the real destructor rollback.
     // The controller's catch (destroy candidate, reset clone, Edit state,
@@ -130,6 +154,160 @@ size_t PhysicsWorld::LiveWorldCount()
 {
     return s_LiveWorlds;
 }
+
+void PhysicsWorld::FastSphereCcdPreset(float radius, float& thresholdOut,
+                                    float& sweptOut)
+{
+    thresholdOut = 0.5f * radius;
+    sweptOut = 0.8f * radius;
+}
+
+const PhysicsBodyRecord* PhysicsWorld::FindBody(const UUID& id) const
+{
+    for (const auto& rec : m_BodyIndex)
+    {
+        if (rec.id == id)
+            return &rec;
+    }
+    return nullptr;
+}
+
+static PhysicsBodyRecord* FindBodyMut(std::vector<PhysicsBodyRecord>& index,
+                                        const UUID& id)
+{
+    for (auto& rec : index)
+    {
+        if (rec.id == id)
+            return &rec;
+    }
+    return nullptr;
+}
+
+bool PhysicsWorld::BodyWorldPosition(const UUID& id, glm::vec3& out) const
+{
+    const PhysicsBodyRecord* rec = FindBody(id);
+    if (rec == nullptr)
+        return false;
+    const btTransform* t = nullptr;
+    if (rec->body != nullptr)
+        t = &rec->body->getWorldTransform();
+    else if (rec->ghost != nullptr)
+        t = &rec->ghost->getWorldTransform();
+    else
+        return false;
+    const btVector3& o = t->getOrigin();
+    out = glm::vec3(o.x(), o.y(), o.z());
+    return true;
+}
+
+bool PhysicsWorld::SetBodyLinearVelocity(const UUID& id,
+                                         const glm::vec3& velocity)
+{
+    PhysicsBodyRecord* rec = FindBodyMut(m_BodyIndex, id);
+    if (rec == nullptr || rec->body == nullptr ||
+        rec->kind == PhysicsBodyKind::Static)
+        return false;
+    rec->body->setLinearVelocity(
+        btVector3(velocity.x, velocity.y, velocity.z));
+    rec->body->activate();
+    return true;
+}
+
+bool PhysicsWorld::TryWriteBodyPose(const UUID& id, const glm::vec3& position,
+                                    const glm::quat& rotation)
+{
+    PhysicsBodyRecord* rec = FindBodyMut(m_BodyIndex, id);
+    if (rec == nullptr || rec->kind == PhysicsBodyKind::Static)
+        return false;
+    const btTransform t(
+        btQuaternion(rotation.x, rotation.y, rotation.z, rotation.w),
+        btVector3(position.x, position.y, position.z));
+    if (rec->body != nullptr)
+    {
+        rec->body->setWorldTransform(t);
+        if (rec->motion != nullptr)
+            rec->motion->setWorldTransform(t);
+        rec->body->setInterpolationWorldTransform(t);
+        rec->body->setLinearVelocity(btVector3(0, 0, 0));
+        rec->body->setAngularVelocity(btVector3(0, 0, 0));
+        rec->body->clearForces();
+        rec->body->activate();
+    }
+    else if (rec->ghost != nullptr)
+    {
+        rec->ghost->setWorldTransform(t);
+    }
+    else
+    {
+        return false;
+    }
+    return true;
+}
+
+void PhysicsWorld::PreStepSync(SceneDocument& runtime)
+{
+    auto& reg = runtime.ecs.registry;
+    // Refresh world matrices after OnFixedUpdate/Motion writes so the
+    // kinematic push observes current poses (bodies are roots: world==local,
+    // but the matrix is what Create baked from, so read it, not the TRS).
+    SceneGraph::UpdateWorldTransforms(reg);
+    for (auto& rec : m_BodyIndex)
+    {
+        if (rec.kind != PhysicsBodyKind::Kinematic)
+            continue;
+        if (!reg.valid(rec.entity))
+            continue;
+        const auto* tf = reg.try_get<Transform>(rec.entity);
+        if (tf == nullptr)
+            continue;
+        const glm::vec3 t(tf->worldMatrix[3]);
+        const glm::quat r =
+            glm::quat_cast(glm::mat3(tf->worldMatrix) / rec.bakedScale);
+        const btTransform btT(
+            btQuaternion(r.x, r.y, r.z, r.w), btVector3(t.x, t.y, t.z));
+        if (rec.body != nullptr)
+        {
+            rec.body->getWorldTransform() = btT;
+            if (rec.motion != nullptr)
+                rec.motion->setWorldTransform(btT);
+            rec.body->setInterpolationWorldTransform(btT);
+            rec.body->activate();
+        }
+        else if (rec.ghost != nullptr)
+        {
+            rec.ghost->setWorldTransform(btT);
+        }
+    }
+}
+
+void PhysicsWorld::PostStepSync(SceneDocument& runtime)
+{
+    auto& reg = runtime.ecs.registry;
+    // Dynamic Bullet -> ECS after step. Static/Kinematic/ghost poses are
+    // never written back (single authority per kind). Local TRS is written
+    // and marked dirty; the controller's one batched SceneGraph +
+    // TransformSync pass per presentation frame carries it to the GPU.
+    for (auto& rec : m_BodyIndex)
+    {
+        if (rec.kind != PhysicsBodyKind::Dynamic || rec.body == nullptr)
+            continue;
+        if (!reg.valid(rec.entity))
+            continue;
+        auto* tf = reg.try_get<Transform>(rec.entity);
+        if (tf == nullptr)
+            continue;
+        const btTransform& wt = rec.body->getWorldTransform();
+        const btVector3& o = wt.getOrigin();
+        const btQuaternion& q = wt.getRotation();
+        tf->translation = glm::vec3(o.x(), o.y(), o.z());
+        tf->rotation = glm::normalize(glm::quat(q.w(), q.x(), q.y(), q.z()));
+        SceneGraph::SetLocalDirty(reg, rec.entity);
+    }
+}
+
+// ============================================================================
+// T4 sync + introspection (member definitions at rt2::core scope)
+// ============================================================================
 
 void PhysicsWorld::Step(float dt)
 {
@@ -172,6 +350,399 @@ std::vector<PhysicsWorld::ConstructionPose> PhysicsWorld::TestRecordedPoses()
 void PhysicsWorld::ClearTestRecordedPoses()
 {
     s_RecordedPoses.clear();
+}
+
+// ============================================================================
+// BuildBodies — T4 candidate body staging driver
+// ============================================================================
+
+namespace {
+
+std::string T4EntityName(const entt::registry& registry, entt::entity e)
+{
+    const auto* name = registry.try_get<NameComponent>(e);
+    return name != nullptr ? name->name : std::string{};
+}
+
+bool T4Fail(Error& err, const UUID& owner, const std::string& name,
+            const std::string& detail)
+{
+    err.code = Error::InvalidArgument;
+    err.path = owner.ToString();
+    err.detail = "entity " + owner.ToString() +
+                 (name.empty() ? "" : " ('" + name + "') ") + detail;
+    return false;
+}
+
+bool T4FailCode(Error& err, Error::Code code, const UUID& owner,
+                const std::string& name, const std::string& detail)
+{
+    err.code = code;
+    err.path = owner.ToString();
+    err.detail = "entity " + owner.ToString() +
+                 (name.empty() ? "" : " ('" + name + "') ") + detail;
+    return false;
+}
+
+bool IsValidBodyNumerics(const PhysicsBodyComponent& body)
+{
+    return std::isfinite(body.mass) && std::isfinite(body.friction) &&
+           std::isfinite(body.restitution) &&
+           std::isfinite(body.linearDamping) &&
+           std::isfinite(body.angularDamping) &&
+           std::isfinite(body.ccdMotionThreshold) &&
+           std::isfinite(body.ccdSweptRadius);
+}
+
+// Decompose a refreshed world matrix under the known uniform scale.
+void DecomposeUniform(const glm::mat4& world, float scale, glm::vec3& t,
+                      glm::quat& r)
+{
+    t = glm::vec3(world[3]);
+    r = glm::quat_cast(glm::mat3(world) / scale);
+}
+
+btTransform ToBtTransform(const glm::vec3& t, const glm::quat& r)
+{
+    return btTransform(btQuaternion(r.x, r.y, r.z, r.w),
+                       btVector3(t.x, t.y, t.z));
+}
+
+} // namespace
+
+// ============================================================================
+// PhysicsWorld::StageOneBody / StageBodies — member definitions at
+// rt2::core scope (lambdas are illegal inside the anonymous namespace above)
+// ============================================================================
+
+// Stage one authored body. Appends records/shapes/motion/bodies/ghosts on
+// success; on failure returns false with a UUID-named typed Error and leaves
+// the candidate for the caller to roll back wholesale.
+bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
+                                const entt::registry& registry,
+                                const UUID& uuid, entt::entity entity,
+                                const IPhysicsCollisionAssetProvider* provider,
+                                Error& err)
+{
+    const std::string name = T4EntityName(registry, entity);
+    const auto& body = registry.get<PhysicsBodyComponent>(entity);
+    const auto* shape = registry.try_get<PhysicsShapeComponent>(entity);
+    const auto* tf = registry.try_get<Transform>(entity);
+
+    if (shape == nullptr)
+    {
+        return T4FailCode(err, Error::MissingAsset, uuid, name,
+                          "carries PhysicsBodyComponent but no PhysicsShapeComponent "
+                          "(missing collider; attach a shape before Play)");
+    }
+    if (tf == nullptr)
+    {
+        return T4FailCode(err, Error::InvalidTransform, uuid, name,
+                          "carries PhysicsBodyComponent but has no Transform");
+    }
+    if (!IsValidBodyNumerics(body))
+    {
+        return T4Fail(err, uuid, name,
+                      "has non-finite body parameters (mass/friction/restitution/"
+                      "damping/CCD must all be finite)");
+    }
+
+    // T4 units contract: Dynamic requires mass > 0 (kilograms);
+    // Static/Kinematic require mass == 0. Inertia is computed only for
+    // positive mass, after the uniform scale is applied.
+    const bool isDynamic = body.kind == PhysicsBodyKind::Dynamic;
+    if (isDynamic)
+    {
+        if (!(body.mass > 0.0f))
+        {
+            return T4Fail(err, uuid, name,
+                          "is Dynamic with mass " + std::to_string(body.mass) +
+                              " (Dynamic requires mass > 0 kg)");
+        }
+    }
+    else if (body.mass != 0.0f)
+    {
+        return T4Fail(err, uuid, name,
+                      "is non-dynamic with mass " + std::to_string(body.mass) +
+                          " (Static/Kinematic require mass == 0)");
+    }
+    if (body.friction < 0.0f)
+        return T4Fail(err, uuid, name, "has negative friction");
+    if (body.restitution < 0.0f || body.restitution > 1.0f)
+        return T4Fail(err, uuid, name, "has restitution outside [0,1]");
+    if (body.linearDamping < 0.0f || body.angularDamping < 0.0f)
+        return T4Fail(err, uuid, name, "has negative damping");
+    if (body.ccdEnabled &&
+        (!(body.ccdMotionThreshold > 0.0f) ||
+         !(body.ccdSweptRadius > 0.0f)))
+    {
+        return T4Fail(err, uuid, name,
+                      "has CCD enabled with a non-positive motion threshold or "
+                      "swept radius (world units, post-scale)");
+    }
+
+    // Single scale owner re-check at build (T3 validated the authoring doc;
+    // this guards the runtime clone the candidate actually stages from).
+    const glm::vec3& s = tf->scale;
+    if (!std::isfinite(s.x) || !std::isfinite(s.y) || !std::isfinite(s.z) ||
+        s.x <= 0.0f || s.y <= 0.0f || s.z <= 0.0f || s.x != s.y || s.y != s.z)
+    {
+        return T4FailCode(err, Error::InvalidTransform, uuid, name,
+                          "has a non-uniform, non-positive, or non-finite "
+                          "physics scale (single uniform-positive world scale "
+                          "required)");
+    }
+    const float scale = s.x;
+
+    // Shape staging (world units, post-scale). One shape per entity.
+    std::unique_ptr<btCollisionShape> owned;
+    const CollisionGeometry* collision = nullptr;
+    switch (shape->shape)
+    {
+        case PhysicsShapeKind::Sphere:
+        {
+            if (!(shape->radius > 0.0f) || !std::isfinite(shape->radius))
+                return T4Fail(err, uuid, name, "has a non-positive sphere radius");
+            owned = std::make_unique<btSphereShape>(shape->radius * scale);
+            break;
+        }
+        case PhysicsShapeKind::Box:
+        {
+            const glm::vec3& h = shape->halfExtents;
+            if (!std::isfinite(h.x) || !std::isfinite(h.y) ||
+                !std::isfinite(h.z) || h.x <= 0.0f || h.y <= 0.0f ||
+                h.z <= 0.0f)
+            {
+                return T4Fail(err, uuid, name,
+                              "has non-positive box half-extents");
+            }
+            owned = std::make_unique<btBoxShape>(
+                btVector3(h.x * scale, h.y * scale, h.z * scale));
+            break;
+        }
+        case PhysicsShapeKind::ConvexHull:
+        {
+            if (shape->hull.path.empty())
+            {
+                return T4FailCode(err, Error::MissingAsset, uuid, name,
+                                  "physicsShape.hull has an empty path "
+                                  "(convex hulls reference authored simplified hull "
+                                  "assets, never the render mesh)");
+            }
+            if (provider == nullptr)
+            {
+                return T4FailCode(err, Error::MissingAsset, uuid, name,
+                                  "physicsShape.hull references '" +
+                                      shape->hull.path +
+                                      "' but no collision provider was injected");
+            }
+            Result<const CollisionGeometry*> got =
+                const_cast<IPhysicsCollisionAssetProvider*>(provider)
+                    ->GetCollisionGeometry(shape->hull, uuid, name);
+            if (!got.IsOk())
+            {
+                err = got.error;
+                return false;
+            }
+            collision = got.value;
+            const size_t points = collision->vertices.size() / 3;
+            if (points < 4)
+            {
+                return T4FailCode(err, Error::Parse, uuid, name,
+                                  "convex hull geometry has fewer than 4 points");
+            }
+            auto* hull = new btConvexHullShape();
+            for (size_t i = 0; i < points; ++i)
+            {
+                hull->addPoint(btVector3(collision->vertices[i * 3 + 0] * scale,
+                                         collision->vertices[i * 3 + 1] * scale,
+                                         collision->vertices[i * 3 + 2] * scale));
+            }
+            hull->recalcLocalAabb();
+            owned.reset(hull);
+            break;
+        }
+        case PhysicsShapeKind::StaticTriMesh:
+        {
+            // Bullet restriction: never a dynamic (or kinematic) triangle
+            // mesh — static bodies only.
+            if (body.kind != PhysicsBodyKind::Static)
+            {
+                return T4Fail(err, uuid, name,
+                              "is a non-static body with a StaticTriMesh shape "
+                              "(dynamic/kinematic triangle mesh is refused)");
+            }
+            if (shape->triMesh.path.empty())
+            {
+                return T4FailCode(err, Error::MissingAsset, uuid, name,
+                                  "physicsShape.triMesh has an empty path "
+                                  "(static triangle meshes reference authored "
+                                  "collision-only geometry)");
+            }
+            if (provider == nullptr)
+            {
+                return T4FailCode(err, Error::MissingAsset, uuid, name,
+                                  "physicsShape.triMesh references '" +
+                                      shape->triMesh.path +
+                                      "' but no collision provider was injected");
+            }
+            Result<const CollisionGeometry*> got =
+                const_cast<IPhysicsCollisionAssetProvider*>(provider)
+                    ->GetCollisionGeometry(shape->triMesh, uuid, name);
+            if (!got.IsOk())
+            {
+                err = got.error;
+                return false;
+            }
+            collision = got.value;
+            if (collision->indices.size() % 3 != 0 ||
+                collision->indices.empty())
+            {
+                return T4FailCode(err, Error::Parse, uuid, name,
+                                  "static triangle mesh has no triangles");
+            }
+            auto mesh = std::make_unique<btTriangleMesh>();
+            const size_t tris = collision->indices.size() / 3;
+            for (size_t t = 0; t < tris; ++t)
+            {
+                btVector3 v[3];
+                for (int k = 0; k < 3; ++k)
+                {
+                    const uint32_t vi = collision->indices[t * 3 + (size_t)k];
+                    v[k] = btVector3(
+                        collision->vertices[(size_t)vi * 3 + 0] * scale,
+                        collision->vertices[(size_t)vi * 3 + 1] * scale,
+                        collision->vertices[(size_t)vi * 3 + 2] * scale);
+                }
+                mesh->addTriangle(v[0], v[1], v[2]);
+            }
+            auto* triShape =
+                new btBvhTriangleMeshShape(mesh.get(), true);
+            world.m_TriangleMeshes.push_back(std::move(mesh));
+            owned.reset(triShape);
+            break;
+        }
+    }
+
+    // Margin in final world units, post-scale.
+    if (!std::isfinite(shape->collisionMargin) ||
+        shape->collisionMargin < 0.0f || shape->collisionMargin > 1.0f)
+    {
+        return T4Fail(err, uuid, name,
+                      "has a collision margin outside [0,1] world units");
+    }
+    owned->setMargin(shape->collisionMargin);
+
+    glm::vec3 origin;
+    glm::quat rotation;
+    DecomposeUniform(tf->worldMatrix, scale, origin, rotation);
+    const btTransform start = ToBtTransform(origin, rotation);
+    btCollisionShape* rawShape = owned.get();
+    world.m_Shapes.push_back(std::move(owned));
+
+    PhysicsBodyRecord rec;
+    rec.id = uuid;
+    rec.entity = entity;
+    rec.kind = body.kind;
+    rec.isTrigger = shape->isTrigger;
+    rec.bakedScale = scale;
+
+    const int group = (int)body.layer;
+    const int mask = (int)body.mask;
+    if (shape->isTrigger)
+    {
+        // Ghost trigger: overlaps, gives no response. Follows its host body
+        // kind for sync (kinematic ghosts push, static ghosts bake).
+        auto ghost = std::make_unique<btPairCachingGhostObject>();
+        ghost->setCollisionShape(rawShape);
+        ghost->setWorldTransform(start);
+        ghost->setCollisionFlags(ghost->getCollisionFlags() |
+                                 btCollisionObject::CF_NO_CONTACT_RESPONSE);
+        world.m_World.addCollisionObject(ghost.get(), group, mask);
+        rec.ghost = ghost.get();
+        world.m_Ghosts.push_back(std::move(ghost));
+    }
+    else
+    {
+        btVector3 inertia(0, 0, 0);
+        if (isDynamic)
+            rawShape->calculateLocalInertia(body.mass, inertia);
+        auto motion = std::make_unique<btDefaultMotionState>(start);
+        btRigidBody::btRigidBodyConstructionInfo info(
+            isDynamic ? body.mass : 0.0f, motion.get(), rawShape, inertia);
+        auto rigid = std::make_unique<btRigidBody>(info);
+        rigid->setFriction(body.friction);
+        rigid->setRestitution(body.restitution);
+        rigid->setDamping(body.linearDamping, body.angularDamping);
+        if (body.ccdEnabled)
+        {
+            rigid->setCcdMotionThreshold(body.ccdMotionThreshold);
+            rigid->setCcdSweptSphereRadius(body.ccdSweptRadius);
+        }
+        if (body.kind == PhysicsBodyKind::Kinematic)
+        {
+            rigid->setCollisionFlags(rigid->getCollisionFlags() |
+                                     btCollisionObject::CF_KINEMATIC_OBJECT);
+            rigid->setActivationState(DISABLE_DEACTIVATION);
+        }
+        else if (body.startAsleep && isDynamic)
+        {
+            rigid->setActivationState(ISLAND_SLEEPING);
+        }
+        world.m_World.addRigidBody(rigid.get(), group, mask);
+        rec.body = rigid.get();
+        rec.motion = motion.get();
+        world.m_MotionStates.push_back(std::move(motion));
+        world.m_Bodies.push_back(std::move(rigid));
+    }
+    world.m_BodyIndex.push_back(rec);
+    return true;
+}
+
+bool PhysicsWorld::StageBodies(PhysicsWorld& world,
+                               const SceneDocument& runtime,
+                               const IPhysicsCollisionAssetProvider* provider,
+                               Error& err)
+{
+    const auto& registry = runtime.ecs.registry;
+    std::vector<std::pair<UUID, entt::entity>> ordered;
+    {
+        auto view = registry.view<PhysicsBodyComponent, EntityIdComponent>();
+        for (auto e : view)
+        {
+            const UUID id = view.get<EntityIdComponent>(e).id;
+            if (!id.IsNull())
+                ordered.emplace_back(id, e);
+        }
+    }
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    // Build order: statics, then kinematics, then dynamics, then ghosts
+    // (triggers); UUID order within each group. Constraints (T5) build last.
+    for (int pass = 0; pass < 4; ++pass)
+    {
+        for (const auto& [uuid, entity] : ordered)
+        {
+            const auto& body = registry.get<PhysicsBodyComponent>(entity);
+            const auto* shape = registry.try_get<PhysicsShapeComponent>(entity);
+            const bool isTrigger = shape != nullptr && shape->isTrigger;
+            int want = -1;
+            if (isTrigger)
+                want = 3;
+            else if (body.kind == PhysicsBodyKind::Static)
+                want = 0;
+            else if (body.kind == PhysicsBodyKind::Kinematic)
+                want = 1;
+            else
+                want = 2;
+            if (want != pass)
+                continue;
+            if (!StageOneBody(world, registry, uuid, entity, provider, err))
+                return false;
+        }
+    }
+    return true;
 }
 
 // ============================================================================

@@ -5,16 +5,21 @@
 
 #include "core/Error.h"
 #include "core/UUID.h"
+#include "PhysicsComponents.h"
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionDispatch/btGhostObject.h>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+#include <entt/entt.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -44,12 +49,42 @@
 //   - ordered teardown (constraints, then ghosts/bodies, then shapes, then
 //     the world) that T4 bodies will ride along.
 //
+// T4 (this file, second half): rigid-body construction from the authored
+// components plus the per-kind transform authority and the fixed-tick sync
+// hooks. Build order is statics, then kinematics, then dynamics, then ghosts
+// (triggers), UUID order within each group; constraints (T5) build last.
+// Units: 1 RT2 unit = 1 metre, Y-up gravity, kilograms, radians internally;
+// dynamic inertia comes from calculateLocalInertia after the uniform scale is
+// applied; margins and CCD thresholds are validated in final world units
+// post-scale. One shape per entity; uniform-positive world scale only;
+// dynamic/kinematic triangle mesh is refused (Bullet restriction).
+//
 // CPU-only: this header pulls Bullet core headers only (proven Vulkan/ImGui/
 // Walnut-free by the T1 RED_NoVulkanInPhysicsIncludes gate). It links into
 // RT2Tests and RT2SliceRunner through the shared CPU source closure.
 // ============================================================================
 
 namespace rt2::core {
+
+class SceneDocument;
+class IPhysicsCollisionAssetProvider;
+
+// One runtime body: the Authoring-UUID-keyed companion record (plan section
+// 2). Bullet pointers are Scene-context handles owned by the vectors below;
+// the ECS components stay plain authored data and never cross into Authoring.
+struct PhysicsBodyRecord
+{
+    UUID id;
+    entt::entity entity = entt::null;
+    PhysicsBodyKind kind = PhysicsBodyKind::Static;
+    bool isTrigger = false;
+    // Non-owning views into m_Bodies/m_Ghosts (exactly one is set).
+    btRigidBody* body = nullptr;
+    btDefaultMotionState* motion = nullptr;
+    btPairCachingGhostObject* ghost = nullptr;
+    // Uniform world scale baked at build (single scale owner).
+    float bakedScale = 1.0f;
+};
 
 class SceneDocument;
 class IPhysicsCollisionAssetProvider;
@@ -81,6 +116,19 @@ public:
     static Result<std::unique_ptr<PhysicsWorld>> Create(
         const SceneDocument& runtime);
 
+    // T4 candidate construction with collision geometry: bodies, ghosts, and
+    // shapes are staged from the runtime clone through the borrowed provider
+    // (host-owned; must outlive the call — the controller guarantees the
+    // Play-session borrow). Null provider means no collision refs may exist
+    // (ValidatePhysicsForPlay already refused that combination); any body
+    // carrying an active hull/triMesh ref with a null provider fails here
+    // with a UUID-named Error. Every other failure (missing/malformed/
+    // oversize geometry, bad units, forbidden dynamic tri mesh) is likewise
+    // a typed UUID-named Error and the candidate rolls back completely.
+    static Result<std::unique_ptr<PhysicsWorld>> Create(
+        const SceneDocument& runtime,
+        const IPhysicsCollisionAssetProvider* provider);
+
     ~PhysicsWorld();
 
     PhysicsWorld(const PhysicsWorld&) = delete;
@@ -91,6 +139,45 @@ public:
     // the only substepper: callers pass kFixedDt once per RT2 fixed tick and
     // this performs stepSimulation(dt, 0) — never an inner substep loop.
     void Step(float dt);
+
+    // T4 fixed-tick authority sync (called by the controller around Step;
+    // see RuntimeSceneController::RunFixedTick):
+    //   - PreStepSync: refresh world transforms, then push every Kinematic
+    //     body and kinematic ghost pose (ECS/script -> Bullet). Static and
+    //     Dynamic bodies are untouched.
+    //   - PostStepSync: write every simulated Dynamic body pose back
+    //     (Bullet -> ECS local TRS, marked dirty for the controller's single
+    //     batched SceneGraph + TransformSync pass). Static, Kinematic, and
+    //     ghost poses are untouched.
+    void PreStepSync(SceneDocument& runtime);
+    void PostStepSync(SceneDocument& runtime);
+
+    // Explicit pose write used by future script reset paths (T7 owns the Lua
+    // binding; T4 owns the authority rule). Static bodies (and static ghosts)
+    // refuse with false and mutate nothing; Kinematic/Dynamic bodies and
+    // their ghosts apply atomically (Bullet + ECS pose, forces and velocities
+    // cleared, body reactivated). Unknown UUIDs return false.
+    bool TryWriteBodyPose(const UUID& id, const glm::vec3& position,
+                          const glm::quat& rotation);
+
+    // Test/preset helper: linear velocity write for simulated rigid bodies.
+    // Returns false (mutating nothing) for Static bodies, ghosts, and unknown
+    // UUIDs — the same authority rule as TryWriteBodyPose.
+    bool SetBodyLinearVelocity(const UUID& id, const glm::vec3& velocity);
+
+    // Bullet-side world position for tests (kinematic-push and CCD proofs).
+    // Returns false for unknown UUIDs.
+    bool BodyWorldPosition(const UUID& id, glm::vec3& out) const;
+
+    // Spike-proven fast-sphere CCD calibration preset (plan section 3):
+    // threshold = 0.5 * radius, swept radius = 0.8 * radius, in world units.
+    // Explicitly authored per body — never inferred from a gameplay role.
+    static void FastSphereCcdPreset(float radius, float& thresholdOut,
+                                    float& sweptOut);
+
+    // Companion-map lookup for tests and T5+ consumers. Null when absent.
+    const PhysicsBodyRecord* FindBody(const UUID& id) const;
+    size_t BodyRecordCount() const { return m_BodyIndex.size(); }
 
     // Handle census for tests and the Stop leak assertion. All zero in T3
     // (no bodies are created yet); T4 backfills the same storage.
@@ -143,6 +230,19 @@ public:
 private:
     PhysicsWorld();
 
+    // T4 candidate staging (defined in PhysicsWorld.cpp): ordered body/ghost
+    // construction from the runtime clone. On failure fills err with a
+    // UUID-named typed Error and returns false; the caller rolls the
+    // half-staged candidate back wholesale.
+    static bool StageBodies(PhysicsWorld& world, const SceneDocument& runtime,
+                            const IPhysicsCollisionAssetProvider* provider,
+                            Error& err);
+    static bool StageOneBody(PhysicsWorld& world,
+                             const entt::registry& registry, const UUID& uuid,
+                             entt::entity entity,
+                             const IPhysicsCollisionAssetProvider* provider,
+                             Error& err);
+
     // Bullet teardown order: constraints first, then ghosts/bodies, then
     // shapes, then the world itself (Bullet requirement; plan section 3).
     void Shutdown();
@@ -163,10 +263,15 @@ private:
     // T3: empty by construction. T4 owns bodies/shapes/constraints/ghosts
     // here so the census above and Shutdown() cover them without change.
     std::vector<std::unique_ptr<btCollisionShape>> m_Shapes;
+    std::vector<std::unique_ptr<btStridingMeshInterface>> m_TriangleMeshes;
     std::vector<std::unique_ptr<btDefaultMotionState>> m_MotionStates;
     std::vector<std::unique_ptr<btRigidBody>> m_Bodies;
     std::vector<std::unique_ptr<btPairCachingGhostObject>> m_Ghosts;
     std::vector<std::unique_ptr<btTypedConstraint>> m_Constraints;
+    // UUID-ordered companion map: Authoring UUID -> runtime entity -> Bullet
+    // handle. Constraint build (T5) and event scrape (T6) read this; the
+    // ECS components never hold Bullet pointers.
+    std::vector<PhysicsBodyRecord> m_BodyIndex;
 
     uint64_t m_StepCount = 0;
 };
