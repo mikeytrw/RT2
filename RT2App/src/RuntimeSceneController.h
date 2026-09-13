@@ -5,6 +5,8 @@
 
 #include "SceneDocument.h"
 #include "ISceneRenderBridge.h"
+#include "IPhysicsCollisionAssetProvider.h"
+#include "PhysicsWorld.h"
 #include "RuntimeLifecycleObserver.h"
 #include "RuntimeSceneMutator.h"
 #include "IRuntimeScriptDispatch.h"
@@ -30,13 +32,19 @@
 // cleanly into RT2Tests and RT2SliceRunner (which supply a null/recording
 // bridge) while RT2App supplies a real bridge backed by RendererGPU.
 //
-// Lifecycle (Phase 4 completion):
+// Lifecycle (Phase 4 completion, T3 physics candidate-commit):
 //   Play(authoring):
-//     1. Construct runtime document, set UUID provider, CloneInMemory.
-//     2. InitPrevTransforms.
-//     3. Bridge FullSync + ResetTemporalState.
-//     4. Set m_State = Playing.
-//     5. Fire OnSceneStart(runtime).
+//     1. Validate physics early invariants on the authoring document (loud
+//        typed Error naming the entity UUID; no mutation on failure).
+//     2. Construct runtime document, set UUID provider, CloneInMemory.
+//     3. InitPrevTransforms (rebuilds world transforms + snapshots prev).
+//     4. Construct a complete private PhysicsWorld candidate; commit to
+//        ownership only on success. On any candidate failure, destroy the
+//        candidate, reset the clone, stay Edit with a zero accumulator, and
+//        emit no bridge call and no script callback.
+//     5. Bridge FullSync + ResetTemporalState.
+//     6. Set m_State = Playing.
+//     7. Fire OnSceneStart(runtime).
 //   Pause:
 //     Clear the accumulator so stale wall-clock time cannot become queued
 //     simulation on resume. No simulation runs while paused. Queue
@@ -49,10 +57,12 @@
 //   Stop:
 //     1. Set m_Stopping (queue submission disabled).
 //     2. Fire OnSceneStop(runtime).
-//     3. Clear m_PendingOperations.
-//     4. m_Runtime.reset().
-//     5. Bridge FullSync + ResetTemporalState on the authoring document.
-//     6. Set m_State = Edit.
+//     3. Destroy the PhysicsWorld (constraints, then ghosts/bodies, then
+//        shapes, then the world; any surviving handle is a hard error).
+//     4. Clear m_PendingOperations.
+//     5. m_Runtime.reset().
+//     6. Bridge FullSync + ResetTemporalState on the authoring document.
+//     7. Set m_State = Edit.
 //
 // Deferred structural operations:
 //   QueueCreateRuntimeEntity allocates a fresh UUID at queue time (returns
@@ -217,6 +227,63 @@ public:
         return m_PendingOperations;
     }
 
+    // ---- T3 physics world lifecycle -------------------------------------
+
+    // Injectable collision provider. Stored non-owning: the host owns the
+    // provider for the host session and the controller borrows the pointer
+    // for one Play session only (plan Sol B2). CPU-only targets inject an
+    // explicit test provider through this same seam. Null (the default)
+    // means no provider: Play with physics collision refs then refuses
+    // loudly; Play without refs proceeds with an empty world.
+    void SetCollisionProvider(IPhysicsCollisionAssetProvider* provider)
+    {
+        m_CollisionProvider = provider;
+    }
+    IPhysicsCollisionAssetProvider* GetCollisionProvider() const
+    {
+        return m_CollisionProvider;
+    }
+
+    // Committed physics world for the current Play session. Null in Edit and
+    // after Stop; non-null while Playing/Paused after a successful Play.
+    const PhysicsWorld* TryGetPhysicsWorld() const
+    {
+        return m_PhysicsWorld.get();
+    }
+    PhysicsWorld* TryGetPhysicsWorldMut() { return m_PhysicsWorld.get(); }
+
+    // Handle census for tests and the Stop leak assertion. Zero when no
+    // world is committed (Edit, or failed Play). T3 worlds are always empty;
+    // T4 backfills bodies through the same counters.
+    size_t PhysicsBodyCount() const
+    {
+        return m_PhysicsWorld ? m_PhysicsWorld->BodyCount() : 0;
+    }
+    size_t PhysicsConstraintCount() const
+    {
+        return m_PhysicsWorld ? m_PhysicsWorld->ConstraintCount() : 0;
+    }
+    size_t PhysicsShapeCount() const
+    {
+        return m_PhysicsWorld ? m_PhysicsWorld->ShapeCount() : 0;
+    }
+    size_t PhysicsGhostCount() const
+    {
+        return m_PhysicsWorld ? m_PhysicsWorld->GhostCount() : 0;
+    }
+    size_t PhysicsTotalHandles() const
+    {
+        return m_PhysicsWorld ? m_PhysicsWorld->TotalHandles() : 0;
+    }
+    uint64_t PhysicsStepCount() const
+    {
+        return m_PhysicsWorld ? m_PhysicsWorld->StepCount() : 0;
+    }
+
+    // Test-only accumulator read-out. Failed Play must leave it zero; Step
+    // must not advance it.
+    float DebugAccumulator() const { return m_Accumulator; }
+
 private:
     // Initialize prevWorldMatrix = worldMatrix for all transforms in the
     // runtime document. Called once at Play to prevent invalid motion vectors
@@ -227,8 +294,9 @@ private:
     // each simulation step.
     void SnapshotPrevTransforms();
 
-    // Run one fixed update tick (MotionSystem). Does NOT drain the queue —
-    // the queue is drained at the safe point AFTER the fixed-step loop.
+    // Run one fixed update tick (MotionSystem + exactly one PhysicsWorld
+    // step at kFixedDt). Does NOT drain the queue — the queue is drained at
+    // the safe point AFTER the fixed-step loop.
     void RunFixedTick(float dt);
 
     // Apply deferred structural changes at the safe point (after the fixed-
@@ -249,6 +317,13 @@ private:
     std::unordered_set<UUID> PendingCreateUuids() const;
 
     std::unique_ptr<SceneDocument> m_Runtime;
+    // T3: at most one committed PhysicsWorld per Play session. Staged as a
+    // local candidate in Play() and moved here only after complete
+    // construction; destroyed in Stop() before m_Runtime.reset(). Never
+    // global, never surviving Stop.
+    std::unique_ptr<PhysicsWorld> m_PhysicsWorld;
+    // T3: borrowed collision provider (host-owned; see SetCollisionProvider).
+    IPhysicsCollisionAssetProvider* m_CollisionProvider = nullptr;
     SceneRunState m_State = SceneRunState::Edit;
     float m_Accumulator = 0.0f;
 

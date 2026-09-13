@@ -126,6 +126,13 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- T3: physics world lifecycle (CPU-only; links the three pinned Bullet
+         libraries like every other CPU consumer). -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\PhysicsWorld.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\PrefabCommandTransaction.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

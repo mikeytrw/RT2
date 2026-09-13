@@ -28,6 +28,16 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     m_Stopping = false;
     m_PendingOperations.clear();
 
+    // T3 candidate-commit step 1: validate the physics early invariants on
+    // the authoring document BEFORE anything is staged. Loud typed Error
+    // naming the entity UUID; no clone, no world, no bridge call, no script
+    // callback, accumulator stays zero.
+    if (!ValidatePhysicsForPlay(authoring, m_CollisionProvider, err))
+    {
+        m_Accumulator = 0.0f;
+        return false;
+    }
+
     // Construct the runtime document and set the UUID provider BEFORE
     // CloneInMemory. CloneInMemory preserves the destination provider (see
     // SceneSerializer.cpp:1132-1137), so this is the only place we need to
@@ -43,7 +53,26 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
 
     // Initialize prevWorldMatrix = worldMatrix so the first frame's motion
     // vectors are zero (no spurious movement from uninitialized prev state).
+    // This rebuilds world transforms first, so a non-identity authored
+    // transform is refreshed BEFORE the physics candidate below observes it.
     InitPrevTransforms();
+
+    // T3 candidate-commit step 2: construct the PhysicsWorld completely in
+    // private and commit to ownership only on success. Rollback on any
+    // candidate failure: the candidate dies with the local, the clone is
+    // reset, state stays Edit with a zero accumulator, and no bridge call
+    // and no script callback have happened yet.
+    {
+        auto candidate = PhysicsWorld::Create();
+        if (!candidate.IsOk())
+        {
+            err = candidate.error;
+            m_Runtime.reset();
+            m_Accumulator = 0.0f;
+            return false;
+        }
+        m_PhysicsWorld = std::move(candidate.value);
+    }
 
     // Activate the runtime document for rendering: full GPU upload + temporal
     // reset. The bridge builds GPUSceneData from m_Runtime and hands it to
@@ -202,13 +231,19 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
     if (m_LifecycleObserver && m_Runtime)
         m_LifecycleObserver->OnSceneStop(*m_Runtime);
 
-    // 3. Clear any pending operations (they are runtime-only).
+    // 3. Destroy the PhysicsWorld BEFORE the runtime clone goes away:
+    //    constraints, then ghosts/bodies, then shapes, then the world. Any
+    //    surviving Bullet handle after this is a hard error (leak counter in
+    //    tests observe zero through PhysicsTotalHandles).
+    m_PhysicsWorld.reset();
+
+    // 4. Clear any pending operations (they are runtime-only).
     m_PendingOperations.clear();
 
-    // 4. Destroy the runtime document and all runtime-only state.
+    // 5. Destroy the runtime document and all runtime-only state.
     m_Runtime.reset();
 
-    // 5. Re-activate the authoring document for rendering: full upload +
+    // 6. Re-activate the authoring document for rendering: full upload +
     //    temporal reset. The authoring document's canonical serialized state
     //    was never mutated during Play, so this restores the exact pre-Play
     //    visual state. (The transient gpuCache IS mutated via const_cast
@@ -229,12 +264,11 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
     bridge.FullSync(gpuData);
     bridge.ResetTemporalState();
 
-    // 6. Reset state.
+    // 7. Reset state.
     m_State = SceneRunState::Edit;
     m_Accumulator = 0.0f;
     m_Stopping = false;
 }
-
 // ============================================================================
 // Update — per-frame while Playing
 // ============================================================================
@@ -598,6 +632,14 @@ void RuntimeSceneController::RunFixedTick(float dt)
         tf.translation += mc.linearVelocity * dt;
         SceneGraph::SetLocalDirty(reg, e);
     }
+
+    // T3: exactly one Bullet step per RT2 fixed tick. The outer accumulator
+    // is the sole substepper (PhysicsWorld::Step performs stepSimulation(dt,
+    // 0)); an entity can never carry both MotionComponent and a physics body
+    // (Play refuses it), so motion integration and the physics step never
+    // fight over one transform.
+    if (m_PhysicsWorld)
+        m_PhysicsWorld->Step(dt);
 }
 
 } // namespace rt2::core

@@ -30,7 +30,7 @@ project "RT2ImGuiProbe"
 
     -- Identical CPU translation-unit closure as RT2Tests (keep in lockstep
     -- with RT2Tests/premake5.lua and RT2Tests/RT2AppCpuSources.props).
-    files { "../RT2App/src/core/PathTransaction.cpp", "../RT2App/src/SceneLoader.cpp", "../RT2App/src/TextureAssetPipeline.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneHierarchy.cpp", "../RT2App/src/SceneVisibility.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/EntityReferenceRemapper.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp", "../RT2App/src/SceneDocument.cpp", "../RT2App/src/SceneSerializer.cpp", "../RT2App/src/PrefabSerializer.cpp", "../RT2App/src/PrefabEditorActions.cpp", "../RT2App/src/PrefabEditorPresentation.cpp", "../RT2App/src/PrefabPropagationContracts.cpp", "../RT2App/src/PrefabPropagationDiscovery.cpp", "../RT2App/src/PrefabPropagationCommand.cpp", "../RT2App/src/PrefabPropagationService.cpp", "../RT2App/src/SceneAssetReferenceVisitor.cpp", "../RT2App/src/SceneAssetMigration.cpp", "../RT2App/src/ContentBrowserOperations.cpp", "../RT2App/src/ContentBrowserDispatch.cpp", "../RT2App/src/AssetResolver.cpp", "../RT2App/src/SceneAssetResolver.cpp", "../RT2App/src/RuntimeSceneController.cpp", "../RT2App/src/RuntimeSceneMutator.cpp", "../RT2App/src/InputStateMachine.cpp", "../RT2App/src/InputConfig.cpp", "../RT2App/src/InputBindingEditor.cpp", "../RT2App/src/EditorSettings.cpp", "../RT2App/src/Project.cpp", "../RT2App/src/ProjectAssetScanner.cpp", "../RT2App/src/ProjectContext.cpp", "../RT2App/src/SceneRecoveryService.cpp", "../RT2App/src/UnsavedChangesCoordinator.cpp", "../RT2App/src/EditorSelection.cpp", "../RT2App/src/EditorSceneState.cpp", "../RT2App/src/EditorCameraWorkflow.cpp", "../RT2App/src/EditorCommandHistory.cpp", "../RT2App/src/EditorCommands.cpp", "../RT2App/src/EditorStructuralCommands.cpp", "../RT2App/src/EditorPropertyCommands.cpp", "../RT2App/src/EditorSyncRouter.cpp", "../RT2App/src/ViewportCoordinates.cpp", "../RT2App/src/EditorViewportIcons.cpp", "../RT2App/src/TransformEditing.cpp", "../RT2App/src/ScriptAssetPath.cpp", "../RT2App/src/ScriptFieldReconcile.cpp", "../RT2App/src/ScriptFieldRegistry.cpp", "../RT2App/src/ScriptFieldResolver.cpp",         "../RT2App/src/ScriptSystem.cpp", "../RT2App/src/AssetIdentity.cpp", "../RT2App/src/AssetDatabase.cpp", "../RT2App/src/AssetWatchPolicy.cpp", "../RT2App/src/core/UUID.cpp", "../RT2App/src/core/Error.cpp" }
+    files { "../RT2App/src/core/PathTransaction.cpp", "../RT2App/src/SceneLoader.cpp", "../RT2App/src/TextureAssetPipeline.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneHierarchy.cpp", "../RT2App/src/SceneVisibility.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/EntityReferenceRemapper.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp", "../RT2App/src/SceneDocument.cpp", "../RT2App/src/SceneSerializer.cpp", "../RT2App/src/PrefabSerializer.cpp", "../RT2App/src/PrefabEditorActions.cpp", "../RT2App/src/PrefabEditorPresentation.cpp", "../RT2App/src/PrefabPropagationContracts.cpp", "../RT2App/src/PrefabPropagationDiscovery.cpp", "../RT2App/src/PrefabPropagationCommand.cpp", "../RT2App/src/PrefabPropagationService.cpp", "../RT2App/src/SceneAssetReferenceVisitor.cpp", "../RT2App/src/SceneAssetMigration.cpp", "../RT2App/src/ContentBrowserOperations.cpp", "../RT2App/src/ContentBrowserDispatch.cpp", "../RT2App/src/AssetResolver.cpp", "../RT2App/src/SceneAssetResolver.cpp", "../RT2App/src/RuntimeSceneController.cpp", "../RT2App/src/PhysicsWorld.cpp", "../RT2App/src/RuntimeSceneMutator.cpp", "../RT2App/src/InputStateMachine.cpp", "../RT2App/src/InputConfig.cpp", "../RT2App/src/InputBindingEditor.cpp", "../RT2App/src/EditorSettings.cpp", "../RT2App/src/Project.cpp", "../RT2App/src/ProjectAssetScanner.cpp", "../RT2App/src/ProjectContext.cpp", "../RT2App/src/SceneRecoveryService.cpp", "../RT2App/src/UnsavedChangesCoordinator.cpp", "../RT2App/src/EditorSelection.cpp", "../RT2App/src/EditorSceneState.cpp", "../RT2App/src/EditorCameraWorkflow.cpp", "../RT2App/src/EditorCommandHistory.cpp", "../RT2App/src/EditorCommands.cpp", "../RT2App/src/EditorStructuralCommands.cpp", "../RT2App/src/EditorPropertyCommands.cpp", "../RT2App/src/EditorSyncRouter.cpp", "../RT2App/src/ViewportCoordinates.cpp", "../RT2App/src/EditorViewportIcons.cpp", "../RT2App/src/TransformEditing.cpp", "../RT2App/src/ScriptAssetPath.cpp", "../RT2App/src/ScriptFieldReconcile.cpp", "../RT2App/src/ScriptFieldRegistry.cpp", "../RT2App/src/ScriptFieldResolver.cpp",         "../RT2App/src/ScriptSystem.cpp", "../RT2App/src/AssetIdentity.cpp", "../RT2App/src/AssetDatabase.cpp", "../RT2App/src/AssetWatchPolicy.cpp", "../RT2App/src/core/UUID.cpp", "../RT2App/src/core/Error.cpp" }
 
     files {
         "../RT2App/src/PrefabPropagationLive.cpp",
@@ -72,6 +72,7 @@ project "RT2ImGuiProbe"
        "../Walnut/vendor/imgui",
        "../Walnut/vendor/stb_image",
        "../RT2App/vendor",
+       "../RT2App/vendor/bullet/src",   -- T3: pinned Bullet core (src include root only; PhysicsWorld.h pulls it)
        "../RT2App/vendor/tinygltf",
        "../RT2App/vendor/entt/src",
        "../RT2App/vendor/sol2/include",
@@ -82,12 +83,30 @@ project "RT2ImGuiProbe"
     targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
     objdir ("../bin-int/" .. outputdir .. "/%{prj.name}")
 
+    -- T3: pinned Bullet core (same explicit three-library link as RT2App,
+    -- RT2Tests and RT2SliceRunner; the shared CPU closure now compiles
+    -- PhysicsWorld.cpp, which needs the Bullet symbols. No Vulkan/ImGui/
+    -- Walnut includes are added with it).
+    links
+    {
+        "BulletDynamics",
+        "BulletCollision",
+        "LinearMath",
+    }
+
     filter "system:windows"
        systemversion "latest"
 
     filter "configurations:Debug"
        defines { "WL_DEBUG" }
-       runtime "Debug"
+       -- T3 (T1 Amendment F applied here): runtime "Release" (/MD), not
+       -- "Debug" (/MDd). The single shared Bullet Debug static libraries
+       -- build /MD (matching RT2App, RT2Tests and RT2SliceRunner); one
+       -- static lib per config cannot serve a /MD and a /MDd consumer
+       -- simultaneously (LNK2038/LNK1319). Symbols stay on, optimization
+       -- off. The vendored ImGui core compiles into this target, so the CRT
+       -- stays consistent throughout it.
+       runtime "Release"
        symbols "On"
 
     filter { "configurations:Debug", "files:../RT2App/src/SceneLoader.cpp" }

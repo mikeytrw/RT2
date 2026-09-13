@@ -79,10 +79,15 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\RT2Tests\vendor;..\RT2Tests\vendor\doctest;..\Walnut\vendor\glm;..\Walnut\vendor\imgui;..\Walnut\vendor\stb_image;..\RT2App\vendor;..\RT2App\vendor\tinygltf;..\RT2App\vendor\entt\src;..\RT2App\vendor\sol2\include;..\RT2App\vendor\lua;..\RT2App\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\RT2Tests\vendor;..\RT2Tests\vendor\doctest;..\Walnut\vendor\glm;..\Walnut\vendor\imgui;..\Walnut\vendor\stb_image;..\RT2App\vendor;..\RT2App\vendor\bullet\src;..\RT2App\vendor\tinygltf;..\RT2App\vendor\entt\src;..\RT2App\vendor\sol2\include;..\RT2App\vendor\lua;..\RT2App\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <!-- T3 (T1 Amendment F applied here): Debug uses /MD (not /MDd). The
+           single shared Bullet Debug static libraries build /MD; one static
+           lib per config cannot serve a /MD and a /MDd consumer
+           simultaneously (LNK2038/LNK1319). Symbols stay on, optimization
+           stays off. -->
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
@@ -96,7 +101,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\RT2Tests\vendor;..\RT2Tests\vendor\doctest;..\Walnut\vendor\glm;..\Walnut\vendor\imgui;..\Walnut\vendor\stb_image;..\RT2App\vendor;..\RT2App\vendor\tinygltf;..\RT2App\vendor\entt\src;..\RT2App\vendor\sol2\include;..\RT2App\vendor\lua;..\RT2App\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\RT2Tests\vendor;..\RT2Tests\vendor\doctest;..\Walnut\vendor\glm;..\Walnut\vendor\imgui;..\Walnut\vendor\stb_image;..\RT2App\vendor;..\RT2App\vendor\bullet\src;..\RT2App\vendor\tinygltf;..\RT2App\vendor\entt\src;..\RT2App\vendor\sol2\include;..\RT2App\vendor\lua;..\RT2App\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -119,7 +124,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\RT2Tests\vendor;..\RT2Tests\vendor\doctest;..\Walnut\vendor\glm;..\Walnut\vendor\imgui;..\Walnut\vendor\stb_image;..\RT2App\vendor;..\RT2App\vendor\tinygltf;..\RT2App\vendor\entt\src;..\RT2App\vendor\sol2\include;..\RT2App\vendor\lua;..\RT2App\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\RT2Tests\vendor;..\RT2Tests\vendor\doctest;..\Walnut\vendor\glm;..\Walnut\vendor\imgui;..\Walnut\vendor\stb_image;..\RT2App\vendor;..\RT2App\vendor\bullet\src;..\RT2App\vendor\tinygltf;..\RT2App\vendor\entt\src;..\RT2App\vendor\sol2\include;..\RT2App\vendor\lua;..\RT2App\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>None</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -174,6 +179,22 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+  </ItemGroup>
+  <!-- T3: pinned Bullet core libraries. Explicit link order BulletDynamics,
+       BulletCollision, LinearMath; every consumer links all three (no
+       transitive-static-link assumptions). GUIDs match the Premake-
+       generated library projects (deterministic per pinned premake5.exe),
+       same block as RT2Tests.vcxproj. -->
+  <ItemGroup>
+    <ProjectReference Include="..\RT2App\vendor\bullet\BulletDynamics.vcxproj">
+      <Project>{45122E0F-31E0-2115-1A74-923B06E1FD79}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\RT2App\vendor\bullet\BulletCollision.vcxproj">
+      <Project>{B91153C5-259D-C089-2EAE-437E9AB81C8A}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\RT2App\vendor\bullet\LinearMath.vcxproj">
+      <Project>{EAF25DFD-D6AA-9F4A-3FB2-78A62B893A3B}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -19,6 +19,7 @@ project "RT2SliceRunner"
         "../RT2App/src/AssetResolver.cpp",
         "../RT2App/src/SceneAssetResolver.cpp",
         "../RT2App/src/RuntimeSceneController.cpp",
+        "../RT2App/src/PhysicsWorld.cpp",
         "../RT2App/src/RuntimeSceneMutator.cpp",
         "../RT2App/src/SceneManager.cpp",
         "../RT2App/src/EditorCommandHistory.cpp",
