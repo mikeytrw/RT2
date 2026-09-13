@@ -1123,6 +1123,45 @@ TEST_CASE("T4 GREEN_NonUnitScaleMarginCcdInertia: uniform scale composes once wi
     CHECK(ctrl.PhysicsTotalHandles() == 0);
 }
 
+TEST_CASE("T4 GREEN_ProviderOutlivesSession: destroying the provider mid-Play leaves the session intact")
+{
+    // Lifetime proof for the host-owned borrow rule: the committed world
+    // owns its Bullet shapes, so the provider is only touched during
+    // candidate construction. Destroying it mid-Play must not disturb
+    // stepping or Stop (mirrors host shutdown ordering, where the provider
+    // member is now declared before the controller and destroyed after it).
+    T4TempAssets assets;
+    assets.MakeCube("hullbox.obj", 0.5f);
+
+    T4Fixture f;
+    const UUID hull = f.Create("Hull");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(hull), T4DynamicBody());
+    PhysicsShapeComponent hullShape;
+    hullShape.shape = PhysicsShapeKind::ConvexHull;
+    hullShape.hull = T4ModelRef("hullbox.obj", "obj:whole-model");
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(hull), hullShape);
+
+    T4NullBridge bridge;
+    Error err;
+    auto provider = std::make_unique<PhysicsCollisionAssetProvider>();
+    provider->SetContext(AssetResolutionContext{assets.dir, nullptr});
+    RuntimeSceneController ctrl;
+    ctrl.SetCollisionProvider(provider.get());
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    REQUIRE(ctrl.PhysicsBodyCount() == 1);
+
+    // The session borrow ends at commit: destroy the provider mid-Play.
+    provider.reset();
+    ctrl.SetCollisionProvider(nullptr);
+    for (int i = 0; i < 30; ++i)
+        ctrl.Update(kFixedDt, bridge);
+    CHECK(ctrl.PhysicsStepCount() == 30);
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.GetState() == SceneRunState::Edit);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+    CHECK(PhysicsWorld::LiveWorldCount() == 0);
+}
+
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")
 {
     T4Fixture f;

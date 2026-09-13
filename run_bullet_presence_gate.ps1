@@ -78,6 +78,17 @@ $requiredCases = @(
     "T4 RED_PhysicsBodyValidationRejects: out-of-range authoring values fail atomically",
     "T4 RED_PhysicsPrefabMemberEditRejected: linked members refuse every physics edit",
     "T4 GREEN_PhysicsAuthoringUndoRedo: body and shape edits are exact with revision and no GPU sync"
+    # T4 review fixup: authority, cache, decoding, trigger/enum, authoring.
+    "T4 GREEN_LuaSetPositionAuthority: Lua set_position obeys per-kind authority",
+    "T4 GREEN_CollisionCacheRetarget: same asset ID on a new path decodes anew",
+    "T4 RED_HostileGltfRefused: forged relationships and hostile accessor metadata fail loudly",
+    "T4 GREEN_TriggerAuthority: Static baked, Kinematic pushed, Dynamic refused",
+    "T4 RED_DynamicTriggerRefused: dynamic triggers refuse Play atomically",
+    "T4 RED_InvalidPhysicsEnumRefused: forged body/shape kinds refuse Play atomically",
+    "T4 GREEN_InspectorWorkPolicy: clean resync, dirty conflict, reset, assetId rebind",
+    "T4 GREEN_StaticTriMeshRamp: sphere deflects along a static triangle ramp",
+    "T4 GREEN_NonUnitScaleMarginCcdInertia: uniform scale composes once with Bullet-level proofs",
+    "T4 GREEN_ProviderOutlivesSession: destroying the provider mid-Play leaves the session intact"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }

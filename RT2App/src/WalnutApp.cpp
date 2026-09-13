@@ -4308,6 +4308,15 @@ private:
 
 	// Runtime lifecycle
 	SceneRenderBridge* m_RenderBridge = nullptr;
+	// Bullet T4: host-owned collision provider + stable value-held physics
+	// context (plan section 2, Sol B2). Declared BEFORE the controller on
+	// purpose: reverse member destruction then destroys the provider AFTER
+	// the controller/session, so the host-owned provider outlives every
+	// runtime session by construction. The context value is refreshed
+	// immediately before Play beside the script context and the controller
+	// borrows the provider for one Play session only.
+	rt2::core::AssetResolutionContext               m_PhysicsAssetContext;
+	std::unique_ptr<rt2::core::PhysicsCollisionAssetProvider> m_PhysicsProvider;
 	rt2::core::RuntimeSceneController m_Runtime;
 	Camera m_RuntimeCam;           // separate camera for Play mode
 	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
@@ -4321,14 +4330,6 @@ private:
 	std::vector<rt2::core::AssetDiagnostic>          m_ScriptAssetDiagnostics;
 	std::unique_ptr<rt2::core::ScriptSystem>         m_ScriptSystem;
 	std::unique_ptr<rt2::core::RuntimeCommandSink>   m_ScriptSink;
-
-	// Bullet T4: host-owned collision provider + stable value-held physics
-	// context (plan section 2, Sol B2). The provider lives for the host
-	// session; the context value is refreshed immediately before Play beside
-	// the script context and the controller borrows the provider for one
-	// Play session only. Created lazily by EnsurePhysicsProvider().
-	rt2::core::AssetResolutionContext               m_PhysicsAssetContext;
-	std::unique_ptr<rt2::core::PhysicsCollisionAssetProvider> m_PhysicsProvider;
 
 	// Phase 6B/W5: inspector-side field registry. Created at startup so the
 	// inspector can query declared fields while the editor is STOPPED (the
