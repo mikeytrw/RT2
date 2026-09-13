@@ -49,6 +49,9 @@
     -- Bullet T2: physics persistence foundation tests (same rationale).
     files { "src/PhysicsPersistenceTests.cpp" }
 
+    -- Bullet T3: physics world lifecycle tests (same rationale).
+    files { "src/PhysicsWorldLifecycleTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

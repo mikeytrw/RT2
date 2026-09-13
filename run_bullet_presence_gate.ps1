@@ -1,13 +1,13 @@
 #!/usr/bin/env pwsh
-# run_bullet_presence_gate.ps1 - assert the named T1/T2 Bullet cases exist
+# run_bullet_presence_gate.ps1 - assert the named T1/T2/T3 Bullet cases exist
 # in the built RT2Tests executables.
 #
 # Usage: pwsh run_bullet_presence_gate.ps1 [-Configuration Release|Debug|Both]
 #
-# A zero exit from RT2Tests proves nothing about T1/T2 when the tracked
+# A zero exit from RT2Tests proves nothing about T1/T2/T3 when the tracked
 # Visual Studio projects silently omit their translation units (a 1218-case
 # false green passed while exercising none of the new tests). This gate
-# enumerates --list-test-cases and requires every named T1/T2 case, so a
+# enumerates --list-test-cases and requires every named T1/T2/T3 case, so a
 # build that drops them fails loudly instead of passing silently.
 #
 # Exits 0 when every named case is present in every checked binary, 1
@@ -43,7 +43,22 @@ $requiredCases = @(
     "T2 malformed v8 physics blocks fail loudly with entity identity",
     "T2 nested asset fields and float overflow fail loudly with wire path",
     "T2 both persisted collision refs are visited unconditionally",
-    "T2 save rejects a physics ref with a path but no asset kind"
+    "T2 save rejects a physics ref with a path but no asset kind",
+    # T3: physics world lifecycle (candidate-commit Play, fixed-step, teardown).
+    "T3 GREEN_EmptyPlayHasZeroHandles: empty Play commits an empty world and steps silently",
+    "T3 GREEN_StepIsOneTick: paused Step advances exactly one kFixedDt tick",
+    "T3 GREEN_StopZeroHandles: repeated Play/Stop cycles leave zero handles",
+    "T3 GREEN_StopRestoresAuthoring: Play/Stop cycles leave authoring bytes identical",
+    "T3 GREEN_NonIdentityTransformRefreshed: runtime worldMatrix matches non-identity authoring",
+    "T3 GREEN_ProviderPresentLetsPlayProceed: collision refs with a provider Play clean",
+    "T3 RED_MotionPlusBodyRefused: MotionComponent plus physics body refuses Play",
+    "T3 RED_ParentedBodyRefused: parented physics body refuses Play",
+    "T3 RED_DynamicTriMeshRefused: dynamic triangle mesh refuses Play",
+    "T3 RED_BadLayerMaskRefused: zero or unknown layer/mask bits refuse Play",
+    "T3 RED_BadScaleRefused: non-uniform or non-positive scale refuses Play",
+    "T3 RED_MissingCollisionProviderRefusesPlay: refs without a provider refuse Play",
+    "T3 RED_BadConstraintIdentityRefusesPlay: malformed constraint identities refuse Play",
+    "T3 RED_PhysicsPlayConstructionIsAtomic: late candidate failure leaves zero observable mutation"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
@@ -64,13 +79,13 @@ foreach ($config in $configs) {
         }
     }
     if ($missing.Count -gt 0) {
-        Write-Host "[$config] FAIL: $($missing.Count) named T1/T2 cases absent from $exe" -ForegroundColor Red
+        Write-Host "[$config] FAIL: $($missing.Count) named T1/T2/T3 cases absent from $exe" -ForegroundColor Red
         foreach ($case in $missing) {
             Write-Host "  missing: $case" -ForegroundColor Red
         }
         $failed++
     } else {
-        Write-Host "[$config] PASS: all $($requiredCases.Count) named T1/T2 cases present" -ForegroundColor Green
+        Write-Host "[$config] PASS: all $($requiredCases.Count) named T1/T2/T3 cases present" -ForegroundColor Green
     }
 }
 
