@@ -957,6 +957,172 @@ TEST_CASE("T4 GREEN_InspectorWorkPolicy: clean resync, dirty conflict, reset, as
     CHECK_FALSE(ref.assetId.IsNull());
 }
 
+TEST_CASE("T4 GREEN_StaticTriMeshRamp: sphere deflects along a static triangle ramp")
+{
+    // Production StaticTriMesh success path: a sloped static triangle ramp
+    // (both windings, so contact never depends on triangle sidedness).
+    // A dropped sphere lands, rolls down-slope (+X), and settles on it.
+    T4TempAssets assets;
+    T4WriteText(assets.dir / "ramp.obj",
+        "v 0 2 -1\nv 4 0 -1\nv 4 0 1\nv 0 2 1\n"
+        "f 1 2 3\nf 1 3 4\nf 1 4 3\nf 1 3 2\n");
+
+    T4Fixture f;
+    const UUID ramp = f.Create("Ramp");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ramp), T4StaticBody());
+    PhysicsShapeComponent rampShape;
+    rampShape.shape = PhysicsShapeKind::StaticTriMesh;
+    rampShape.triMesh = T4ModelRef("ramp.obj", "obj:whole-model");
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ramp), rampShape);
+
+    const UUID ball = f.Create("Ball");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ball), T4DynamicBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ball), T4SphereShape(0.5f));
+    f.Registry().get<Transform>(f.Handle(ball)).translation = {0.5f, 4.0f, 0.0f};
+    // Catch floor below (gravity-only motion cannot move +X on its own, so
+    // any +X travel proves ramp contact and deflection; the floor proves the
+    // ball never tunneled through the triangle mesh).
+    const UUID floor = f.Create("Floor");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(floor), T4StaticBody());
+    PhysicsShapeComponent floorShape = T4BoxShape(5.0f);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(floor), floorShape);
+    f.Registry().get<PhysicsShapeComponent>(f.Handle(floor)).halfExtents =
+        {20.0f, 5.0f, 20.0f};
+    f.Registry().get<Transform>(f.Handle(floor)).translation = {4.0f, -6.0f, 0.0f};
+
+    T4NullBridge bridge;
+    Error err;
+    PhysicsCollisionAssetProvider provider;
+    provider.SetContext(AssetResolutionContext{assets.dir, nullptr});
+    RuntimeSceneController ctrl;
+    ctrl.SetCollisionProvider(&provider);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    CHECK(ctrl.PhysicsBodyCount() == 3);
+    CHECK(ctrl.PhysicsShapeCount() == 3);
+
+    for (int i = 0; i < 90; ++i)
+        ctrl.Update(kFixedDt, bridge);
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    REQUIRE(runtime != nullptr);
+    const auto e = runtime->FindByUuid(ball);
+    const bool resolved = (e != entt::null);
+    REQUIRE(resolved);
+    const glm::vec3 p =
+        runtime->ecs.registry.get<Transform>(e).translation;
+    // Deflected down-slope (gravity alone cannot move +X) and caught by the
+    // ramp or the floor (never tunneled through the triangle mesh).
+    CHECK(p.x > 0.8f);
+    CHECK(p.y > -0.9f);
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+}
+
+TEST_CASE("T4 GREEN_NonUnitScaleMarginCcdInertia: uniform scale composes once with Bullet-level proofs")
+{
+    // Single scale owner: uniform world scale 2 composes once at build for
+    // sphere/box/hull/tri shapes. Bullet-boundary proofs: baked scale,
+    // sphere margin == radius (policy), box margin round-trip, CCD values,
+    // and post-scale inertia (box half 1.0, mass 12 -> I = 8 per axis).
+    T4TempAssets assets;
+    assets.MakeCube("hullbox.obj", 0.5f);
+    T4WriteText(assets.dir / "slab.obj",
+        "v -5 0 -5\nv 5 0 -5\nv 5 0 5\nv -5 0 5\n"
+        "f 1 2 3\nf 1 3 4\nf 1 4 3\nf 1 3 2\n");
+
+    T4Fixture f;
+    const UUID ground = f.Create("Ground");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ground), T4StaticBody());
+    PhysicsShapeComponent groundShape;
+    groundShape.shape = PhysicsShapeKind::StaticTriMesh;
+    groundShape.triMesh = T4ModelRef("slab.obj", "obj:whole-model");
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ground), groundShape);
+    f.Registry().get<Transform>(f.Handle(ground)).scale = {2.0f, 2.0f, 2.0f};
+
+    const UUID sphere = f.Create("Sphere");
+    PhysicsBodyComponent sphereBody = T4DynamicBody(1.0f);
+    sphereBody.ccdEnabled = true;
+    sphereBody.ccdMotionThreshold = 0.5f;
+    sphereBody.ccdSweptRadius = 0.8f;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(sphere), sphereBody);
+    PhysicsShapeComponent sphereShape = T4SphereShape(0.5f);
+    sphereShape.collisionMargin = 0.3f; // reserved for spheres (policy proof)
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(sphere), sphereShape);
+    f.Registry().get<Transform>(f.Handle(sphere)).translation = {0.0f, 5.0f, 0.0f};
+    f.Registry().get<Transform>(f.Handle(sphere)).scale = {2.0f, 2.0f, 2.0f};
+
+    const UUID box = f.Create("Box");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(box), T4DynamicBody(12.0f));
+    PhysicsShapeComponent boxShape = T4BoxShape(0.5f);
+    boxShape.collisionMargin = 0.07f;
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(box), boxShape);
+    f.Registry().get<Transform>(f.Handle(box)).translation = {4.0f, 5.0f, 0.0f};
+    f.Registry().get<Transform>(f.Handle(box)).scale = {2.0f, 2.0f, 2.0f};
+
+    const UUID hull = f.Create("Hull");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(hull), T4DynamicBody(8.0f));
+    PhysicsShapeComponent hullShape;
+    hullShape.shape = PhysicsShapeKind::ConvexHull;
+    hullShape.hull = T4ModelRef("hullbox.obj", "obj:whole-model");
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(hull), hullShape);
+    f.Registry().get<Transform>(f.Handle(hull)).translation = {-4.0f, 5.0f, 0.0f};
+    f.Registry().get<Transform>(f.Handle(hull)).scale = {2.0f, 2.0f, 2.0f};
+
+    T4NullBridge bridge;
+    Error err;
+    PhysicsCollisionAssetProvider provider;
+    provider.SetContext(AssetResolutionContext{assets.dir, nullptr});
+    RuntimeSceneController ctrl;
+    ctrl.SetCollisionProvider(&provider);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    REQUIRE(ctrl.TryGetPhysicsWorld() != nullptr);
+    const PhysicsWorld* world = ctrl.TryGetPhysicsWorld();
+
+    // Bullet-boundary proofs at staging time.
+    for (const UUID id : {ground, sphere, box, hull})
+    {
+        const PhysicsBodyRecord* rec = world->FindBody(id);
+        REQUIRE(rec != nullptr);
+        CHECK(rec->bakedScale == doctest::Approx(2.0f));
+    }
+    const btCollisionShape* sphereStaged = world->FindBodyShape(sphere);
+    REQUIRE(sphereStaged != nullptr);
+    CHECK(sphereStaged->getMargin() == doctest::Approx(1.0f));
+    const btCollisionShape* boxStaged = world->FindBodyShape(box);
+    REQUIRE(boxStaged != nullptr);
+    CHECK(boxStaged->getMargin() == doctest::Approx(0.07f));
+    const PhysicsBodyRecord* sphereRec = world->FindBody(sphere);
+    REQUIRE(sphereRec != nullptr);
+    REQUIRE(sphereRec->body != nullptr);
+    CHECK(sphereRec->body->getCcdMotionThreshold() == doctest::Approx(0.5f));
+    CHECK(sphereRec->body->getCcdSweptSphereRadius() == doctest::Approx(0.8f));
+    const PhysicsBodyRecord* boxRec = world->FindBody(box);
+    REQUIRE(boxRec != nullptr);
+    REQUIRE(boxRec->body != nullptr);
+    CHECK(boxRec->body->getInvMass() == doctest::Approx(1.0f / 12.0f));
+    const btVector3& invI = boxRec->body->getInvInertiaDiagLocal();
+    CHECK(invI.x() == doctest::Approx(1.0f / 8.0f).epsilon(0.02));
+    CHECK(invI.y() == doctest::Approx(1.0f / 8.0f).epsilon(0.02));
+    CHECK(invI.z() == doctest::Approx(1.0f / 8.0f).epsilon(0.02));
+    CHECK(world->FindBodyShape(UUID::Nil()) == nullptr);
+
+    // All droppers rest at scaled-extent height on the scaled tri slab.
+    for (int i = 0; i < 240; ++i)
+        ctrl.Update(kFixedDt, bridge);
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    REQUIRE(runtime != nullptr);
+    auto readY = [&](const UUID& id) {
+        const auto e = runtime->FindByUuid(id);
+        const bool resolved = (e != entt::null);
+        REQUIRE(resolved);
+        return runtime->ecs.registry.get<Transform>(e).translation.y;
+    };
+    CHECK(readY(sphere) == doctest::Approx(1.0f).epsilon(0.1));
+    CHECK(readY(box) == doctest::Approx(1.0f).epsilon(0.1));
+    CHECK(readY(hull) == doctest::Approx(1.0f).epsilon(0.15));
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+}
+
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")
 {
     T4Fixture f;

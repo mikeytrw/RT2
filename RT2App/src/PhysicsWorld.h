@@ -78,7 +78,8 @@ struct PhysicsBodyRecord
     entt::entity entity = entt::null;
     PhysicsBodyKind kind = PhysicsBodyKind::Static;
     bool isTrigger = false;
-    // Non-owning views into m_Bodies/m_Ghosts (exactly one is set).
+    // Non-owning views into m_Shapes/m_Bodies/m_Ghosts (body XOR ghost set).
+    btCollisionShape* shape = nullptr;
     btRigidBody* body = nullptr;
     btDefaultMotionState* motion = nullptr;
     btPairCachingGhostObject* ghost = nullptr;
@@ -173,6 +174,9 @@ public:
 
     // Companion-map lookup for tests and T5+ consumers. Null when absent.
     const PhysicsBodyRecord* FindBody(const UUID& id) const;
+    // Bullet shape staged for a body (null when absent). Test seam for
+    // margin/CCD/inertia proofs at the Bullet boundary.
+    const btCollisionShape* FindBodyShape(const UUID& id) const;
     size_t BodyRecordCount() const { return m_BodyIndex.size(); }
 
     // Handle census for tests and the Stop leak assertion. All zero in T3

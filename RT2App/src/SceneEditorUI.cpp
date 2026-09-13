@@ -2067,7 +2067,9 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		}
 		if (ImGui::Checkbox("Trigger (ghost)", &work.isTrigger))
 			m_PhysicsWork.shapeDirty = true;
-		if (ImGui::DragFloat("Margin", &work.collisionMargin, 0.005f, 0.0f, 1.0f, "%.3f"))
+		if (work.shape == PhysicsShapeKind::Sphere)
+			ImGui::TextDisabled("Margin: spheres use radius as margin (field reserved)");
+		else if (ImGui::DragFloat("Margin", &work.collisionMargin, 0.005f, 0.0f, 1.0f, "%.3f"))
 			m_PhysicsWork.shapeDirty = true;
 		if (m_PhysicsWork.shapeDirty)
 		{

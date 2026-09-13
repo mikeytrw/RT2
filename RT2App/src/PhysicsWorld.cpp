@@ -172,6 +172,12 @@ const PhysicsBodyRecord* PhysicsWorld::FindBody(const UUID& id) const
     return nullptr;
 }
 
+const btCollisionShape* PhysicsWorld::FindBodyShape(const UUID& id) const
+{
+    const PhysicsBodyRecord* rec = FindBody(id);
+    return rec != nullptr ? rec->shape : nullptr;
+}
+
 static PhysicsBodyRecord* FindBodyMut(std::vector<PhysicsBodyRecord>& index,
                                         const UUID& id)
 {
@@ -632,14 +638,22 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
         }
     }
 
-    // Margin in final world units, post-scale.
+    // Margin range hygiene in final world units, post-scale (accepted for
+    // every shape, including spheres, for uniformity).
     if (!std::isfinite(shape->collisionMargin) ||
         shape->collisionMargin < 0.0f || shape->collisionMargin > 1.0f)
     {
         return T4Fail(err, uuid, name,
                       "has a collision margin outside [0,1] world units");
     }
-    owned->setMargin(shape->collisionMargin);
+    // Sphere policy (review P2): pinned Bullet's btSphereShape::getMargin
+    // returns its radius regardless of the base-class value, so an
+    // independent sphere margin has no Bullet meaning — spheres skip
+    // setMargin (radius IS the margin) while every other shape applies the
+    // authored value. The field stays accepted for uniformity and is labeled
+    // accordingly in the Inspector.
+    if (shape->shape != PhysicsShapeKind::Sphere)
+        owned->setMargin(shape->collisionMargin);
 
     glm::vec3 origin;
     glm::quat rotation;
@@ -654,6 +668,7 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
     rec.kind = body.kind;
     rec.isTrigger = shape->isTrigger;
     rec.bakedScale = scale;
+    rec.shape = rawShape;
 
     const int group = (int)body.layer;
     const int mask = (int)body.mask;

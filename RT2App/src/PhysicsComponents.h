@@ -114,7 +114,11 @@ struct PhysicsShapeComponent
     AssetReference hull;    // ConvexHull collision geometry (durable)
     AssetReference triMesh; // StaticTriMesh collision geometry (durable)
     bool  isTrigger = false; // ghost: overlaps, gives no response
-    float collisionMargin = 0.04f; // Bullet default margin; world units (T3)
+    // Collision margin in world units, post-scale, range-checked to [0,1].
+    // Sphere policy: pinned Bullet reports a sphere's radius as its margin
+    // regardless of this value, so spheres accept the field for uniformity
+    // but it has no independent Bullet effect (radius IS the margin).
+    float collisionMargin = 0.04f;
 
     bool operator==(const PhysicsShapeComponent& o) const
     {
