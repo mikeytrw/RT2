@@ -24,6 +24,7 @@
 #include "EditorPropertyCommands.h"
 #include "EditorSceneState.h"
 #include "EditorSyncRouter.h"
+#include "PhysicsComponents.h"
 #include "PrefabComponentValueEquality.h"
 #include "PrefabSerializer.h"
 #include "RRFeatureLifecycle.h"

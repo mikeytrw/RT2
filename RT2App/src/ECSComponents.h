@@ -6,6 +6,7 @@
 #include "AssetReference.h"
 #include "CameraPresentation.h"
 #include "core/UUID.h"
+#include "PhysicsComponents.h"
 #include "PrefabComponentKeyBase.h"
 #include "SceneTypes.h"
 #include "ScriptFieldValue.h"

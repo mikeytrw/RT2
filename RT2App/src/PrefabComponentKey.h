@@ -59,6 +59,13 @@ inline constexpr std::string_view kMotion           = "motion";
 inline constexpr std::string_view kScript           = "script";
 inline constexpr std::string_view kPrefabInstance   = "prefabInstance";
 inline constexpr std::string_view kPrefabMember     = "prefabMember";
+// T2 physics persistence foundation: wire names match the scene codec member
+// names in EntityRecordToJson (SceneSerializer.cpp), exactly like every entry
+// above. Never rename without changing the codec.
+inline constexpr std::string_view kPhysicsBody       = "physicsBody";
+inline constexpr std::string_view kPhysicsShape      = "physicsShape";
+inline constexpr std::string_view kPhysicsHinge      = "physicsHinge";
+inline constexpr std::string_view kPhysicsSlider     = "physicsSlider";
 }
 
 // The frozen classification table. One entry per persisted component, in the
@@ -80,6 +87,15 @@ inline constexpr std::array<PrefabComponentKey, PersistedComponents::Count> kPre
     PrefabComponentKey(PrefabWireKeys::kScript,           true),  // ScriptComponent
     PrefabComponentKey(PrefabWireKeys::kPrefabInstance,   false), // PrefabInstanceComponent
     PrefabComponentKey(PrefabWireKeys::kPrefabMember,     false), // PrefabMemberComponent
+    // T2: the four physics components are scene-serializable but EXCLUDED
+    // from prefab propagation/override wires (overridable=false). Propagation
+    // ignores them (no adapter in PrefabPropagationComponentAdapter — that
+    // expansion is deferred); instantiate/duplicate/clone/snapshot still copy
+    // them verbatim as ordinary persisted data. The overridable total stays 9.
+    PrefabComponentKey(PrefabWireKeys::kPhysicsBody,      false), // PhysicsBodyComponent
+    PrefabComponentKey(PrefabWireKeys::kPhysicsShape,     false), // PhysicsShapeComponent
+    PrefabComponentKey(PrefabWireKeys::kPhysicsHinge,     false), // PhysicsHingeComponent
+    PrefabComponentKey(PrefabWireKeys::kPhysicsSlider,    false), // PhysicsSliderComponent
 };
 
 // Required compile-time assertion 1: the table always covers every persisted
@@ -131,6 +147,14 @@ template<> struct PrefabComponentKeyFor<PrefabInstanceComponent>
     { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPrefabInstance, false); };
 template<> struct PrefabComponentKeyFor<PrefabMemberComponent>
     { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPrefabMember, false); };
+template<> struct PrefabComponentKeyFor<PhysicsBodyComponent>
+    { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPhysicsBody, false); };
+template<> struct PrefabComponentKeyFor<PhysicsShapeComponent>
+    { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPhysicsShape, false); };
+template<> struct PrefabComponentKeyFor<PhysicsHingeComponent>
+    { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPhysicsHinge, false); };
+template<> struct PrefabComponentKeyFor<PhysicsSliderComponent>
+    { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPhysicsSlider, false); };
 
 // Overridable predicate. The by-name form keeps a non-overridable name from
 // ever being treated as one (the W3 boundary test asserts each excluded

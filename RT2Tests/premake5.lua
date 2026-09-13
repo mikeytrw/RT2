@@ -46,6 +46,9 @@
     -- Phase 8 closure: CPU prefab UI action/presentation shell.
     files { "src/Phase8PrefabUiClosureTests.cpp" }
 
+    -- Bullet T2: physics persistence foundation tests (same rationale).
+    files { "src/PhysicsPersistenceTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
@@ -97,6 +100,7 @@
        "../Walnut/vendor/glm",
        "../Walnut/vendor/stb_image",
        "../RT2App/vendor",
+       "../RT2App/vendor/bullet/src",   -- T1: pinned Bullet core (src include root only)
        "../RT2App/vendor/tinygltf",
        "../RT2App/vendor/entt/src",
        "../RT2App/vendor/sol2/include",   -- Phase 6: sol2 header-only bindings
@@ -107,12 +111,32 @@
     targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
     objdir ("../bin-int/" .. outputdir .. "/%{prj.name}")
 
+    -- T1: pinned Bullet core. Explicit link order BulletDynamics,
+    -- BulletCollision, LinearMath; every consumer links all three (no
+    -- transitive-static-link assumptions). The BulletVendoringTests
+    -- translation unit references one symbol from each library, so removing
+    -- any entry here fails the link loudly.
+    links
+    {
+        "BulletDynamics",
+        "BulletCollision",
+        "LinearMath",
+    }
+
     filter "system:windows"
        systemversion "latest"
 
     filter "configurations:Debug"
        defines { "WL_DEBUG" }
-       runtime "Debug"
+       -- Amendment F (T1 Debug CRT alignment): runtime "Release" (/MD), not
+       -- "Debug" (/MDd). The single shared Bullet Debug static libraries
+       -- build /MD per W1 (matching RT2App, which must stay /MD for the
+       -- prebuilt NRD/NRI libs); one static lib per config cannot serve a
+       -- /MD and a /MDd consumer simultaneously (LNK2038/LNK1319). This
+       -- deliberately loses /MDd iterator-debugging and the debug heap in
+       -- this target, but preserves the exactly-three-StaticLib graph and
+       -- full Debug code/test coverage. Symbols stay on, optimization off.
+       runtime "Release"
        symbols "On"
 
     filter { "configurations:Debug", "files:../RT2App/src/SceneLoader.cpp" }

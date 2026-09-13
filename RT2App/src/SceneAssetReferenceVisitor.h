@@ -14,8 +14,9 @@ namespace rt2::core {
 class SceneDocument;
 
 // One durable source-asset reference in a scene. Native persistence owns
-// imported models, scripts, and the environment; derived SceneTexture records
-// are deliberately not part of this visitor.
+// imported models, scripts, physics collision geometry (T2), prefab links,
+// and the environment; derived SceneTexture records are deliberately not
+// part of this visitor.
 struct SceneAssetReferenceSlot
 {
     AssetReference* reference = nullptr;

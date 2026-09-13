@@ -25,7 +25,8 @@
 // optional full-value payloads for every persisted component (MeshRef,
 // PrimitiveComponent, ImportedMeshSourceComponent, MaterialOverrideComponent
 // with the full SceneMaterial + sourceMaterialKey, LightComponent,
-// CameraComponent, MotionComponent).
+// CameraComponent, MotionComponent, ScriptComponent, PrefabInstanceComponent,
+// PrefabMemberComponent, and the four T2 physics components).
 //
 // Root sibling anchors preserve exact Outliner position. Restoration fails
 // atomically rather than silently appending if the anchors are inconsistent
@@ -91,6 +92,23 @@ struct SubtreeEntityRecord
 
 	bool      hasPrefabMember = false;
 	PrefabMemberComponent prefabMember{};
+
+	// T2 physics persistence foundation: authored physics data rides every
+	// subtree path (Undo/Redo snapshots, clipboard copy/paste staging,
+	// prefab create/instantiate) exactly like every other persisted
+	// component. Plain values only — no Bullet handles, no transient
+	// mesh-registry indices.
+	bool      hasPhysicsBody = false;
+	PhysicsBodyComponent physicsBody{};
+
+	bool      hasPhysicsShape = false;
+	PhysicsShapeComponent physicsShape{};
+
+	bool      hasPhysicsHinge = false;
+	PhysicsHingeComponent physicsHinge{};
+
+	bool      hasPhysicsSlider = false;
+	PhysicsSliderComponent physicsSlider{};
 };
 
 struct RootSiblingAnchor

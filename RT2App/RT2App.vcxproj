@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -121,7 +121,7 @@ copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlssd.dll" "../bi
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -169,7 +169,7 @@ copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "../bi
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>None</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -1350,6 +1350,17 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
   <ItemGroup>
     <ProjectReference Include="..\Walnut\Walnut\Walnut.vcxproj">
       <Project>{C038E8D9-ACDA-12B0-9595-260481D69900}</Project>
+    </ProjectReference>
+    <!-- T1: pinned Bullet core libraries (same explicit order and GUIDs as
+         RT2Tests; see note there). -->
+    <ProjectReference Include="vendor\bullet\BulletDynamics.vcxproj">
+      <Project>{45122E0F-31E0-2115-1A74-923B06E1FD79}</Project>
+    </ProjectReference>
+    <ProjectReference Include="vendor\bullet\BulletCollision.vcxproj">
+      <Project>{B91153C5-259D-C089-2EAE-437E9AB81C8A}</Project>
+    </ProjectReference>
+    <ProjectReference Include="vendor\bullet\LinearMath.vcxproj">
+      <Project>{EAF25DFD-D6AA-9F4A-3FB2-78A62B893A3B}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

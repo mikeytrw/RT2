@@ -47,6 +47,22 @@ std::vector<Slot> Collect(Document& document)
         if (auto* script =
                 document.ecs.registry.template try_get<ScriptComponent>(entity))
             result.push_back(Slot{&script->asset, id, name});
+        // T2 physics persistence foundation: BOTH stored collision-geometry
+        // references of a physics shape, unconditionally — matching
+        // imported/script/prefab reference behavior. Both fields are exact
+        // authored payload and both are serialized, so save validation
+        // (which rejects a non-empty path with an unknown kind),
+        // migration (assign/rebase/validate), and content-browser
+        // dependency protection must see them even when inactive, empty,
+        // or invalid. Filtering here would let Save succeed on a v8 file
+        // that Load refuses, and would hide a stale reference until a
+        // later shape-kind switch reveals it.
+        if (auto* shape =
+                document.ecs.registry.template try_get<PhysicsShapeComponent>(entity))
+        {
+            result.push_back(Slot{&shape->hull, id, name});
+            result.push_back(Slot{&shape->triMesh, id, name});
+        }
         if (auto* instance =
                 document.ecs.registry.template try_get<PrefabInstanceComponent>(entity))
             result.push_back(Slot{&instance->prefab, id, name});

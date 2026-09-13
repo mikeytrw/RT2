@@ -151,6 +151,27 @@ void RemapCopiedScriptFields(
 			scripts.push_back(script);
 	}
 	rt2::core::RemapEntityReferences(uuidRemap, scripts);
+
+	// T2 physics persistence foundation: hinge/slider `otherBody` is an
+	// Authoring UUID under the same durable remap contract. Intra-copy
+	// references resolve to the copy's fresh UUIDs; external references and
+	// nil world anchors are preserved exactly by the remapper. All four copy
+	// paths (DuplicateSubtrees, PasteSubtreesFrom,
+	// DuplicateSubtreesWithUuids, PasteSubtreesWithUuids) and prefab
+	// instantiate chain through this helper, so every path remaps physics
+	// references — never just scripts.
+	std::vector<PhysicsHingeComponent*> hinges;
+	std::vector<PhysicsSliderComponent*> sliders;
+	hinges.reserve(destinations.size());
+	sliders.reserve(destinations.size());
+	for (const auto destination : destinations)
+	{
+		if (auto* hinge = registry.try_get<PhysicsHingeComponent>(destination))
+			hinges.push_back(hinge);
+		if (auto* slider = registry.try_get<PhysicsSliderComponent>(destination))
+			sliders.push_back(slider);
+	}
+	rt2::core::RemapPhysicsConstraintReferences(uuidRemap, hinges, sliders);
 }
 
 // Phase 8 W3, S4 / W3-D8 + review fix 2 — a copy/paste of a prefab instance is
@@ -161,7 +182,7 @@ void RemapCopiedScriptFields(
 // unit of classification is the FOREST of copied entities, not each selected
 // root in isolation.
 //
-// CopyAuthoredComponents copies all 13 persisted components verbatim
+// CopyAuthoredComponents copies all 17 persisted components verbatim
 // (SceneManager.cpp:89-93), so a copy of a prefab instance would share the
 // SOURCE's instanceId: duplicating an instance produces two entities (and two
 // member groups) claiming the same instance identity. W3 groups overrides by
@@ -2293,6 +2314,33 @@ SubtreeEntityRecord BuildSubtreeRecord(const entt::registry& reg, entt::entity e
 		r.prefabMember    = *pmc;
 	}
 
+	// T2 physics persistence foundation: authored physics rides subtree
+	// snapshots (Undo/Redo), clipboard staging, and prefab records exactly
+	// like every other persisted component.
+	if (const auto* pb = reg.try_get<PhysicsBodyComponent>(e))
+	{
+		r.hasPhysicsBody = true;
+		r.physicsBody    = *pb;
+	}
+
+	if (const auto* ps = reg.try_get<PhysicsShapeComponent>(e))
+	{
+		r.hasPhysicsShape = true;
+		r.physicsShape    = *ps;
+	}
+
+	if (const auto* ph = reg.try_get<PhysicsHingeComponent>(e))
+	{
+		r.hasPhysicsHinge = true;
+		r.physicsHinge    = *ph;
+	}
+
+	if (const auto* psl = reg.try_get<PhysicsSliderComponent>(e))
+	{
+		r.hasPhysicsSlider = true;
+		r.physicsSlider    = *psl;
+	}
+
 	return r;
 }
 
@@ -2374,6 +2422,28 @@ void ApplySubtreeRecord(const SubtreeEntityRecord& record, entt::registry& reg,
 		reg.emplace_or_replace<PrefabMemberComponent>(e, record.prefabMember);
 	else
 		reg.remove<PrefabMemberComponent>(e);
+
+	// T2: structural restore reinstates recorded physics verbatim (W3-D4
+	// analogue) — restore never remaps or invents references.
+	if (record.hasPhysicsBody)
+		reg.emplace_or_replace<PhysicsBodyComponent>(e, record.physicsBody);
+	else
+		reg.remove<PhysicsBodyComponent>(e);
+
+	if (record.hasPhysicsShape)
+		reg.emplace_or_replace<PhysicsShapeComponent>(e, record.physicsShape);
+	else
+		reg.remove<PhysicsShapeComponent>(e);
+
+	if (record.hasPhysicsHinge)
+		reg.emplace_or_replace<PhysicsHingeComponent>(e, record.physicsHinge);
+	else
+		reg.remove<PhysicsHingeComponent>(e);
+
+	if (record.hasPhysicsSlider)
+		reg.emplace_or_replace<PhysicsSliderComponent>(e, record.physicsSlider);
+	else
+		reg.remove<PhysicsSliderComponent>(e);
 }
 
 // Compare authored component state on an entity against a record. Returns
@@ -2569,6 +2639,31 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 		      live.prefab.assetId == record.prefabInstance.prefab.assetId))
 			return false;
 	}
+
+	// T2 physics persistence foundation: exact-value compare. Physics
+	// components are pure authored data (operator== is the canonical
+	// comparison — no eps, no transient state), so presence and value must
+	// both match exactly for RemoveSubtreesExact to consider the entity
+	// consistent with its snapshot.
+	if (reg.all_of<PhysicsBodyComponent>(e) != record.hasPhysicsBody) return false;
+	if (record.hasPhysicsBody &&
+	    !(*reg.try_get<PhysicsBodyComponent>(e) == record.physicsBody))
+		return false;
+
+	if (reg.all_of<PhysicsShapeComponent>(e) != record.hasPhysicsShape) return false;
+	if (record.hasPhysicsShape &&
+	    !(*reg.try_get<PhysicsShapeComponent>(e) == record.physicsShape))
+		return false;
+
+	if (reg.all_of<PhysicsHingeComponent>(e) != record.hasPhysicsHinge) return false;
+	if (record.hasPhysicsHinge &&
+	    !(*reg.try_get<PhysicsHingeComponent>(e) == record.physicsHinge))
+		return false;
+
+	if (reg.all_of<PhysicsSliderComponent>(e) != record.hasPhysicsSlider) return false;
+	if (record.hasPhysicsSlider &&
+	    !(*reg.try_get<PhysicsSliderComponent>(e) == record.physicsSlider))
+		return false;
 
 	if (reg.all_of<PrefabMemberComponent>(e) != record.hasPrefabMember) return false;
 	if (record.hasPrefabMember)
