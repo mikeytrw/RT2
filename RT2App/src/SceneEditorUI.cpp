@@ -154,7 +154,7 @@ bool SceneEditorUI::CanBeginPreview(PreviewSessionKind kind,
 	if (!session) return false;
 
 	// If this kind's session already owns THIS target, it is the ongoing
-	// gesture � do not re-begin it.
+	// gesture — do not re-begin it.
 	if (session->IsOpen() && session->Target() == target) return false;
 
 	// At most one preview: finalize any other-open session (different kind, or
@@ -462,7 +462,7 @@ void SceneEditorUI::Undo()
 	if (!m_CommandHistory || !m_SceneMgr) return;
 	// Two-phase-close every open live-preview session (abandon) before history
 	// moves. If any stays pending, abort the Undo so an applied preview is
-	// never orphaned � the persistent recovery bar stays surfaced (S6-C
+	// never orphaned — the persistent recovery bar stays surfaced (S6-C
 	// re-review, P1 finding 2).
 	if (!CloseAllPreviewSessionsForGlobalAction()) return;
 	// Abandon the non-composite record-on-release sessions (uncommitted widget
@@ -504,11 +504,11 @@ bool SceneEditorUI::CloseAllPreviewSessionsForAction(bool finalize)
 	// The product decision seam: the CPU-tested global-action reducer closes
 	// every open preview session (abandon/restore for Undo/Redo, record for
 	// discrete/global authoring admission) and clears owner IDs for the ones
-	// that close (S6-C final closure P1 finding 2 � wired here, not
+	// that close (S6-C final closure P1 finding 2 — wired here, not
 	// duplicated). The per-slot outcomes carry the owner/error/sync facts.
 	//
 	// Host-edge P1 finding 1: if recovery is ALREADY pending, ordinary admission
-	// and Undo/Redo short-circuit immediately WITHOUT invoking the reducer � no
+	// and Undo/Redo short-circuit immediately WITHOUT invoking the reducer — no
 	// implicit close retry, no idle re-run, no recovery-error overwrite, no
 	// scene sync, no UUID draw, no mutation. Only the explicit Retry action (and
 	// proven replacement/removal handling) re-runs a pending close.
@@ -1071,7 +1071,7 @@ void SceneEditorUI::RenderOutliner()
 			// Punctual defaults. Point/spot intensity is candela and goes
 			// through inverse-square falloff, so 50 cd at a few metres reads
 			// as a normal room light. A directional light has no falloff at
-			// all � its intensity is the arriving radiance � which is why it
+			// all — its intensity is the arriving radiance — which is why it
 			// needs a far smaller number to sit at the same exposure.
 			if (ImGui::MenuItem("Point"))
 			{
@@ -1586,7 +1586,7 @@ void SceneEditorUI::RenderInspector()
 		ImGui::TextDisabled("Directly locked in the editor");
 	ImGui::BeginDisabled(directlyLocked);
 
-	// Name field � records on Enter or focus loss after edit (not per keystroke).
+	// Name field — records on Enter or focus loss after edit (not per keystroke).
 	char nameBuf[128];
 	snprintf(nameBuf, sizeof(nameBuf), "%s", name.c_str());
 	ImGui::Text("Name:");
@@ -1669,7 +1669,7 @@ void SceneEditorUI::RenderInspector()
 					motionCancelPending = true;
 				ImGui::EndDisabled();
 
-				// S6-C live preview through the composite � no direct mutation
+				// S6-C live preview through the composite — no direct mutation
 				// of `mc`; the working copy carries the edited velocity.
 				// Publish gate: the changed widget must own the session (trivial
 				// for the single motion field) and the frame is frozen while the
@@ -2370,7 +2370,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
 
 	ImGui::BeginDisabled(!m_Editable);
-	// Material index combo � record-on-release via a discrete commit
+	// Material index combo — record-on-release via a discrete commit
 	// (Combo returns true only on selection change, so one record per
 	// selection is natural).
 	const auto& materials = m_SceneMgr->GetMaterials();
@@ -2423,7 +2423,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		// after-override (no mutation), then let the command's composite
 		// replay do the index write + marker insertion + override swap
 		// atomically (construct-then-Execute; the 2026-08-03 material-index
-		// undo defect shape � before can no longer be inverted with after).
+		// undo defect shape — before can no longer be inverted with after).
 		auto beforeOverride = m_SceneMgr->GetMaterialOverride(targetUuid);
 		const auto staged = m_SceneMgr->StageMaterialIndex(targetUuid, current);
 		if (!staged.IsOk())
@@ -2514,7 +2514,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		if (pendingCloseWidgetId != 0 && m_MaterialPropertiesSession.IsOpen() &&
 		    m_MaterialPropertiesSessionOwningWidgetId == pendingCloseWidgetId)
 		{
-			// Construct-then-Execute: no mutation has happened yet � the
+			// Construct-then-Execute: no mutation has happened yet — the
 			// command's composite replay applies the material value write +
 			// imported-member override fan-out + marker insertion atomically.
 			auto rec = m_MaterialPropertiesSession.CloseDeferred(mat,
@@ -2945,7 +2945,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 }
 
 // ----------------------------------------------------------------------------
-// Phase 6B/W5 � Script component editor
+// Phase 6B/W5 — Script component editor
 // ----------------------------------------------------------------------------
 void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 {
@@ -3152,7 +3152,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 		ImGui::Text("%s:", desc.name.c_str());
 		ImGui::SameLine();
 
-		// Find the stored entry. Do NOT auto-insert defaults into the map �
+		// Find the stored entry. Do NOT auto-insert defaults into the map —
 		// only insert when the widget actually changes a field, so untouched
 		// declared-but-unstored fields don't get persisted as authored data.
 		auto& fieldMap = scriptState->fieldValues;
@@ -3160,12 +3160,12 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 		const bool hasStored = it != fieldMap.end();
 
 		// Guard: if the stored type and declared type are incompatible (different
-		// variant arms), don't touch the value � the user needs to reload/reconcile.
+		// variant arms), don't touch the value — the user needs to reload/reconcile.
 		// Compatible types (vec3 <-> color, same arm) are safe to read/write.
 		if (hasStored && !rt2::core::ScriptFieldTypesCompatible(
 		        it->second.type, desc.type))
 		{
-			ImGui::TextDisabled("(declaration type changed � reopen to reconcile)");
+			ImGui::TextDisabled("(declaration type changed — reopen to reconcile)");
 			ImGui::PopID();
 			continue;
 		}
@@ -3414,7 +3414,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 //
 // Shown after the user picks a file from "Import Scene..." or "Load Mesh
 // File...". Collects import settings (currently just mergeMegaMesh for OBJ)
-// and dispatches via m_OnImportWithOptions. The modal is modal � the file
+// and dispatches via m_OnImportWithOptions. The modal is modal — the file
 // dialog cannot open while it is up, so a second pick before dismissing is
 // naturally blocked.
 // ----------------------------------------------------------------------------
@@ -3467,7 +3467,7 @@ void SceneEditorUI::DrawImportOptionsModal()
 				ImGui::SetTooltip(
 					"glTF defines an absent metallicFactor as 1.0, so a material\n"
 					"with no metallicRoughness texture and no authored factor is\n"
-					"fully metallic and fully rough by spec � a rough mirror that\n"
+					"fully metallic and fully rough by spec — a rough mirror that\n"
 					"renders as a grey patch which never converges.\n\n"
 					"Exporters hit this constantly by omitting the value and\n"
 					"assuming a dielectric default. When checked, such materials\n"

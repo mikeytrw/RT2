@@ -197,8 +197,12 @@ void T4WriteText(const std::filesystem::path& path, const std::string& text)
 {
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
+    REQUIRE_MESSAGE(!ec, "T4 fixture directory creation failed");
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out << text;
+    REQUIRE_MESSAGE(out.is_open(), "T4 fixture file open failed");
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    out.flush();
+    REQUIRE_MESSAGE(out.good(), "T4 fixture file write failed");
 }
 
 // Unit cube OBJ (8 verts, 12 tris): convex-hull and static-tri source.
@@ -225,7 +229,9 @@ struct T4TempAssets
         dir = std::filesystem::temp_directory_path() / "t4_collision_tests";
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
+        REQUIRE_MESSAGE(!ec, "T4 fixture cleanup failed");
         std::filesystem::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "T4 fixture directory creation failed");
     }
     ~T4TempAssets()
     {
@@ -334,7 +340,6 @@ TEST_CASE("T4 GREEN_CollisionCacheDedup: identical keys decode once and sourceKe
         "gltf:scene=0:node=0:mesh=0:primitive=1");
     auto got0 = provider.GetCollisionGeometry(tri0, entity, "Tri");
     auto got1 = provider.GetCollisionGeometry(tri1, entity, "Tri");
-    REQUIRE(got0.IsOk());
     REQUIRE(got0.IsOk());
     REQUIRE(got1.IsOk());
     CHECK(got0.value != got1.value);
@@ -1274,9 +1279,12 @@ TEST_CASE("T4 RED_OversizeCollisionAssetRefusesPlay: oversize geometry refuses P
     {
         // 260k vertices over the 250k cap (positions only; one triangle).
         std::ofstream out(assets.dir / "huge.obj", std::ios::binary);
+        REQUIRE_MESSAGE(out.is_open(), "T4 huge OBJ fixture open failed");
         for (int i = 0; i < 260000; ++i)
             out << "v 0 0 " << (i % 1000) << "\n";
         out << "f 1 2 3\n";
+        out.flush();
+        REQUIRE_MESSAGE(out.good(), "T4 huge OBJ fixture write failed");
     }
     T4Fixture f;
     const UUID id = f.Create("Huge");
@@ -1395,7 +1403,9 @@ TEST_CASE("T4 GREEN_LuaSetPositionAuthority: Lua set_position obeys per-kind aut
         std::filesystem::temp_directory_path() / "t4_lua_authority";
     std::error_code ec;
     std::filesystem::remove_all(scriptDir, ec);
+    REQUIRE_MESSAGE(!ec, "T4 Lua fixture cleanup failed");
     std::filesystem::create_directories(scriptDir, ec);
+    REQUIRE_MESSAGE(!ec, "T4 Lua fixture directory creation failed");
     T4WriteText(scriptDir / "authority.lua", R"LUA(
 function on_update(entity, dt, input, world)
     entity:set_position({7, 0, 0})

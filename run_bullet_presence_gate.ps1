@@ -74,7 +74,7 @@ $requiredCases = @(
     "T4 RED_MalformedCollisionAssetRefusesPlay: corrupt collision file refuses Play atomically",
     "T4 RED_SourceKeyMismatchRefusesPlay: wrong sourceKey for the file refuses Play atomically",
     "T4 RED_OversizeCollisionAssetRefusesPlay: oversize geometry refuses Play atomically",
-    "T4 RED_StaticSetPositionRefused: Static bodies refuse pose writes",
+    "T4 RED_StaticSetPositionRefused: runtime position setter on Static/Dynamic returns false; Kinematic succeeds",
     "T4 RED_PhysicsBodyValidationRejects: out-of-range authoring values fail atomically",
     "T4 RED_PhysicsPrefabMemberEditRejected: linked members refuse every physics edit",
     "T4 GREEN_PhysicsAuthoringUndoRedo: body and shape edits are exact with revision and no GPU sync"
