@@ -13,6 +13,7 @@
 #include "ECSComponents.h"
 #include "EntityReferenceRemapper.h"
 #include "IPhysicsCollisionAssetProvider.h"
+#include "PhysicsDebugCapture.h"
 #include "SceneDocument.h"
 #include "SceneGraph.h"
 
@@ -318,6 +319,47 @@ void PhysicsWorld::PostStepSync(SceneDocument& runtime)
         tf->rotation = glm::normalize(glm::quat(q.w(), q.x(), q.y(), q.z()));
         SceneGraph::SetLocalDirty(reg, rec.entity);
     }
+}
+
+// ============================================================================
+// T8 debug capture (member definitions at rt2::core scope)
+// ============================================================================
+
+void PhysicsWorld::CaptureDebugLines(const SceneDocument* runtime,
+                                     PhysicsDebugLines& out)
+{
+    PhysicsDebugDrawer drawer;
+    drawer.setDebugMode(btIDebugDraw::DBG_DrawWireframe);
+    drawer.BeginCapture(&out);
+    m_World.setDebugDrawer(&drawer);
+    for (const auto& rec : m_BodyIndex)
+    {
+        PhysicsDebugLineKind kind = PhysicsDebugLineKind::Static;
+        if (rec.isTrigger)
+            kind = PhysicsDebugLineKind::Trigger;
+        else if (rec.kind == PhysicsBodyKind::Dynamic)
+            kind = PhysicsDebugLineKind::Dynamic;
+        else if (rec.kind == PhysicsBodyKind::Kinematic)
+            kind = PhysicsDebugLineKind::Kinematic;
+
+        const btTransform* t = nullptr;
+        if (rec.body != nullptr)
+            t = &rec.body->getWorldTransform();
+        else if (rec.ghost != nullptr)
+            t = &rec.ghost->getWorldTransform();
+        if (t == nullptr || rec.shape == nullptr)
+            continue;
+        drawer.SetOwner(rec.id, kind);
+        m_World.debugDrawObject(*t, rec.shape, btVector3(1.0f, 1.0f, 1.0f));
+    }
+    drawer.ClearOwner();
+    m_World.setDebugDrawer(nullptr);
+    // Persisted hinge/slider adapter (T5-independent): consumes already-read
+    // runtime components, builds no Bullet constraints. See the T5 merge
+    // point in PhysicsDebugCapture.h.
+    if (runtime != nullptr)
+        AppendConstraintAdapterLines(*runtime, out);
+    out.SortStable();
 }
 
 // ============================================================================

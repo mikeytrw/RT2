@@ -91,6 +91,7 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
                 "physics candidate handoff (clone reset; still Edit)";
             m_Runtime.reset();
             m_Accumulator = 0.0f;
+            m_DebugLines.Clear();
             return false;
         }
         if (!candidate.IsOk())
@@ -98,9 +99,14 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
             err = candidate.error;
             m_Runtime.reset();
             m_Accumulator = 0.0f;
+            m_DebugLines.Clear();
             return false;
         }
         m_PhysicsWorld = std::move(candidate.value);
+        // T8: capture the first debug snapshot from the committed world.
+        // Refused Play above leaves the snapshot empty (invalid geometry
+        // keeps the T4 diagnostic; no synthetic shape is ever produced).
+        RefreshPhysicsDebugLines();
     }
 
     // Activate the runtime document for rendering: full GPU upload + temporal
@@ -221,6 +227,9 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
         }
     }
 
+    // T8: re-capture after transforms so constraint-adapter pivots track.
+    RefreshPhysicsDebugLines();
+
     // One sync for the presentation pass: FullSync if the frame applied any
     // structural operation, otherwise TransformSync. Updated in place — see
     // the note in Update() on why copying GPUSceneData per frame is costly.
@@ -271,6 +280,8 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
     m_PhysicsWorld.reset();
     assert(PhysicsWorld::LiveWorldCount() == m_PhysicsLiveBaseline &&
            "PhysicsWorld destroyed on Stop must restore the live baseline");
+    // T8: Stop clears the debug snapshot (Pause retains; Stop does not).
+    m_DebugLines.Clear();
 
     // 4. Clear any pending operations (they are runtime-only).
     m_PendingOperations.clear();
@@ -369,6 +380,9 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
                     tf->prevWorldMatrix = tf->worldMatrix;
         }
     }
+
+    // T8: re-capture after transforms so constraint-adapter pivots track.
+    RefreshPhysicsDebugLines();
 
     // One sync per rendered frame: FullSync if any structural operation was
     // applied this frame, otherwise TransformSync. A frame with a failed
@@ -603,6 +617,16 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+void RuntimeSceneController::RefreshPhysicsDebugLines()
+{
+    if (!m_PhysicsWorld || !m_Runtime)
+    {
+        m_DebugLines.Clear();
+        return;
+    }
+    m_PhysicsWorld->CaptureDebugLines(m_Runtime.get(), m_DebugLines);
+}
 
 void RuntimeSceneController::InitPrevTransforms()
 {

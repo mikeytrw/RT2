@@ -146,6 +146,18 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- T8: CPU-only debug DTO + btIDebugDraw capture. The RT2App-only
+         overlay (PhysicsDebugOverlay.cpp, ImGui) is deliberately absent. -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\PhysicsDebugLines.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\PhysicsDebugCapture.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\PrefabCommandTransaction.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
