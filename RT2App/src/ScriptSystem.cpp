@@ -1518,14 +1518,37 @@ bool RuntimeCommandSink::SetLocalTransform(const UUID& uuid, const EditableTRS& 
                uuid.ToString().c_str());
         return false;
     }
-    const float rotLen = glm::length(trs.rotation);
-    if (!(rotLen > 1e-6f))
+    // Overflow-safe norm (narrow follow-up): the squared length is summed
+    // in double precision, so finite near-FLT_MAX components cannot overflow
+    // the norm to infinity. The norm itself must be finite, positive, and
+    // within float magnitude range: Bullet and the ECS store and compute
+    // rotations in float, so a rotation magnitude beyond FLT_MAX refuses
+    // rather than entering a regime where every downstream float
+    // intermediate overflows. Every normalized output component is
+    // re-validated before anything is stored.
+    const double dx = (double)trs.rotation.x;
+    const double dy = (double)trs.rotation.y;
+    const double dz = (double)trs.rotation.z;
+    const double dw = (double)trs.rotation.w;
+    const double norm = std::sqrt(dx * dx + dy * dy + dz * dz + dw * dw);
+    if (!std::isfinite(norm) || !(norm > 1e-6) || norm > (double)FLT_MAX)
     {
         printf("[Script] SetLocalTransform refused degenerate rotation for %s\n",
                uuid.ToString().c_str());
         return false;
     }
-    const glm::quat unitRotation = trs.rotation / rotLen;
+    // glm::quat stores (w, x, y, z): normalized components are reordered
+    // into that layout here (each |.| <= 1, so the float narrowing is exact).
+    const glm::quat unitRotation{
+        (float)(dw / norm), (float)(dx / norm), (float)(dy / norm),
+        (float)(dz / norm)};
+    if (!std::isfinite(unitRotation.x) || !std::isfinite(unitRotation.y) ||
+        !std::isfinite(unitRotation.z) || !std::isfinite(unitRotation.w))
+    {
+        printf("[Script] SetLocalTransform refused non-normalizable rotation for %s\n",
+               uuid.ToString().c_str());
+        return false;
+    }
     // Bullet T4 per-kind transform authority (plan section 2): Static bodies
     // are baked once at Play and Dynamic bodies are owned Bullet -> ECS, so
     // runtime pose writes to either refuse without mutation. Kinematic bodies

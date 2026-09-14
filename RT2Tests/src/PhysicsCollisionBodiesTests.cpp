@@ -58,6 +58,7 @@
 #error "T4 boundary: Walnut headers must not be reachable from physics collision units"
 #endif
 
+#include <cfloat>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -1850,6 +1851,53 @@ TEST_CASE("T4 RED_StaticSetPositionRefused: runtime position setter on Static/Dy
     CHECK(staticPos.x == doctest::Approx(0.0f));
     CHECK(staticPos.y == doctest::Approx(0.0f));
     CHECK(staticPos.z == doctest::Approx(0.0f));
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T4 RED_SinkRotationOverflowRefused: finite near-FLT_MAX rotations refuse without mutation")
+{
+    // A quaternion with finite FLT_MAX components overflows a float norm to
+    // infinity; dividing by it previously stored a zero quaternion as
+    // success. The sink must refuse and preserve ECS exactly, while a valid
+    // non-unit rotation still canonicalizes to unit length.
+    T4Fixture f;
+    const UUID kinematic = f.Create("Kinematic");
+    PhysicsBodyComponent kBody;
+    kBody.kind = PhysicsBodyKind::Kinematic;
+    kBody.mass = 0.0f;
+    kBody.layer = PhysicsLayer::Mechanism;
+    kBody.mask = PhysicsLayer::Dynamic;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(kinematic), kBody);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(kinematic), T4BoxShape());
+
+    T4NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    RuntimeCommandSink sink(ctrl);
+
+    EditableTRS hostile;
+    hostile.translation = {1.0f, 2.0f, 3.0f};
+    // Four finite FLT_MAX components: norm (~6.8e38) exceeds float range.
+    hostile.rotation = glm::quat(FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX);
+    hostile.scale = {1.0f, 1.0f, 1.0f};
+    CHECK_FALSE(sink.SetLocalTransform(kinematic, hostile));
+    EditableTRS live;
+    REQUIRE(sink.GetLocalTransform(kinematic, live));
+    CHECK(live.translation.x == doctest::Approx(0.0f));
+    CHECK(live.rotation.w == doctest::Approx(1.0f));
+    CHECK(live.rotation.x == doctest::Approx(0.0f));
+
+    // Valid non-unit control: magnitude 2 about X canonicalizes to unit.
+    EditableTRS scaled;
+    scaled.translation = {4.0f, 5.0f, 6.0f};
+    scaled.rotation = glm::quat(0.0f, 2.0f, 0.0f, 0.0f);
+    scaled.scale = {1.0f, 1.0f, 1.0f};
+    CHECK(sink.SetLocalTransform(kinematic, scaled));
+    REQUIRE(sink.GetLocalTransform(kinematic, live));
+    CHECK(live.translation.x == doctest::Approx(4.0f));
+    CHECK(live.rotation.w == doctest::Approx(0.0f));
+    CHECK(live.rotation.x == doctest::Approx(1.0f));
     ctrl.Stop(f.Authoring(), bridge);
 }
 
