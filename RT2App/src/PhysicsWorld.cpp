@@ -576,6 +576,25 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
     }
     const float scale = s.x;
 
+    // Safe-margin rule (review P2): Bullet preserves a box's outer dimensions
+    // by subtracting the margin from its implicit (margin-free) support, so
+    // a margin at or above the smallest final scaled half-extent inverts the
+    // core and invalidates GJK. Margins must be strictly below it (zero is
+    // always safe: every staged half-extent is positive).
+    if (shape->shape == PhysicsShapeKind::Box)
+    {
+        const float minHalf =
+            std::min({shape->halfExtents.x, shape->halfExtents.y,
+                      shape->halfExtents.z}) *
+            scale;
+        if (!(shape->collisionMargin < minHalf))
+        {
+            return T4Fail(err, uuid, name,
+                          "has a box margin at or above the smallest final "
+                          "scaled half-extent (margin must be strictly smaller)");
+        }
+    }
+
     // Shape staging (world units, post-scale). One shape per entity.
     std::unique_ptr<btCollisionShape> owned;
     const CollisionGeometry* collision = nullptr;
@@ -629,6 +648,16 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
             if (!ValidateProviderPayload(got.value, uuid, name,
                                          "physicsShape.hull", err))
                 return false;
+            // Equivalent hull rule: the margin must stay strictly below the
+            // smallest final scaled AABB half-extent of the decoded hull.
+            if (!(shape->collisionMargin <
+                  CollisionMinHalf(*got.value) * scale))
+            {
+                return T4Fail(err, uuid, name,
+                              "has a convex-hull margin at or above the "
+                              "smallest final scaled half-extent (margin must "
+                              "be strictly smaller)");
+            }
             collision = got.value;
             const size_t points = collision->vertices.size() / 3;
             if (points < 4)

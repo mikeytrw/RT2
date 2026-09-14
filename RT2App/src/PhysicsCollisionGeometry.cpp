@@ -647,6 +647,31 @@ Result<CollisionGeometry> DecodeGltf(const std::filesystem::path& absolutePath,
 
 } // namespace
 
+float CollisionMinHalf(const CollisionGeometry& geom)
+{
+    if (geom.vertices.size() < 3 || geom.vertices.size() % 3 != 0)
+        return 0.0f;
+    float minX = geom.vertices[0], maxX = minX;
+    float minY = geom.vertices[1], maxY = minY;
+    float minZ = geom.vertices[2], maxZ = minZ;
+    for (size_t i = 3; i < geom.vertices.size(); i += 3)
+    {
+        const float x = geom.vertices[i];
+        const float y = geom.vertices[i + 1];
+        const float z = geom.vertices[i + 2];
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+            return 0.0f;
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+        minZ = std::min(minZ, z);
+        maxZ = std::max(maxZ, z);
+    }
+    return std::min({(maxX - minX) * 0.5f, (maxY - minY) * 0.5f,
+                     (maxZ - minZ) * 0.5f});
+}
+
 uint64_t FnV1a64(const void* data, size_t bytes, uint64_t seed)
 {
     const auto* p = (const unsigned char*)data;

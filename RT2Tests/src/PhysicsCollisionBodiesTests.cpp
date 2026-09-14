@@ -1354,6 +1354,94 @@ TEST_CASE("T4 RED_HostileProviderPayloadRefused: injected payloads are validated
     }
 }
 
+TEST_CASE("T4 RED_UnsafeMarginRefused: margins at/above the scaled half-extent refuse Play atomically")
+{
+    // Forged past the authoring API (which refuses the same pairs): proves
+    // Play staging enforces the Bullet core-dimension invariant for boxes
+    // and hulls alike.
+    T4TempAssets assets;
+    assets.MakeCube("tinyhull.obj", 0.01f);
+    struct MarginVariant
+    {
+        const char* name;
+        PhysicsShapeComponent shape;
+    };
+    PhysicsShapeComponent tinyBox = T4BoxShape(0.01f);
+    tinyBox.collisionMargin = 1.0f;
+    PhysicsShapeComponent tinyHull;
+    tinyHull.shape = PhysicsShapeKind::ConvexHull;
+    tinyHull.hull = T4ModelRef("tinyhull.obj", "obj:whole-model");
+    tinyHull.collisionMargin = 0.04f; // hull min-half is 0.01
+    const MarginVariant variants[] = {
+        {"TinyBox", tinyBox},
+        {"TinyHull", tinyHull},
+    };
+    for (const auto& variant : variants)
+    {
+        T4Fixture f;
+        const UUID id = f.Create(variant.name);
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T4StaticBody());
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), variant.shape);
+
+        T4NullBridge bridge;
+        T4NoopObserver obs;
+        Error err;
+        PhysicsCollisionAssetProvider provider;
+        provider.SetContext(AssetResolutionContext{assets.dir, nullptr});
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        ctrl.SetCollisionProvider(&provider);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK(err.code == Error::InvalidArgument);
+        T4CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+}
+
+TEST_CASE("T4 GREEN_SmallMarginStages: a valid small margin keeps support, AABB, and contact")
+{
+    T4Fixture f;
+    const UUID pedestal = f.Create("Pedestal");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(pedestal), T4StaticBody());
+    PhysicsShapeComponent validSmall = T4BoxShape(0.05f);
+    validSmall.collisionMargin = 0.04f;
+    REQUIRE(f.manager.SetPhysicsShapeState(pedestal, validSmall).success);
+    const UUID ball = f.Create("Ball");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ball), T4DynamicBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ball), T4SphereShape(0.5f));
+    f.Registry().get<Transform>(f.Handle(ball)).translation = {0.0f, 3.0f, 0.0f};
+
+    T4NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    const PhysicsWorld* world = ctrl.TryGetPhysicsWorld();
+    REQUIRE(world != nullptr);
+    // Support/AABB stay valid: margin applied, outer dims preserved, and the
+    // box AABB has strictly positive extent on every axis.
+    const btCollisionShape* staged = world->FindBodyShape(pedestal);
+    REQUIRE(staged != nullptr);
+    CHECK(staged->getMargin() == doctest::Approx(0.04f));
+    btVector3 aabbMin, aabbMax;
+    const PhysicsBodyRecord* rec = world->FindBody(pedestal);
+    REQUIRE(rec != nullptr);
+    REQUIRE(rec->body != nullptr);
+    staged->getAabb(rec->body->getWorldTransform(), aabbMin, aabbMax);
+    CHECK((aabbMax.x() - aabbMin.x()) > 0.0f);
+    CHECK((aabbMax.y() - aabbMin.y()) > 0.0f);
+    CHECK((aabbMax.z() - aabbMin.z()) > 0.0f);
+    // Collision behavior: the ball rests on the pedestal top (y = 0.05).
+    for (int i = 0; i < 180; ++i)
+        ctrl.Update(kFixedDt, bridge);
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    REQUIRE(runtime != nullptr);
+    const auto e = runtime->FindByUuid(ball);
+    const bool resolved = (e != entt::null);
+    REQUIRE(resolved);
+    CHECK(runtime->ecs.registry.get<Transform>(e).translation.y ==
+          doctest::Approx(0.55f).epsilon(0.1));
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")
 {
     T4Fixture f;
@@ -1704,6 +1792,36 @@ TEST_CASE("T4 RED_PhysicsBodyValidationRejects: out-of-range authoring values fa
     PhysicsShapeComponent unknownShape = T4SphereShape();
     unknownShape.shape = (PhysicsShapeKind)99;
     expectShapeReject(unknownShape);
+    // Safe-margin rule at authoring: margin must be strictly below the
+    // smallest final half-extent (entity scale is 1 here).
+    PhysicsShapeComponent tinyBox = T4BoxShape(0.01f);
+    tinyBox.collisionMargin = 0.04f;
+    expectShapeReject(tinyBox);
+    PhysicsShapeComponent equalBox = T4BoxShape(0.04f);
+    equalBox.collisionMargin = 0.04f;
+    expectShapeReject(equalBox);
+    PhysicsShapeComponent validSmallBox = T4BoxShape(0.05f);
+    validSmallBox.collisionMargin = 0.04f;
+    CHECK(f.manager.SetPhysicsShapeState(id, validSmallBox).success);
+    REQUIRE(f.manager.SetPhysicsShapeState(id, std::nullopt).success);
+    // Hull size rule at authoring (resolvable asset): the 0.01 hull refuses
+    // a 0.04 margin before Play is ever involved.
+    T4TempAssets hullAssets;
+    hullAssets.MakeCube("tiny.obj", 0.01f);
+    f.manager.SetAssetResolutionContext(
+        AssetResolutionContext{hullAssets.dir, nullptr});
+    REQUIRE(f.manager.SetPhysicsBodyState(id, T4StaticBody()).success);
+    PhysicsShapeComponent tinyHull;
+    tinyHull.shape = PhysicsShapeKind::ConvexHull;
+    tinyHull.hull = T4ModelRef("tiny.obj", "obj:whole-model");
+    tinyHull.collisionMargin = 0.04f;
+    {
+        const auto r = f.manager.SetPhysicsShapeState(id, tinyHull);
+        CHECK_FALSE(r.success);
+        CHECK(r.error.code == Error::InvalidArgument);
+        CHECK_FALSE(f.manager.GetPhysicsShape(id).has_value());
+    }
+    REQUIRE(f.manager.SetPhysicsBodyState(id, std::nullopt).success);
     PhysicsShapeComponent textured = T4SphereShape();
     textured.shape = PhysicsShapeKind::ConvexHull;
     textured.hull.kind = AssetKind::Texture;

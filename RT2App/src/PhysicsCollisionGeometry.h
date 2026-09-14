@@ -60,6 +60,12 @@ Result<CollisionGeometry> DecodeCollisionGeometry(
     const std::string& sourceKey,
     const ImportSettings& settings);
 
+// Minimum AABB half-extent over the decoded vertices (authoring scale;
+// the caller multiplies by the entity's uniform world scale). Used by the
+// convex-hull safe-margin rule: Bullet shrinks convex support by the margin,
+// so the margin must stay strictly below this value.
+float CollisionMinHalf(const CollisionGeometry& geom);
+
 // FNV-1a 64 over raw bytes (content hashing primitive).
 uint64_t FnV1a64(const void* data, size_t bytes, uint64_t seed = 1469598103934665603ULL);
 

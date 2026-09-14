@@ -1,5 +1,6 @@
 #include "SceneManager.h"
 #include "SceneLoader.h"
+#include "PhysicsCollisionGeometry.h"
 #include "SceneGraph.h"
 #include "SceneHierarchy.h"
 #include "EditorCameraWorkflow.h"
@@ -5665,6 +5666,10 @@ bool T4ShapeValueOk(const PhysicsShapeComponent& shape, std::string& detail)
 // the Trigger layer over a Static or Kinematic host; Dynamic triggers are
 // refused loudly (massless ghosts are never simulated, so a Dynamic trigger
 // has no coherent authority). Solid shapes never claim the Trigger layer.
+// Trigger/host agreement (same rules Play enforces): ghost shapes live on
+// the Trigger layer over a Static or Kinematic host; Dynamic triggers are
+// refused loudly (massless ghosts are never simulated, so a Dynamic trigger
+// has no coherent authority). Solid shapes never claim the Trigger layer.
 bool T4TriggerHostOk(const PhysicsBodyComponent& body,
                      const PhysicsShapeComponent& shape, std::string& detail)
 {
@@ -5686,6 +5691,65 @@ bool T4TriggerHostOk(const PhysicsBodyComponent& body,
 	{
 		detail = "only trigger shapes may use the Trigger layer";
 		return false;
+	}
+	return true;
+}
+
+// Best-effort hull size lookup for the authoring safe-margin rule: resolve
+// and decode through the manager's asset context. Empty on any failure
+// (unresolvable, malformed, oversize) — Play staging refuses those loudly
+// with the entity UUID, so authoring defers rather than duplicating the
+// diagnostic.
+std::optional<float> T4AuthoringHullMinHalf(
+	const AssetReference& hull, const rt2::core::AssetResolutionContext& ctx,
+	const rt2::core::UUID& entityUuid, const std::string& entityName)
+{
+	if (hull.path.empty())
+		return std::nullopt;
+	std::vector<rt2::core::AssetDiagnostic> diagnostics;
+	const rt2::core::AssetResolutionResult resolved =
+		rt2::core::Resolve(hull, ctx, entityUuid, entityName, diagnostics);
+	if (!resolved.success)
+		return std::nullopt;
+	const rt2::core::Result<rt2::core::CollisionGeometry> decoded =
+		rt2::core::DecodeCollisionGeometry(resolved.resolvedPath,
+		                                   hull.sourceKey, hull.importSettings);
+	if (!decoded.IsOk() || decoded.value.vertices.size() < 3)
+		return std::nullopt;
+	return rt2::core::CollisionMinHalf(decoded.value);
+}
+
+// Safe-margin rule mirror (same policy Play staging enforces): box margins
+// must be strictly below the smallest final scaled half-extent, and hull
+// margins below the decoded AABB minimum whenever the hull resolves now.
+// Spheres are exempt by policy (radius is the margin); triangle meshes keep
+// range hygiene only. Scale comes from the entity's Transform when present
+// (uniform-positive expected; anything else is refused at Play regardless).
+bool T4MarginSizeOk(const PhysicsShapeComponent& shape, float entityScale,
+                    const std::optional<float>& hullMinHalf,
+                    std::string& detail)
+{
+	if (shape.shape == PhysicsShapeKind::Box)
+	{
+		const float minHalf =
+			std::min({shape.halfExtents.x, shape.halfExtents.y,
+			          shape.halfExtents.z}) *
+			entityScale;
+		if (!(shape.collisionMargin < minHalf))
+		{
+			detail = "box margin must be strictly below the smallest final "
+			         "scaled half-extent";
+			return false;
+		}
+	}
+	else if (shape.shape == PhysicsShapeKind::ConvexHull && hullMinHalf.has_value())
+	{
+		if (!(shape.collisionMargin < *hullMinHalf * entityScale))
+		{
+			detail = "convex-hull margin must be strictly below the smallest "
+			         "final scaled half-extent of the hull geometry";
+			return false;
+		}
 	}
 	return true;
 }
@@ -5761,6 +5825,34 @@ EditorMutationResult SceneManager::SetPhysicsShapeState(
 	{
 		std::string detail;
 		if (!T4ShapeValueOk(*value, detail))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetPhysicsShapeState: " + detail);
+		}
+		// Safe-margin size rule against the entity's current uniform scale
+		// (Play re-enforces it against the staged world scale regardless).
+		float entityScale = 1.0f;
+		if (const auto* tf =
+		        m_EcsScene.registry.try_get<Transform>(e))
+		{
+			if (std::isfinite(tf->scale.x) && tf->scale.x > 0.0f &&
+			    tf->scale.x == tf->scale.y && tf->scale.y == tf->scale.z)
+				entityScale = tf->scale.x;
+		}
+		std::optional<float> hullMinHalf;
+		if (value->shape == PhysicsShapeKind::ConvexHull &&
+		    !value->hull.path.empty())
+		{
+			std::string entityName;
+			if (const auto* nc =
+			        m_EcsScene.registry.try_get<NameComponent>(e))
+				entityName = nc->name;
+			hullMinHalf = T4AuthoringHullMinHalf(value->hull,
+			                                     m_AssetResolutionContext,
+			                                     entity, entityName);
+		}
+		if (!T4MarginSizeOk(*value, entityScale, hullMinHalf, detail))
 		{
 			return EditorMutationResult::Failure(
 				rt2::core::Error::InvalidArgument, entity.ToString(),
