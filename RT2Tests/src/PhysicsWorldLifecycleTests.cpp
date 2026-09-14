@@ -383,11 +383,14 @@ TEST_CASE("T3 GREEN_StopZeroHandles: repeated Play/Stop cycles leave zero handle
         // stages two dynamic sphere bodies plus two shapes (constraints land
         // in T5, so the hinge contributes no handle yet). Stop still returns
         // every census to zero.
+        // T5 supersedes the parenthetical: the valid pair's hinge now
+        // stages one constraint, so the committed census is 2 bodies + 2
+        // shapes + 1 constraint. Stop still returns every census to zero.
         CHECK(ctrl.PhysicsBodyCount() == 2);
         CHECK(ctrl.PhysicsShapeCount() == 2);
         CHECK(ctrl.PhysicsGhostCount() == 0);
-        CHECK(ctrl.PhysicsConstraintCount() == 0);
-        CHECK(ctrl.PhysicsTotalHandles() == 4);
+        CHECK(ctrl.PhysicsConstraintCount() == 1);
+        CHECK(ctrl.PhysicsTotalHandles() == 5);
         for (int s = 0; s < 3; ++s)
             ctrl.Update(kFixedDt, bridge);
         // StepCount is per committed world (one Play session): three ticks.
