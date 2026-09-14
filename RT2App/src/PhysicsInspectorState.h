@@ -82,6 +82,14 @@ struct PhysicsInspectorWork
         shapeConflict = false;
     }
 
+    // Atomic pair apply: both sides advance to current live state together,
+    // so solid <-> trigger conversions never strand a half-applied pair.
+    void AppliedPair(const std::optional<PhysicsBodyComponent>& liveBody,
+                     const std::optional<PhysicsShapeComponent>& liveShape)
+    {
+        Reseed(liveBody, liveShape);
+    }
+
     // Single-side revert (the other side's working state is preserved).
     void RevertBody(const std::optional<PhysicsBodyComponent>& liveBody)
     {

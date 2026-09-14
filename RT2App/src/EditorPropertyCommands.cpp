@@ -636,6 +636,59 @@ std::unique_ptr<IEditorCommand> MakeSetPhysicsShapeCommandIfEffective(
 		std::move(beforeValue), std::move(afterValue));
 }
 
+SetPhysicsBodyShapeCommand::SetPhysicsBodyShapeCommand(
+	rt2::core::UUID target,
+	std::optional<PhysicsBodyComponent> beforeBody,
+	std::optional<PhysicsBodyComponent> afterBody,
+	std::optional<PhysicsShapeComponent> beforeShape,
+	std::optional<PhysicsShapeComponent> afterShape)
+	: m_Target(target)
+	, m_BeforeBody(std::move(beforeBody))
+	, m_AfterBody(std::move(afterBody))
+	, m_BeforeShape(std::move(beforeShape))
+	, m_AfterShape(std::move(afterShape))
+{
+}
+
+EditorMutationResult SetPhysicsBodyShapeCommand::Execute(SceneManager& scene)
+{
+	return scene.SetPhysicsBodyAndShapeState(m_Target, m_AfterBody,
+	                                         m_AfterShape);
+}
+
+EditorMutationResult SetPhysicsBodyShapeCommand::Undo(SceneManager& scene)
+{
+	return scene.SetPhysicsBodyAndShapeState(m_Target, m_BeforeBody,
+	                                         m_BeforeShape);
+}
+
+std::string SetPhysicsBodyShapeCommand::Description() const
+{
+	const bool beforeEmpty =
+		!m_BeforeBody.has_value() && !m_BeforeShape.has_value();
+	const bool afterEmpty =
+		!m_AfterBody.has_value() && !m_AfterShape.has_value();
+	if (beforeEmpty && !afterEmpty)
+		return "Add Physics Pair";
+	if (!beforeEmpty && afterEmpty)
+		return "Remove Physics Pair";
+	return "Edit Physics Pair";
+}
+
+std::unique_ptr<IEditorCommand> MakeSetPhysicsBodyShapeCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsBodyComponent> beforeBody,
+	std::optional<PhysicsBodyComponent> afterBody,
+	std::optional<PhysicsShapeComponent> beforeShape,
+	std::optional<PhysicsShapeComponent> afterShape)
+{
+	if (beforeBody == afterBody && beforeShape == afterShape)
+		return nullptr;
+	return std::make_unique<SetPhysicsBodyShapeCommand>(target,
+		std::move(beforeBody), std::move(afterBody),
+		std::move(beforeShape), std::move(afterShape));
+}
+
 std::unique_ptr<IEditorCommand> MakeSetCameraPresentationCommandIfEffective(
 	rt2::core::UUID target,
 	const CameraComponent& live,

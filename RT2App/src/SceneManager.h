@@ -909,6 +909,16 @@ struct PrefabMaterialDuplicateStage
 	                                         const std::optional<PhysicsBodyComponent>& value);
 	EditorMutationResult SetPhysicsShapeState(const rt2::core::UUID& entity,
 	                                          const std::optional<PhysicsShapeComponent>& value);
+	// Bullet T4 fixup: atomic body+shape mutation for mutually dependent
+	// transitions (solid <-> trigger). Each side independently sets or
+	// removes (nullopt removes that side); trigger/layer and margin rules
+	// are checked against the POST state, so a valid pair never passes
+	// through an invalid persisted intermediate. One revision bump,
+	// SyncImpact None, prefab-member refusal before any mutation.
+	EditorMutationResult SetPhysicsBodyAndShapeState(
+		const rt2::core::UUID& entity,
+		const std::optional<PhysicsBodyComponent>& body,
+		const std::optional<PhysicsShapeComponent>& shape);
 	// Read-back for inspector before-state capture and tests. nullopt when
 	// the entity is missing or carries no such component.
 	std::optional<PhysicsBodyComponent> GetPhysicsBody(

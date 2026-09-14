@@ -5695,6 +5695,18 @@ bool T4TriggerHostOk(const PhysicsBodyComponent& body,
 	return true;
 }
 
+// Entity uniform scale for the authoring safe-margin rule (1.0 when no
+// Transform is present or the scale is not uniform-positive; such scales
+// are refused at Play regardless).
+float T4EntityScale(const entt::registry& registry, entt::entity e)
+{
+	const auto* tf = registry.try_get<Transform>(e);
+	if (tf == nullptr || !std::isfinite(tf->scale.x) || tf->scale.x <= 0.0f ||
+	    tf->scale.x != tf->scale.y || tf->scale.y != tf->scale.z)
+		return 1.0f;
+	return tf->scale.x;
+}
+
 // Best-effort hull size lookup for the authoring safe-margin rule: resolve
 // and decode through the manager's asset context. Empty on any failure
 // (unresolvable, malformed, oversize) — Play staging refuses those loudly
@@ -5832,14 +5844,7 @@ EditorMutationResult SceneManager::SetPhysicsShapeState(
 		}
 		// Safe-margin size rule against the entity's current uniform scale
 		// (Play re-enforces it against the staged world scale regardless).
-		float entityScale = 1.0f;
-		if (const auto* tf =
-		        m_EcsScene.registry.try_get<Transform>(e))
-		{
-			if (std::isfinite(tf->scale.x) && tf->scale.x > 0.0f &&
-			    tf->scale.x == tf->scale.y && tf->scale.y == tf->scale.z)
-				entityScale = tf->scale.x;
-		}
+		const float entityScale = T4EntityScale(m_EcsScene.registry, e);
 		std::optional<float> hullMinHalf;
 		if (value->shape == PhysicsShapeKind::ConvexHull &&
 		    !value->hull.path.empty())
@@ -5875,6 +5880,87 @@ EditorMutationResult SceneManager::SetPhysicsShapeState(
 		if (m_EcsScene.registry.all_of<PhysicsShapeComponent>(e))
 			m_EcsScene.registry.remove<PhysicsShapeComponent>(e);
 	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetPhysicsBodyAndShapeState(
+	const rt2::core::UUID& entity,
+	const std::optional<PhysicsBodyComponent>& body,
+	const std::optional<PhysicsShapeComponent>& shape)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetPhysicsBodyAndShapeState: entity not present");
+	if (m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
+	{
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			entity.ToString(),
+			"SetPhysicsBodyAndShapeState: entity is a linked prefab member "
+			"(physicsBody/physicsShape are non-overridable; edit the prefab source)");
+	}
+	// Validate each present side, then the POST pair: the trigger/layer and
+	// margin rules see the after-states together, so solid <-> trigger
+	// conversions never persist an invalid intermediate.
+	std::string detail;
+	if (body.has_value() && !T4BodyValueOk(*body, detail))
+	{
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, entity.ToString(),
+			"SetPhysicsBodyAndShapeState: " + detail);
+	}
+	if (shape.has_value() && !T4ShapeValueOk(*shape, detail))
+	{
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, entity.ToString(),
+			"SetPhysicsBodyAndShapeState: " + detail);
+	}
+	if (body.has_value() && shape.has_value())
+	{
+		if (!T4TriggerHostOk(*body, *shape, detail))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetPhysicsBodyAndShapeState: " + detail);
+		}
+	}
+	// Margin size rule runs whenever a shape is present (like the single
+	// shape API), against the entity's current uniform scale.
+	if (shape.has_value())
+	{
+		const float entityScale = T4EntityScale(m_EcsScene.registry, e);
+		std::optional<float> hullMinHalf;
+		if (shape->shape == PhysicsShapeKind::ConvexHull &&
+		    !shape->hull.path.empty())
+		{
+			std::string entityName;
+			if (const auto* nc =
+			        m_EcsScene.registry.try_get<NameComponent>(e))
+				entityName = nc->name;
+			hullMinHalf = T4AuthoringHullMinHalf(shape->hull,
+			                                     m_AssetResolutionContext,
+			                                     entity, entityName);
+		}
+		if (!T4MarginSizeOk(*shape, entityScale, hullMinHalf, detail))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetPhysicsBodyAndShapeState: " + detail);
+		}
+	}
+	if (body.has_value())
+		m_EcsScene.registry.emplace_or_replace<PhysicsBodyComponent>(e, *body);
+	else if (m_EcsScene.registry.all_of<PhysicsBodyComponent>(e))
+		m_EcsScene.registry.remove<PhysicsBodyComponent>(e);
+	if (shape.has_value())
+		m_EcsScene.registry.emplace_or_replace<PhysicsShapeComponent>(e, *shape);
+	else if (m_EcsScene.registry.all_of<PhysicsShapeComponent>(e))
+		m_EcsScene.registry.remove<PhysicsShapeComponent>(e);
 	NotifyAuthoringChanged();
 	EditorMutationResult result;
 	result.success = true;

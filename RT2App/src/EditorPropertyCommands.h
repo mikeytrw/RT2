@@ -352,6 +352,33 @@ private:
 	std::optional<PhysicsShapeComponent>      m_AfterValue;
 };
 
+// Bullet T4 fixup: atomic body+shape pair command for mutually dependent
+// transitions (solid <-> trigger). Before/after snapshots cover both sides;
+// Execute/Undo call the atomic manager API, so a valid pair never passes
+// through an invalid persisted intermediate and history holds one entry.
+class SetPhysicsBodyShapeCommand final : public IEditorCommand
+{
+public:
+	SetPhysicsBodyShapeCommand(rt2::core::UUID target,
+	                           std::optional<PhysicsBodyComponent> beforeBody,
+	                           std::optional<PhysicsBodyComponent> afterBody,
+	                           std::optional<PhysicsShapeComponent> beforeShape,
+	                           std::optional<PhysicsShapeComponent> afterShape);
+
+	const rt2::core::UUID& Target() const { return m_Target; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override;
+
+private:
+	rt2::core::UUID                           m_Target;
+	std::optional<PhysicsBodyComponent>       m_BeforeBody;
+	std::optional<PhysicsBodyComponent>       m_AfterBody;
+	std::optional<PhysicsShapeComponent>      m_BeforeShape;
+	std::optional<PhysicsShapeComponent>      m_AfterShape;
+};
+
 // SetScriptCommand covers add, remove, script-path replacement, and any typed
 // field-map change via std::optional<ScriptComponent> before/after. Add =
 // {nullopt, some}; Remove = {some, nullopt}; edit = {some, some}. The command
@@ -527,6 +554,17 @@ std::unique_ptr<IEditorCommand> MakeSetPhysicsShapeCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<PhysicsShapeComponent> beforeValue,
 	std::optional<PhysicsShapeComponent> afterValue);
+
+// Bullet T4 fixup: returns null when both sides are canonically unchanged
+// (body before == after AND shape before == after, where absent == absent).
+// An invalid after-pair is NOT suppressed: the command is returned so history
+// surfaces the manager's actionable failure without recording.
+std::unique_ptr<IEditorCommand> MakeSetPhysicsBodyShapeCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsBodyComponent> beforeBody,
+	std::optional<PhysicsBodyComponent> afterBody,
+	std::optional<PhysicsShapeComponent> beforeShape,
+	std::optional<PhysicsShapeComponent> afterShape);
 
 // Discrete inspector-gesture policy for camera presentation widgets (tone-map
 // Combo selection, exposure reset button). Maps a widget value change to a

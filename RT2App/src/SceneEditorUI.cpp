@@ -2121,6 +2121,37 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		}
 	}
 
+	// Atomic pair path: commits both working copies in one command, so
+	// solid <-> trigger conversions never persist an invalid intermediate.
+	// Enabled exactly when at least one side is dirty and neither side is
+	// in dirty/live conflict.
+	if ((m_PhysicsWork.bodyDirty || m_PhysicsWork.shapeDirty) &&
+	    !m_PhysicsWork.bodyConflict && !m_PhysicsWork.shapeConflict)
+	{
+		if (ImGui::Button("Apply Body + Shape"))
+		{
+			auto cmd = MakeSetPhysicsBodyShapeCommandIfEffective(
+				targetUuid, liveBody, m_PhysicsWork.body, liveShape,
+				m_PhysicsWork.shape);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+				if (result.success)
+				{
+					std::optional<PhysicsBodyComponent> freshBody;
+					if (const auto* b = reg.try_get<PhysicsBodyComponent>(entity.id))
+						freshBody = *b;
+					std::optional<PhysicsShapeComponent> freshShape;
+					if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
+						freshShape = *s;
+					m_PhysicsWork.AppliedPair(freshBody, freshShape);
+				}
+			}
+		}
+	}
+
 	ImGui::EndDisabled();
 }
 

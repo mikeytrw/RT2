@@ -1442,6 +1442,105 @@ TEST_CASE("T4 GREEN_SmallMarginStages: a valid small margin keeps support, AABB,
     ctrl.Stop(f.Authoring(), bridge);
 }
 
+TEST_CASE("T4 GREEN_PhysicsPairAuthoring: atomic trigger-pair create, convert, undo, redo")
+{
+    // The production pair path: mutually dependent body-layer and shape
+    // transitions commit atomically through history, so a valid trigger pair
+    // is creatable and convertible without ever persisting an invalid half.
+    T4Fixture f;
+    const UUID id = f.Create("Pair");
+    EditorCommandHistory history;
+
+    PhysicsBodyComponent solidBody = T4StaticBody();
+    PhysicsShapeComponent solidShape = T4SphereShape();
+    PhysicsBodyComponent triggerBody = T4StaticBody();
+    triggerBody.layer = PhysicsLayer::Trigger;
+    triggerBody.mask = PhysicsLayer::Dynamic;
+    PhysicsShapeComponent triggerShape = T4SphereShape();
+    triggerShape.isTrigger = true;
+
+    // No-op suppression across both sides.
+    CHECK(MakeSetPhysicsBodyShapeCommandIfEffective(
+              id, solidBody, solidBody, solidShape, solidShape) == nullptr);
+
+    // Neither single command can build the trigger pair from the solid one:
+    // each half alone conflicts with the live other half (the deadlock the
+    // atomic command exists to resolve).
+    REQUIRE(f.manager.SetPhysicsBodyState(id, solidBody).success);
+    REQUIRE(f.manager.SetPhysicsShapeState(id, solidShape).success);
+    CHECK_FALSE(f.manager.SetPhysicsBodyState(id, triggerBody).success);
+    CHECK_FALSE(f.manager.SetPhysicsShapeState(id, triggerShape).success);
+    CHECK(f.manager.GetPhysicsBody(id) == solidBody);
+    CHECK(f.manager.GetPhysicsShape(id) == solidShape);
+
+    // Atomic solid -> trigger through history: one entry, exact values.
+    auto toTrigger = MakeSetPhysicsBodyShapeCommandIfEffective(
+        id, solidBody, triggerBody, solidShape, triggerShape);
+    REQUIRE(toTrigger != nullptr);
+    REQUIRE(history.Execute(std::move(toTrigger), f.manager).success);
+    CHECK(f.manager.GetPhysicsBody(id) == triggerBody);
+    CHECK(f.manager.GetPhysicsShape(id) == triggerShape);
+    REQUIRE(history.CanUndo());
+    // Undo restores the exact solid pair; redo restores the trigger pair.
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(f.manager.GetPhysicsBody(id) == solidBody);
+    CHECK(f.manager.GetPhysicsShape(id) == solidShape);
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(f.manager.GetPhysicsBody(id) == triggerBody);
+    CHECK(f.manager.GetPhysicsShape(id) == triggerShape);
+
+    // Atomic trigger -> solid converts back through the same seam.
+    auto toSolid = MakeSetPhysicsBodyShapeCommandIfEffective(
+        id, triggerBody, solidBody, triggerShape, solidShape);
+    REQUIRE(toSolid != nullptr);
+    REQUIRE(history.Execute(std::move(toSolid), f.manager).success);
+    CHECK(f.manager.GetPhysicsBody(id) == solidBody);
+
+    // An invalid after-pair surfaces the failure without recording.
+    const size_t depth = history.UndoDepthForTest();
+    PhysicsBodyComponent dynamicBody = T4DynamicBody();
+    auto badPair = MakeSetPhysicsBodyShapeCommandIfEffective(
+        id, solidBody, dynamicBody, solidShape, triggerShape);
+    REQUIRE(badPair != nullptr);
+    CHECK_FALSE(history.Execute(std::move(badPair), f.manager).success);
+    CHECK(history.UndoDepthForTest() == depth);
+    CHECK(f.manager.GetPhysicsBody(id) == solidBody);
+    CHECK(f.manager.GetPhysicsShape(id) == solidShape);
+
+    // The converted trigger pair Plays as one ghost plus one shape.
+    auto reTrigger = MakeSetPhysicsBodyShapeCommandIfEffective(
+        id, solidBody, triggerBody, solidShape, triggerShape);
+    REQUIRE(history.Execute(std::move(reTrigger), f.manager).success);
+    T4NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    CHECK(ctrl.PhysicsBodyCount() == 0);
+    CHECK(ctrl.PhysicsGhostCount() == 1);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T4 RED_PhysicsPairPrefabMemberRejected: linked members refuse the atomic pair")
+{
+    T4Fixture f;
+    const UUID member = f.Create("Member");
+    PrefabMemberComponent link;
+    link.instanceId = f.ids.CreateV4();
+    link.templateId = f.ids.CreateV4();
+    f.Registry().emplace<PrefabMemberComponent>(f.Handle(member), link);
+    const uint64_t rev0 = f.manager.AuthoringRevision();
+
+    EditorCommandHistory history;
+    auto cmd = MakeSetPhysicsBodyShapeCommandIfEffective(
+        member, std::nullopt, T4StaticBody(), std::nullopt, T4SphereShape());
+    REQUIRE(cmd != nullptr);
+    CHECK_FALSE(history.Execute(std::move(cmd), f.manager).success);
+    CHECK_FALSE(history.CanUndo());
+    CHECK_FALSE(f.manager.GetPhysicsBody(member).has_value());
+    CHECK_FALSE(f.manager.GetPhysicsShape(member).has_value());
+    CHECK(f.manager.AuthoringRevision() == rev0);
+}
+
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")
 {
     T4Fixture f;
