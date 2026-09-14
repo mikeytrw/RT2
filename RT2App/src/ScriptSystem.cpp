@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <fstream>
@@ -1067,13 +1069,25 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             if (!s) return false;
             if (!pos.valid() || !pos.is<sol::table>()) return false;
             // Q10e: validate the vec3 table has exactly 3 numeric elements.
-            // Don't silently zero-fill malformed input.
+            // Don't silently zero-fill malformed input. Finite/range gate
+            // (T4 fixup): narrowing an out-of-float-range double is
+            // implementation-defined, so reject non-finite and oversized
+            // magnitudes BEFORE the cast — math.huge, NaN, and 1e300 never
+            // reach the sink or Bullet.
             sol::object x = pos[1], y = pos[2], z = pos[3];
             if (!x.is<double>() || !y.is<double>() || !z.is<double>())
                 return false;
-            glm::vec3 p{ static_cast<float>(x.as<double>()),
-                         static_cast<float>(y.as<double>()),
-                         static_cast<float>(z.as<double>()) };
+            const double dx = x.as<double>();
+            const double dy = y.as<double>();
+            const double dz = z.as<double>();
+            if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz))
+                return false;
+            if (std::fabs(dx) > (double)FLT_MAX ||
+                std::fabs(dy) > (double)FLT_MAX ||
+                std::fabs(dz) > (double)FLT_MAX)
+                return false;
+            glm::vec3 p{ static_cast<float>(dx), static_cast<float>(dy),
+                         static_cast<float>(dz) };
             return s->SetPosition(instUuid, p);
         };
         entity["get_visible"] = [self, instUuid](sol::object) -> bool {
@@ -1489,6 +1503,29 @@ bool RuntimeCommandSink::SetLocalTransform(const UUID& uuid, const EditableTRS& 
     if (e == entt::null || !reg.valid(e)) return false;
     auto* tf = reg.try_get<Transform>(e);
     if (!tf) return false;
+    // Finite/range gate (T4 fixup): every written component must be finite
+    // before any mutation, and the rotation must be a valid (normalizable)
+    // quaternion. Non-finite Kinematic input would otherwise be copied into
+    // Bullet at the next pre-step and poison the world. Normalization is the
+    // documented canonical form, not silent data loss.
+    if (!std::isfinite(trs.translation.x) || !std::isfinite(trs.translation.y) ||
+        !std::isfinite(trs.translation.z) || !std::isfinite(trs.scale.x) ||
+        !std::isfinite(trs.scale.y) || !std::isfinite(trs.scale.z) ||
+        !std::isfinite(trs.rotation.x) || !std::isfinite(trs.rotation.y) ||
+        !std::isfinite(trs.rotation.z) || !std::isfinite(trs.rotation.w))
+    {
+        printf("[Script] SetLocalTransform refused non-finite transform for %s\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    const float rotLen = glm::length(trs.rotation);
+    if (!(rotLen > 1e-6f))
+    {
+        printf("[Script] SetLocalTransform refused degenerate rotation for %s\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    const glm::quat unitRotation = trs.rotation / rotLen;
     // Bullet T4 per-kind transform authority (plan section 2): Static bodies
     // are baked once at Play and Dynamic bodies are owned Bullet -> ECS, so
     // runtime pose writes to either refuse without mutation. Kinematic bodies
@@ -1514,7 +1551,7 @@ bool RuntimeCommandSink::SetLocalTransform(const UUID& uuid, const EditableTRS& 
         }
     }
     tf->translation = trs.translation;
-    tf->rotation = trs.rotation;
+    tf->rotation = unitRotation;
     tf->scale = trs.scale;
     SceneGraph::SetLocalDirty(reg, e);
     return true;

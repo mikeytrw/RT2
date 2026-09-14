@@ -1735,6 +1735,29 @@ TEST_CASE("T4 RED_StaticSetPositionRefused: runtime position setter on Static/Dy
     DeterministicUuidProvider ids;
     CHECK_FALSE(sink.SetPosition(ids.CreateV4(), {0.0f, 0.0f, 0.0f}));
 
+    // Non-finite and degenerate full-TRS writes refuse before mutation, on
+    // physics and non-physics entities alike, leaving ECS untouched.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    EditableTRS finite = moved;
+    finite.translation = {1.0f, 2.0f, 3.0f};
+    for (float hostile : {nan, inf})
+    {
+        EditableTRS bad = finite;
+        bad.translation.x = hostile;
+        CHECK_FALSE(sink.SetLocalTransform(kinematic, bad));
+        CHECK_FALSE(sink.SetLocalTransform(plain, bad));
+        EditableTRS badRot = finite;
+        badRot.rotation = glm::quat(0.0f, 0.0f, 0.0f, 0.0f);
+        CHECK_FALSE(sink.SetLocalTransform(kinematic, badRot));
+    }
+    REQUIRE(sink.GetLocalTransform(kinematic, live));
+    CHECK(live.translation.x == doctest::Approx(1.0f));
+    CHECK(live.scale.x == doctest::Approx(1.0f));
+    glm::vec3 plainPos{0.0f, 0.0f, 0.0f};
+    REQUIRE(sink.GetPosition(plain, plainPos));
+    CHECK(plainPos.x == doctest::Approx(4.0f));
+
     // Velocity remains a legal Dynamic control; Static refuses it.
     PhysicsWorld* world = ctrl.TryGetPhysicsWorldMut();
     REQUIRE(world != nullptr);
@@ -1838,6 +1861,87 @@ end
     CHECK(readX(ids[0]) == doctest::Approx(-3.0f));
     CHECK(readX(ids[1]) == doctest::Approx(0.0f));
     CHECK(readX(ids[2]) == doctest::Approx(7.0f));
+    ctrl.Stop(doc, bridge);
+    std::filesystem::remove_all(scriptDir, ec);
+}
+
+TEST_CASE("T4 RED_LuaHostilePositionRefused: math.huge, NaN, and overflow never reach Bullet")
+{
+    // math.huge, 0/0, and 1e300 (double overflow past FLT_MAX) must return
+    // false at the binding without mutating ECS; a later valid write still
+    // works, proving the world was never poisoned.
+    const auto scriptDir =
+        std::filesystem::temp_directory_path() / "t4_lua_hostile";
+    std::error_code ec;
+    std::filesystem::remove_all(scriptDir, ec);
+    std::filesystem::create_directories(scriptDir, ec);
+    T4WriteText(scriptDir / "hostile.lua", R"LUA(
+attempt = attempt or 0
+function on_update(entity, dt, input, world)
+    attempt = attempt + 1
+    if attempt == 1 then entity:set_position({math.huge, 0, 0}) end
+    if attempt == 2 then entity:set_position({0/0, 0, 0}) end
+    if attempt == 3 then entity:set_position({1e300, 0, 0}) end
+    if attempt == 4 then entity:set_position({7, 0, 0}) end
+end
+)LUA");
+
+    DeterministicUuidProvider uuidProv;
+    SceneDocument doc;
+    doc.SetUuidProvider(&uuidProv);
+    doc.metadata.sourcePath = scriptDir / "fixture.rt2scene";
+    entt::entity e = doc.ecs.registry.create();
+    doc.ecs.registry.emplace<NameComponent>(e, "K");
+    doc.ecs.registry.emplace<Transform>(e);
+    doc.ecs.registry.emplace<VisibleComponent>(e);
+    PhysicsBodyComponent body;
+    body.kind = PhysicsBodyKind::Kinematic;
+    body.mass = 0.0f;
+    body.layer = PhysicsLayer::Mechanism;
+    body.mask = PhysicsLayer::Dynamic;
+    doc.ecs.registry.emplace<PhysicsBodyComponent>(e, body);
+    doc.ecs.registry.emplace<PhysicsShapeComponent>(e, T4BoxShape());
+    ScriptComponent sc;
+    sc.asset.kind = AssetKind::Script;
+    sc.asset.path = "hostile.lua";
+    sc.asset.sourceKey = "lua:asset=hostile.lua";
+    doc.ecs.registry.emplace<ScriptComponent>(e, sc);
+    doc.AssignNewUuid(e);
+    const UUID id = doc.ecs.registry.get<EntityIdComponent>(e).id;
+
+    T4NullBridge bridge;
+    AssetResolutionContext assetContext;
+    std::vector<AssetDiagnostic> assetDiagnostics;
+    ScriptSystem scriptSys(uuidProv, assetContext, assetDiagnostics);
+    RuntimeSceneController ctrl;
+    RuntimeCommandSink sink(ctrl);
+    ctrl.SetRuntimeUuidProvider(&uuidProv);
+    ctrl.SetLifecycleObserver(&scriptSys);
+    ctrl.SetScriptDispatch(&scriptSys);
+    ctrl.SetInputService(nullptr);
+    ctrl.SetRuntimeCommandSink(&sink);
+    assetContext.assetRoot = doc.metadata.sourcePath.parent_path();
+    assetContext.database = nullptr;
+    Error err;
+    REQUIRE(ctrl.Play(doc, bridge, err));
+
+    auto readX = [&]() {
+        const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+        REQUIRE(runtime != nullptr);
+        const auto found = runtime->FindByUuid(id);
+        const bool resolved = (found != entt::null);
+        REQUIRE(resolved);
+        return runtime->ecs.registry.get<Transform>(found).translation.x;
+    };
+    ctrl.Update(kFixedDt, bridge);
+    CHECK(readX() == doctest::Approx(0.0f));
+    ctrl.Update(kFixedDt, bridge);
+    CHECK(readX() == doctest::Approx(0.0f));
+    ctrl.Update(kFixedDt, bridge);
+    CHECK(readX() == doctest::Approx(0.0f));
+    // The channel survives: a valid write applies and pushes next tick.
+    ctrl.Update(kFixedDt, bridge);
+    CHECK(readX() == doctest::Approx(7.0f));
     ctrl.Stop(doc, bridge);
     std::filesystem::remove_all(scriptDir, ec);
 }
