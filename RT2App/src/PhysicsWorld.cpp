@@ -23,12 +23,15 @@
 #include <utility>
 #include <vector>
 
+#include <new>
+
 #include <glm/gtc/quaternion.hpp>
 
 namespace rt2::core {
 
 bool PhysicsWorld::s_TestInjectCreateFailure = false;
 bool PhysicsWorld::s_TestPoseProbe = false;
+bool PhysicsWorld::s_StagingTestThrow = false;
 size_t PhysicsWorld::s_LiveWorlds = 0;
 std::vector<PhysicsWorld::ConstructionPose> PhysicsWorld::s_RecordedPoses;
 std::function<void()> PhysicsWorld::s_TestDestroyProbe;
@@ -125,9 +128,24 @@ Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
     // kinematics, then dynamics, then ghosts; UUID order within each group).
     // Any failure returns a typed UUID-named Error and the half-staged
     // candidate dies with the local through the full Shutdown() teardown.
+    // Allocation boundary (review P2): make_unique/vector growth below
+    // surfaces as a typed resource error with the same rollback, never an
+    // escaped exception. Error::Io is the resource-exhaustion code.
     {
         Error buildErr;
-        if (!StageBodies(*world, runtime, provider, buildErr))
+        bool staged = false;
+        try
+        {
+            staged = StageBodies(*world, runtime, provider, buildErr);
+        }
+        catch (const std::bad_alloc&)
+        {
+            return Result<std::unique_ptr<PhysicsWorld>>::Fail(
+                Error::Io, "",
+                "PhysicsWorld::Create allocation failure during body staging "
+                "(candidate rolled back; no world committed)");
+        }
+        if (!staged)
         {
             return Result<std::unique_ptr<PhysicsWorld>>::Fail(
                 buildErr.code, buildErr.path, buildErr.detail);
@@ -303,6 +321,16 @@ void PhysicsWorld::Step(float dt)
 void PhysicsWorld::SetTestInjectCreateFailure(bool fail)
 {
     s_TestInjectCreateFailure = fail;
+}
+
+void PhysicsWorld::SetStagingTestThrow(bool fail)
+{
+    s_StagingTestThrow = fail;
+}
+
+bool PhysicsWorld::StagingTestThrow()
+{
+    return s_StagingTestThrow;
 }
 
 bool PhysicsWorld::TestInjectCreateFailure()
@@ -855,6 +883,9 @@ bool PhysicsWorld::StageBodies(PhysicsWorld& world,
 
     // Build order: statics, then kinematics, then dynamics, then ghosts
     // (triggers); UUID order within each group. Constraints (T5) build last.
+    // Deterministic injection hook for the allocation boundary (tests only).
+    if (s_StagingTestThrow)
+        throw std::bad_alloc();
     for (int pass = 0; pass < 4; ++pass)
     {
         for (const auto& [uuid, entity] : ordered)

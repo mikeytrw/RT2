@@ -89,6 +89,16 @@ $requiredCases = @(
     "T4 GREEN_StaticTriMeshRamp: sphere deflects along a static triangle ramp",
     "T4 GREEN_NonUnitScaleMarginCcdInertia: uniform scale composes once with Bullet-level proofs",
     "T4 GREEN_ProviderOutlivesSession: destroying the provider mid-Play leaves the session intact"
+    # T4 fresh-review follow-up: derived velocity, pair atomicity, finite
+    # inputs, payload trust, safe margins, allocation boundaries.
+    "T4 GREEN_KinematicPlatformDrags: commanded platform motion derives velocity and drags contact",
+    "T4 GREEN_PhysicsPairAuthoring: atomic trigger-pair create, convert, undo, redo",
+    "T4 RED_PhysicsPairPrefabMemberRejected: linked members refuse the atomic pair",
+    "T4 RED_LuaHostilePositionRefused: math.huge, NaN, and overflow never reach Bullet",
+    "T4 RED_HostileProviderPayloadRefused: injected payloads are validated before Bullet reads",
+    "T4 RED_UnsafeMarginRefused: margins at/above the scaled half-extent refuse Play atomically",
+    "T4 GREEN_SmallMarginStages: a valid small margin keeps support, AABB, and contact",
+    "T4 RED_AllocationFailureTyped: exhaustion surfaces typed errors, never exceptions"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }

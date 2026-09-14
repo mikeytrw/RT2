@@ -60,6 +60,13 @@ Result<CollisionGeometry> DecodeCollisionGeometry(
     const std::string& sourceKey,
     const ImportSettings& settings);
 
+// Deterministic allocation-failure injection (tests only, never set outside
+// tests). When armed, DecodeCollisionGeometry throws std::bad_alloc at entry
+// so the translation boundary below can prove a typed Error surfaces instead
+// of an escaped exception. Default off; tests must disarm after use.
+void SetCollisionDecodeTestThrow(bool fail);
+bool CollisionDecodeTestThrow();
+
 // Minimum AABB half-extent over the decoded vertices (authoring scale;
 // the caller multiplies by the entity's uniform world scale). Used by the
 // convex-hull safe-margin rule: Bullet shrinks convex support by the margin,

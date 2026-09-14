@@ -24,7 +24,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fstream>
+#include <new>
 
 namespace rt2::core {
 namespace {
@@ -86,6 +88,32 @@ Result<CollisionGeometry> DecodeObj(const std::filesystem::path& absolutePath,
     const tinyobj::attrib_t& attrib = reader.GetAttrib();
     const std::vector<tinyobj::shape_t>& shapes = reader.GetShapes();
 
+    // Caps before copies: the parser-owned arrays are measured first so an
+    // over-cap hostile file is refused without duplicating its storage.
+    if (attrib.vertices.size() / 3 > kMaxCollisionVertices)
+    {
+        return FailWith(Error::InvalidArgument, absolutePath.string(),
+                        "DecodeCollisionGeometry: OBJ '" + absolutePath.string() +
+                            "' has " +
+                            std::to_string(attrib.vertices.size() / 3) +
+                            " vertices (cap " +
+                            std::to_string(kMaxCollisionVertices) + ")");
+    }
+    uint64_t indexTotal = 0;
+    for (const auto& shape : shapes)
+    {
+        indexTotal += (uint64_t)shape.mesh.indices.size();
+        if (indexTotal > (uint64_t)kMaxCollisionIndices)
+        {
+            return FailWith(Error::InvalidArgument, absolutePath.string(),
+                            "DecodeCollisionGeometry: OBJ '" +
+                                absolutePath.string() +
+                                "' has more than " +
+                                std::to_string(kMaxCollisionIndices) +
+                                " indices (cap refused before staging)");
+        }
+    }
+
     CollisionGeometry out;
     out.vertices = attrib.vertices; // xyz triplets, authoring scale.
     if (out.vertices.size() % 3 != 0)
@@ -100,14 +128,8 @@ Result<CollisionGeometry> DecodeObj(const std::filesystem::path& absolutePath,
                         "DecodeCollisionGeometry: OBJ '" + absolutePath.string() +
                             "' contains no vertices");
     }
-    if (vertexCount > kMaxCollisionVertices)
-    {
-        return FailWith(Error::InvalidArgument, absolutePath.string(),
-                        "DecodeCollisionGeometry: OBJ '" + absolutePath.string() +
-                            "' has " + std::to_string(vertexCount) +
-                            " vertices (cap " +
-                            std::to_string(kMaxCollisionVertices) + ")");
-    }
+    // (The vertex cap was enforced on the parser-owned array above, before
+    // the copy landed here.)
     for (float v : out.vertices)
     {
         if (!IsFiniteFloat(v))
@@ -119,24 +141,14 @@ Result<CollisionGeometry> DecodeObj(const std::filesystem::path& absolutePath,
         }
     }
 
-    size_t indexCount = 0;
-    for (const auto& shape : shapes)
-        indexCount += shape.mesh.indices.size();
-    if (indexCount == 0)
+    // indexTotal was capped above before any staging allocation.
+    if (indexTotal == 0)
     {
         return FailWith(Error::Parse, absolutePath.string(),
                         "DecodeCollisionGeometry: OBJ '" + absolutePath.string() +
                             "' contains no triangle indices");
     }
-    if (indexCount > kMaxCollisionIndices)
-    {
-        return FailWith(Error::InvalidArgument, absolutePath.string(),
-                        "DecodeCollisionGeometry: OBJ '" + absolutePath.string() +
-                            "' has " + std::to_string(indexCount) +
-                            " indices (cap " +
-                            std::to_string(kMaxCollisionIndices) + ")");
-    }
-    out.indices.reserve(indexCount);
+    out.indices.reserve((size_t)indexTotal);
     for (const auto& shape : shapes)
     {
         for (const tinyobj::index_t& idx : shape.mesh.indices)
@@ -684,7 +696,21 @@ uint64_t FnV1a64(const void* data, size_t bytes, uint64_t seed)
     return h;
 }
 
-Result<CollisionGeometry> DecodeCollisionGeometry(
+namespace {
+bool s_TestThrowBadAlloc = false;
+} // namespace
+
+void SetCollisionDecodeTestThrow(bool fail)
+{
+    s_TestThrowBadAlloc = fail;
+}
+
+bool CollisionDecodeTestThrow()
+{
+    return s_TestThrowBadAlloc;
+}
+
+Result<CollisionGeometry> DecodeCollisionGeometryChecked(
     const std::filesystem::path& absolutePath,
     const std::string& sourceKey,
     const ImportSettings& settings)
@@ -709,6 +735,40 @@ Result<CollisionGeometry> DecodeCollisionGeometry(
     return FailWith(Error::InvalidArgument, absolutePath.string(),
                     "DecodeCollisionGeometry: unsupported collision extension '" +
                         ext + "' (OBJ and glTF only)");
+}
+
+Result<CollisionGeometry> DecodeCollisionGeometry(
+    const std::filesystem::path& absolutePath,
+    const std::string& sourceKey,
+    const ImportSettings& settings)
+{
+    // Allocation/parser translation boundary (review P2): resource
+    // exhaustion anywhere below — vendor parser internals, vector growth,
+    // Bullet-adjacent staging buffers — surfaces as a typed file diagnostic,
+    // never an escaped exception. Error::Io is the resource-exhaustion code.
+    // The deterministic injection hook fires INSIDE the boundary so tests
+    // prove translation rather than escape.
+    try
+    {
+        if (s_TestThrowBadAlloc)
+            throw std::bad_alloc();
+        return DecodeCollisionGeometryChecked(absolutePath, sourceKey,
+                                              settings);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return Result<CollisionGeometry>::Fail(
+            Error::Io, absolutePath.string(),
+            "DecodeCollisionGeometry: allocation failure while decoding '" +
+                absolutePath.string() + "' (no geometry produced)");
+    }
+    catch (const std::exception& e)
+    {
+        return Result<CollisionGeometry>::Fail(
+            Error::Parse, absolutePath.string(),
+            std::string("DecodeCollisionGeometry: parser exception for '") +
+                absolutePath.string() + "': " + e.what());
+    }
 }
 
 } // namespace rt2::core

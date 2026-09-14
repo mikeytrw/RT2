@@ -82,8 +82,19 @@ Result<const CollisionGeometry*> PhysicsCollisionAssetProvider::GetCollisionGeom
     }
 
     std::vector<AssetDiagnostic> diagnostics;
-    AssetResolutionResult resolved =
-        Resolve(ref, m_Context, entityUuid, entityName, diagnostics);
+    AssetResolutionResult resolved;
+    try
+    {
+        resolved = Resolve(ref, m_Context, entityUuid, entityName, diagnostics);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return Result<const CollisionGeometry*>::Fail(
+            Error::Io, uuidText,
+            "entity " + uuidText + " ('" + entityName +
+                "'): allocation failure while resolving collision asset '" +
+                ref.path + "'");
+    }
     if (!resolved.success)
     {
         Error::Code code = Error::MissingAsset;
@@ -113,11 +124,21 @@ Result<const CollisionGeometry*> PhysicsCollisionAssetProvider::GetCollisionGeom
 
     uint64_t rawHash = 0;
     std::string fpDetail;
-    if (!FingerprintFile(resolved.resolvedPath, rawHash, fpDetail))
+    try
+    {
+        if (!FingerprintFile(resolved.resolvedPath, rawHash, fpDetail))
+        {
+            return Result<const CollisionGeometry*>::Fail(
+                Error::MissingAsset, uuidText,
+                "entity " + uuidText + " ('" + entityName + "'): " + fpDetail);
+        }
+    }
+    catch (const std::bad_alloc&)
     {
         return Result<const CollisionGeometry*>::Fail(
-            Error::MissingAsset, uuidText,
-            "entity " + uuidText + " ('" + entityName + "'): " + fpDetail);
+            Error::Io, uuidText,
+            "entity " + uuidText + " ('" + entityName +
+                "'): allocation failure while fingerprinting collision asset");
     }
 
     auto it = m_Cache.find(key);
@@ -127,8 +148,21 @@ Result<const CollisionGeometry*> PhysicsCollisionAssetProvider::GetCollisionGeom
         return Result<const CollisionGeometry*>::Ok(&it->second.geometry);
     }
 
-    Result<CollisionGeometry> decoded = DecodeCollisionGeometry(
-        resolved.resolvedPath, ref.sourceKey, ref.importSettings);
+    Result<CollisionGeometry> decoded;
+    try
+    {
+        decoded = DecodeCollisionGeometry(resolved.resolvedPath, ref.sourceKey,
+                                          ref.importSettings);
+    }
+    catch (const std::bad_alloc&)
+    {
+        // The decoder translates its own failures; this guards the call
+        // boundary itself (plus map insertion below).
+        return Result<const CollisionGeometry*>::Fail(
+            Error::Io, uuidText,
+            "entity " + uuidText + " ('" + entityName +
+                "'): allocation failure while decoding collision asset");
+    }
     if (!decoded.IsOk())
     {
         // Preserve the decoder's typed code; name the entity UUID per the
@@ -143,9 +177,20 @@ Result<const CollisionGeometry*> PhysicsCollisionAssetProvider::GetCollisionGeom
     entry.geometry = std::move(decoded.value);
     entry.rawContentHash = rawHash;
     entry.canonicalPath = canonical;
-    auto inserted = m_Cache.insert_or_assign(key, std::move(entry));
-    ++m_DecodeCount;
-    return Result<const CollisionGeometry*>::Ok(&inserted.first->second.geometry);
+    try
+    {
+        auto inserted = m_Cache.insert_or_assign(key, std::move(entry));
+        ++m_DecodeCount;
+        return Result<const CollisionGeometry*>::Ok(
+            &inserted.first->second.geometry);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return Result<const CollisionGeometry*>::Fail(
+            Error::Io, uuidText,
+            "entity " + uuidText + " ('" + entityName +
+                "'): allocation failure while caching collision geometry");
+    }
 }
 
 } // namespace rt2::core

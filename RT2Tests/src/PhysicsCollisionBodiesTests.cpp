@@ -1541,6 +1541,84 @@ TEST_CASE("T4 RED_PhysicsPairPrefabMemberRejected: linked members refuse the ato
     CHECK(f.manager.AuthoringRevision() == rev0);
 }
 
+TEST_CASE("T4 RED_AllocationFailureTyped: exhaustion surfaces typed errors, never exceptions")
+{
+    // Deterministic injection proves the translation boundaries: decoder,
+    // provider, and candidate staging convert resource exhaustion into the
+    // approved typed failure (Error::Io) with atomic Play semantics. The
+    // guard disarms both hooks even when an assertion aborts the case.
+    struct AllocGuard
+    {
+        ~AllocGuard()
+        {
+            SetCollisionDecodeTestThrow(false);
+            PhysicsWorld::SetStagingTestThrow(false);
+        }
+    };
+    T4TempAssets assets;
+    assets.MakeCube("cube.obj", 1.0f);
+
+    // Decoder boundary: no exception escapes, typed Io surfaces.
+    {
+        AllocGuard guard;
+        SetCollisionDecodeTestThrow(true);
+        bool threw = false;
+        bool ok = true;
+        Error::Code code = Error::None;
+        try
+        {
+            const auto r = DecodeCollisionGeometry(
+                assets.dir / "cube.obj", "obj:whole-model", ImportSettings{});
+            ok = r.IsOk();
+            code = r.error.code;
+        }
+        catch (...)
+        {
+            threw = true;
+        }
+        CHECK_FALSE(threw);
+        CHECK_FALSE(ok);
+        CHECK(code == Error::Io);
+    }
+    // Staging boundary: Play refuses atomically with Io (Edit, no world,
+    // no bridge traffic, zero accumulator).
+    {
+        T4Fixture f;
+        const UUID id = f.Create("Staged");
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T4DynamicBody());
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), T4SphereShape());
+
+        AllocGuard guard;
+        PhysicsWorld::SetStagingTestThrow(true);
+        T4NullBridge bridge;
+        T4NoopObserver obs;
+        Error err;
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        bool threw = false;
+        bool ok = true;
+        try
+        {
+            ok = ctrl.Play(f.Authoring(), bridge, err);
+        }
+        catch (...)
+        {
+            threw = true;
+        }
+        CHECK_FALSE(threw);
+        CHECK_FALSE(ok);
+        CHECK(err.code == Error::Io);
+        CHECK(ctrl.GetState() == SceneRunState::Edit);
+        CHECK(ctrl.TryGetRuntimeScene() == nullptr);
+        CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+        CHECK(ctrl.PhysicsTotalHandles() == 0);
+        CHECK(bridge.Quiet());
+        CHECK(obs.starts == 0);
+    }
+    CHECK_FALSE(CollisionDecodeTestThrow());
+    CHECK_FALSE(PhysicsWorld::StagingTestThrow());
+}
+
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")
 {
     T4Fixture f;
