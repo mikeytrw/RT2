@@ -242,10 +242,15 @@ void PhysicsWorld::PreStepSync(SceneDocument& runtime)
             btQuaternion(r.x, r.y, r.z, r.w), btVector3(t.x, t.y, t.z));
         if (rec.body != nullptr)
         {
-            rec.body->getWorldTransform() = btT;
+            // Publish the commanded pose through the motion state ONLY.
+            // Bullet's saveKinematicState pulls motion-state -> world and
+            // derives linear/angular velocity from previous-interpolation ->
+            // new-world, which is exactly the platform motion contacts must
+            // feel. Writing the world or interpolation transform here would
+            // collapse that difference to zero velocity (or be overwritten
+            // by the motion-state pull).
             if (rec.motion != nullptr)
                 rec.motion->setWorldTransform(btT);
-            rec.body->setInterpolationWorldTransform(btT);
             rec.body->activate();
         }
         else if (rec.ghost != nullptr)

@@ -615,6 +615,82 @@ TEST_CASE("T4 GREEN_CcdFastSphereStops: authored CCD stops the fast sphere")
     CHECK(ccdX > -2.0f);
 }
 
+TEST_CASE("T4 GREEN_KinematicPlatformDrags: commanded platform motion derives velocity and drags contact")
+{
+    // Discriminator for derived kinematic velocity (not just final pose):
+    // the platform pose is published through the motion state so Bullet's
+    // saveKinematicState derives linear velocity, which friction then
+    // transfers to a resting Dynamic crate. Zeroing the interpolation
+    // transform at push time would drag nothing.
+    T4Fixture f;
+    const UUID platform = f.Create("Platform");
+    PhysicsBodyComponent pBody;
+    pBody.kind = PhysicsBodyKind::Kinematic;
+    pBody.mass = 0.0f;
+    pBody.friction = 1.0f;
+    pBody.layer = PhysicsLayer::Mechanism;
+    pBody.mask = PhysicsLayer::Dynamic;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(platform), pBody);
+    PhysicsShapeComponent pShape = T4BoxShape(0.5f);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(platform), pShape);
+    f.Registry().get<Transform>(f.Handle(platform)).translation = {0.0f, -0.25f, 0.0f};
+    // Widen the platform on X/Z only (uniform scale must stay 1).
+    f.Registry().get<PhysicsShapeComponent>(f.Handle(platform)).halfExtents =
+        {2.0f, 0.25f, 2.0f};
+
+    const UUID crate = f.Create("Crate");
+    PhysicsBodyComponent cBody = T4DynamicBody(1.0f);
+    cBody.friction = 1.0f;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(crate), cBody);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(crate), T4BoxShape(0.5f));
+    f.Registry().get<Transform>(f.Handle(crate)).translation = {0.0f, 0.6f, 0.0f};
+
+    T4NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    // Settle the crate onto the platform first (commanded motion starts after).
+    for (int i = 0; i < 30; ++i)
+        ctrl.Update(kFixedDt, bridge);
+
+    // Drive the platform +X at 2 u/s through the ECS (dirty-marked, exactly
+    // like every ECS write path) for one simulated second.
+    float platformX = 0.0f;
+    for (int i = 0; i < 60; ++i)
+    {
+        platformX += 2.0f * kFixedDt;
+        SceneDocument* runtime = ctrl.TryGetRuntimeSceneMut();
+        REQUIRE(runtime != nullptr);
+        const auto e = runtime->FindByUuid(platform);
+        const bool resolved = (e != entt::null);
+        REQUIRE(resolved);
+        runtime->ecs.registry.get<Transform>(e).translation =
+            {platformX, -0.25f, 0.0f};
+        SceneGraph::SetLocalDirty(runtime->ecs.registry, e);
+        ctrl.Update(kFixedDt, bridge);
+    }
+
+    // Derived platform velocity is the commanded 2 u/s (not zero).
+    const PhysicsWorld* world = ctrl.TryGetPhysicsWorld();
+    REQUIRE(world != nullptr);
+    const PhysicsBodyRecord* platformRec = world->FindBody(platform);
+    REQUIRE(platformRec != nullptr);
+    REQUIRE(platformRec->body != nullptr);
+    CHECK(platformRec->body->getLinearVelocity().x() ==
+          doctest::Approx(2.0f).epsilon(0.05));
+    // Contact friction dragged the crate along (it started at x = 0).
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    REQUIRE(runtime != nullptr);
+    const auto ce = runtime->FindByUuid(crate);
+    const bool crateResolved = (ce != entt::null);
+    REQUIRE(crateResolved);
+    const float crateX =
+        runtime->ecs.registry.get<Transform>(ce).translation.x;
+    CHECK(crateX > 1.0f);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
 TEST_CASE("T4 GREEN_KinematicEcsToBullet: kinematic pose pushes before the step")
 {
     T4Fixture f;
