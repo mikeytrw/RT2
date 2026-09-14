@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <new>
 #include <unordered_set>
 #include <vector>
 
@@ -66,9 +67,32 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     // teardown of a live world), the clone is reset, state stays Edit with a
     // zero accumulator, and no bridge call and no script callback have
     // happened yet.
+    // happened yet. Defense in depth (narrow follow-up): even though Create
+    // is itself no-throw, the handoff translates any escaping resource
+    // failure into the same atomic refusal rather than an exception.
     {
         m_PhysicsLiveBaseline = PhysicsWorld::LiveWorldCount();
-        auto candidate = PhysicsWorld::Create(*m_Runtime, m_CollisionProvider);
+        Result<std::unique_ptr<PhysicsWorld>> candidate;
+        bool handoffThrew = false;
+        try
+        {
+            candidate = PhysicsWorld::Create(*m_Runtime, m_CollisionProvider);
+        }
+        catch (const std::bad_alloc&)
+        {
+            handoffThrew = true;
+        }
+        if (handoffThrew)
+        {
+            err.code = Error::Io;
+            err.path = "";
+            err.detail =
+                "RuntimeSceneController::Play allocation failure during "
+                "physics candidate handoff (clone reset; still Edit)";
+            m_Runtime.reset();
+            m_Accumulator = 0.0f;
+            return false;
+        }
         if (!candidate.IsOk())
         {
             err = candidate.error;

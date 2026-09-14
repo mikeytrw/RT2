@@ -32,6 +32,7 @@ namespace rt2::core {
 bool PhysicsWorld::s_TestInjectCreateFailure = false;
 bool PhysicsWorld::s_TestPoseProbe = false;
 bool PhysicsWorld::s_StagingTestThrow = false;
+bool PhysicsWorld::s_ConstructionTestThrow = false;
 size_t PhysicsWorld::s_LiveWorlds = 0;
 std::vector<PhysicsWorld::ConstructionPose> PhysicsWorld::s_RecordedPoses;
 std::function<void()> PhysicsWorld::s_TestDestroyProbe;
@@ -87,11 +88,25 @@ Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
     const SceneDocument& runtime,
     const IPhysicsCollisionAssetProvider* provider)
 {
-    // The candidate is FULLY constructed first: broadphase, dispatcher,
-    // solver, configuration, dynamics world, ghost-pair callback, gravity.
-    // A failure below therefore rolls back a live Bullet world through the
-    // complete Shutdown() teardown — never a pre-construction early-out.
-    std::unique_ptr<PhysicsWorld> world(new PhysicsWorld());
+    // Single allocation-translation boundary over the WHOLE candidate
+    // construction sequence (narrow follow-up): the PhysicsWorld allocation
+    // with Bullet member construction, test-pose preparation, and body
+    // staging all run inside one try. Any resource exhaustion surfaces as a
+    // typed Error::Io; a half-built candidate still dies with its local
+    // through the complete Shutdown() teardown (the destructor runs exactly
+    // when construction completed — never a pre-construction early-out, never
+    // a leak). Error::Io is the resource-exhaustion code.
+    try
+    {
+        if (s_ConstructionTestThrow)
+            throw std::bad_alloc(); // pre-candidate injection (tests only)
+        // The candidate is FULLY constructed first: broadphase, dispatcher,
+        // solver, configuration, dynamics world, ghost-pair callback,
+        // gravity. A failure below therefore rolls back a live Bullet world
+        // through the complete Shutdown() teardown.
+        std::unique_ptr<PhysicsWorld> world(new PhysicsWorld());
+        if (s_ConstructionTestThrow)
+            throw std::bad_alloc(); // post-construction injection: teardown proof
 
     // Construction pose probe (test-only, gated): record what the candidate
     // observes in the runtime clone at this exact point in the Play sequence.
@@ -128,24 +143,10 @@ Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
     // kinematics, then dynamics, then ghosts; UUID order within each group).
     // Any failure returns a typed UUID-named Error and the half-staged
     // candidate dies with the local through the full Shutdown() teardown.
-    // Allocation boundary (review P2): make_unique/vector growth below
-    // surfaces as a typed resource error with the same rollback, never an
-    // escaped exception. Error::Io is the resource-exhaustion code.
+    // (Covered by the single outer boundary: no inner island remains.)
     {
         Error buildErr;
-        bool staged = false;
-        try
-        {
-            staged = StageBodies(*world, runtime, provider, buildErr);
-        }
-        catch (const std::bad_alloc&)
-        {
-            return Result<std::unique_ptr<PhysicsWorld>>::Fail(
-                Error::Io, "",
-                "PhysicsWorld::Create allocation failure during body staging "
-                "(candidate rolled back; no world committed)");
-        }
-        if (!staged)
+        if (!StageBodies(*world, runtime, provider, buildErr))
         {
             return Result<std::unique_ptr<PhysicsWorld>>::Fail(
                 buildErr.code, buildErr.path, buildErr.detail);
@@ -166,6 +167,14 @@ Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
     }
 
     return Result<std::unique_ptr<PhysicsWorld>>::Ok(std::move(world));
+    }
+    catch (const std::bad_alloc&)
+    {
+        return Result<std::unique_ptr<PhysicsWorld>>::Fail(
+            Error::Io, "",
+            "PhysicsWorld::Create allocation failure during candidate "
+            "construction (rolled back; no world committed)");
+    }
 }
 
 size_t PhysicsWorld::LiveWorldCount()
@@ -331,6 +340,16 @@ void PhysicsWorld::SetStagingTestThrow(bool fail)
 bool PhysicsWorld::StagingTestThrow()
 {
     return s_StagingTestThrow;
+}
+
+void PhysicsWorld::SetConstructionTestThrow(bool fail)
+{
+    s_ConstructionTestThrow = fail;
+}
+
+bool PhysicsWorld::ConstructionTestThrow()
+{
+    return s_ConstructionTestThrow;
 }
 
 bool PhysicsWorld::TestInjectCreateFailure()

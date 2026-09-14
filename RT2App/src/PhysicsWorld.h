@@ -218,6 +218,14 @@ public:
     static void SetStagingTestThrow(bool fail);
     static bool StagingTestThrow();
 
+    // Test-only allocation-failure injection for the whole candidate
+    // construction sequence (narrow follow-up). Checked both before the
+    // PhysicsWorld allocation (pre-candidate) and right after it (candidate
+    // constructed: proves the local teardown still runs). Default off;
+    // tests must clear it after use. Never set outside tests.
+    static void SetConstructionTestThrow(bool fail);
+    static bool ConstructionTestThrow();
+
     // Test-only destruction probe, invoked by the REAL ~PhysicsWorld()
     // when set (after Bullet teardown, before the live count decrements).
     // Lets the Stop-order test observe the actual destruction boundary:
@@ -258,6 +266,7 @@ private:
     static bool s_TestInjectCreateFailure;
     static bool s_TestPoseProbe;
     static bool s_StagingTestThrow;
+    static bool s_ConstructionTestThrow;
     static size_t s_LiveWorlds;
     static std::vector<ConstructionPose> s_RecordedPoses;
     static std::function<void()> s_TestDestroyProbe;

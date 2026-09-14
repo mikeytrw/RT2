@@ -61,7 +61,24 @@ public:
     size_t CacheEntryCount() const override { return m_Cache.size(); }
     size_t DecodeCount() const override { return m_DecodeCount; }
 
+    // Deterministic allocation-failure injection (tests only, never set
+    // outside tests). The key hook fires during cache-key preparation, the
+    // entry hook during cache-entry preparation; both prove the single outer
+    // translation boundary. Default off; tests must clear after use.
+    static void SetKeyTestThrow(bool fail);
+    static bool KeyTestThrow();
+    static void SetEntryTestThrow(bool fail);
+    static bool EntryTestThrow();
+
 private:
+    static bool s_KeyTestThrow;
+    static bool s_EntryTestThrow;
+
+    // Inner lookup body: runs entirely inside the outer translation boundary
+    // established by GetCollisionGeometry above.
+    Result<const CollisionGeometry*> GetCollisionGeometryInner(
+        const AssetReference& ref, const UUID& entityUuid,
+        const std::string& entityName);
     struct CacheEntry
     {
         CollisionGeometry geometry;

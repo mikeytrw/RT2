@@ -1620,6 +1620,117 @@ TEST_CASE("T4 RED_AllocationFailureTyped: exhaustion surfaces typed errors, neve
     CHECK_FALSE(PhysicsWorld::StagingTestThrow());
 }
 
+TEST_CASE("T4 RED_CreateConstructionAllocationTyped: candidate-construction exhaustion is atomic Io")
+{
+    // The whole-Create boundary covers the PhysicsWorld allocation, Bullet
+    // member construction, pose-probe staging, and body staging alike, and
+    // the Play handoff preserves atomicity: no exception, typed Io, Edit
+    // state, null runtime/world, zero handles AND zero live-world delta
+    // (a constructed candidate still tears down), quiet bridge, no callbacks.
+    struct ConstructionGuard
+    {
+        ~ConstructionGuard() { PhysicsWorld::SetConstructionTestThrow(false); }
+    };
+    T4Fixture f;
+    const UUID id = f.Create("Staged");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T4DynamicBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), T4SphereShape());
+
+    ConstructionGuard guard;
+    PhysicsWorld::SetConstructionTestThrow(true);
+    T4NullBridge bridge;
+    T4NoopObserver obs;
+    Error err;
+    RuntimeSceneController ctrl;
+    ctrl.SetLifecycleObserver(&obs);
+    const size_t liveBaseline = PhysicsWorld::LiveWorldCount();
+    bool threw = false;
+    bool ok = true;
+    try
+    {
+        ok = ctrl.Play(f.Authoring(), bridge, err);
+    }
+    catch (...)
+    {
+        threw = true;
+    }
+    CHECK_FALSE(threw);
+    CHECK_FALSE(ok);
+    CHECK(err.code == Error::Io);
+    CHECK(ctrl.GetState() == SceneRunState::Edit);
+    CHECK(ctrl.TryGetRuntimeScene() == nullptr);
+    CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+    CHECK(PhysicsWorld::LiveWorldCount() == liveBaseline);
+    CHECK(ctrl.DebugAccumulator() == doctest::Approx(0.0f));
+    CHECK(bridge.Quiet());
+    CHECK(obs.starts == 0);
+    CHECK(obs.stops == 0);
+    PhysicsWorld::SetConstructionTestThrow(false);
+    CHECK_FALSE(PhysicsWorld::ConstructionTestThrow());
+}
+
+TEST_CASE("T4 RED_ProviderKeyEntryAllocationTyped: key/entry exhaustion is typed Io")
+{
+    // Formerly uncovered provider islands: key preparation and cache-entry
+    // preparation each translate to typed Io without throwing and without
+    // recording a decode; a disarmed lookup then succeeds normally.
+    struct ProviderGuard
+    {
+        ~ProviderGuard()
+        {
+            PhysicsCollisionAssetProvider::SetKeyTestThrow(false);
+            PhysicsCollisionAssetProvider::SetEntryTestThrow(false);
+        }
+    };
+    T4TempAssets assets;
+    assets.MakeCube("cube.obj", 1.0f);
+    DeterministicUuidProvider ids;
+    const UUID entity = ids.CreateV4();
+    AssetReference ref = T4ModelRef("cube.obj", "obj:whole-model");
+
+    PhysicsCollisionAssetProvider provider;
+    provider.SetContext(AssetResolutionContext{assets.dir, nullptr});
+    ProviderGuard guard;
+    for (bool keyPhase : {true, false})
+    {
+        if (keyPhase)
+            PhysicsCollisionAssetProvider::SetKeyTestThrow(true);
+        else
+        {
+            PhysicsCollisionAssetProvider::SetKeyTestThrow(false);
+            PhysicsCollisionAssetProvider::SetEntryTestThrow(true);
+        }
+        bool threw = false;
+        bool ok = true;
+        Error::Code code = Error::None;
+        try
+        {
+            const auto r =
+                provider.GetCollisionGeometry(ref, entity, "Cube");
+            ok = r.IsOk();
+            code = r.error.code;
+        }
+        catch (...)
+        {
+            threw = true;
+        }
+        CHECK_FALSE(threw);
+        CHECK_FALSE(ok);
+        CHECK(code == Error::Io);
+    }
+    CHECK(provider.DecodeCount() == 0);
+    CHECK(provider.CacheEntryCount() == 0);
+    PhysicsCollisionAssetProvider::SetKeyTestThrow(false);
+    PhysicsCollisionAssetProvider::SetEntryTestThrow(false);
+    CHECK_FALSE(PhysicsCollisionAssetProvider::KeyTestThrow());
+    CHECK_FALSE(PhysicsCollisionAssetProvider::EntryTestThrow());
+
+    auto valid = provider.GetCollisionGeometry(ref, entity, "Cube");
+    REQUIRE(valid.IsOk());
+    CHECK(provider.DecodeCount() == 1);
+}
+
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")
 {
     T4Fixture f;

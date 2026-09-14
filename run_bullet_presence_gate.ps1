@@ -99,6 +99,11 @@ $requiredCases = @(
     "T4 RED_UnsafeMarginRefused: margins at/above the scaled half-extent refuse Play atomically",
     "T4 GREEN_SmallMarginStages: a valid small margin keeps support, AABB, and contact",
     "T4 RED_AllocationFailureTyped: exhaustion surfaces typed errors, never exceptions"
+    # T4 narrow-review follow-up: overflow-safe rotation norm, whole-Create /
+    # Play / provider allocation perimeter with injection at every boundary.
+    "T4 RED_SinkRotationOverflowRefused: finite near-FLT_MAX rotations refuse without mutation",
+    "T4 RED_CreateConstructionAllocationTyped: candidate-construction exhaustion is atomic Io",
+    "T4 RED_ProviderKeyEntryAllocationTyped: key/entry exhaustion is typed Io"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
