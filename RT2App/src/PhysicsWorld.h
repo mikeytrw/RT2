@@ -83,8 +83,39 @@ struct PhysicsBodyRecord
     btRigidBody* body = nullptr;
     btDefaultMotionState* motion = nullptr;
     btPairCachingGhostObject* ghost = nullptr;
+    // Non-owning view into m_TriangleMeshes (set only for StaticTriMesh).
+    btStridingMeshInterface* triangleMesh = nullptr;
     // Uniform world scale baked at build (single scale owner).
     float bakedScale = 1.0f;
+};
+
+// One runtime constraint: the body-to-constraint dependency index entry (T5).
+// Owner is the Authoring UUID of the entity carrying the hinge/slider
+// component; other is its otherBody (nil = world anchor). The Bullet pointer
+// is a non-owning view into m_Constraints; hinge XOR slider is set.
+struct PhysicsConstraintRecord
+{
+    UUID ownerId;
+    UUID otherId; // nil = world/static frame anchor
+    bool isHinge = true;
+    btTypedConstraint* constraint = nullptr;
+    btHingeConstraint* hinge = nullptr;
+    btSliderConstraint* slider = nullptr;
+    // Staged drive parameters (authored values, validated at build): hinge
+    // uses driveSpeed = target velocity and driveMax = max impulse with
+    // restPosition = rest angle; slider uses driveSpeed = target-velocity
+    // cap, driveMax = max force, restPosition = target position.
+    float driveSpeed = 0.0f;
+    float driveMax = 0.0f;
+    float restPosition = 0.0f;
+    float lowerLimit = 0.0f;
+    float upperLimit = 0.0f;
+    // Staged normalized owner-local axis (slider release-impulse direction).
+    glm::vec3 localAxis = {1.0f, 0.0f, 0.0f};
+    // Hinge return-in-progress (ReturnHingeToRest): the pre-step servo
+    // drives toward restPosition until it disengages inside half a degree.
+    // Any explicit SetHingeDrive/ReleaseHingeDrive clears it.
+    bool returning = false;
 };
 
 class SceneDocument;
@@ -145,7 +176,9 @@ public:
     // see RuntimeSceneController::RunFixedTick):
     //   - PreStepSync: refresh world transforms, then push every Kinematic
     //     body and kinematic ghost pose (ECS/script -> Bullet). Static and
-    //     Dynamic bodies are untouched.
+    //     Dynamic bodies are untouched. T5 drive servo rides the same hook:
+    //     powered slider targets and in-progress hinge returns are
+    //     re-servoed toward their setpoints before the step.
     //   - PostStepSync: write every simulated Dynamic body pose back
     //     (Bullet -> ECS local TRS, marked dirty for the controller's single
     //     batched SceneGraph + TransformSync pass). Static, Kinematic, and
@@ -178,6 +211,89 @@ public:
     // margin/CCD/inertia proofs at the Bullet boundary.
     const btCollisionShape* FindBodyShape(const UUID& id) const;
     size_t BodyRecordCount() const { return m_BodyIndex.size(); }
+
+    // ---- T5 driven-constraint surface ------------------------------------
+    //
+    // Constraints are built after all bodies/ghosts in stable owner-UUID
+    // order (StageConstraints, called by Create after StageBodies). Frames
+    // are resolved once at build from the authored owner-local pivots/axes
+    // and the other-local (or world, when otherBody is nil) pivots/axes;
+    // Bullet poses are never teleported to satisfy a constraint.
+    //
+    // Drive commands mutate the live Bullet constraint immediately, so the
+    // very next fixed tick (at most one tick of latency) moves the bodies.
+    // All setters return false (mutating nothing) for unknown owners, wrong
+    // constraint kinds, and out-of-range input. No Lua/event/debug coupling:
+    // T7 binds these same C++ entry points later.
+
+    // Dependency index lookup. Null when the owner carries no constraint.
+    const PhysicsConstraintRecord* FindConstraint(const UUID& ownerId) const;
+    size_t ConstraintRecordCount() const { return m_ConstraintIndex.size(); }
+    // Every constraint owner UUID whose constraint references bodyId as
+    // owner or as otherBody, in stable UUID order. The body-to-constraint
+    // dependency index the safe-point drain consults before tearing down.
+    std::vector<UUID> ConstraintsForBody(const UUID& bodyId) const;
+
+    // Hinge drive: enable the angular-velocity motor immediately with the
+    // given target velocity (rad/s) and max impulse. Returns false for
+    // unknown/non-hinge owners and non-finite/negative-impulse input.
+    bool SetHingeDrive(const UUID& owner, float velocity, float maxImpulse);
+    // Hinge release: disable the motor; the arm swings freely within its
+    // limits. No pose is teleported.
+    bool ReleaseHingeDrive(const UUID& owner);
+    // Hinge return: drive toward the authored rest angle (within limits)
+    // using the staged motor impulse cap, without teleporting.
+    bool ReturnHingeToRest(const UUID& owner);
+    // Live hinge angle in radians (getHingeAngle). ok=false when unknown or
+    // not a hinge. Non-const: the underlying Bullet query is non-const.
+    float HingeAngle(const UUID& owner, bool& ok);
+    // Live hinge motor state (enabled flag + staged target velocity and max
+    // impulse). ok=false when unknown or not a hinge.
+    bool HingeMotorEnabled(const UUID& owner, bool& ok);
+    bool HingeMotorParams(const UUID& owner, float& velocityOut,
+                          float& maxImpulseOut);
+
+    // Slider drive: power the linear motor toward target (world units along
+    // the axis) with a proportional speed law — larger displacements map
+    // monotonically to higher speeds, capped by the staged target velocity
+    // and force. Targets outside [lower,upper] are refused (false), so the
+    // slider never moves outside its limits through this entry point.
+    bool SetSliderTarget(const UUID& owner, float target);
+    // Slider release: cut the motor and apply an impulse along the axis to
+    // the owner body. The limits still bind afterwards.
+    bool ReleaseSlider(const UUID& owner, float impulse);
+    // Live slider linear position (getLinearPos). ok=false when unknown or
+    // not a slider.
+    float SliderPosition(const UUID& owner, bool& ok) const;
+
+    // Safe-point teardown participation (called by the controller drain at
+    // each destroy position, after OnEntitiesDestroying while ECS and Bullet
+    // state are still present):
+    //   1. RemoveSubtreePhysics removes every live constraint whose owner
+    //      or otherBody lies in uuids FIRST, then every live body/ghost in
+    //      uuids. Constraints always die before referenced bodies.
+    //   2. RemoveRuntimeBody removes one body/ghost, but loudly refuses
+    //      (false + err) while a live constraint still references it — the
+    //      orphan guard that turns a reversed teardown order red.
+    void RemoveSubtreePhysics(const std::vector<UUID>& uuids);
+    bool RemoveRuntimeBody(const UUID& bodyId, Error& err);
+
+    // Atomically rebuild every constraint touching bodyId (as owner or
+    // otherBody) from the current runtime document: replacements are fully
+    // staged and validated before any live constraint is removed, so a
+    // failure leaves the previous set untouched. Returns false with a
+    // UUID-named Error on failure.
+    bool RebuildConstraintsForBody(SceneDocument& runtime, const UUID& bodyId,
+                                   Error& err);
+
+    // Test-only teardown-order log. While enabled, every constraint/body
+    // removal records "constraint" or "body" in removal order, so the
+    // lifetime test proves constraints-first teardown (reversing the order
+    // turns it red). Disabled by default (zero production effect); tests
+    // enable, read, then disable and clear. Never set outside tests.
+    static void SetTeardownOrderLog(bool enabled);
+    static std::vector<std::string> TakeTeardownOrderLog();
+    static void ClearTeardownOrderLog();
 
     // Handle census for tests and the Stop leak assertion. All zero in T3
     // (no bodies are created yet); T4 backfills the same storage.
@@ -270,6 +386,19 @@ private:
                              entt::entity entity,
                              const IPhysicsCollisionAssetProvider* provider,
                              Error& err);
+    // T5 candidate staging: every authored hinge/slider from the runtime
+    // clone, stable owner-UUID order across both kinds, after all bodies and
+    // ghosts. Frames resolve once at build; any failure fills err with a
+    // UUID-named typed Error and the caller rolls the candidate back.
+    static bool StageConstraints(PhysicsWorld& world,
+                                 const SceneDocument& runtime, Error& err);
+    static bool StageOneHinge(PhysicsWorld& world,
+                              const SceneDocument& runtime, const UUID& owner,
+                              entt::entity entity, Error& err);
+    static bool StageOneSlider(PhysicsWorld& world,
+                               const SceneDocument& runtime,
+                               const UUID& owner, entt::entity entity,
+                               Error& err);
 
     // Bullet teardown order: constraints first, then ghosts/bodies, then
     // shapes, then the world itself (Bullet requirement; plan section 3).
@@ -278,6 +407,8 @@ private:
     static bool s_TestInjectCreateFailure;
     static bool s_TestPoseProbe;
     static bool s_StagingTestThrow;
+    static bool s_TeardownOrderLog;
+    static std::vector<std::string> s_TeardownOrder;
     static CandidateThrowPoint s_CandidateThrowPoint;
     static bool s_EscapeTestThrow;
     static size_t s_LiveWorlds;
@@ -299,6 +430,7 @@ private:
     std::vector<std::unique_ptr<btRigidBody>> m_Bodies;
     std::vector<std::unique_ptr<btPairCachingGhostObject>> m_Ghosts;
     std::vector<std::unique_ptr<btTypedConstraint>> m_Constraints;
+    std::vector<PhysicsConstraintRecord> m_ConstraintIndex;
     // UUID-ordered companion map: Authoring UUID -> runtime entity -> Bullet
     // handle. Constraint build (T5) and event scrape (T6) read this; the
     // ECS components never hold Bullet pointers.

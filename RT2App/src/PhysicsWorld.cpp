@@ -17,9 +17,12 @@
 #include "SceneGraph.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -29,9 +32,19 @@
 
 namespace rt2::core {
 
+// T5 drive constants (declared early: PreStepSync servos the drive setpoints
+// every fixed tick, ahead of the staging section that also uses them).
+namespace {
+constexpr float kT5MinAxisLength = 1e-6f;
+// Proportional speed gain (1/s) for the slider target law.
+constexpr float kT5SliderTargetGain = 10.0f;
+} // namespace
+
 bool PhysicsWorld::s_TestInjectCreateFailure = false;
 bool PhysicsWorld::s_TestPoseProbe = false;
 bool PhysicsWorld::s_StagingTestThrow = false;
+bool PhysicsWorld::s_TeardownOrderLog = false;
+std::vector<std::string> PhysicsWorld::s_TeardownOrder;
 PhysicsWorld::CandidateThrowPoint PhysicsWorld::s_CandidateThrowPoint = PhysicsWorld::CandidateThrowPoint::None;
 bool PhysicsWorld::s_EscapeTestThrow = false;
 size_t PhysicsWorld::s_LiveWorlds = 0;
@@ -65,17 +78,35 @@ void PhysicsWorld::Shutdown()
 {
     // Bullet teardown order (plan section 3): constraints first, then
     // ghosts/bodies, then shapes, then the world itself. All four stores are
-    // empty in T3; the loops are real so T4 bodies ride the same order.
+    // empty in T3; the loops are real so T4 bodies ride the same order. T5
+    // constraints ride the first loop; reversing the constraint/body order
+    // strands live Bullet constraints over removed bodies, which the
+    // teardown-order lifetime test observes through the order log.
     for (auto it = m_Constraints.rbegin(); it != m_Constraints.rend(); ++it)
+    {
         m_World.removeConstraint(it->get());
+        if (s_TeardownOrderLog)
+            s_TeardownOrder.emplace_back("constraint");
+    }
     m_Constraints.clear();
+    m_ConstraintIndex.clear();
     for (auto it = m_Ghosts.rbegin(); it != m_Ghosts.rend(); ++it)
+    {
         m_World.removeCollisionObject(it->get());
+        if (s_TeardownOrderLog)
+            s_TeardownOrder.emplace_back("body");
+    }
     m_Ghosts.clear();
     for (auto it = m_Bodies.rbegin(); it != m_Bodies.rend(); ++it)
+    {
         m_World.removeCollisionObject(it->get());
+        if (s_TeardownOrderLog)
+            s_TeardownOrder.emplace_back("body");
+    }
     m_Bodies.clear();
     m_MotionStates.clear();
+    m_TriangleMeshes.clear();
+    m_BodyIndex.clear();
     m_Shapes.clear();
 }
 
@@ -155,6 +186,21 @@ Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
     {
         Error buildErr;
         if (!StageBodies(*world, runtime, provider, buildErr))
+        {
+            return Result<std::unique_ptr<PhysicsWorld>>::Fail(
+                buildErr.code, buildErr.path, buildErr.detail);
+        }
+    }
+
+    // T5: stage every authored hinge/slider after all bodies and ghosts, in
+    // stable owner-UUID order across both kinds. Frames resolve once at
+    // build; any failure (dangling/self reference, singular frame, invalid
+    // limit range, body-less owner/other) rolls the whole candidate back.
+    // Same outer allocation boundary: resource exhaustion surfaces as
+    // Error::Io with no committed world.
+    {
+        Error buildErr;
+        if (!StageConstraints(*world, runtime, buildErr))
         {
             return Result<std::unique_ptr<PhysicsWorld>>::Fail(
                 buildErr.code, buildErr.path, buildErr.detail);
@@ -291,6 +337,45 @@ void PhysicsWorld::PreStepSync(SceneDocument& runtime)
         else if (rec.ghost != nullptr)
         {
             rec.ghost->setWorldTransform(btT);
+        }
+    }
+
+    // T5 drive servo (every fixed tick, before the step): powered slider
+    // targets and hinge returns are closed-loop setpoints, not one-shot
+    // velocities. Re-servoing each tick makes the authored target the
+    // attractor — larger displacements still map monotonically to higher
+    // speeds (same proportional law as the drive entry points), but the
+    // mechanism settles AT the target instead of blowing past it on a
+    // constant initial velocity. Drive commands therefore take effect on
+    // the immediately following step (at most one tick of latency).
+    for (auto& rec : m_ConstraintIndex)
+    {
+        if (rec.isHinge && rec.hinge != nullptr && rec.returning)
+        {
+            const float delta = rec.restPosition - rec.hinge->getHingeAngle();
+            // Disengage inside half a degree: the motor did its job, and a
+            // one-shot velocity would orbit the setpoint forever.
+            if (std::abs(delta) < 0.0087f)
+            {
+                rec.hinge->enableAngularMotor(false, 0.0f, 0.0f);
+                rec.returning = false;
+                continue;
+            }
+            float speed = rec.driveSpeed;
+            if (!(speed > 0.0f))
+                speed = 1.0f;
+            rec.hinge->enableAngularMotor(true,
+                                          delta > 0.0f ? speed : -speed,
+                                          rec.driveMax);
+        }
+        else if (!rec.isHinge && rec.slider != nullptr &&
+                 rec.slider->getPoweredLinMotor())
+        {
+            const float delta =
+                rec.restPosition - rec.slider->getLinearPos();
+            float speed = kT5SliderTargetGain * delta;
+            speed = std::clamp(speed, -rec.driveSpeed, rec.driveSpeed);
+            rec.slider->setTargetLinMotorVelocity(speed);
         }
     }
 }
@@ -846,6 +931,12 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
     rec.isTrigger = shape->isTrigger;
     rec.bakedScale = scale;
     rec.shape = rawShape;
+    // T5 safe-point removal needs the mesh entry: StaticTriMesh bodies own
+    // one btTriangleMesh in m_TriangleMeshes (pushed just above for this
+    // shape), so removal erases the matching entry instead of leaking it.
+    if (shape->shape == PhysicsShapeKind::StaticTriMesh &&
+        !world.m_TriangleMeshes.empty())
+        rec.triangleMesh = world.m_TriangleMeshes.back().get();
 
     const int group = (int)body.layer;
     const int mask = (int)body.mask;
@@ -947,6 +1038,887 @@ bool PhysicsWorld::StageBodies(PhysicsWorld& world,
     }
     return true;
 }
+
+// ============================================================================
+// StageConstraints — T5 driven hinge/slider construction
+// ============================================================================
+//
+// Build order: every hinge/slider from the runtime clone, stable owner-UUID
+// order across both kinds, after all bodies/ghosts. Owner is the component
+// entity (must stage to a rigid body — Dynamic or Kinematic, never a ghost);
+// otherBody is another rigid body UUID or nil = world/static anchor.
+//
+// Frame resolution (exact, once at build, no teleport):
+//   - Hinge body-body: Bullet's pivot/axis constructor consumes the authored
+//     owner-local pivot+axis and other-local pivot+axis verbatim (axes
+//     normalized here; Bullet builds the frames).
+//   - Hinge world anchor: the authored otherPivot is a WORLD position and the
+//     hinge axis is the owner's local axis; the single-body frame is
+//     ownerWorld^-1 * worldAnchor (uniform scale stripped), so the Play-time
+//     world transform participates exactly.
+//   - Slider body-body: frameA is the owner-local frame (origin at the owner
+//     body center, X along the owner-local axis); frameB is the same world
+//     frame expressed in the other body's local space, so both frames
+//     coincide at build and the initial linear position is zero.
+//   - Slider world anchor: the single-body frame is the owner-local frame
+//     above (joint centered on the owner body at build).
+//
+// Drive (applied at build when motorEnabled, re-applied by the C++ drive
+// entry points below):
+//   - Hinge: enableAngularMotor(motorTargetVelocity, motorMaxImpulse) with
+//     the authored limits. Release cuts the motor (free swing in limits);
+//     return drives back toward restAngle with the staged impulse cap.
+//   - Slider: powered linear motor toward targetPosition with the
+//     proportional speed law v = clamp(kGain * (target - current),
+//     +/-motorTargetVelocity) capped by motorMaxForce, so larger
+//     displacements map monotonically to higher speeds. Release cuts the
+//     motor and applies an axis impulse; limits still bind afterwards.
+// Bodies joined by an enabled motor are set DISABLE_DEACTIVATION (spike
+// precedent: a sleeping body would swallow the drive).
+//
+// Validation at staging (defense in depth behind ValidatePhysicsForPlay and
+// the authoring APIs, all UUID-named): owner/other stage to rigid bodies,
+// finite pivots/axes/limits/motor params, driveMode == 0, hinge min <= max,
+// slider lower <= upper, slider target and hinge rest inside limits.
+
+namespace {
+
+bool T5FiniteVec3(const glm::vec3& v)
+{
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+btVector3 ToBt(const glm::vec3& v) { return btVector3(v.x, v.y, v.z); }
+glm::vec3 FromBt(const btVector3& v)
+{
+    return glm::vec3(v.x(), v.y(), v.z());
+}
+
+// Uniform Play-time scale of a constraint endpoint (bodies are roots, so
+// the local scale IS the world scale). Non-uniform/non-positive/non-finite
+// scales refuse loudly — frames cannot resolve without one scale owner.
+bool T5UniformScale(const entt::registry& registry, entt::entity entity,
+                    const UUID& owner, const std::string& name, Error& err,
+                    float& scaleOut)
+{
+    const auto* tf = registry.try_get<Transform>(entity);
+    if (tf == nullptr)
+        return T4FailCode(err, Error::InvalidTransform, owner, name,
+                          "constraint endpoint has no Transform "
+                          "(frames resolve from the Play-time world transform)");
+    const glm::vec3& s = tf->scale;
+    if (!T5FiniteVec3(s) || s.x <= 0.0f || s.x != s.y || s.y != s.z)
+        return T4FailCode(err, Error::InvalidTransform, owner, name,
+                          "constraint endpoint has a non-uniform, "
+                          "non-positive, or non-finite scale (frames need one "
+                          "uniform scale)");
+    scaleOut = s.x;
+    return true;
+}
+
+// Owner world transform (translation + rotation) with the uniform scale
+// stripped. Bodies are roots, so the refreshed world matrix is exact.
+bool T5OwnerWorldFrame(const entt::registry& registry, entt::entity entity,
+                       const UUID& owner, const std::string& name, Error& err,
+                       glm::vec3& originOut, glm::quat& rotationOut)
+{
+    const auto* tf = registry.try_get<Transform>(entity);
+    if (tf == nullptr)
+        return T4FailCode(err, Error::InvalidTransform, owner, name,
+                          "constraint owner has no Transform "
+                          "(frames resolve from the Play-time world transform)");
+    const glm::vec3& s = tf->scale;
+    if (!T5FiniteVec3(s) || s.x <= 0.0f || s.x != s.y || s.y != s.z)
+        return T4FailCode(err, Error::InvalidTransform, owner, name,
+                          "constraint owner has a non-uniform, non-positive, "
+                          "or non-finite scale (frames need one uniform scale)");
+    DecomposeUniform(tf->worldMatrix, s.x, originOut, rotationOut);
+    if (!T5FiniteVec3(originOut) || !std::isfinite(rotationOut.x) ||
+        !std::isfinite(rotationOut.y) || !std::isfinite(rotationOut.z) ||
+        !std::isfinite(rotationOut.w))
+        return T4FailCode(err, Error::InvalidTransform, owner, name,
+                          "constraint owner world transform is non-finite");
+    return true;
+}
+
+// Rigid body staged for a constraint endpoint. Null when the UUID stages to
+// a ghost trigger or to no record at all — both refuse loudly (a constraint
+// over a ghost has no simulated body to drive).
+btRigidBody* T5RigidEndpoint(PhysicsWorld& world, const UUID& id)
+{
+    const PhysicsBodyRecord* rec = world.FindBody(id);
+    if (rec == nullptr || rec->body == nullptr)
+        return nullptr;
+    return rec->body;
+}
+
+// Orthonormal basis with X along the (already normalized) axis.
+btMatrix3x3 T5BasisFromX(const btVector3& x)
+{
+    btVector3 up(0, 1, 0);
+    if (std::abs(x.dot(up)) > 0.95f)
+        up = btVector3(1, 0, 0);
+    const btVector3 z = (x.cross(up)).normalized();
+    const btVector3 y = (z.cross(x)).normalized();
+    return btMatrix3x3(x.x(), y.x(), z.x(), x.y(), y.y(), z.y(), x.z(), y.z(),
+                       z.z());
+}
+
+bool T5ValidateHingeValues(const PhysicsHingeComponent& hinge,
+                           const UUID& owner, const std::string& name,
+                           Error& err)
+{
+    if (!T5FiniteVec3(hinge.ownerPivot) || !T5FiniteVec3(hinge.otherPivot))
+        return T4Fail(err, owner, name,
+                      "hinge has a non-finite pivot (frames must be finite)");
+    if (!T5FiniteVec3(hinge.ownerAxis) ||
+        glm::length(hinge.ownerAxis) <= kT5MinAxisLength ||
+        !T5FiniteVec3(hinge.otherAxis) ||
+        glm::length(hinge.otherAxis) <= kT5MinAxisLength)
+        return T4Fail(err, owner, name,
+                      "hinge has a non-finite or zero-length pivot axis "
+                      "(singular frame)");
+    if (!std::isfinite(hinge.minAngleLimit) ||
+        !std::isfinite(hinge.maxAngleLimit) ||
+        hinge.minAngleLimit > hinge.maxAngleLimit)
+        return T4Fail(err, owner, name,
+                      "hinge has an invalid angle limit range "
+                      "(finite min <= max required, radians)");
+    if (hinge.driveMode != 0)
+        return T4Fail(err, owner, name,
+                      "hinge has an unknown drive mode (0 = velocity motor)");
+    if (!std::isfinite(hinge.motorTargetVelocity) ||
+        !std::isfinite(hinge.motorMaxImpulse) || hinge.motorMaxImpulse < 0.0f)
+        return T4Fail(err, owner, name,
+                      "hinge has non-finite motor params or a negative max "
+                      "impulse");
+    if (!std::isfinite(hinge.restAngle) || hinge.restAngle < hinge.minAngleLimit ||
+        hinge.restAngle > hinge.maxAngleLimit)
+        return T4Fail(err, owner, name,
+                      "hinge rest angle is non-finite or outside its limits");
+    return true;
+}
+
+bool T5ValidateSliderValues(const PhysicsSliderComponent& slider,
+                            const UUID& owner, const std::string& name,
+                            Error& err)
+{
+    if (!T5FiniteVec3(slider.axis) ||
+        glm::length(slider.axis) <= kT5MinAxisLength)
+        return T4Fail(err, owner, name,
+                      "slider has a non-finite or zero-length axis "
+                      "(singular frame)");
+    if (!std::isfinite(slider.lowerLimit) || !std::isfinite(slider.upperLimit) ||
+        slider.lowerLimit > slider.upperLimit)
+        return T4Fail(err, owner, name,
+                      "slider has an invalid limit range "
+                      "(finite lower <= upper required, world units)");
+    if (!std::isfinite(slider.targetPosition) ||
+        slider.targetPosition < slider.lowerLimit ||
+        slider.targetPosition > slider.upperLimit)
+        return T4Fail(err, owner, name,
+                      "slider target is non-finite or outside its limits");
+    if (!std::isfinite(slider.motorTargetVelocity) ||
+        slider.motorTargetVelocity < 0.0f ||
+        !std::isfinite(slider.motorMaxForce) || slider.motorMaxForce < 0.0f)
+        return T4Fail(err, owner, name,
+                      "slider has non-finite or negative motor params");
+    return true;
+}
+
+} // namespace
+
+const PhysicsConstraintRecord* PhysicsWorld::FindConstraint(
+    const UUID& ownerId) const
+{
+    for (const auto& rec : m_ConstraintIndex)
+    {
+        if (rec.ownerId == ownerId)
+            return &rec;
+    }
+    return nullptr;
+}
+
+static PhysicsConstraintRecord* FindConstraintMut(
+    std::vector<PhysicsConstraintRecord>& index, const UUID& ownerId)
+{
+    for (auto& rec : index)
+    {
+        if (rec.ownerId == ownerId)
+            return &rec;
+    }
+    return nullptr;
+}
+
+std::vector<UUID> PhysicsWorld::ConstraintsForBody(const UUID& bodyId) const
+{
+    std::vector<UUID> owners;
+    for (const auto& rec : m_ConstraintIndex)
+    {
+        if (rec.ownerId == bodyId || rec.otherId == bodyId)
+            owners.push_back(rec.ownerId);
+    }
+    std::sort(owners.begin(), owners.end());
+    return owners;
+}
+
+bool PhysicsWorld::StageOneHinge(PhysicsWorld& world,
+                                 const SceneDocument& runtime,
+                                 const UUID& owner, entt::entity entity,
+                                 Error& err)
+{
+    const auto& registry = runtime.ecs.registry;
+    const std::string name = T4EntityName(registry, entity);
+    const auto& hinge = registry.get<PhysicsHingeComponent>(entity);
+    if (!T5ValidateHingeValues(hinge, owner, name, err))
+        return false;
+
+    // Single scale owner: authored pivots are unscaled body-local points;
+    // the staged Bullet frames carry scaled geometry, so each pivot composes
+    // once with its endpoint's uniform Play-time scale (axes are
+    // scale-invariant after normalization).
+    float ownerScale = 1.0f;
+    if (!T5UniformScale(registry, entity, owner, name, err, ownerScale))
+        return false;
+
+    btRigidBody* ownerBody = T5RigidEndpoint(world, owner);
+    if (ownerBody == nullptr)
+        return T4Fail(err, owner, name,
+                      "hinge owner stages to no rigid body (constraint owners "
+                      "must be non-trigger Dynamic or Kinematic bodies)");
+    btRigidBody* otherBody = nullptr;
+    float otherScale = 1.0f;
+    if (!hinge.otherBody.IsNull())
+    {
+        otherBody = T5RigidEndpoint(world, hinge.otherBody);
+        if (otherBody == nullptr)
+            return T4Fail(err, owner, name,
+                          "hinge otherBody " + hinge.otherBody.ToString() +
+                              " stages to no rigid body (ghost triggers and "
+                              "missing bodies cannot anchor a hinge); owner " +
+                              owner.ToString());
+        const entt::entity otherEntity =
+            runtime.FindByUuid(hinge.otherBody);
+        if (otherEntity == entt::null ||
+            !T5UniformScale(registry, otherEntity, owner, name, err,
+                            otherScale))
+            return T4Fail(err, owner, name,
+                          "hinge otherBody " + hinge.otherBody.ToString() +
+                              " has no valid scaled endpoint; owner " +
+                              owner.ToString());
+    }
+
+    const btVector3 pivotA = ToBt(hinge.ownerPivot) * ownerScale;
+    const btVector3 axisA =
+        ToBt(glm::normalize(hinge.ownerAxis));
+    std::unique_ptr<btHingeConstraint> owned;
+    if (otherBody != nullptr)
+    {
+        const btVector3 pivotB = ToBt(hinge.otherPivot) * otherScale;
+        const btVector3 axisB =
+            ToBt(glm::normalize(hinge.otherAxis));
+        owned = std::make_unique<btHingeConstraint>(
+            *ownerBody, *otherBody, pivotA, pivotB, axisA, axisB, false);
+    }
+    else
+    {
+        // World anchor: otherPivot is a WORLD position. Resolve it into the
+        // owner body frame (which already carries scaled geometry) through
+        // the rigid Play-time world transform — pure Bullet math, no scale
+        // residue. The hinge axis stays the owner's local axis.
+        glm::vec3 origin;
+        glm::quat rotation;
+        if (!T5OwnerWorldFrame(registry, entity, owner, name, err, origin,
+                               rotation))
+            return false;
+        const btTransform ownerWorld = ToBtTransform(origin, rotation);
+        const btVector3 pivotLocal =
+            ownerWorld.inverse() * ToBt(hinge.otherPivot);
+        owned = std::make_unique<btHingeConstraint>(*ownerBody, pivotLocal,
+                                                    axisA, false);
+    }
+    btHingeConstraint* hingePtr = owned.get();
+    hingePtr->setLimit(hinge.minAngleLimit, hinge.maxAngleLimit);
+    if (hinge.motorEnabled)
+    {
+        hingePtr->enableAngularMotor(true, hinge.motorTargetVelocity,
+                                     hinge.motorMaxImpulse);
+        ownerBody->setActivationState(DISABLE_DEACTIVATION);
+        if (otherBody != nullptr)
+            otherBody->setActivationState(DISABLE_DEACTIVATION);
+    }
+    world.m_World.addConstraint(hingePtr, true);
+
+    PhysicsConstraintRecord rec;
+    rec.ownerId = owner;
+    rec.otherId = hinge.otherBody;
+    rec.isHinge = true;
+    rec.constraint = hingePtr;
+    rec.hinge = hingePtr;
+    rec.slider = nullptr;
+    rec.driveSpeed = hinge.motorTargetVelocity;
+    rec.driveMax = hinge.motorMaxImpulse;
+    rec.restPosition = hinge.restAngle;
+    rec.lowerLimit = hinge.minAngleLimit;
+    rec.upperLimit = hinge.maxAngleLimit;
+    world.m_Constraints.push_back(std::move(owned));
+    world.m_ConstraintIndex.push_back(rec);
+    return true;
+}
+
+bool PhysicsWorld::StageOneSlider(PhysicsWorld& world,
+                                  const SceneDocument& runtime,
+                                  const UUID& owner, entt::entity entity,
+                                  Error& err)
+{
+    const auto& registry = runtime.ecs.registry;
+    const std::string name = T4EntityName(registry, entity);
+    const auto& slider = registry.get<PhysicsSliderComponent>(entity);
+    if (!T5ValidateSliderValues(slider, owner, name, err))
+        return false;
+
+    btRigidBody* ownerBody = T5RigidEndpoint(world, owner);
+    if (ownerBody == nullptr)
+        return T4Fail(err, owner, name,
+                      "slider owner stages to no rigid body (constraint "
+                      "owners must be non-trigger Dynamic or Kinematic "
+                      "bodies)");
+    btRigidBody* otherBody = nullptr;
+    if (!slider.otherBody.IsNull())
+    {
+        otherBody = T5RigidEndpoint(world, slider.otherBody);
+        if (otherBody == nullptr)
+            return T4Fail(err, owner, name,
+                          "slider otherBody " + slider.otherBody.ToString() +
+                              " stages to no rigid body (ghost triggers and "
+                              "missing bodies cannot anchor a slider); owner " +
+                              owner.ToString());
+    }
+
+    const btVector3 axisA =
+        ToBt(glm::normalize(slider.axis)).normalized();
+    const btTransform frameA(T5BasisFromX(axisA), btVector3(0, 0, 0));
+    std::unique_ptr<btSliderConstraint> owned;
+    if (otherBody != nullptr)
+    {
+        // Same world frame in the other body's local space, so both frames
+        // coincide at build (initial linear position zero). Pure Bullet
+        // math: the owner world frame carries the staged axis, mapped into
+        // the other body's local space through its staged world transform
+        // (exact; bodies carry uniform scale only, which translations and
+        // orthonormal bases are invariant to).
+        glm::vec3 origin;
+        glm::quat rotation;
+        if (!T5OwnerWorldFrame(registry, entity, owner, name, err, origin,
+                               rotation))
+            return false;
+        const btTransform ownerWorld(ToBtTransform(origin, rotation));
+        const btVector3 axisWorld = ownerWorld.getBasis() * axisA;
+        const btTransform frameWorld(T5BasisFromX(axisWorld),
+                                     ownerWorld.getOrigin());
+        const btTransform otherWorld = otherBody->getWorldTransform();
+        const btTransform frameB = otherWorld.inverse() * frameWorld;
+        // Anchor-first body order (spike convention): with the static/other
+        // body as A and the owner as B, a positive target velocity drives
+        // the owner along +axis and getLinearPos measures travel from the
+        // build pose outward. Owner-first order mirrors the sign (proven by
+        // a debug probe: the plunger traveled -X for a +X target).
+        owned = std::make_unique<btSliderConstraint>(*otherBody, *ownerBody,
+                                                     frameB, frameA, true);
+    }
+    else
+    {
+        owned = std::make_unique<btSliderConstraint>(*ownerBody, frameA, true);
+    }
+    btSliderConstraint* sliderPtr = owned.get();
+    sliderPtr->setLowerLinLimit(slider.lowerLimit);
+    sliderPtr->setUpperLinLimit(slider.upperLimit);
+    if (slider.motorEnabled)
+    {
+        sliderPtr->setMaxLinMotorForce(slider.motorMaxForce);
+        const float current = sliderPtr->getLinearPos();
+        const float delta = slider.targetPosition - current;
+        float speed = kT5SliderTargetGain * delta;
+        speed = std::clamp(speed, -slider.motorTargetVelocity,
+                           slider.motorTargetVelocity);
+        sliderPtr->setTargetLinMotorVelocity(speed);
+        sliderPtr->setPoweredLinMotor(true);
+        ownerBody->setActivationState(DISABLE_DEACTIVATION);
+        if (otherBody != nullptr)
+            otherBody->setActivationState(DISABLE_DEACTIVATION);
+    }
+    world.m_World.addConstraint(sliderPtr, true);
+
+    PhysicsConstraintRecord rec;
+    rec.ownerId = owner;
+    rec.otherId = slider.otherBody;
+    rec.isHinge = false;
+    rec.constraint = sliderPtr;
+    rec.hinge = nullptr;
+    rec.slider = sliderPtr;
+    rec.driveSpeed = slider.motorTargetVelocity;
+    rec.driveMax = slider.motorMaxForce;
+    rec.restPosition = slider.targetPosition;
+    rec.lowerLimit = slider.lowerLimit;
+    rec.upperLimit = slider.upperLimit;
+    // Staged local axis (normalized) for the release-impulse direction.
+    rec.localAxis = FromBt(axisA);
+    world.m_Constraints.push_back(std::move(owned));
+    world.m_ConstraintIndex.push_back(rec);
+    return true;
+}
+
+bool PhysicsWorld::StageConstraints(PhysicsWorld& world,
+                                    const SceneDocument& runtime, Error& err)
+{
+    const auto& registry = runtime.ecs.registry;
+    std::vector<std::pair<UUID, entt::entity>> hinges;
+    for (auto e : registry.view<PhysicsHingeComponent>())
+    {
+        const auto* idc = registry.try_get<EntityIdComponent>(e);
+        if (idc != nullptr && !idc->id.IsNull())
+            hinges.emplace_back(idc->id, e);
+    }
+    std::vector<std::pair<UUID, entt::entity>> sliders;
+    for (auto e : registry.view<PhysicsSliderComponent>())
+    {
+        const auto* idc = registry.try_get<EntityIdComponent>(e);
+        if (idc != nullptr && !idc->id.IsNull())
+            sliders.emplace_back(idc->id, e);
+    }
+    // Stable UUID order across both kinds: constraints build last as one
+    // group, deterministic regardless of component kind.
+    std::vector<std::tuple<UUID, entt::entity, bool>> ordered;
+    for (const auto& [uuid, entity] : hinges)
+        ordered.emplace_back(uuid, entity, true);
+    for (const auto& [uuid, entity] : sliders)
+        ordered.emplace_back(uuid, entity, false);
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto& a, const auto& b) {
+                  return std::get<0>(a) < std::get<0>(b);
+              });
+
+    if (s_StagingTestThrow)
+        throw std::bad_alloc();
+    for (const auto& [uuid, entity, isHinge] : ordered)
+    {
+        const bool ok = isHinge
+                            ? StageOneHinge(world, runtime, uuid, entity, err)
+                            : StageOneSlider(world, runtime, uuid, entity,
+                                             err);
+        if (!ok)
+            return false;
+    }
+    return true;
+}
+
+// ---- T5 drive entry points (immediate; next fixed tick moves) ----
+
+bool PhysicsWorld::SetHingeDrive(const UUID& owner, float velocity,
+                                 float maxImpulse)
+{
+    PhysicsConstraintRecord* rec = FindConstraintMut(m_ConstraintIndex, owner);
+    if (rec == nullptr || !rec->isHinge || rec->hinge == nullptr)
+        return false;
+    if (!std::isfinite(velocity) || !std::isfinite(maxImpulse) ||
+        maxImpulse < 0.0f)
+        return false;
+    rec->hinge->enableAngularMotor(true, velocity, maxImpulse);
+    rec->driveSpeed = velocity;
+    rec->driveMax = maxImpulse;
+    rec->returning = false;
+    return true;
+}
+
+bool PhysicsWorld::ReleaseHingeDrive(const UUID& owner)
+{
+    PhysicsConstraintRecord* rec = FindConstraintMut(m_ConstraintIndex, owner);
+    if (rec == nullptr || !rec->isHinge || rec->hinge == nullptr)
+        return false;
+    // Motor off: free swing within limits. Poses are untouched — release
+    // never teleports the constrained body.
+    rec->hinge->enableAngularMotor(false, 0.0f, 0.0f);
+    rec->returning = false;
+    return true;
+}
+
+bool PhysicsWorld::ReturnHingeToRest(const UUID& owner)
+{
+    PhysicsConstraintRecord* rec = FindConstraintMut(m_ConstraintIndex, owner);
+    if (rec == nullptr || !rec->isHinge || rec->hinge == nullptr)
+        return false;
+    const float current = rec->hinge->getHingeAngle();
+    const float delta = rec->restPosition - current;
+    if (delta == 0.0f)
+    {
+        rec->hinge->enableAngularMotor(false, 0.0f, 0.0f);
+        rec->returning = false;
+        return true;
+    }
+    float speed = rec->driveSpeed;
+    if (!(speed > 0.0f))
+        speed = 1.0f; // sane return rate when the staged drive is idle
+    const float velocity = delta > 0.0f ? speed : -speed;
+    rec->hinge->enableAngularMotor(true, velocity, rec->driveMax);
+    // Closed-loop return: the pre-step servo keeps driving toward rest
+    // until it disengages at the setpoint (a one-shot velocity alone would
+    // orbit past it).
+    rec->returning = true;
+    return true;
+}
+
+float PhysicsWorld::HingeAngle(const UUID& owner, bool& ok)
+{
+    PhysicsConstraintRecord* rec = FindConstraintMut(m_ConstraintIndex, owner);
+    if (rec == nullptr || !rec->isHinge || rec->hinge == nullptr)
+    {
+        ok = false;
+        return 0.0f;
+    }
+    ok = true;
+    return rec->hinge->getHingeAngle();
+}
+
+bool PhysicsWorld::HingeMotorEnabled(const UUID& owner, bool& ok)
+{
+    PhysicsConstraintRecord* rec = FindConstraintMut(m_ConstraintIndex, owner);
+    if (rec == nullptr || !rec->isHinge || rec->hinge == nullptr)
+    {
+        ok = false;
+        return false;
+    }
+    ok = true;
+    return rec->hinge->getEnableAngularMotor();
+}
+
+bool PhysicsWorld::HingeMotorParams(const UUID& owner, float& velocityOut,
+                                    float& maxImpulseOut)
+{
+    PhysicsConstraintRecord* rec = FindConstraintMut(m_ConstraintIndex, owner);
+    if (rec == nullptr || !rec->isHinge || rec->hinge == nullptr)
+        return false;
+    velocityOut = rec->hinge->getMotorTargetVelocity();
+    maxImpulseOut = rec->hinge->getMaxMotorImpulse();
+    return true;
+}
+
+bool PhysicsWorld::SetSliderTarget(const UUID& owner, float target)
+{
+    PhysicsConstraintRecord* rec = FindConstraintMut(m_ConstraintIndex, owner);
+    if (rec == nullptr || rec->isHinge || rec->slider == nullptr)
+        return false;
+    // Outside the limits is a loud refusal, never a clamp: the slider must
+    // not move outside its limits through this entry point.
+    if (!std::isfinite(target) || target < rec->lowerLimit ||
+        target > rec->upperLimit)
+        return false;
+    const float current = rec->slider->getLinearPos();
+    float speed = kT5SliderTargetGain * (target - current);
+    speed = std::clamp(speed, -rec->driveSpeed, rec->driveSpeed);
+    rec->slider->setTargetLinMotorVelocity(speed);
+    rec->slider->setMaxLinMotorForce(rec->driveMax);
+    rec->slider->setPoweredLinMotor(true);
+    rec->restPosition = target;
+    return true;
+}
+
+bool PhysicsWorld::ReleaseSlider(const UUID& owner, float impulse)
+{
+    PhysicsConstraintRecord* rec = FindConstraintMut(m_ConstraintIndex, owner);
+    if (rec == nullptr || rec->isHinge || rec->slider == nullptr)
+        return false;
+    if (!std::isfinite(impulse))
+        return false;
+    rec->slider->setPoweredLinMotor(false);
+    const PhysicsBodyRecord* body = FindBody(owner);
+    if (body == nullptr || body->body == nullptr)
+        return false;
+    // Impulse along the staged axis in its current world direction. Limits
+    // still bind afterwards; poses are never teleported.
+    const btVector3 axisWorld =
+        body->body->getWorldTransform().getBasis() * ToBt(rec->localAxis);
+    body->body->activate(true);
+    body->body->applyCentralImpulse(axisWorld * impulse);
+    return true;
+}
+
+float PhysicsWorld::SliderPosition(const UUID& owner, bool& ok) const
+{
+    const PhysicsConstraintRecord* rec = FindConstraint(owner);
+    if (rec == nullptr || rec->isHinge || rec->slider == nullptr)
+    {
+        ok = false;
+        return 0.0f;
+    }
+    ok = true;
+    return rec->slider->getLinearPos();
+}
+
+// ---- T5 safe-point teardown participation ----
+
+void PhysicsWorld::RemoveSubtreePhysics(const std::vector<UUID>& uuids)
+{
+    // Constraints FIRST (every live constraint touching the set, as owner
+    // or as otherBody), then bodies. Reversing this strands Bullet
+    // constraints over removed bodies.
+    for (size_t i = 0; i < m_ConstraintIndex.size();)
+    {
+        const auto& rec = m_ConstraintIndex[i];
+        const bool ownerGone =
+            std::find(uuids.begin(), uuids.end(), rec.ownerId) != uuids.end();
+        const bool otherGone =
+            !rec.otherId.IsNull() &&
+            std::find(uuids.begin(), uuids.end(), rec.otherId) != uuids.end();
+        if (!ownerGone && !otherGone)
+        {
+            ++i;
+            continue;
+        }
+        m_World.removeConstraint(rec.constraint);
+        if (s_TeardownOrderLog)
+            s_TeardownOrder.emplace_back("constraint");
+        auto it = m_Constraints.begin();
+        for (; it != m_Constraints.end(); ++it)
+        {
+            if (it->get() == rec.constraint)
+                break;
+        }
+        if (it != m_Constraints.end())
+            m_Constraints.erase(it);
+        m_ConstraintIndex.erase(m_ConstraintIndex.begin() + (ptrdiff_t)i);
+    }
+    for (const auto& uuid : uuids)
+    {
+        Error ignored;
+        RemoveRuntimeBody(uuid, ignored);
+    }
+}
+
+bool PhysicsWorld::RemoveRuntimeBody(const UUID& bodyId, Error& err)
+{
+    // Orphan guard: a body still referenced by a live constraint cannot be
+    // removed first. Callers remove dependent constraints (or prove the
+    // batch rejects them) before bodies — a reversed order fails here with
+    // the UUIDs named instead of dangling silently.
+    const std::vector<UUID> dependents = ConstraintsForBody(bodyId);
+    if (!dependents.empty())
+    {
+        err.code = Error::InvalidArgument;
+        err.path = bodyId.ToString();
+        err.detail = "entity " + bodyId.ToString() +
+                     " is still referenced by live constraint owner " +
+                     dependents.front().ToString() +
+                     " (remove dependent constraints before bodies)";
+        return false;
+    }
+    for (size_t i = 0; i < m_BodyIndex.size(); ++i)
+    {
+        if (!(m_BodyIndex[i].id == bodyId))
+            continue;
+        PhysicsBodyRecord rec = m_BodyIndex[i];
+        if (rec.ghost != nullptr)
+        {
+            m_World.removeCollisionObject(rec.ghost);
+            for (auto it = m_Ghosts.begin(); it != m_Ghosts.end(); ++it)
+            {
+                if (it->get() == rec.ghost)
+                {
+                    m_Ghosts.erase(it);
+                    break;
+                }
+            }
+        }
+        else if (rec.body != nullptr)
+        {
+            m_World.removeCollisionObject(rec.body);
+            for (auto it = m_Bodies.begin(); it != m_Bodies.end(); ++it)
+            {
+                if (it->get() == rec.body)
+                {
+                    m_Bodies.erase(it);
+                    break;
+                }
+            }
+            for (auto it = m_MotionStates.begin(); it != m_MotionStates.end();
+                 ++it)
+            {
+                if (it->get() == rec.motion)
+                {
+                    m_MotionStates.erase(it);
+                    break;
+                }
+            }
+        }
+        if (rec.shape != nullptr)
+        {
+            for (auto it = m_Shapes.begin(); it != m_Shapes.end(); ++it)
+            {
+                if (it->get() == rec.shape)
+                {
+                    m_Shapes.erase(it);
+                    break;
+                }
+            }
+        }
+        if (rec.triangleMesh != nullptr)
+        {
+            for (auto it = m_TriangleMeshes.begin();
+                 it != m_TriangleMeshes.end(); ++it)
+            {
+                if (it->get() == rec.triangleMesh)
+                {
+                    m_TriangleMeshes.erase(it);
+                    break;
+                }
+            }
+        }
+        m_BodyIndex.erase(m_BodyIndex.begin() + (ptrdiff_t)i);
+        if (s_TeardownOrderLog)
+            s_TeardownOrder.emplace_back("body");
+        err = Error{};
+        return true;
+    }
+    err = Error{};
+    return true; // no live body for this UUID: nothing to remove
+}
+
+bool PhysicsWorld::RebuildConstraintsForBody(SceneDocument& runtime,
+                                             const UUID& bodyId, Error& err)
+{
+    // Atomic rebuild: validate + construct every affected replacement
+    // against a scratch check first (the live set is untouched), then swap.
+    // A failure leaves the previous constraints live and stepping.
+    const std::vector<UUID> affected = ConstraintsForBody(bodyId);
+    if (affected.empty())
+    {
+        err = Error{};
+        return true;
+    }
+    auto& registry = runtime.ecs.registry;
+    for (const auto& owner : affected)
+    {
+        const entt::entity entity = runtime.FindByUuid(owner);
+        if (entity == entt::null || !registry.valid(entity))
+        {
+            err.code = Error::InvalidEntity;
+            err.path = owner.ToString();
+            err.detail = "constraint owner " + owner.ToString() +
+                         " does not resolve to a live runtime entity "
+                         "(rebuild refused; live set unchanged)";
+            return false;
+        }
+        const bool wantHinge = registry.all_of<PhysicsHingeComponent>(entity);
+        const bool wantSlider =
+            registry.all_of<PhysicsSliderComponent>(entity);
+        const PhysicsConstraintRecord* live = FindConstraint(owner);
+        const bool liveHinge = live != nullptr && live->isHinge;
+        if ((wantHinge == wantSlider) || (wantHinge != liveHinge))
+        {
+            err.code = Error::InvalidArgument;
+            err.path = owner.ToString();
+            err.detail = "constraint owner " + owner.ToString() +
+                         " changed kind or lost its component "
+                         "(rebuild refused; live set unchanged)";
+            return false;
+        }
+        // Dry-run validation of values + endpoints before touching live
+        // state. Mirrors the staging checks without constructing.
+        const std::string name = T4EntityName(registry, entity);
+        if (wantHinge)
+        {
+            if (!T5ValidateHingeValues(registry.get<PhysicsHingeComponent>(entity),
+                                       owner, name, err))
+                return false;
+        }
+        else
+        {
+            if (!T5ValidateSliderValues(
+                    registry.get<PhysicsSliderComponent>(entity), owner, name,
+                    err))
+                return false;
+        }
+        const auto& comp = wantHinge
+                               ? registry.get<PhysicsHingeComponent>(entity)
+                                     .otherBody
+                               : registry.get<PhysicsSliderComponent>(entity)
+                                     .otherBody;
+        if (!comp.IsNull() && T5RigidEndpoint(*this, comp) == nullptr)
+        {
+            err.code = Error::InvalidArgument;
+            err.path = owner.ToString();
+            err.detail = "constraint owner " + owner.ToString() +
+                         " references body " + comp.ToString() +
+                         " with no live rigid body "
+                         "(rebuild refused; live set unchanged)";
+            return false;
+        }
+        if (T5RigidEndpoint(*this, owner) == nullptr)
+        {
+            err.code = Error::InvalidArgument;
+            err.path = owner.ToString();
+            err.detail = "constraint owner " + owner.ToString() +
+                         " has no live rigid body "
+                         "(rebuild refused; live set unchanged)";
+            return false;
+        }
+    }
+    // All replacements validate: remove the old set first (constraints
+    // before anything else), then stage the new set from the document.
+    for (const auto& owner : affected)
+    {
+        const PhysicsConstraintRecord* live = FindConstraint(owner);
+        m_World.removeConstraint(live->constraint);
+        if (s_TeardownOrderLog)
+            s_TeardownOrder.emplace_back("constraint");
+        for (auto it = m_Constraints.begin(); it != m_Constraints.end(); ++it)
+        {
+            if (it->get() == live->constraint)
+            {
+                m_Constraints.erase(it);
+                break;
+            }
+        }
+        for (auto it = m_ConstraintIndex.begin(); it != m_ConstraintIndex.end();
+             ++it)
+        {
+            if (it->ownerId == owner)
+            {
+                m_ConstraintIndex.erase(it);
+                break;
+            }
+        }
+    }
+    for (const auto& owner : affected)
+    {
+        const entt::entity entity = runtime.FindByUuid(owner);
+        const bool wantHinge = registry.all_of<PhysicsHingeComponent>(entity);
+        const bool ok = wantHinge
+                            ? StageOneHinge(*this, runtime, owner, entity, err)
+                            : StageOneSlider(*this, runtime, owner, entity,
+                                             err);
+        if (!ok)
+        {
+            // Validated above, so this is a code bug (validation and
+            // staging disagree) — loud, never a silent half-rebuild.
+            assert(false && "RebuildConstraintsForBody staged validated input");
+            return false;
+        }
+    }
+    err = Error{};
+    return true;
+}
+
+void PhysicsWorld::SetTeardownOrderLog(bool enabled)
+{
+    s_TeardownOrderLog = enabled;
+}
+
+std::vector<std::string> PhysicsWorld::TakeTeardownOrderLog()
+{
+    return s_TeardownOrder;
+}
+
+void PhysicsWorld::ClearTeardownOrderLog() { s_TeardownOrder.clear(); }
 
 // ============================================================================
 // ValidatePhysicsForPlay — T3 early invariants
@@ -1082,6 +2054,87 @@ bool ValidatePhysicsForPlay(const SceneDocument& doc,
             return FailWith(err, Error::InvalidArgument, owner,
                             "PhysicsSliderComponent owner " + owner.ToString() +
                             " has a non-finite or zero-length axis (singular frame)");
+        }
+    }
+
+    // T5 constraint value ranges (defense in depth behind the authoring
+    // APIs; staging re-checks verbatim). Limit ranges, pivots, and motor
+    // params must be finite and ordered; unknown drive modes refuse.
+    for (const auto& [owner, entity] : CollectOrdered<PhysicsHingeComponent>(registry))
+    {
+        const auto& hinge = registry.get<PhysicsHingeComponent>(entity);
+        if (!IsFiniteVec3(hinge.ownerPivot) || !IsFiniteVec3(hinge.otherPivot))
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsHingeComponent owner " + owner.ToString() +
+                            " has a non-finite pivot (frames must be finite)");
+        }
+        if (!std::isfinite(hinge.minAngleLimit) ||
+            !std::isfinite(hinge.maxAngleLimit) ||
+            hinge.minAngleLimit > hinge.maxAngleLimit)
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsHingeComponent owner " + owner.ToString() +
+                            " has an invalid angle limit range (finite min <= "
+                            "max required, radians)");
+        }
+        if (hinge.driveMode != 0)
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsHingeComponent owner " + owner.ToString() +
+                            " has an unknown drive mode (0 = velocity motor)");
+        }
+        if (!std::isfinite(hinge.motorTargetVelocity) ||
+            !std::isfinite(hinge.motorMaxImpulse) ||
+            hinge.motorMaxImpulse < 0.0f)
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsHingeComponent owner " + owner.ToString() +
+                            " has non-finite motor params or a negative max "
+                            "impulse");
+        }
+        if (!std::isfinite(hinge.restAngle) ||
+            hinge.restAngle < hinge.minAngleLimit ||
+            hinge.restAngle > hinge.maxAngleLimit)
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsHingeComponent owner " + owner.ToString() +
+                            " has a non-finite rest angle or one outside its "
+                            "limits");
+        }
+    }
+    for (const auto& [owner, entity] : CollectOrdered<PhysicsSliderComponent>(registry))
+    {
+        const auto& slider = registry.get<PhysicsSliderComponent>(entity);
+        if (!std::isfinite(slider.lowerLimit) ||
+            !std::isfinite(slider.upperLimit) ||
+            slider.lowerLimit > slider.upperLimit)
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsSliderComponent owner " +
+                            owner.ToString() +
+                            " has an invalid limit range (finite lower <= "
+                            "upper required, world units)");
+        }
+        if (!std::isfinite(slider.targetPosition) ||
+            slider.targetPosition < slider.lowerLimit ||
+            slider.targetPosition > slider.upperLimit)
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsSliderComponent owner " +
+                            owner.ToString() +
+                            " has a non-finite target or one outside its "
+                            "limits");
+        }
+        if (!std::isfinite(slider.motorTargetVelocity) ||
+            slider.motorTargetVelocity < 0.0f ||
+            !std::isfinite(slider.motorMaxForce) ||
+            slider.motorMaxForce < 0.0f)
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsSliderComponent owner " +
+                            owner.ToString() +
+                            " has non-finite or negative motor params");
         }
     }
 
