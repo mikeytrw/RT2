@@ -450,18 +450,12 @@ Result<void> RuntimeSceneController::QueueDestroyRuntimeEntity(const UUID& uuid)
     return Result<void>::Ok();
 }
 
-bool RuntimeSceneController::ApplyDeferredStructuralChanges(
-    Error& err, std::vector<UUID>& createdUuids)
+bool RuntimeSceneController::ValidatePendingBatch(Error& err) const
 {
-    createdUuids.clear();
-
     if (!m_Runtime)
         return false;
 
-    if (m_PendingOperations.empty())
-        return false;
-
-    auto& doc = *m_Runtime;
+    const auto& doc = *m_Runtime;
 
     // Phase 1: validate the complete batch before any mutation. Walk the
     // queue in order, building the set of UUIDs that will exist after each
@@ -470,6 +464,9 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
     std::unordered_set<UUID> existingUuids;
     for (const auto& [uuid, entity] : doc.uuidIndex.All())
         existingUuids.insert(uuid);
+    // T5 destroy closure: every UUID the batch removes (explicit destroys
+    // plus their registry subtrees), for the constrained-body rule below.
+    std::unordered_set<UUID> destroyedUuids;
 
     for (const auto& op : m_PendingOperations)
     {
@@ -509,6 +506,7 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
             // the registry, so we collect it post-order and remove every
             // descendant UUID.
             existingUuids.erase(destroy->uuid);
+            destroyedUuids.insert(destroy->uuid);
             const auto root = doc.FindByUuid(destroy->uuid);
             if (root != entt::null)
             {
@@ -517,11 +515,90 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
                 for (const auto e : subtree)
                 {
                     if (const auto* id = doc.ecs.registry.try_get<EntityIdComponent>(e))
+                    {
                         existingUuids.erase(id->id);
+                        destroyedUuids.insert(id->id);
+                    }
                 }
             }
         }
     }
+
+    // T5 constrained-body destroy policy (plan section 3): a destroy batch
+    // that would leave a surviving hinge/slider referencing a destroyed body
+    // is rejected as a whole (loud, batch preserved) unless the constraint
+    // owner is destroyed in the same batch — then teardown rides along.
+    // UUID order for determinism: the first orphaned constraint fails.
+    std::vector<std::pair<UUID, entt::entity>> hingeOwners;
+    for (auto e : doc.ecs.registry.view<PhysicsHingeComponent>())
+    {
+        const auto* idc = doc.ecs.registry.try_get<EntityIdComponent>(e);
+        if (idc != nullptr && !idc->id.IsNull())
+            hingeOwners.emplace_back(idc->id, e);
+    }
+    std::vector<std::pair<UUID, entt::entity>> sliderOwners;
+    for (auto e : doc.ecs.registry.view<PhysicsSliderComponent>())
+    {
+        const auto* idc = doc.ecs.registry.try_get<EntityIdComponent>(e);
+        if (idc != nullptr && !idc->id.IsNull())
+            sliderOwners.emplace_back(idc->id, e);
+    }
+    std::sort(hingeOwners.begin(), hingeOwners.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::sort(sliderOwners.begin(), sliderOwners.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    auto checkOther = [&](const UUID& owner, const UUID& other,
+                          const char* kind) -> bool {
+        if (other.IsNull())
+            return true; // world anchor: no body to orphan
+        if (destroyedUuids.count(owner) != 0)
+            return true; // owner dies with the batch: teardown rides along
+        if (destroyedUuids.count(other) != 0)
+        {
+            err = Error{ Error::InvalidArgument, owner.ToString(),
+                std::string("ApplyDeferredStructuralChanges: destroy batch would orphan surviving ") +
+                kind + " owner " + owner.ToString() +
+                " (otherBody " + other.ToString() +
+                " destroyed without the constraint owner)" };
+            return false;
+        }
+        return true;
+    };
+    for (const auto& [owner, entity] : hingeOwners)
+    {
+        const auto& hinge = doc.ecs.registry.get<PhysicsHingeComponent>(entity);
+        if (!checkOther(owner, hinge.otherBody, "PhysicsHingeComponent"))
+            return false;
+    }
+    for (const auto& [owner, entity] : sliderOwners)
+    {
+        const auto& slider = doc.ecs.registry.get<PhysicsSliderComponent>(entity);
+        if (!checkOther(owner, slider.otherBody, "PhysicsSliderComponent"))
+            return false;
+    }
+
+    err = Error{};
+    return true;
+}
+
+bool RuntimeSceneController::ApplyDeferredStructuralChanges(
+    Error& err, std::vector<UUID>& createdUuids)
+{
+    createdUuids.clear();
+
+    if (!m_Runtime)
+        return false;
+
+    if (m_PendingOperations.empty())
+        return false;
+
+    auto& doc = *m_Runtime;
+
+    // Phase 1 (no mutation): the standalone validator covers duplicate UUID,
+    // parent resolution, destroy targets, and the T5 constrained-body rule.
+    // Any failure leaves the queue intact and the document unchanged.
+    if (!ValidatePendingBatch(err))
+        return false;
 
     // Phase 2: apply the batch atomically in enqueue order via the mutator.
     // Post-validation, mutator failures are bugs — the validation phase
@@ -574,6 +651,33 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
 
                     if (!uuids.empty())
                         m_ScriptDispatch->OnEntitiesDestroying(uuids);
+                }
+            }
+
+            // T5 physics teardown participation at the OnEntitiesDestroying
+            // seam: ECS entities and Bullet objects are still present here.
+            // Dependent constraints die FIRST, then the bodies/ghosts they
+            // reference (constraints-before-bodies, same op position, so a
+            // half-torn constraint set is never stepped). Phase-1 validation
+            // already rejected batches that would orphan a surviving
+            // constraint, so every affected constraint owner dies in this
+            // same subtree.
+            if (m_PhysicsWorld)
+            {
+                const auto root = doc.FindByUuid(destroy->uuid);
+                if (root != entt::null && doc.ecs.registry.valid(root))
+                {
+                    std::vector<entt::entity> subtree;
+                    SceneHierarchy::CollectSubtreePostOrder(
+                        doc.ecs.registry, root, subtree);
+                    std::vector<UUID> subtreeUuids;
+                    subtreeUuids.reserve(subtree.size());
+                    for (auto e : subtree)
+                        if (const auto* idc =
+                                doc.ecs.registry.try_get<EntityIdComponent>(e))
+                            subtreeUuids.push_back(idc->id);
+                    if (!subtreeUuids.empty())
+                        m_PhysicsWorld->RemoveSubtreePhysics(subtreeUuids);
                 }
             }
 

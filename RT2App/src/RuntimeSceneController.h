@@ -284,6 +284,15 @@ public:
     // must not advance it.
     float DebugAccumulator() const { return m_Accumulator; }
 
+    // Phase-1 batch validation as a standalone predicate (T5 destroy-policy
+    // seam): duplicate-UUID, parent-resolution, destroy-target, AND the
+    // constrained-body rule — a destroy batch that would orphan a surviving
+    // hinge/slider (owner lives, referenced body dies) is rejected as a
+    // whole unless the constraint owner dies in the same batch. False leaves
+    // the queue and the world untouched; true means the drain may apply.
+    // The drain calls this before mutating anything.
+    bool ValidatePendingBatch(Error& err) const;
+
 private:
     // Initialize prevWorldMatrix = worldMatrix for all transforms in the
     // runtime document. Called once at Play to prevent invalid motion vectors

@@ -105,7 +105,29 @@ $requiredCases = @(
     "T4 RED_CreatePreNewAllocationTyped: pre-candidate exhaustion is atomic Io",
     "T4 RED_CreatePostNewAllocationTyped: constructed candidate tears down with atomic Io",
     "T4 RED_PlayHandoffAllocationTyped: escaped factory failure rolls back atomically",
-    "T4 RED_ProviderKeyEntryAllocationTyped: key/entry exhaustion is typed Io"
+    "T4 RED_ProviderKeyEntryAllocationTyped: key/entry exhaustion is typed Io",
+    # T5: driven hinge/slider constraints, authoring, teardown, remap.
+    "T5 GREEN_HingeReachesAngle: motorized hinge reaches ~55 degrees with negligible pivot drift",
+    "T5 GREEN_SliderTransfersImpulse: bounded travel with positive impulse transfer",
+    "T5 GREEN_SliderTargetMonotonic: larger displacement maps to larger output",
+    "T5 GREEN_DriveLatencyOneTick: drive commands move bodies within one fixed tick",
+    "T5 GREEN_HingeReleaseAndReturn: release frees without teleport, return reaches rest",
+    "T5 GREEN_SliderReleaseImpulseBounded: release impulse stays within limits",
+    "T5 GREEN_ConstraintRemapPlays: duplicated internal refs Play against copied bodies",
+    "T5 GREEN_PrefabConstraintRemapPlays: instantiated refs Play against instance bodies",
+    "T5 GREEN_ExternalWorldAnchorsPlay: external and world anchors survive copy and Play",
+    "T5 GREEN_ZeroHandlesAfterCycles: repeated Play/Stop and destroy cycles leave zero handles",
+    "T5 RED_BadConstraintUuidRefused: dangling, self, and missing-owner refs refuse Play",
+    "T5 RED_InvalidConstraintRangeRefused: bad limits, modes, and targets refuse loudly",
+    "T5 RED_ConstrainedDestroyBatchRejected: orphaning batch rejected whole, queue preserved",
+    "T5 GREEN_CoDestroyConstraintRidesAlong: owner co-destroy tears down atomically",
+    "T5 RED_TeardownOrderGuarded: body-first removal refused, constraints die first",
+    "T5 GREEN_ShutdownOrderConstraintsFirst: Stop destroys constraints before bodies",
+    "T5 GREEN_RebuildConstraintsAtomic: valid rebuild applies, invalid keeps live set",
+    "T5 RED_PhysicsHingeSliderPrefabMemberRejected: linked members refuse hinge/slider",
+    "T5 GREEN_PhysicsHingeSliderAuthoring: exact Undo/Redo through history",
+    "T5 GREEN_InspectorHingeSliderPolicy: clean resync, dirty conflict, reset",
+    "T5 RED_HingeSliderAuthoringValidation: non-finite and out-of-range values refused"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }

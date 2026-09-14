@@ -55,6 +55,9 @@
     -- Bullet T4: collision bodies + authoring tests (same rationale).
     files { "src/PhysicsCollisionBodiesTests.cpp" }
 
+    -- Bullet T5: driven hinge/slider constraint tests (same rationale).
+    files { "src/PhysicsConstraintsTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
