@@ -32,7 +32,8 @@ namespace rt2::core {
 bool PhysicsWorld::s_TestInjectCreateFailure = false;
 bool PhysicsWorld::s_TestPoseProbe = false;
 bool PhysicsWorld::s_StagingTestThrow = false;
-bool PhysicsWorld::s_ConstructionTestThrow = false;
+PhysicsWorld::CandidateThrowPoint PhysicsWorld::s_CandidateThrowPoint = PhysicsWorld::CandidateThrowPoint::None;
+bool PhysicsWorld::s_EscapeTestThrow = false;
 size_t PhysicsWorld::s_LiveWorlds = 0;
 std::vector<PhysicsWorld::ConstructionPose> PhysicsWorld::s_RecordedPoses;
 std::function<void()> PhysicsWorld::s_TestDestroyProbe;
@@ -96,17 +97,24 @@ Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
     // through the complete Shutdown() teardown (the destructor runs exactly
     // when construction completed — never a pre-construction early-out, never
     // a leak). Error::Io is the resource-exhaustion code.
+    //
+    // The factory-escape hook fires BEFORE the boundary so the throw escapes
+    // Create entirely: it proves the Play handoff fallback, not this
+    // boundary. The phased hook below fires inside it at independently
+    // reachable points.
+    if (s_EscapeTestThrow)
+        throw std::bad_alloc(); // factory escape (tests only, pre-boundary)
     try
     {
-        if (s_ConstructionTestThrow)
+        if (s_CandidateThrowPoint == CandidateThrowPoint::BeforeNew)
             throw std::bad_alloc(); // pre-candidate injection (tests only)
         // The candidate is FULLY constructed first: broadphase, dispatcher,
         // solver, configuration, dynamics world, ghost-pair callback,
         // gravity. A failure below therefore rolls back a live Bullet world
         // through the complete Shutdown() teardown.
         std::unique_ptr<PhysicsWorld> world(new PhysicsWorld());
-        if (s_ConstructionTestThrow)
-            throw std::bad_alloc(); // post-construction injection: teardown proof
+        if (s_CandidateThrowPoint == CandidateThrowPoint::AfterNew)
+            throw std::bad_alloc(); // post-construction: teardown proof
 
     // Construction pose probe (test-only, gated): record what the candidate
     // observes in the runtime clone at this exact point in the Play sequence.
@@ -342,14 +350,24 @@ bool PhysicsWorld::StagingTestThrow()
     return s_StagingTestThrow;
 }
 
-void PhysicsWorld::SetConstructionTestThrow(bool fail)
+void PhysicsWorld::SetCandidateThrowPoint(CandidateThrowPoint point)
 {
-    s_ConstructionTestThrow = fail;
+    s_CandidateThrowPoint = point;
 }
 
-bool PhysicsWorld::ConstructionTestThrow()
+PhysicsWorld::CandidateThrowPoint PhysicsWorld::GetCandidateThrowPoint()
 {
-    return s_ConstructionTestThrow;
+    return s_CandidateThrowPoint;
+}
+
+void PhysicsWorld::SetEscapeTestThrow(bool fail)
+{
+    s_EscapeTestThrow = fail;
+}
+
+bool PhysicsWorld::EscapeTestThrow()
+{
+    return s_EscapeTestThrow;
 }
 
 bool PhysicsWorld::TestInjectCreateFailure()

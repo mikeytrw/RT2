@@ -1620,24 +1620,27 @@ TEST_CASE("T4 RED_AllocationFailureTyped: exhaustion surfaces typed errors, neve
     CHECK_FALSE(PhysicsWorld::StagingTestThrow());
 }
 
-TEST_CASE("T4 RED_CreateConstructionAllocationTyped: candidate-construction exhaustion is atomic Io")
+TEST_CASE("T4 RED_CreatePreNewAllocationTyped: pre-candidate exhaustion is atomic Io")
 {
-    // The whole-Create boundary covers the PhysicsWorld allocation, Bullet
-    // member construction, pose-probe staging, and body staging alike, and
-    // the Play handoff preserves atomicity: no exception, typed Io, Edit
-    // state, null runtime/world, zero handles AND zero live-world delta
-    // (a constructed candidate still tears down), quiet bridge, no callbacks.
-    struct ConstructionGuard
+    // BeforeNew phase: the throw fires before the PhysicsWorld allocation,
+    // so no candidate ever exists. Play still refuses atomically with typed
+    // Io and zero observable mutation.
+    struct PreNewGuard
     {
-        ~ConstructionGuard() { PhysicsWorld::SetConstructionTestThrow(false); }
+        ~PreNewGuard()
+        {
+            PhysicsWorld::SetCandidateThrowPoint(
+                PhysicsWorld::CandidateThrowPoint::None);
+        }
     };
     T4Fixture f;
     const UUID id = f.Create("Staged");
     f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T4DynamicBody());
     f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), T4SphereShape());
 
-    ConstructionGuard guard;
-    PhysicsWorld::SetConstructionTestThrow(true);
+    PreNewGuard guard;
+    PhysicsWorld::SetCandidateThrowPoint(
+        PhysicsWorld::CandidateThrowPoint::BeforeNew);
     T4NullBridge bridge;
     T4NoopObserver obs;
     Error err;
@@ -1666,8 +1669,120 @@ TEST_CASE("T4 RED_CreateConstructionAllocationTyped: candidate-construction exha
     CHECK(bridge.Quiet());
     CHECK(obs.starts == 0);
     CHECK(obs.stops == 0);
-    PhysicsWorld::SetConstructionTestThrow(false);
-    CHECK_FALSE(PhysicsWorld::ConstructionTestThrow());
+    PhysicsWorld::SetCandidateThrowPoint(
+        PhysicsWorld::CandidateThrowPoint::None);
+    CHECK(PhysicsWorld::GetCandidateThrowPoint() ==
+          PhysicsWorld::CandidateThrowPoint::None);
+}
+
+TEST_CASE("T4 RED_CreatePostNewAllocationTyped: constructed candidate tears down with atomic Io")
+{
+    // AfterNew phase: the throw fires after `new PhysicsWorld()` completed,
+    // so a live candidate exists at unwind time. The destruction probe proves
+    // the constructed world actually destructs (not a pre-candidate
+    // early-out), and the live-world census returns to baseline.
+    struct PostNewGuard
+    {
+        ~PostNewGuard()
+        {
+            PhysicsWorld::SetCandidateThrowPoint(
+                PhysicsWorld::CandidateThrowPoint::None);
+            PhysicsWorld::SetTestDestroyProbe(nullptr);
+        }
+    };
+    T4Fixture f;
+    const UUID id = f.Create("Staged");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T4DynamicBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), T4SphereShape());
+
+    PostNewGuard guard;
+    PhysicsWorld::SetCandidateThrowPoint(
+        PhysicsWorld::CandidateThrowPoint::AfterNew);
+    int destroyProbeFires = 0;
+    PhysicsWorld::SetTestDestroyProbe([&destroyProbeFires]() {
+        ++destroyProbeFires;
+    });
+    T4NullBridge bridge;
+    T4NoopObserver obs;
+    Error err;
+    RuntimeSceneController ctrl;
+    ctrl.SetLifecycleObserver(&obs);
+    const size_t liveBaseline = PhysicsWorld::LiveWorldCount();
+    bool threw = false;
+    bool ok = true;
+    try
+    {
+        ok = ctrl.Play(f.Authoring(), bridge, err);
+    }
+    catch (...)
+    {
+        threw = true;
+    }
+    CHECK_FALSE(threw);
+    CHECK_FALSE(ok);
+    CHECK(err.code == Error::Io);
+    // The constructed candidate destructed exactly once during rollback.
+    CHECK(destroyProbeFires == 1);
+    CHECK(PhysicsWorld::LiveWorldCount() == liveBaseline);
+    CHECK(ctrl.GetState() == SceneRunState::Edit);
+    CHECK(ctrl.TryGetRuntimeScene() == nullptr);
+    CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+    CHECK(bridge.Quiet());
+    CHECK(obs.starts == 0);
+    CHECK(obs.stops == 0);
+    PhysicsWorld::SetCandidateThrowPoint(
+        PhysicsWorld::CandidateThrowPoint::None);
+    PhysicsWorld::SetTestDestroyProbe(nullptr);
+}
+
+TEST_CASE("T4 RED_PlayHandoffAllocationTyped: escaped factory failure rolls back atomically")
+{
+    // The factory-escape hook fires before Create's translation boundary, so
+    // the throw genuinely escapes PhysicsWorld::Create and executes the Play
+    // handoff catch: same atomic outcome (typed Io, clone reset, zero
+    // accumulator, no bridge traffic, no callbacks).
+    struct EscapeGuard
+    {
+        ~EscapeGuard() { PhysicsWorld::SetEscapeTestThrow(false); }
+    };
+    T4Fixture f;
+    const UUID id = f.Create("Staged");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T4DynamicBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), T4SphereShape());
+
+    EscapeGuard guard;
+    PhysicsWorld::SetEscapeTestThrow(true);
+    T4NullBridge bridge;
+    T4NoopObserver obs;
+    Error err;
+    RuntimeSceneController ctrl;
+    ctrl.SetLifecycleObserver(&obs);
+    const size_t liveBaseline = PhysicsWorld::LiveWorldCount();
+    bool threw = false;
+    bool ok = true;
+    try
+    {
+        ok = ctrl.Play(f.Authoring(), bridge, err);
+    }
+    catch (...)
+    {
+        threw = true;
+    }
+    CHECK_FALSE(threw);
+    CHECK_FALSE(ok);
+    CHECK(err.code == Error::Io);
+    CHECK(ctrl.GetState() == SceneRunState::Edit);
+    CHECK(ctrl.TryGetRuntimeScene() == nullptr);
+    CHECK(ctrl.TryGetPhysicsWorld() == nullptr);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+    CHECK(PhysicsWorld::LiveWorldCount() == liveBaseline);
+    CHECK(ctrl.DebugAccumulator() == doctest::Approx(0.0f));
+    CHECK(bridge.Quiet());
+    CHECK(obs.starts == 0);
+    CHECK(obs.stops == 0);
+    PhysicsWorld::SetEscapeTestThrow(false);
+    CHECK_FALSE(PhysicsWorld::EscapeTestThrow());
 }
 
 TEST_CASE("T4 RED_ProviderKeyEntryAllocationTyped: key/entry exhaustion is typed Io")

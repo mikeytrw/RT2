@@ -102,7 +102,9 @@ $requiredCases = @(
     # T4 narrow-review follow-up: overflow-safe rotation norm, whole-Create /
     # Play / provider allocation perimeter with injection at every boundary.
     "T4 RED_SinkRotationOverflowRefused: finite near-FLT_MAX rotations refuse without mutation",
-    "T4 RED_CreateConstructionAllocationTyped: candidate-construction exhaustion is atomic Io",
+    "T4 RED_CreatePreNewAllocationTyped: pre-candidate exhaustion is atomic Io",
+    "T4 RED_CreatePostNewAllocationTyped: constructed candidate tears down with atomic Io",
+    "T4 RED_PlayHandoffAllocationTyped: escaped factory failure rolls back atomically",
     "T4 RED_ProviderKeyEntryAllocationTyped: key/entry exhaustion is typed Io"
 )
 

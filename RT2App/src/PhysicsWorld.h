@@ -219,12 +219,24 @@ public:
     static bool StagingTestThrow();
 
     // Test-only allocation-failure injection for the whole candidate
-    // construction sequence (narrow follow-up). Checked both before the
-    // PhysicsWorld allocation (pre-candidate) and right after it (candidate
-    // constructed: proves the local teardown still runs). Default off;
-    // tests must clear it after use. Never set outside tests.
-    static void SetConstructionTestThrow(bool fail);
-    static bool ConstructionTestThrow();
+    // construction sequence (narrow follow-up). Explicit phases replace the
+    // earlier shared boolean, whose single flag could never reach the
+    // post-new point: BeforeNew fires before the PhysicsWorld allocation
+    // (pre-candidate early-out), AfterNew fires right after it (proves the
+    // constructed local still tears down). A separate factory-escape flag
+    // fires before the translation boundary so the throw escapes Create and
+    // exercises the Play handoff fallback instead. All default off; tests
+    // must clear after use. Never set outside tests.
+    enum class CandidateThrowPoint : uint8_t
+    {
+        None = 0,
+        BeforeNew = 1,
+        AfterNew = 2,
+    };
+    static void SetCandidateThrowPoint(CandidateThrowPoint point);
+    static CandidateThrowPoint GetCandidateThrowPoint();
+    static void SetEscapeTestThrow(bool fail);
+    static bool EscapeTestThrow();
 
     // Test-only destruction probe, invoked by the REAL ~PhysicsWorld()
     // when set (after Bullet teardown, before the live count decrements).
@@ -266,7 +278,8 @@ private:
     static bool s_TestInjectCreateFailure;
     static bool s_TestPoseProbe;
     static bool s_StagingTestThrow;
-    static bool s_ConstructionTestThrow;
+    static CandidateThrowPoint s_CandidateThrowPoint;
+    static bool s_EscapeTestThrow;
     static size_t s_LiveWorlds;
     static std::vector<ConstructionPose> s_RecordedPoses;
     static std::function<void()> s_TestDestroyProbe;
