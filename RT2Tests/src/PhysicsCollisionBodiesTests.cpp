@@ -62,6 +62,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <limits>
 #include <string>
 
 using namespace rt2::core;
@@ -1257,6 +1259,99 @@ TEST_CASE("T4 GREEN_ProviderOutlivesSession: destroying the provider mid-Play le
     CHECK(ctrl.GetState() == SceneRunState::Edit);
     CHECK(ctrl.PhysicsTotalHandles() == 0);
     CHECK(PhysicsWorld::LiveWorldCount() == 0);
+}
+
+TEST_CASE("T4 RED_HostileProviderPayloadRefused: injected payloads are validated before Bullet reads")
+{
+    // A buggy/test/alternate provider can return success with hostile
+    // payloads. Staging must refuse each with a typed UUID-bearing error and
+    // roll the candidate back atomically — never null-deref or over-read.
+    struct HostileProvider final : public IPhysicsCollisionAssetProvider
+    {
+        CollisionGeometry payload;
+        bool nullIt = false;
+        void SetContext(const AssetResolutionContext&) override {}
+        Result<const CollisionGeometry*> GetCollisionGeometry(
+            const AssetReference&, const UUID&, const std::string&) override
+        {
+            if (nullIt)
+                return Result<const CollisionGeometry*>::Ok(nullptr);
+            return Result<const CollisionGeometry*>::Ok(&payload);
+        }
+        size_t CacheEntryCount() const override { return 0; }
+        size_t DecodeCount() const override { return 0; }
+    };
+    auto tetra = []() {
+        CollisionGeometry g;
+        g.vertices = {0,0,0, 1,0,0, 0,1,0, 0,0,1};
+        g.indices = {0,1,2, 0,1,3, 0,2,3, 1,2,3};
+        return g;
+    };
+    struct Variant
+    {
+        const char* name;
+        std::function<void(CollisionGeometry&, bool&)> arm;
+        Error::Code code;
+    };
+    const Variant variants[] = {
+        {"null", [](CollisionGeometry&, bool& nullIt) { nullIt = true; },
+         Error::Parse},
+        {"truncated", [tetra](CollisionGeometry& g, bool&) {
+             g = tetra();
+             g.vertices.resize(4);
+         }, Error::Parse},
+        {"nonfinite", [tetra](CollisionGeometry& g, bool&) {
+             g = tetra();
+             g.vertices[0] = std::numeric_limits<float>::quiet_NaN();
+         }, Error::Parse},
+        {"outofrange", [tetra](CollisionGeometry& g, bool&) {
+             g = tetra();
+             g.indices[0] = 99;
+         }, Error::Parse},
+    };
+    for (const auto& variant : variants)
+    {
+        T4Fixture f;
+        const UUID id = f.Create(variant.name);
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T4StaticBody());
+        PhysicsShapeComponent shape;
+        shape.shape = PhysicsShapeKind::ConvexHull;
+        shape.hull = T4ModelRef("hostile.obj", "obj:whole-model");
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), shape);
+
+        T4NullBridge bridge;
+        T4NoopObserver obs;
+        Error err;
+        HostileProvider provider;
+        variant.arm(provider.payload, provider.nullIt);
+        RuntimeSceneController ctrl;
+        ctrl.SetLifecycleObserver(&obs);
+        ctrl.SetCollisionProvider(&provider);
+        CHECK_FALSE(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK(err.code == variant.code);
+        T4CheckCleanRefusal(ctrl, bridge, obs, err, id);
+    }
+
+    // Valid injected payload stages (control: the boundary accepts).
+    {
+        T4Fixture f;
+        const UUID id = f.Create("Honest");
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(id), T4StaticBody());
+        PhysicsShapeComponent shape;
+        shape.shape = PhysicsShapeKind::ConvexHull;
+        shape.hull = T4ModelRef("honest.obj", "obj:whole-model");
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(id), shape);
+
+        T4NullBridge bridge;
+        Error err;
+        HostileProvider provider;
+        provider.payload = tetra();
+        RuntimeSceneController ctrl;
+        ctrl.SetCollisionProvider(&provider);
+        REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+        CHECK(ctrl.PhysicsBodyCount() == 1);
+        ctrl.Stop(f.Authoring(), bridge);
+    }
 }
 
 TEST_CASE("T4 RED_MissingColliderRefusesPlay: body without shape refuses Play atomically")

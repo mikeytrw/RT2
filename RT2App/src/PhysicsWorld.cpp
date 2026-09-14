@@ -388,6 +388,78 @@ btTransform ToBtTransform(const glm::vec3& t, const glm::quat& r)
                        btVector3(t.x, t.y, t.z));
 }
 
+// Trust boundary for injected providers: a successful Result carries a
+// pointer the consumer must validate before any Bullet allocation or read.
+// The production decoder guarantees these invariants, but the interface is
+// explicitly usable by CPU targets with alternate providers, so staging
+// re-checks: non-null, triplet/non-empty/capped vertices, finite vertices,
+// triplet/capped indices, and every index inside the vertex range.
+bool ValidateProviderPayload(const CollisionGeometry* geom, const UUID& uuid,
+                             const std::string& name, const char* wire,
+                             Error& err)
+{
+    auto fail = [&](Error::Code code, const std::string& detail) {
+        err.code = code;
+        err.path = uuid.ToString();
+        err.detail = "entity " + uuid.ToString() +
+                     (name.empty() ? "" : " ('" + name + "') ") + detail;
+        return false;
+    };
+    if (geom == nullptr)
+    {
+        return fail(Error::Parse,
+                    std::string(wire) +
+                        " provider returned success with null geometry");
+    }
+    if (geom->vertices.empty() || geom->vertices.size() % 3 != 0)
+    {
+        return fail(Error::Parse,
+                    std::string(wire) +
+                        " provider geometry has no xyz-triplet vertices");
+    }
+    const size_t points = geom->vertices.size() / 3;
+    if (points > kMaxCollisionVertices)
+    {
+        return fail(Error::InvalidArgument,
+                    std::string(wire) + " provider geometry has " +
+                        std::to_string(points) + " vertices (cap " +
+                        std::to_string(kMaxCollisionVertices) + ")");
+    }
+    for (float v : geom->vertices)
+    {
+        if (!std::isfinite(v))
+        {
+            return fail(Error::Parse,
+                        std::string(wire) +
+                            " provider geometry has non-finite vertices");
+        }
+    }
+    if (geom->indices.empty() || geom->indices.size() % 3 != 0)
+    {
+        return fail(Error::Parse,
+                    std::string(wire) +
+                        " provider geometry has no triangle-triplet indices");
+    }
+    if (geom->indices.size() > kMaxCollisionIndices)
+    {
+        return fail(Error::InvalidArgument,
+                    std::string(wire) + " provider geometry has " +
+                        std::to_string(geom->indices.size()) +
+                        " indices (cap " +
+                        std::to_string(kMaxCollisionIndices) + ")");
+    }
+    for (uint32_t vi : geom->indices)
+    {
+        if ((size_t)vi >= points)
+        {
+            return fail(Error::Parse,
+                        std::string(wire) +
+                            " provider geometry has an out-of-range index");
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 // ============================================================================
@@ -554,6 +626,9 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
                 err = got.error;
                 return false;
             }
+            if (!ValidateProviderPayload(got.value, uuid, name,
+                                         "physicsShape.hull", err))
+                return false;
             collision = got.value;
             const size_t points = collision->vertices.size() / 3;
             if (points < 4)
@@ -604,6 +679,9 @@ bool PhysicsWorld::StageOneBody(PhysicsWorld& world,
                 err = got.error;
                 return false;
             }
+            if (!ValidateProviderPayload(got.value, uuid, name,
+                                         "physicsShape.triMesh", err))
+                return false;
             collision = got.value;
             if (collision->indices.size() % 3 != 0 ||
                 collision->indices.empty())
