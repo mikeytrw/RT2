@@ -1795,12 +1795,18 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	std::optional<PhysicsShapeComponent> liveShape;
 	if (const auto* s = reg.try_get<PhysicsShapeComponent>(entity.id))
 		liveShape = *s;
+	std::optional<PhysicsHingeComponent> liveHinge;
+	if (const auto* h = reg.try_get<PhysicsHingeComponent>(entity.id))
+		liveHinge = *h;
+	std::optional<PhysicsSliderComponent> liveSlider;
+	if (const auto* sl = reg.try_get<PhysicsSliderComponent>(entity.id))
+		liveSlider = *sl;
 
 	// Working-copy lifecycle (PhysicsInspectorWork): reseed on selection
 	// change, resync clean copies after Undo/Redo,
 	// and flag dirty/live conflicts instead of overwriting restored state.
 	// Exact before-states are still read fresh at Apply.
-	m_PhysicsWork.Sync(targetUuid, liveBody, liveShape);
+	m_PhysicsWork.Sync(targetUuid, liveBody, liveShape, liveHinge, liveSlider);
 
 	ImGui::Separator();
 	ImGui::Text("Physics (Bullet)");
@@ -2148,6 +2154,260 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 						freshShape = *s;
 					m_PhysicsWork.AppliedPair(freshBody, freshShape);
 				}
+			}
+		}
+	}
+
+	// ---- Hinge (T5) ----
+	// Minimal controls: the owner is this entity; otherBody is a UUID text
+	// field (empty = world anchor). Angles edit in degrees, stored radians.
+	if (!m_PhysicsWork.hinge.has_value())
+	{
+		if (ImGui::Button("Add Physics Hinge"))
+		{
+			PhysicsHingeComponent after{};
+			auto cmd = MakeSetPhysicsHingeCommandIfEffective(
+				targetUuid, std::nullopt, after);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+			}
+		}
+	}
+	else
+	{
+		auto& work = *m_PhysicsWork.hinge;
+		ImGui::Text("Hinge (owner: this entity)");
+		char otherBuf[64];
+		snprintf(otherBuf, sizeof(otherBuf), "%s",
+		         work.otherBody.IsNull() ? "" : work.otherBody.ToString().c_str());
+		ImGui::SetNextItemWidth(220.0f);
+		const bool otherReturned = ImGui::InputText(
+			"Other body UUID (empty = world)", otherBuf, sizeof(otherBuf),
+			ImGuiInputTextFlags_EnterReturnsTrue);
+		const bool otherEdited = ImGui::IsItemDeactivatedAfterEdit();
+		if (otherReturned || otherEdited)
+		{
+			if (otherBuf[0] == '\0')
+			{
+				if (!work.otherBody.IsNull())
+				{
+					work.otherBody = rt2::core::UUID{};
+					m_PhysicsWork.hingeDirty = true;
+				}
+			}
+			else
+			{
+				const rt2::core::UUID parsed = rt2::core::UUID::Parse(otherBuf);
+				if (!parsed.IsNull() && !(parsed == work.otherBody))
+				{
+					work.otherBody = parsed;
+					m_PhysicsWork.hingeDirty = true;
+				}
+			}
+		}
+		if (ImGui::DragFloat3("Owner pivot", &work.ownerPivot[0], 0.01f))
+			m_PhysicsWork.hingeDirty = true;
+		if (ImGui::DragFloat3("Owner axis", &work.ownerAxis[0], 0.01f))
+			m_PhysicsWork.hingeDirty = true;
+		if (ImGui::DragFloat3("Other pivot", &work.otherPivot[0], 0.01f))
+			m_PhysicsWork.hingeDirty = true;
+		if (ImGui::DragFloat3("Other axis", &work.otherAxis[0], 0.01f))
+			m_PhysicsWork.hingeDirty = true;
+		float minDeg = glm::degrees(work.minAngleLimit);
+		float maxDeg = glm::degrees(work.maxAngleLimit);
+		if (ImGui::DragFloat("Min angle (deg)", &minDeg, 1.0f))
+		{
+			work.minAngleLimit = glm::radians(minDeg);
+			m_PhysicsWork.hingeDirty = true;
+		}
+		if (ImGui::DragFloat("Max angle (deg)", &maxDeg, 1.0f))
+		{
+			work.maxAngleLimit = glm::radians(maxDeg);
+			m_PhysicsWork.hingeDirty = true;
+		}
+		float restDeg = glm::degrees(work.restAngle);
+		if (ImGui::DragFloat("Rest angle (deg)", &restDeg, 1.0f))
+		{
+			work.restAngle = glm::radians(restDeg);
+			m_PhysicsWork.hingeDirty = true;
+		}
+		if (ImGui::Checkbox("Motor enabled", &work.motorEnabled))
+			m_PhysicsWork.hingeDirty = true;
+		if (ImGui::DragFloat("Motor velocity (rad/s)", &work.motorTargetVelocity,
+		                     0.1f))
+			m_PhysicsWork.hingeDirty = true;
+		if (ImGui::DragFloat("Motor max impulse", &work.motorMaxImpulse, 0.1f,
+		                     0.0f, 100000.0f, "%.3f"))
+			m_PhysicsWork.hingeDirty = true;
+		if (m_PhysicsWork.hingeDirty)
+		{
+			if (m_PhysicsWork.hingeConflict)
+				ImGui::TextDisabled("Live state changed underneath (Undo/Redo): Revert to continue");
+			ImGui::BeginDisabled(m_PhysicsWork.hingeConflict);
+			if (ImGui::Button("Apply Hinge"))
+			{
+				std::optional<PhysicsHingeComponent> before;
+				if (const auto* h = reg.try_get<PhysicsHingeComponent>(entity.id))
+					before = *h;
+				auto cmd = MakeSetPhysicsHingeCommandIfEffective(
+					targetUuid, before, m_PhysicsWork.hinge);
+				bool applied = !cmd;
+				if (cmd)
+				{
+					const auto result = ExecuteCommandThroughHistory(
+						m_CommandHistory, *m_SceneMgr, std::move(cmd));
+					ApplyMutation(result);
+					applied = result.success;
+				}
+				if (applied)
+				{
+					std::optional<PhysicsHingeComponent> freshHinge;
+					if (const auto* h = reg.try_get<PhysicsHingeComponent>(entity.id))
+						freshHinge = *h;
+					m_PhysicsWork.AppliedHinge(freshHinge);
+				}
+			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Revert Hinge"))
+			{
+				m_PhysicsWork.RevertHinge(liveHinge);
+			}
+		}
+		if (liveHinge.has_value() && ImGui::Button("Remove Physics Hinge"))
+		{
+			std::optional<PhysicsHingeComponent> before;
+			if (const auto* h = reg.try_get<PhysicsHingeComponent>(entity.id))
+				before = *h;
+			auto cmd = MakeSetPhysicsHingeCommandIfEffective(
+				targetUuid, before, std::nullopt);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+				if (result.success)
+					m_PhysicsWork.AppliedHinge(std::nullopt);
+			}
+		}
+	}
+
+	// ---- Slider (T5) ----
+	if (!m_PhysicsWork.slider.has_value())
+	{
+		if (ImGui::Button("Add Physics Slider"))
+		{
+			PhysicsSliderComponent after{};
+			auto cmd = MakeSetPhysicsSliderCommandIfEffective(
+				targetUuid, std::nullopt, after);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+			}
+		}
+	}
+	else
+	{
+		auto& work = *m_PhysicsWork.slider;
+		ImGui::Text("Slider (owner: this entity)");
+		char otherBuf[64];
+		snprintf(otherBuf, sizeof(otherBuf), "%s",
+		         work.otherBody.IsNull() ? "" : work.otherBody.ToString().c_str());
+		ImGui::SetNextItemWidth(220.0f);
+		const bool otherReturned = ImGui::InputText(
+			"Other body UUID (empty = world)", otherBuf, sizeof(otherBuf),
+			ImGuiInputTextFlags_EnterReturnsTrue);
+		const bool otherEdited = ImGui::IsItemDeactivatedAfterEdit();
+		if (otherReturned || otherEdited)
+		{
+			if (otherBuf[0] == '\0')
+			{
+				if (!work.otherBody.IsNull())
+				{
+					work.otherBody = rt2::core::UUID{};
+					m_PhysicsWork.sliderDirty = true;
+				}
+			}
+			else
+			{
+				const rt2::core::UUID parsed = rt2::core::UUID::Parse(otherBuf);
+				if (!parsed.IsNull() && !(parsed == work.otherBody))
+				{
+					work.otherBody = parsed;
+					m_PhysicsWork.sliderDirty = true;
+				}
+			}
+		}
+		if (ImGui::DragFloat3("Axis", &work.axis[0], 0.01f))
+			m_PhysicsWork.sliderDirty = true;
+		if (ImGui::DragFloat("Lower limit", &work.lowerLimit, 0.01f))
+			m_PhysicsWork.sliderDirty = true;
+		if (ImGui::DragFloat("Upper limit", &work.upperLimit, 0.01f))
+			m_PhysicsWork.sliderDirty = true;
+		if (ImGui::DragFloat("Target position", &work.targetPosition, 0.01f))
+			m_PhysicsWork.sliderDirty = true;
+		if (ImGui::Checkbox("Motor enabled", &work.motorEnabled))
+			m_PhysicsWork.sliderDirty = true;
+		if (ImGui::DragFloat("Motor velocity (u/s)", &work.motorTargetVelocity,
+		                     0.1f, 0.0f, 1000.0f, "%.3f"))
+			m_PhysicsWork.sliderDirty = true;
+		if (ImGui::DragFloat("Motor max force", &work.motorMaxForce, 0.5f, 0.0f,
+		                     100000.0f, "%.3f"))
+			m_PhysicsWork.sliderDirty = true;
+		if (m_PhysicsWork.sliderDirty)
+		{
+			if (m_PhysicsWork.sliderConflict)
+				ImGui::TextDisabled("Live state changed underneath (Undo/Redo): Revert to continue");
+			ImGui::BeginDisabled(m_PhysicsWork.sliderConflict);
+			if (ImGui::Button("Apply Slider"))
+			{
+				std::optional<PhysicsSliderComponent> before;
+				if (const auto* sl = reg.try_get<PhysicsSliderComponent>(entity.id))
+					before = *sl;
+				auto cmd = MakeSetPhysicsSliderCommandIfEffective(
+					targetUuid, before, m_PhysicsWork.slider);
+				bool applied = !cmd;
+				if (cmd)
+				{
+					const auto result = ExecuteCommandThroughHistory(
+						m_CommandHistory, *m_SceneMgr, std::move(cmd));
+					ApplyMutation(result);
+					applied = result.success;
+				}
+				if (applied)
+				{
+					std::optional<PhysicsSliderComponent> freshSlider;
+					if (const auto* sl = reg.try_get<PhysicsSliderComponent>(entity.id))
+						freshSlider = *sl;
+					m_PhysicsWork.AppliedSlider(freshSlider);
+				}
+			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Revert Slider"))
+			{
+				m_PhysicsWork.RevertSlider(liveSlider);
+			}
+		}
+		if (liveSlider.has_value() && ImGui::Button("Remove Physics Slider"))
+		{
+			std::optional<PhysicsSliderComponent> before;
+			if (const auto* sl = reg.try_get<PhysicsSliderComponent>(entity.id))
+				before = *sl;
+			auto cmd = MakeSetPhysicsSliderCommandIfEffective(
+				targetUuid, before, std::nullopt);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+				if (result.success)
+					m_PhysicsWork.AppliedSlider(std::nullopt);
 			}
 		}
 	}

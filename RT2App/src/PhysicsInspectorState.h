@@ -43,29 +43,44 @@ struct PhysicsInspectorWork
     rt2::core::UUID target{};
     std::optional<PhysicsBodyComponent> body;
     std::optional<PhysicsShapeComponent> shape;
+    std::optional<PhysicsHingeComponent> hinge;
+    std::optional<PhysicsSliderComponent> slider;
     std::optional<PhysicsBodyComponent> seedBody;
     std::optional<PhysicsShapeComponent> seedShape;
+    std::optional<PhysicsHingeComponent> seedHinge;
+    std::optional<PhysicsSliderComponent> seedSlider;
     bool bodyDirty = false;
     bool shapeDirty = false;
+    bool hingeDirty = false;
+    bool sliderDirty = false;
     bool bodyConflict = false;
     bool shapeConflict = false;
+    bool hingeConflict = false;
+    bool sliderConflict = false;
 
     bool HasTarget() const { return !target.IsNull(); }
 
     // Reconcile working state with the live document for the selected target.
     // Live presence is derived from the optionals (nullopt = absent).
+    // The T5 hinge/slider sides ride the exact T4 body/shape policy.
     void Sync(const rt2::core::UUID& selected,
               const std::optional<PhysicsBodyComponent>& liveBody,
-              const std::optional<PhysicsShapeComponent>& liveShape)
+              const std::optional<PhysicsShapeComponent>& liveShape,
+              const std::optional<PhysicsHingeComponent>& liveHinge =
+                  std::nullopt,
+              const std::optional<PhysicsSliderComponent>& liveSlider =
+                  std::nullopt)
     {
         if (target != selected)
         {
             target = selected;
-            Reseed(liveBody, liveShape);
+            Reseed(liveBody, liveShape, liveHinge, liveSlider);
             return;
         }
         SyncSide(body, seedBody, liveBody, bodyDirty, bodyConflict);
         SyncSide(shape, seedShape, liveShape, shapeDirty, shapeConflict);
+        SyncSide(hinge, seedHinge, liveHinge, hingeDirty, hingeConflict);
+        SyncSide(slider, seedSlider, liveSlider, sliderDirty, sliderConflict);
     }
 
     // Applying one component must not discard pending edits to the other.
@@ -84,13 +99,29 @@ struct PhysicsInspectorWork
 
     // Atomic pair apply: both sides advance to current live state together,
     // so solid <-> trigger conversions never strand a half-applied pair.
+    // Hinge/slider working state is preserved (their own Apply commits it).
     void AppliedPair(const std::optional<PhysicsBodyComponent>& liveBody,
                      const std::optional<PhysicsShapeComponent>& liveShape)
     {
-        Reseed(liveBody, liveShape);
+        body = seedBody = liveBody;
+        shape = seedShape = liveShape;
+        bodyDirty = shapeDirty = false;
+        bodyConflict = shapeConflict = false;
+    }
+    void AppliedHinge(const std::optional<PhysicsHingeComponent>& liveHinge)
+    {
+        hinge = seedHinge = liveHinge;
+        hingeDirty = false;
+        hingeConflict = false;
+    }
+    void AppliedSlider(const std::optional<PhysicsSliderComponent>& liveSlider)
+    {
+        slider = seedSlider = liveSlider;
+        sliderDirty = false;
+        sliderConflict = false;
     }
 
-    // Single-side revert (the other side's working state is preserved).
+    // Single-side revert (the other sides' working state is preserved).
     void RevertBody(const std::optional<PhysicsBodyComponent>& liveBody)
     {
         body = seedBody = liveBody;
@@ -103,6 +134,18 @@ struct PhysicsInspectorWork
         shapeDirty = false;
         shapeConflict = false;
     }
+    void RevertHinge(const std::optional<PhysicsHingeComponent>& liveHinge)
+    {
+        hinge = seedHinge = liveHinge;
+        hingeDirty = false;
+        hingeConflict = false;
+    }
+    void RevertSlider(const std::optional<PhysicsSliderComponent>& liveSlider)
+    {
+        slider = seedSlider = liveSlider;
+        sliderDirty = false;
+        sliderConflict = false;
+    }
 
     // Document reset (including same-UUID replacement): drop everything.
     void Clear()
@@ -110,10 +153,14 @@ struct PhysicsInspectorWork
         target = rt2::core::UUID{};
         body.reset();
         shape.reset();
+        hinge.reset();
+        slider.reset();
         seedBody.reset();
         seedShape.reset();
-        bodyDirty = shapeDirty = false;
-        bodyConflict = shapeConflict = false;
+        seedHinge.reset();
+        seedSlider.reset();
+        bodyDirty = shapeDirty = hingeDirty = sliderDirty = false;
+        bodyConflict = shapeConflict = hingeConflict = sliderConflict = false;
     }
 
     // Collision-ref path edit: assign the new path (Model kind unless empty)
@@ -173,12 +220,16 @@ private:
     }
 
     void Reseed(const std::optional<PhysicsBodyComponent>& liveBody,
-                const std::optional<PhysicsShapeComponent>& liveShape)
+                const std::optional<PhysicsShapeComponent>& liveShape,
+                const std::optional<PhysicsHingeComponent>& liveHinge,
+                const std::optional<PhysicsSliderComponent>& liveSlider)
     {
         body = seedBody = liveBody;
         shape = seedShape = liveShape;
-        bodyDirty = shapeDirty = false;
-        bodyConflict = shapeConflict = false;
+        hinge = seedHinge = liveHinge;
+        slider = seedSlider = liveSlider;
+        bodyDirty = shapeDirty = hingeDirty = sliderDirty = false;
+        bodyConflict = shapeConflict = hingeConflict = sliderConflict = false;
     }
 };
 

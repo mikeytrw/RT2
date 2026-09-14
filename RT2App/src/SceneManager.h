@@ -925,6 +925,20 @@ struct PrefabMaterialDuplicateStage
 		const rt2::core::UUID& entity) const;
 	std::optional<PhysicsShapeComponent> GetPhysicsShape(
 		const rt2::core::UUID& entity) const;
+	// Bullet T5 hinge/slider authoring: exact CPU state APIs with the same
+	// contract as the T4 body/shape APIs (value validation, prefab-member
+	// refusal before mutation, one revision bump, SyncImpact None).
+	// otherBody self-references refuse here; dangling references (unknown
+	// UUIDs, body-less targets) refuse loudly at Play with both UUIDs named,
+	// so partially authored mechanisms can be built up in any order.
+	EditorMutationResult SetPhysicsHingeState(const rt2::core::UUID& entity,
+		const std::optional<PhysicsHingeComponent>& value);
+	EditorMutationResult SetPhysicsSliderState(const rt2::core::UUID& entity,
+		const std::optional<PhysicsSliderComponent>& value);
+	std::optional<PhysicsHingeComponent> GetPhysicsHinge(
+		const rt2::core::UUID& entity) const;
+	std::optional<PhysicsSliderComponent> GetPhysicsSlider(
+		const rt2::core::UUID& entity) const;
 	// Phase 6B/W0: add, remove, or replace an entity's ScriptComponent.
 	// nullopt removes. SyncImpact is None — script bindings and field values
 	// are authored/runtime state that never touches the GPU scene (see the

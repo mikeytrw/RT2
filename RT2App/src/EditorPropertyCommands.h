@@ -566,6 +566,68 @@ std::unique_ptr<IEditorCommand> MakeSetPhysicsBodyShapeCommandIfEffective(
 	std::optional<PhysicsShapeComponent> beforeShape,
 	std::optional<PhysicsShapeComponent> afterShape);
 
+// Bullet T5: one command each covering hinge/slider add, remove, and value
+// edits via std::optional before/after (same shape as the T4 body/shape
+// commands). No PrefabCommandTransaction: constraint wires are
+// non-overridable with no propagation adapters, so enforcement lives in the
+// SetPhysicsHinge/SliderState APIs, which refuse linked members before
+// mutation. Execute/Undo call the manager directly and propagate its loud
+// failure (a failed Execute records nothing).
+class SetPhysicsHingeCommand final : public IEditorCommand
+{
+public:
+	SetPhysicsHingeCommand(rt2::core::UUID target,
+	                       std::optional<PhysicsHingeComponent> beforeValue,
+	                       std::optional<PhysicsHingeComponent> afterValue);
+
+	const rt2::core::UUID& Target() const { return m_Target; }
+	const std::optional<PhysicsHingeComponent>& BeforeValue() const { return m_BeforeValue; }
+	const std::optional<PhysicsHingeComponent>& AfterValue() const { return m_AfterValue; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override;
+
+private:
+	rt2::core::UUID                          m_Target;
+	std::optional<PhysicsHingeComponent>     m_BeforeValue;
+	std::optional<PhysicsHingeComponent>     m_AfterValue;
+};
+
+class SetPhysicsSliderCommand final : public IEditorCommand
+{
+public:
+	SetPhysicsSliderCommand(rt2::core::UUID target,
+	                        std::optional<PhysicsSliderComponent> beforeValue,
+	                        std::optional<PhysicsSliderComponent> afterValue);
+
+	const rt2::core::UUID& Target() const { return m_Target; }
+	const std::optional<PhysicsSliderComponent>& BeforeValue() const { return m_BeforeValue; }
+	const std::optional<PhysicsSliderComponent>& AfterValue() const { return m_AfterValue; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override;
+
+private:
+	rt2::core::UUID                           m_Target;
+	std::optional<PhysicsSliderComponent>     m_BeforeValue;
+	std::optional<PhysicsSliderComponent>     m_AfterValue;
+};
+
+// Bullet T5: returns null when the edit is a canonical no-op (both nullopt,
+// or both present and exactly equal). An invalid after-state is NOT
+// suppressed: the command is returned so history surfaces the manager's
+// actionable failure without recording.
+std::unique_ptr<IEditorCommand> MakeSetPhysicsHingeCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsHingeComponent> beforeValue,
+	std::optional<PhysicsHingeComponent> afterValue);
+std::unique_ptr<IEditorCommand> MakeSetPhysicsSliderCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsSliderComponent> beforeValue,
+	std::optional<PhysicsSliderComponent> afterValue);
+
 // Discrete inspector-gesture policy for camera presentation widgets (tone-map
 // Combo selection, exposure reset button). Maps a widget value change to a
 // whole-camera discrete commit. Unlike drag widgets, these gestures never

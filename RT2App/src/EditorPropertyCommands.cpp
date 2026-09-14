@@ -689,6 +689,98 @@ std::unique_ptr<IEditorCommand> MakeSetPhysicsBodyShapeCommandIfEffective(
 		std::move(beforeShape), std::move(afterShape));
 }
 
+// ---- Bullet T5 hinge/slider commands ----
+
+SetPhysicsHingeCommand::SetPhysicsHingeCommand(
+	rt2::core::UUID target,
+	std::optional<PhysicsHingeComponent> beforeValue,
+	std::optional<PhysicsHingeComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+{
+}
+
+EditorMutationResult SetPhysicsHingeCommand::Execute(SceneManager& scene)
+{
+	return scene.SetPhysicsHingeState(m_Target, m_AfterValue);
+}
+
+EditorMutationResult SetPhysicsHingeCommand::Undo(SceneManager& scene)
+{
+	return scene.SetPhysicsHingeState(m_Target, m_BeforeValue);
+}
+
+std::string SetPhysicsHingeCommand::Description() const
+{
+	if (!m_BeforeValue.has_value() && m_AfterValue.has_value())
+		return "Add Physics Hinge";
+	if (m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Remove Physics Hinge";
+	if (!m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Physics Hinge (no change)";
+	return "Edit Physics Hinge";
+}
+
+SetPhysicsSliderCommand::SetPhysicsSliderCommand(
+	rt2::core::UUID target,
+	std::optional<PhysicsSliderComponent> beforeValue,
+	std::optional<PhysicsSliderComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+{
+}
+
+EditorMutationResult SetPhysicsSliderCommand::Execute(SceneManager& scene)
+{
+	return scene.SetPhysicsSliderState(m_Target, m_AfterValue);
+}
+
+EditorMutationResult SetPhysicsSliderCommand::Undo(SceneManager& scene)
+{
+	return scene.SetPhysicsSliderState(m_Target, m_BeforeValue);
+}
+
+std::string SetPhysicsSliderCommand::Description() const
+{
+	if (!m_BeforeValue.has_value() && m_AfterValue.has_value())
+		return "Add Physics Slider";
+	if (m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Remove Physics Slider";
+	if (!m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Physics Slider (no change)";
+	return "Edit Physics Slider";
+}
+
+std::unique_ptr<IEditorCommand> MakeSetPhysicsHingeCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsHingeComponent> beforeValue,
+	std::optional<PhysicsHingeComponent> afterValue)
+{
+	const bool beforeHas = beforeValue.has_value();
+	const bool afterHas = afterValue.has_value();
+	if (!beforeHas && !afterHas) return nullptr;
+	if (beforeHas && afterHas && *beforeValue == *afterValue)
+		return nullptr;
+	return std::make_unique<SetPhysicsHingeCommand>(target,
+		std::move(beforeValue), std::move(afterValue));
+}
+
+std::unique_ptr<IEditorCommand> MakeSetPhysicsSliderCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<PhysicsSliderComponent> beforeValue,
+	std::optional<PhysicsSliderComponent> afterValue)
+{
+	const bool beforeHas = beforeValue.has_value();
+	const bool afterHas = afterValue.has_value();
+	if (!beforeHas && !afterHas) return nullptr;
+	if (beforeHas && afterHas && *beforeValue == *afterValue)
+		return nullptr;
+	return std::make_unique<SetPhysicsSliderCommand>(target,
+		std::move(beforeValue), std::move(afterValue));
+}
+
 std::unique_ptr<IEditorCommand> MakeSetCameraPresentationCommandIfEffective(
 	rt2::core::UUID target,
 	const CameraComponent& live,

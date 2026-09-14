@@ -5707,6 +5707,102 @@ float T4EntityScale(const entt::registry& registry, entt::entity e)
 	return tf->scale.x;
 }
 
+// Bullet T5 hinge/slider value validation (mirrors the Play-time ranges in
+// ValidatePhysicsForPlay, minus cross-entity existence: otherBody may name
+// a body authored later, so dangling/self-missing references refuse at Play
+// with both UUIDs named. Self-references refuse here — they can never become
+// valid by authoring more entities).
+bool T5HingeValueOk(const rt2::core::UUID& entity,
+                    const PhysicsHingeComponent& hinge, std::string& detail)
+{
+    auto finite3 = [](const glm::vec3& v) {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    };
+    if (!hinge.otherBody.IsNull() && hinge.otherBody == entity)
+    {
+        detail = "hinge otherBody is the entity's own UUID (self-constraint)";
+        return false;
+    }
+    if (!finite3(hinge.ownerPivot) || !finite3(hinge.otherPivot))
+    {
+        detail = "non-finite hinge pivot";
+        return false;
+    }
+    if (!finite3(hinge.ownerAxis) ||
+        glm::length(hinge.ownerAxis) <= 1e-6f ||
+        !finite3(hinge.otherAxis) ||
+        glm::length(hinge.otherAxis) <= 1e-6f)
+    {
+        detail = "non-finite or zero-length hinge pivot axis (singular frame)";
+        return false;
+    }
+    if (!std::isfinite(hinge.minAngleLimit) ||
+        !std::isfinite(hinge.maxAngleLimit) ||
+        hinge.minAngleLimit > hinge.maxAngleLimit)
+    {
+        detail = "invalid hinge angle limit range (finite min <= max, radians)";
+        return false;
+    }
+    if (hinge.driveMode != 0)
+    {
+        detail = "unknown hinge drive mode (0 = velocity motor)";
+        return false;
+    }
+    if (!std::isfinite(hinge.motorTargetVelocity) ||
+        !std::isfinite(hinge.motorMaxImpulse) || hinge.motorMaxImpulse < 0.0f)
+    {
+        detail = "non-finite hinge motor params or negative max impulse";
+        return false;
+    }
+    if (!std::isfinite(hinge.restAngle) ||
+        hinge.restAngle < hinge.minAngleLimit ||
+        hinge.restAngle > hinge.maxAngleLimit)
+    {
+        detail = "non-finite hinge rest angle or one outside its limits";
+        return false;
+    }
+    return true;
+}
+
+bool T5SliderValueOk(const rt2::core::UUID& entity,
+                     const PhysicsSliderComponent& slider, std::string& detail)
+{
+    if (!slider.otherBody.IsNull() && slider.otherBody == entity)
+    {
+        detail = "slider otherBody is the entity's own UUID (self-constraint)";
+        return false;
+    }
+    if (!std::isfinite(slider.axis.x) || !std::isfinite(slider.axis.y) ||
+        !std::isfinite(slider.axis.z) ||
+        glm::length(slider.axis) <= 1e-6f)
+    {
+        detail = "non-finite or zero-length slider axis (singular frame)";
+        return false;
+    }
+    if (!std::isfinite(slider.lowerLimit) ||
+        !std::isfinite(slider.upperLimit) ||
+        slider.lowerLimit > slider.upperLimit)
+    {
+        detail = "invalid slider limit range (finite lower <= upper)";
+        return false;
+    }
+    if (!std::isfinite(slider.targetPosition) ||
+        slider.targetPosition < slider.lowerLimit ||
+        slider.targetPosition > slider.upperLimit)
+    {
+        detail = "non-finite slider target or one outside its limits";
+        return false;
+    }
+    if (!std::isfinite(slider.motorTargetVelocity) ||
+        slider.motorTargetVelocity < 0.0f ||
+        !std::isfinite(slider.motorMaxForce) || slider.motorMaxForce < 0.0f)
+    {
+        detail = "non-finite or negative slider motor params";
+        return false;
+    }
+    return true;
+}
+
 // Best-effort hull size lookup for the authoring safe-margin rule: resolve
 // and decode through the manager's asset context. Empty on any failure
 // (unresolvable, malformed, oversize) — Play staging refuses those loudly
@@ -5990,6 +6086,110 @@ std::optional<PhysicsShapeComponent> SceneManager::GetPhysicsShape(
 	if (const auto* shape =
 	        m_EcsScene.registry.try_get<PhysicsShapeComponent>(e))
 		return *shape;
+	return std::nullopt;
+}
+
+EditorMutationResult SceneManager::SetPhysicsHingeState(
+	const rt2::core::UUID& entity,
+	const std::optional<PhysicsHingeComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetPhysicsHingeState: entity not present");
+	// Prefab enforcement before any validation write, revision, or history:
+	// physics wires are non-overridable, so linked members refuse loudly.
+	if (m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
+	{
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			entity.ToString(),
+			"SetPhysicsHingeState: entity is a linked prefab member "
+			"(physicsHinge is non-overridable; edit the prefab source)");
+	}
+	if (value.has_value())
+	{
+		std::string detail;
+		if (!T5HingeValueOk(entity, *value, detail))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetPhysicsHingeState: " + detail);
+		}
+		m_EcsScene.registry.emplace_or_replace<PhysicsHingeComponent>(e, *value);
+	}
+	else
+	{
+		if (m_EcsScene.registry.all_of<PhysicsHingeComponent>(e))
+			m_EcsScene.registry.remove<PhysicsHingeComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetPhysicsSliderState(
+	const rt2::core::UUID& entity,
+	const std::optional<PhysicsSliderComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetPhysicsSliderState: entity not present");
+	if (m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
+	{
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			entity.ToString(),
+			"SetPhysicsSliderState: entity is a linked prefab member "
+			"(physicsSlider is non-overridable; edit the prefab source)");
+	}
+	if (value.has_value())
+	{
+		std::string detail;
+		if (!T5SliderValueOk(entity, *value, detail))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetPhysicsSliderState: " + detail);
+		}
+		m_EcsScene.registry.emplace_or_replace<PhysicsSliderComponent>(e, *value);
+	}
+	else
+	{
+		if (m_EcsScene.registry.all_of<PhysicsSliderComponent>(e))
+			m_EcsScene.registry.remove<PhysicsSliderComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+std::optional<PhysicsHingeComponent> SceneManager::GetPhysicsHinge(
+	const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	if (const auto* hinge =
+	        m_EcsScene.registry.try_get<PhysicsHingeComponent>(e))
+		return *hinge;
+	return std::nullopt;
+}
+
+std::optional<PhysicsSliderComponent> SceneManager::GetPhysicsSlider(
+	const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	if (const auto* slider =
+	        m_EcsScene.registry.try_get<PhysicsSliderComponent>(e))
+		return *slider;
 	return std::nullopt;
 }
 
