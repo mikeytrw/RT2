@@ -1052,10 +1052,11 @@ bool PhysicsWorld::StageBodies(PhysicsWorld& world,
 //   - Hinge body-body: Bullet's pivot/axis constructor consumes the authored
 //     owner-local pivot+axis and other-local pivot+axis verbatim (axes
 //     normalized here; Bullet builds the frames).
-//   - Hinge world anchor: the authored otherPivot is a WORLD position and the
-//     hinge axis is the owner's local axis; the single-body frame is
-//     ownerWorld^-1 * worldAnchor (uniform scale stripped), so the Play-time
-//     world transform participates exactly.
+//   - Hinge world anchor: the single-body Bullet frame consumes the authored
+//     owner-local pivot+axis. The authored world otherPivot/otherAxis are the
+//     same frame expressed in world space and must agree with that owner frame
+//     at Play construction. Refusing disagreement is deliberate: selecting
+//     just one frame would silently discard authored data and move the anchor.
 //   - Slider body-body: frameA is the owner-local frame (origin at the owner
 //     body center, X along the owner-local axis); frameB is the same world
 //     frame expressed in the other body's local space, so both frames
@@ -1332,10 +1333,26 @@ bool PhysicsWorld::StageOneHinge(PhysicsWorld& world,
                                rotation))
             return false;
         const btTransform ownerWorld = ToBtTransform(origin, rotation);
-        const btVector3 pivotLocal =
-            ownerWorld.inverse() * ToBt(hinge.otherPivot);
-        owned = std::make_unique<btHingeConstraint>(*ownerBody, pivotLocal,
-                                                    axisA, false);
+        const btVector3 expectedWorldPivot = ownerWorld * pivotA;
+        const btVector3 expectedWorldAxis =
+            (ownerWorld.getBasis() * axisA).normalized();
+        const btVector3 authoredWorldAxis =
+            ToBt(glm::normalize(hinge.otherAxis));
+        constexpr btScalar kT5WorldFramePositionToleranceSquared =
+            btScalar(1.0e-8f);
+        constexpr btScalar kT5WorldFrameAxisDotTolerance = btScalar(0.9999f);
+        if ((expectedWorldPivot - ToBt(hinge.otherPivot)).length2() >
+                kT5WorldFramePositionToleranceSquared ||
+            expectedWorldAxis.dot(authoredWorldAxis) <
+                kT5WorldFrameAxisDotTolerance)
+        {
+            return T4Fail(
+                err, owner, name,
+                "hinge world anchor frame disagrees with owner-local pivot/axis "
+                "(world otherPivot/otherAxis must express the same frame)");
+        }
+        owned = std::make_unique<btHingeConstraint>(*ownerBody, pivotA, axisA,
+                                                     false);
     }
     btHingeConstraint* hingePtr = owned.get();
     hingePtr->setLimit(hinge.minAngleLimit, hinge.maxAngleLimit);

@@ -116,6 +116,7 @@ $requiredCases = @(
     "T5 GREEN_ConstraintRemapPlays: duplicated internal refs Play against copied bodies",
     "T5 GREEN_PrefabConstraintRemapPlays: instantiated refs Play against instance bodies",
     "T5 GREEN_ExternalWorldAnchorsPlay: external and world anchors survive copy and Play",
+    "T5 GREEN_WorldHingeFramesExact: consistent owner/world frames stage and disagreement refuses",
     "T5 GREEN_ZeroHandlesAfterCycles: repeated Play/Stop and destroy cycles leave zero handles",
     "T5 RED_BadConstraintUuidRefused: dangling, self, and missing-owner refs refuse Play",
     "T5 RED_InvalidConstraintRangeRefused: bad limits, modes, and targets refuse loudly",

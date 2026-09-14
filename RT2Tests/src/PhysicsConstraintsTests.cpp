@@ -752,6 +752,41 @@ TEST_CASE("T5 GREEN_ExternalWorldAnchorsPlay: external and world anchors survive
     CHECK(ctrl.PhysicsTotalHandles() == 0);
 }
 
+TEST_CASE("T5 GREEN_WorldHingeFramesExact: consistent owner/world frames stage and disagreement refuses")
+{
+    // A world-anchored hinge still carries two authored descriptions of the
+    // same frame: owner-local pivot/axis and world otherPivot/otherAxis. The
+    // single-body Bullet constructor can only consume the owner-local one, so
+    // Play must prove the world description agrees instead of silently using
+    // it to relocate the owner pivot.
+    T5Fixture f;
+    const T5HingeScene scene = T5BuildHingeScene(f, false);
+    auto& hinge = f.Registry().get<PhysicsHingeComponent>(f.Handle(scene.flipper));
+    hinge.otherBody = UUID::Nil();
+    hinge.otherPivot = {0.0f, 0.0f, 0.0f}; // owner (0.5,0,0) + local (-0.5,0,0)
+    hinge.otherAxis = {0.0f, 1.0f, 0.0f};
+
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    CHECK(ctrl.PhysicsConstraintCount() == 1);
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    REQUIRE(runtime != nullptr);
+    CHECK(T5HingePivotError(runtime, scene.flipper, hinge.ownerPivot) < 0.001f);
+    ctrl.Stop(f.Authoring(), bridge);
+
+    // A conflicting world frame must fail before a private candidate commits;
+    // the old implementation passed this case and silently discarded
+    // ownerPivot in favour of otherPivot.
+    hinge.otherPivot = {0.25f, 0.0f, 0.0f};
+    RuntimeSceneController rejected;
+    CHECK_FALSE(rejected.Play(f.Authoring(), bridge, err));
+    CHECK(err.path == scene.flipper.ToString());
+    CHECK(err.detail.find("world anchor frame disagrees") != std::string::npos);
+    CHECK(rejected.PhysicsTotalHandles() == 0);
+}
+
 TEST_CASE("T5 GREEN_ZeroHandlesAfterCycles: repeated Play/Stop and destroy cycles leave zero handles")
 {
     T5Fixture f;
