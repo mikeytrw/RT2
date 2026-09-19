@@ -8,6 +8,8 @@
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionDispatch/btGhostObject.h>
 
+#include <cstddef>
+
 // ============================================================================
 // PhysicsDebugCapture — minimal btIDebugDraw capture (Bullet T8, CPU-only).
 //
@@ -63,9 +65,14 @@ public:
     void BeginCapture(PhysicsDebugLines* out)
     {
         m_Out = out;
-        if (m_Out) m_Out->Clear();
         ClearOwner();
     }
+
+    // Test-only deterministic allocation-failure seam. The next accepted
+    // drawLine throws before appending; CaptureDebugLines translates it to a
+    // typed Error and restores Bullet's previous drawer through RAII.
+    static void SetTestThrowOnNextLine(bool enabled);
+    static bool TestThrowOnNextLine();
 
     // btIDebugDraw interface.
     void drawLine(const btVector3& from, const btVector3& to,
@@ -84,6 +91,7 @@ private:
     PhysicsDebugLineKind m_Kind = PhysicsDebugLineKind::Static;
     bool m_HasOwner = false;
     int m_DebugMode = btIDebugDraw::DBG_DrawWireframe;
+    static bool s_TestThrowOnNextLine;
 };
 
 // Adapter over already-persisted hinge/slider components: appends one

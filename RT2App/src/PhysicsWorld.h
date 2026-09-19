@@ -165,7 +165,15 @@ public:
     // T5 merge point: when real btTypedConstraints land, extend this to set
     // the constraint owner and call debugDrawConstraint per constraint in
     // UUID order (see PhysicsDebugCapture.h).
-    void CaptureDebugLines(const SceneDocument* runtime, PhysicsDebugLines& out);
+    // Returns false with Error::Io on capture allocation failure. `out` is
+    // published only after a complete capture; on failure it is untouched.
+    bool CaptureDebugLines(const SceneDocument* runtime, PhysicsDebugLines& out,
+                           Error& err);
+
+    // Test-only proof that the temporary btIDebugDraw is detached after every
+    // success/failure path. Production capture always restores the previous
+    // Bullet drawer (normally null).
+    bool HasDebugDrawerForTests() { return m_World.getDebugDrawer() != nullptr; }
 
     // Test/preset helper: linear velocity write for simulated rigid bodies.
     // Returns false (mutating nothing) for Static bodies, ghosts, and unknown

@@ -325,41 +325,65 @@ void PhysicsWorld::PostStepSync(SceneDocument& runtime)
 // T8 debug capture (member definitions at rt2::core scope)
 // ============================================================================
 
-void PhysicsWorld::CaptureDebugLines(const SceneDocument* runtime,
-                                     PhysicsDebugLines& out)
+bool PhysicsWorld::CaptureDebugLines(const SceneDocument* runtime,
+                                     PhysicsDebugLines& out, Error& err)
 {
-    PhysicsDebugDrawer drawer;
-    drawer.setDebugMode(btIDebugDraw::DBG_DrawWireframe);
-    drawer.BeginCapture(&out);
-    m_World.setDebugDrawer(&drawer);
-    for (const auto& rec : m_BodyIndex)
+    // Capture must not publish partial geometry, and Bullet must never retain
+    // a pointer to the stack drawer if vector growth throws. The guard restores
+    // the exact prior drawer (normally null) before `drawer` is destroyed.
+    struct DrawerRestore final
     {
-        PhysicsDebugLineKind kind = PhysicsDebugLineKind::Static;
-        if (rec.isTrigger)
+        btDiscreteDynamicsWorld& world;
+        btIDebugDraw* previous;
+        DrawerRestore(btDiscreteDynamicsWorld& w, btIDebugDraw& installed)
+            : world(w), previous(w.getDebugDrawer()) { world.setDebugDrawer(&installed); }
+        ~DrawerRestore() { world.setDebugDrawer(previous); }
+    };
+
+    try
+    {
+        PhysicsDebugLines captured;
+        PhysicsDebugDrawer drawer;
+        drawer.setDebugMode(btIDebugDraw::DBG_DrawWireframe);
+        drawer.BeginCapture(&captured);
+        DrawerRestore restore(m_World, drawer);
+        for (const auto& rec : m_BodyIndex)
+        {
+            PhysicsDebugLineKind kind = PhysicsDebugLineKind::Static;
+            if (rec.isTrigger)
             kind = PhysicsDebugLineKind::Trigger;
-        else if (rec.kind == PhysicsBodyKind::Dynamic)
+            else if (rec.kind == PhysicsBodyKind::Dynamic)
             kind = PhysicsDebugLineKind::Dynamic;
-        else if (rec.kind == PhysicsBodyKind::Kinematic)
+            else if (rec.kind == PhysicsBodyKind::Kinematic)
             kind = PhysicsDebugLineKind::Kinematic;
 
-        const btTransform* t = nullptr;
-        if (rec.body != nullptr)
+            const btTransform* t = nullptr;
+            if (rec.body != nullptr)
             t = &rec.body->getWorldTransform();
-        else if (rec.ghost != nullptr)
+            else if (rec.ghost != nullptr)
             t = &rec.ghost->getWorldTransform();
-        if (t == nullptr || rec.shape == nullptr)
-            continue;
-        drawer.SetOwner(rec.id, kind);
-        m_World.debugDrawObject(*t, rec.shape, btVector3(1.0f, 1.0f, 1.0f));
-    }
-    drawer.ClearOwner();
-    m_World.setDebugDrawer(nullptr);
+            if (t == nullptr || rec.shape == nullptr)
+                continue;
+            drawer.SetOwner(rec.id, kind);
+            m_World.debugDrawObject(*t, rec.shape, btVector3(1.0f, 1.0f, 1.0f));
+        }
     // Persisted hinge/slider adapter (T5-independent): consumes already-read
     // runtime components, builds no Bullet constraints. See the T5 merge
     // point in PhysicsDebugCapture.h.
-    if (runtime != nullptr)
-        AppendConstraintAdapterLines(*runtime, out);
-    out.SortStable();
+        if (runtime != nullptr)
+            AppendConstraintAdapterLines(*runtime, captured);
+        captured.SortStable();
+        out.segments.swap(captured.segments); // no-throw publication
+        err = {};
+        return true;
+    }
+    catch (const std::bad_alloc&)
+    {
+        err.code = Error::Io;
+        err.path.clear();
+        err.detail = "PhysicsWorld::CaptureDebugLines allocation failure; previous snapshot retained";
+        return false;
+    }
 }
 
 // ============================================================================

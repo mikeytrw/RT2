@@ -102,11 +102,20 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
             m_DebugLines.Clear();
             return false;
         }
+        // Capture before ownership transfer. Allocation failure is a typed,
+        // atomic Play refusal: no committed world/runtime/bridge/callback.
+        Error debugErr;
+        if (!candidate.value->CaptureDebugLines(m_Runtime.get(), m_DebugLines, debugErr))
+        {
+            err = debugErr;
+            m_Runtime.reset();
+            m_Accumulator = 0.0f;
+            m_DebugLines.Clear();
+            m_LastPhysicsDebugError = err;
+            return false;
+        }
+        m_LastPhysicsDebugError = {};
         m_PhysicsWorld = std::move(candidate.value);
-        // T8: capture the first debug snapshot from the committed world.
-        // Refused Play above leaves the snapshot empty (invalid geometry
-        // keeps the T4 diagnostic; no synthetic shape is ever produced).
-        RefreshPhysicsDebugLines();
     }
 
     // Activate the runtime document for rendering: full GPU upload + temporal
@@ -228,7 +237,11 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     }
 
     // T8: re-capture after transforms so constraint-adapter pivots track.
-    RefreshPhysicsDebugLines();
+    Error debugErr;
+    const bool debugOk = RefreshPhysicsDebugLines(debugErr);
+    if (!debugOk)
+        printf("[Runtime] Step physics debug capture failed: %s (previous snapshot retained)\n",
+               debugErr.Format().c_str());
 
     // One sync for the presentation pass: FullSync if the frame applied any
     // structural operation, otherwise TransformSync. Updated in place — see
@@ -247,7 +260,7 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     // Request a render submission for the presentation pass.
     bridge.RequestRender();
 
-    return true;
+    return debugOk;
 }
 
 // ============================================================================
@@ -382,7 +395,10 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
     }
 
     // T8: re-capture after transforms so constraint-adapter pivots track.
-    RefreshPhysicsDebugLines();
+    Error debugErr;
+    if (!RefreshPhysicsDebugLines(debugErr))
+        printf("[Runtime] Update physics debug capture failed: %s (previous snapshot retained)\n",
+               debugErr.Format().c_str());
 
     // One sync per rendered frame: FullSync if any structural operation was
     // applied this frame, otherwise TransformSync. A frame with a failed
@@ -618,14 +634,22 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
 // Internal helpers
 // ============================================================================
 
-void RuntimeSceneController::RefreshPhysicsDebugLines()
+bool RuntimeSceneController::RefreshPhysicsDebugLines(Error& err)
 {
     if (!m_PhysicsWorld || !m_Runtime)
     {
         m_DebugLines.Clear();
-        return;
+        err = {};
+        m_LastPhysicsDebugError = {};
+        return true;
     }
-    m_PhysicsWorld->CaptureDebugLines(m_Runtime.get(), m_DebugLines);
+    if (!m_PhysicsWorld->CaptureDebugLines(m_Runtime.get(), m_DebugLines, err))
+    {
+        m_LastPhysicsDebugError = err;
+        return false;
+    }
+    m_LastPhysicsDebugError = {};
+    return true;
 }
 
 void RuntimeSceneController::InitPrevTransforms()

@@ -8,15 +8,33 @@
 
 #include <algorithm>
 #include <cmath>
+#include <new>
 #include <vector>
 
 namespace rt2::core {
+
+bool PhysicsDebugDrawer::s_TestThrowOnNextLine = false;
+
+void PhysicsDebugDrawer::SetTestThrowOnNextLine(bool enabled)
+{
+    s_TestThrowOnNextLine = enabled;
+}
+
+bool PhysicsDebugDrawer::TestThrowOnNextLine()
+{
+    return s_TestThrowOnNextLine;
+}
 
 void PhysicsDebugDrawer::drawLine(const btVector3& from, const btVector3& to,
                                   const btVector3& /*color*/)
 {
     if (m_Out == nullptr || !m_HasOwner)
         return;
+    if (s_TestThrowOnNextLine)
+    {
+        s_TestThrowOnNextLine = false;
+        throw std::bad_alloc();
+    }
     PhysicsDebugSegment seg;
     seg.owner = m_Owner;
     seg.kind = m_Kind;
@@ -31,16 +49,19 @@ void PhysicsDebugDrawer::drawLine(const btVector3& from, const btVector3& to,
 
 namespace {
 
-glm::vec3 T8OwnerWorldPos(const SceneDocument& runtime, const UUID& owner)
+const Transform* T8FindTransform(const SceneDocument& runtime, const UUID& owner)
 {
     const entt::entity e = runtime.FindByUuid(owner);
     if (e == entt::null)
-        return glm::vec3(0.0f);
-    const auto* tf = runtime.ecs.registry.try_get<Transform>(e);
-    if (tf == nullptr)
-        return glm::vec3(0.0f);
-    return glm::vec3(tf->worldMatrix[3]);
+        return nullptr;
+    return runtime.ecs.registry.try_get<Transform>(e);
 }
+
+glm::vec3 T8WorldPoint(const glm::mat4& world, const glm::vec3& local)
+{ return glm::vec3(world * glm::vec4(local, 1.0f)); }
+
+glm::vec3 T8WorldDirection(const glm::mat4& world, const glm::vec3& local)
+{ return glm::mat3(world) * local; }
 
 glm::vec3 T8SafeAxis(glm::vec3 v, bool& ok)
 {
@@ -106,10 +127,14 @@ void AppendConstraintAdapterLines(const SceneDocument& runtime,
     for (const auto& [owner, entity] : hinges)
     {
         const auto& hinge = runtime.ecs.registry.get<PhysicsHingeComponent>(entity);
-        const glm::vec3 base = T8OwnerWorldPos(runtime, owner) + hinge.ownerPivot;
+        const Transform* ownerTf = T8FindTransform(runtime, owner);
+        if (ownerTf == nullptr)
+            continue;
+        const glm::vec3 base = T8WorldPoint(ownerTf->worldMatrix, hinge.ownerPivot);
         T8EmitCross(out, owner, base, kCrossHalf);
         bool ok = false;
-        const glm::vec3 axis = T8SafeAxis(hinge.ownerAxis, ok);
+        const glm::vec3 axis = T8SafeAxis(
+            T8WorldDirection(ownerTf->worldMatrix, hinge.ownerAxis), ok);
         if (ok)
         {
             PhysicsDebugSegment seg;
@@ -124,32 +149,58 @@ void AppendConstraintAdapterLines(const SceneDocument& runtime,
         // spanning two bodies shows both ends. Empty (world anchor) draws at
         // the authored other-pivot verbatim — the copy-path contract preserves
         // world anchors verbatim until re-authored.
+        glm::vec3 otherPivot = hinge.otherPivot;
+        glm::vec3 otherAxis = hinge.otherAxis;
         if (!hinge.otherBody.IsNull())
         {
-            const glm::vec3 other = T8OwnerWorldPos(runtime, hinge.otherBody) +
-                                    hinge.otherPivot;
-            T8EmitCross(out, owner, other, kCrossHalf * 0.75f);
+            const Transform* otherTf = T8FindTransform(runtime, hinge.otherBody);
+            if (otherTf == nullptr)
+                continue;
+            otherPivot = T8WorldPoint(otherTf->worldMatrix, hinge.otherPivot);
+            otherAxis = T8WorldDirection(otherTf->worldMatrix, hinge.otherAxis);
         }
+        // The nil other-body frame is authored in world space; a non-null
+        // one is transformed from its body's local frame above.
+        T8EmitCross(out, owner, otherPivot, kCrossHalf * 0.75f);
+        const glm::vec3 resolvedOtherAxis = T8SafeAxis(otherAxis, ok);
+        if (ok)
+            out.segments.push_back({ owner, PhysicsDebugLineKind::Constraint,
+                                     otherPivot, otherPivot + resolvedOtherAxis * kAxisLen });
     }
 
     for (const auto& [owner, entity] : sliders)
     {
         const auto& slider = runtime.ecs.registry.get<PhysicsSliderComponent>(entity);
-        const glm::vec3 base = T8OwnerWorldPos(runtime, owner);
+        const Transform* ownerTf = T8FindTransform(runtime, owner);
+        if (ownerTf == nullptr)
+            continue;
+        // Sliders persist no pivots: owner origin is its frame. A non-null
+        // otherBody is shown at its implicit local-origin frame below; nil
+        // has no stored world point this adapter may invent.
+        const glm::vec3 base = T8WorldPoint(ownerTf->worldMatrix, glm::vec3(0.0f));
         T8EmitCross(out, owner, base, kCrossHalf);
         bool ok = false;
-        const glm::vec3 axis = T8SafeAxis(slider.axis, ok);
+        const glm::vec3 axis = T8SafeAxis(
+            T8WorldDirection(ownerTf->worldMatrix, slider.axis), ok);
         if (ok)
         {
             const float lo = std::isfinite(slider.lowerLimit) ? slider.lowerLimit : 0.0f;
             const float hi = std::isfinite(slider.upperLimit) ? slider.upperLimit : kAxisLen;
-            const float span = (hi > lo && std::isfinite(hi - lo)) ? (hi - lo) : kAxisLen;
+            const float end = (hi > lo && std::isfinite(hi - lo)) ? hi : lo + kAxisLen;
             PhysicsDebugSegment seg;
             seg.owner = owner;
             seg.kind = PhysicsDebugLineKind::Constraint;
-            seg.a = base;
-            seg.b = base + axis * span;
+            seg.a = base + axis * lo;
+            seg.b = base + axis * end;
             out.segments.push_back(seg);
+        }
+        if (!slider.otherBody.IsNull())
+        {
+            const Transform* otherTf = T8FindTransform(runtime, slider.otherBody);
+            if (otherTf != nullptr)
+                T8EmitCross(out, owner,
+                    T8WorldPoint(otherTf->worldMatrix, glm::vec3(0.0f)),
+                    kCrossHalf * 0.75f);
         }
     }
 }
