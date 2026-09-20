@@ -233,6 +233,23 @@ private:
     }
 };
 
+// T5 fixup re-review P2: Apply gating shared by the hinge and slider
+// Inspector fields (CPU-only, unit-tested; SceneEditorUI.cpp consults it for
+// BeginDisabled and for the defensive Apply guard). While malformed text is
+// retained, Apply must refuse even when another field made the working copy
+// dirty: committing would silently revert the invalid edit to the old model
+// value on success. The raw text, error, and working copy survive until a
+// valid parse or an explicit Revert.
+inline bool OtherBodyTextBlocksApply(bool textActive, const std::string& error)
+{
+    return textActive && !error.empty();
+}
+inline bool InspectorApplyBlocked(bool conflict, bool textActive,
+                                  const std::string& error)
+{
+    return conflict || OtherBodyTextBlocksApply(textActive, error);
+}
+
 // T5 review fixup F5: typed otherBody UUID text parser shared by the hinge
 // and slider Inspector fields (CPU-only, unit-tested; the ImGui layer only
 // retains text and renders the error).

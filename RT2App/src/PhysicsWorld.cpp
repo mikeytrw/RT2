@@ -43,6 +43,8 @@ constexpr float kT5SliderTargetGain = 10.0f;
 bool PhysicsWorld::s_TestInjectCreateFailure = false;
 bool PhysicsWorld::s_TestPoseProbe = false;
 bool PhysicsWorld::s_StagingTestThrow = false;
+PhysicsWorld::RebuildAllocThrowPhase PhysicsWorld::s_RebuildAllocThrowPhase =
+    PhysicsWorld::RebuildAllocThrowPhase::None;
 bool PhysicsWorld::s_TeardownOrderLog = false;
 std::vector<std::string> PhysicsWorld::s_TeardownOrder;
 PhysicsWorld::CandidateThrowPoint PhysicsWorld::s_CandidateThrowPoint = PhysicsWorld::CandidateThrowPoint::None;
@@ -354,11 +356,19 @@ void PhysicsWorld::PreStepSync(SceneDocument& runtime)
         {
             const float delta = rec.restPosition - rec.hinge->getHingeAngle();
             // Disengage inside half a degree: the motor did its job, and a
-            // one-shot velocity would orbit the setpoint forever.
+            // one-shot velocity would orbit the setpoint forever. Relax
+            // both endpoints exactly like an explicit release (T5 fixup
+            // re-review P2): bodies ReturnHingeToRest pinned to
+            // DISABLE_DEACTIVATION must return to ACTIVE_TAG once the
+            // return completes, or the island never sleeps again. The
+            // shared-endpoint-aware policy keeps an endpoint awake while
+            // another enabled constraint still touches it.
             if (std::abs(delta) < 0.0087f)
             {
                 rec.hinge->enableAngularMotor(false, 0.0f, 0.0f);
                 rec.returning = false;
+                const UUID ownerId = rec.ownerId;
+                RelaxConstraintEndpoints(ownerId);
                 continue;
             }
             float speed = rec.driveSpeed;
@@ -433,6 +443,16 @@ void PhysicsWorld::SetStagingTestThrow(bool fail)
 bool PhysicsWorld::StagingTestThrow()
 {
     return s_StagingTestThrow;
+}
+
+void PhysicsWorld::SetRebuildAllocThrowPhase(RebuildAllocThrowPhase phase)
+{
+    s_RebuildAllocThrowPhase = phase;
+}
+
+PhysicsWorld::RebuildAllocThrowPhase PhysicsWorld::GetRebuildAllocThrowPhase()
+{
+    return s_RebuildAllocThrowPhase;
 }
 
 void PhysicsWorld::SetCandidateThrowPoint(CandidateThrowPoint point)
@@ -1634,8 +1654,13 @@ void PhysicsWorld::RelaxConstraintEndpoints(const UUID& owner)
                 return;
         }
         const PhysicsBodyRecord* body = FindBody(id);
+        // Vendored Bullet gate (btCollisionObject.cpp:61-65): plain
+        // setActivationState is a no-op while the body sits at
+        // DISABLE_DEACTIVATION, so it can never undo the wake pin. The
+        // unconditional forceActivationState is the only way back to
+        // ACTIVE_TAG (awake now, free to sleep later).
         if (body != nullptr && body->body != nullptr)
-            body->body->setActivationState(ACTIVE_TAG);
+            body->body->forceActivationState(ACTIVE_TAG);
     };
     relax(rec->ownerId);
     if (!rec->otherId.IsNull())
@@ -1835,8 +1860,23 @@ bool PhysicsWorld::RemoveRuntimeBody(const UUID& bodyId, Error& err)
     // Orphan guard: a body still referenced by a live constraint cannot be
     // removed first. Callers remove dependent constraints (or prove the
     // batch rejects them) before bodies — a reversed order fails here with
-    // the UUIDs named instead of dangling silently.
-    const std::vector<UUID> dependents = ConstraintsForBody(bodyId);
+    // the UUIDs named instead of dangling silently. The index walk allocates;
+    // translate exhaustion to the typed Error instead of letting bad_alloc
+    // escape this bool+Error API.
+    std::vector<UUID> dependents;
+    try
+    {
+        dependents = ConstraintsForBody(bodyId);
+    }
+    catch (const std::bad_alloc&)
+    {
+        err.code = Error::Io;
+        err.path = bodyId.ToString();
+        err.detail = "body removal for " + bodyId.ToString() +
+                     " exhausted resources while collecting dependents "
+                     "(live set unchanged)";
+        return false;
+    }
     if (!dependents.empty())
     {
         err.code = Error::InvalidArgument;
@@ -1921,99 +1961,107 @@ bool PhysicsWorld::RemoveRuntimeBody(const UUID& bodyId, Error& err)
 bool PhysicsWorld::RebuildConstraintsForBody(SceneDocument& runtime,
                                              const UUID& bodyId, Error& err)
 {
-    // Atomic rebuild (T5 review fixup F2): every replacement is fully
-    // validated, frame-resolved, and allocated while the live set is
-    // untouched, then the live set is removed and the replacements commit.
-    // Any failure — values, endpoints, uniform scale, owner world frame,
-    // world-anchor agreement, or allocation — leaves the previous
-    // constraints live and stepping.
-    const std::vector<UUID> affected = ConstraintsForBody(bodyId);
-    if (affected.empty())
-    {
-        err = Error{};
-        return true;
-    }
-    auto& registry = runtime.ecs.registry;
-    for (const auto& owner : affected)
-    {
-        const entt::entity entity = runtime.FindByUuid(owner);
-        if (entity == entt::null || !registry.valid(entity))
-        {
-            err.code = Error::InvalidEntity;
-            err.path = owner.ToString();
-            err.detail = "constraint owner " + owner.ToString() +
-                         " does not resolve to a live runtime entity "
-                         "(rebuild refused; live set unchanged)";
-            return false;
-        }
-        const bool wantHinge = registry.all_of<PhysicsHingeComponent>(entity);
-        const bool wantSlider =
-            registry.all_of<PhysicsSliderComponent>(entity);
-        const PhysicsConstraintRecord* live = FindConstraint(owner);
-        const bool liveHinge = live != nullptr && live->isHinge;
-        if ((wantHinge == wantSlider) || (wantHinge != liveHinge))
-        {
-            err.code = Error::InvalidArgument;
-            err.path = owner.ToString();
-            err.detail = "constraint owner " + owner.ToString() +
-                         " changed kind or lost its component "
-                         "(rebuild refused; live set unchanged)";
-            return false;
-        }
-        // Dry-run validation of values + endpoints before touching live
-        // state. Mirrors the staging checks without constructing.
-        const std::string name = T4EntityName(registry, entity);
-        if (wantHinge)
-        {
-            if (!T5ValidateHingeValues(registry.get<PhysicsHingeComponent>(entity),
-                                       owner, name, err))
-                return false;
-        }
-        else
-        {
-            if (!T5ValidateSliderValues(
-                    registry.get<PhysicsSliderComponent>(entity), owner, name,
-                    err))
-                return false;
-        }
-        const auto& comp = wantHinge
-                               ? registry.get<PhysicsHingeComponent>(entity)
-                                     .otherBody
-                               : registry.get<PhysicsSliderComponent>(entity)
-                                     .otherBody;
-        if (!comp.IsNull() && T5RigidEndpoint(*this, comp) == nullptr)
-        {
-            err.code = Error::InvalidArgument;
-            err.path = owner.ToString();
-            err.detail = "constraint owner " + owner.ToString() +
-                         " references body " + comp.ToString() +
-                         " with no live rigid body "
-                         "(rebuild refused; live set unchanged)";
-            return false;
-        }
-        if (T5RigidEndpoint(*this, owner) == nullptr)
-        {
-            err.code = Error::InvalidArgument;
-            err.path = owner.ToString();
-            err.detail = "constraint owner " + owner.ToString() +
-                         " has no live rigid body "
-                         "(rebuild refused; live set unchanged)";
-            return false;
-        }
-    }
-    // Phase B: build every replacement detached from the world and both
-    // indexes. Late frame/scale/anchor failures — and allocation exhaustion,
-    // translated to a typed Error — return here with the live set intact.
+    // Atomic rebuild (T5 review fixup F2, re-review P1): every replacement
+    // is fully validated, frame-resolved, and allocated while the live set
+    // is untouched, then the live set is removed and the replacements
+    // commit. Any failure — values, endpoints, uniform scale, owner world
+    // frame, world-anchor agreement, or allocation — leaves the previous
+    // constraints live and stepping. The collection walk, the reserve, and
+    // the Build loop share one bad_alloc translation boundary so no
+    // allocation site escapes this bool+Error API.
     struct BuiltReplacement
     {
         bool isHinge = true;
         BuiltHingeConstraint hinge;
         BuiltSliderConstraint slider;
     };
+    std::vector<UUID> affected;
     std::vector<BuiltReplacement> replacements;
-    replacements.reserve(affected.size());
     try
     {
+        if (s_RebuildAllocThrowPhase == RebuildAllocThrowPhase::Collect)
+            throw std::bad_alloc();
+        affected = ConstraintsForBody(bodyId);
+        if (affected.empty())
+        {
+            err = Error{};
+            return true;
+        }
+        auto& registry = runtime.ecs.registry;
+        for (const auto& owner : affected)
+        {
+            const entt::entity entity = runtime.FindByUuid(owner);
+            if (entity == entt::null || !registry.valid(entity))
+            {
+                err.code = Error::InvalidEntity;
+                err.path = owner.ToString();
+                err.detail = "constraint owner " + owner.ToString() +
+                             " does not resolve to a live runtime entity "
+                             "(rebuild refused; live set unchanged)";
+                return false;
+            }
+            const bool wantHinge = registry.all_of<PhysicsHingeComponent>(entity);
+            const bool wantSlider =
+                registry.all_of<PhysicsSliderComponent>(entity);
+            const PhysicsConstraintRecord* live = FindConstraint(owner);
+            const bool liveHinge = live != nullptr && live->isHinge;
+            if ((wantHinge == wantSlider) || (wantHinge != liveHinge))
+            {
+                err.code = Error::InvalidArgument;
+                err.path = owner.ToString();
+                err.detail = "constraint owner " + owner.ToString() +
+                             " changed kind or lost its component "
+                             "(rebuild refused; live set unchanged)";
+                return false;
+            }
+            // Dry-run validation of values + endpoints before touching live
+            // state. Mirrors the staging checks without constructing.
+            const std::string name = T4EntityName(registry, entity);
+            if (wantHinge)
+            {
+                if (!T5ValidateHingeValues(registry.get<PhysicsHingeComponent>(entity),
+                                           owner, name, err))
+                    return false;
+            }
+            else
+            {
+                if (!T5ValidateSliderValues(
+                        registry.get<PhysicsSliderComponent>(entity), owner, name,
+                        err))
+                    return false;
+            }
+            const auto& comp = wantHinge
+                                   ? registry.get<PhysicsHingeComponent>(entity)
+                                         .otherBody
+                                   : registry.get<PhysicsSliderComponent>(entity)
+                                         .otherBody;
+            if (!comp.IsNull() && T5RigidEndpoint(*this, comp) == nullptr)
+            {
+                err.code = Error::InvalidArgument;
+                err.path = owner.ToString();
+                err.detail = "constraint owner " + owner.ToString() +
+                             " references body " + comp.ToString() +
+                             " with no live rigid body "
+                             "(rebuild refused; live set unchanged)";
+                return false;
+            }
+            if (T5RigidEndpoint(*this, owner) == nullptr)
+            {
+                err.code = Error::InvalidArgument;
+                err.path = owner.ToString();
+                err.detail = "constraint owner " + owner.ToString() +
+                             " has no live rigid body "
+                             "(rebuild refused; live set unchanged)";
+                return false;
+            }
+        }
+        // Phase B: build every replacement detached from the world and both
+        // indexes. Late frame/scale/anchor failures — and allocation
+        // exhaustion, translated to a typed Error — return here with the
+        // live set intact.
+        if (s_RebuildAllocThrowPhase == RebuildAllocThrowPhase::Reserve)
+            throw std::bad_alloc();
+        replacements.reserve(affected.size());
         for (const auto& owner : affected)
         {
             const entt::entity entity = runtime.FindByUuid(owner);

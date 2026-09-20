@@ -426,6 +426,13 @@ Result<UUID> RuntimeSceneController::QueueCreateRuntimeEntity(
     if (!m_Runtime)
         return Result<UUID>::Fail(Error::InvalidRuntimeState, "",
             "QueueCreateRuntimeEntity: no runtime document");
+    // T5 fixup re-review P1: a callback create parented under the frozen
+    // destroy set would validate against an entity about to be torn down and
+    // then poison the next queue (validation retains the bad batch forever).
+    // Refuse loudly here so the next safe point stays usable.
+    if (desc.parentUuid && m_DestroyingUuids.count(*desc.parentUuid) != 0)
+        return Result<UUID>::Fail(Error::InvalidEntity, desc.parentUuid->ToString(),
+            "QueueCreateRuntimeEntity: parent is being destroyed in this safe-point drain");
 
     UUID uuid = m_RuntimeUuidProvider->CreateV4();
     while (m_Runtime->uuidIndex.Contains(uuid) ||
@@ -445,6 +452,14 @@ Result<void> RuntimeSceneController::QueueDestroyRuntimeEntity(const UUID& uuid)
     if (m_Stopping)
         return Result<void>::Fail(Error::InvalidRuntimeState, "",
             "QueueDestroyRuntimeEntity: controller is stopping");
+    // T5 fixup re-review P1: on_destroy(A) -> destroy(A) would otherwise be
+    // accepted into the next-safe-point queue while A is still observable,
+    // then rejected as a missing target on every later drain (validation
+    // retains the queue), permanently blocking structural work. Refuse
+    // targets anywhere inside the frozen dying subtree loudly instead.
+    if (m_DestroyingUuids.count(uuid) != 0)
+        return Result<void>::Fail(Error::InvalidEntity, uuid.ToString(),
+            "QueueDestroyRuntimeEntity: entity is being destroyed in this safe-point drain");
 
     m_PendingOperations.push_back(DestroyRuntimeSubtreeOperation{ uuid });
     return Result<void>::Ok();

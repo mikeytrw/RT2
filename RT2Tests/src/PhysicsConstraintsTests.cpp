@@ -1420,6 +1420,16 @@ public:
     bool writeResult = true;
     glm::vec3 postWritePos{0.0f, 0.0f, 0.0f};
     bool postWriteOk = false;
+    // T5 fixup re-review P1: structural refusal probe. When armed, the first
+    // OnEntitiesDestroying attempts self/dying-subtree structural work (which
+    // must refuse) plus one unrelated unparented create (which must defer).
+    bool structuralRefusalArmed = false;
+    Result<void> selfDestroyResult;
+    bool selfDestroyTried = false;
+    Result<void> subtreeDestroyResult;
+    bool subtreeDestroyTried = false;
+    Result<UUID> dyingParentCreateResult;
+    bool dyingParentCreateTried = false;
 
     int destroyCallCount = 0;
     std::vector<std::vector<UUID>> destroyCalls;
@@ -1448,6 +1458,36 @@ public:
             RuntimeEntityCreateDesc desc;
             desc.name = queuedCreateName;
             queuedCreateResult = ctrl->QueueCreateRuntimeEntity(desc);
+        }
+        if (structuralRefusalArmed && ctrl != nullptr)
+        {
+            structuralRefusalArmed = false;
+            if (!uuids.empty())
+            {
+                // Self: re-destroy the root being torn down now.
+                selfDestroyTried = true;
+                selfDestroyResult = ctrl->QueueDestroyRuntimeEntity(uuids.front());
+                // Dying parent: create parented under the dying root.
+                dyingParentCreateTried = true;
+                RuntimeEntityCreateDesc childDesc;
+                childDesc.name = "DoomedChild";
+                childDesc.parentUuid = uuids.front();
+                dyingParentCreateResult = ctrl->QueueCreateRuntimeEntity(childDesc);
+                // Dying subtree: destroy a second UUID from the same dying
+                // set when the subtree carries one (parent+child teardown).
+                if (uuids.size() > 1)
+                {
+                    subtreeDestroyTried = true;
+                    subtreeDestroyResult = ctrl->QueueDestroyRuntimeEntity(uuids.back());
+                }
+            }
+            // Unrelated callback work must still defer, not refuse: queue
+            // it now so it lands in the next-safe-point member queue.
+            {
+                RuntimeEntityCreateDesc goodDesc;
+                goodDesc.name = "GoodLate";
+                queuedCreateResult = ctrl->QueueCreateRuntimeEntity(goodDesc);
+            }
         }
     }
 };
@@ -1586,6 +1626,73 @@ TEST_CASE("T5 GREEN_CreateThenDestroySameUuidClean: validated create-then-destro
     ctrl.Stop(f.Authoring(), bridge);
 }
 
+TEST_CASE("T5 RED_DestroyDrainStructuralRefused: OnDestroy self/dying-subtree structural work refuses without poisoning the next queue")
+{
+    // on_destroy(A) -> destroy(A) must not be accepted into the next queue:
+    // A is still observable during the callback, then gone, so the queued
+    // op would fail validation forever (the queue is retained on failure)
+    // and block all later structural work. The same holds for a create
+    // parented under the dying set. Unrelated callback work must still defer
+    // and drain cleanly afterwards.
+    T5Fixture f;
+    const UUID parent = f.manager.CreateEmpty("Parent").affectedEntities.front();
+    const UUID child = f.manager.CreateEmpty("Child", parent).affectedEntities.front();
+    const UUID keep = f.Create("Keep");
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    DeterministicUuidProvider runtimeIds;
+    ctrl.SetRuntimeUuidProvider(&runtimeIds);
+    T5DrainProbeDispatch probe;
+    probe.ctrl = &ctrl;
+    ctrl.SetScriptDispatch(&probe);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    probe.structuralRefusalArmed = true;
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(parent).IsOk());
+    ctrl.Update(kFixedDt, bridge);
+
+    // The destroy ran with its post-order dying set [child, parent].
+    REQUIRE(probe.destroyCallCount == 1);
+    REQUIRE(probe.selfDestroyTried);
+    CHECK_FALSE(probe.selfDestroyResult.IsOk());
+    CHECK(probe.selfDestroyResult.error.code == Error::InvalidEntity);
+    REQUIRE(probe.dyingParentCreateTried);
+    CHECK_FALSE(probe.dyingParentCreateResult.IsOk());
+    CHECK(probe.dyingParentCreateResult.error.code == Error::InvalidEntity);
+    if (probe.subtreeDestroyTried)
+    {
+        CHECK_FALSE(probe.subtreeDestroyResult.IsOk());
+        CHECK(probe.subtreeDestroyResult.error.code == Error::InvalidEntity);
+    }
+    else
+    {
+        // Single-root teardown still proves self-refusal; the subtree shape
+        // is covered by the two-UUID dying set asserted below.
+        CHECK(probe.destroyCalls.front().size() >= 1);
+    }
+    // Both dying entities are gone; the refused ops never entered the queue.
+    const SceneDocument* rt = ctrl.TryGetRuntimeScene();
+    REQUIRE(rt != nullptr);
+    CHECK_FALSE(rt->uuidIndex.Contains(parent));
+    CHECK_FALSE(rt->uuidIndex.Contains(child));
+    CHECK(rt->uuidIndex.Contains(keep));
+    // Only the unrelated unparented create deferred to the next safe point.
+    REQUIRE(probe.queuedCreateResult.IsOk());
+    CHECK(ctrl.PendingOperationCount() == 1);
+
+    // The next queue remains usable: the good create drains, and later
+    // structural work validates cleanly instead of hitting a poisoned entry.
+    ctrl.Update(kFixedDt, bridge);
+    CHECK(rt->uuidIndex.Contains(probe.queuedCreateResult.value));
+    CHECK(ctrl.PendingOperationCount() == 0);
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(keep).IsOk());
+    ctrl.Update(kFixedDt, bridge);
+    CHECK_FALSE(rt->uuidIndex.Contains(keep));
+    CHECK(ctrl.PendingOperationCount() == 0);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
 // ============================================================================
 // T5 review fixup F2: failure-atomic rebuild against post-dry-run failures.
 // ============================================================================
@@ -1647,6 +1754,69 @@ TEST_CASE("T5 GREEN_RebuildAtomicPostDryRunFailure: late frame/allocation failur
     CHECK(ctrl.PhysicsTotalHandles() == 0);
 }
 
+TEST_CASE("T5 RED_RebuildAllocBoundariesTyped: collection/reserve exhaustion translates with the live set exact")
+{
+    // The outer allocations (ConstraintsForBody vector, replacements.reserve)
+    // sit inside the same bad_alloc translation as the Build loop. Injecting
+    // before each proves the typed refusal and that the previous constraint
+    // (motor params, count, stepping) remains exact.
+    T5Fixture f;
+    const T5HingeScene scene = T5BuildHingeScene(f);
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    PhysicsWorld* world = ctrl.TryGetPhysicsWorldMut();
+    REQUIRE(world != nullptr);
+    SceneDocument* runtime = ctrl.TryGetRuntimeSceneMut();
+    REQUIRE(runtime != nullptr);
+
+    runtime->ecs.registry.get<PhysicsHingeComponent>(
+        runtime->FindByUuid(scene.flipper)).motorTargetVelocity = 30.0f;
+    Error rerr;
+    REQUIRE(world->RebuildConstraintsForBody(*runtime, scene.flipper, rerr));
+    REQUIRE(rerr.IsOk());
+
+    auto checkExact = [&]() {
+        CHECK(ctrl.PhysicsConstraintCount() == 1);
+        float vel = 0.0f, imp = 0.0f;
+        REQUIRE(world->HingeMotorParams(scene.flipper, vel, imp));
+        CHECK(vel == doctest::Approx(30.0f));
+        CHECK(imp == doctest::Approx(8.0f));
+    };
+
+    PhysicsWorld::SetRebuildAllocThrowPhase(
+        PhysicsWorld::RebuildAllocThrowPhase::Collect);
+    CHECK_FALSE(world->RebuildConstraintsForBody(*runtime, scene.flipper, rerr));
+    PhysicsWorld::SetRebuildAllocThrowPhase(
+        PhysicsWorld::RebuildAllocThrowPhase::None);
+    CHECK_FALSE(rerr.IsOk());
+    CHECK(rerr.code == Error::Io);
+    CHECK(rerr.path == scene.flipper.ToString());
+    checkExact();
+
+    PhysicsWorld::SetRebuildAllocThrowPhase(
+        PhysicsWorld::RebuildAllocThrowPhase::Reserve);
+    CHECK_FALSE(world->RebuildConstraintsForBody(*runtime, scene.flipper, rerr));
+    PhysicsWorld::SetRebuildAllocThrowPhase(
+        PhysicsWorld::RebuildAllocThrowPhase::None);
+    CHECK_FALSE(rerr.IsOk());
+    CHECK(rerr.code == Error::Io);
+    CHECK(rerr.path == scene.flipper.ToString());
+    checkExact();
+
+    // The preserved constraint is still live and stepping.
+    bool ok = false;
+    const float before = world->HingeAngle(scene.flipper, ok);
+    REQUIRE(ok);
+    ctrl.Update(kFixedDt, bridge);
+    const float after = world->HingeAngle(scene.flipper, ok);
+    REQUIRE(ok);
+    CHECK(after > before + 0.01f);
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+}
+
 // ============================================================================
 // T5 review fixup F4: sleeping mechanisms wake on live drive commands.
 // ============================================================================
@@ -1695,6 +1865,69 @@ TEST_CASE("T5 GREEN_WakeSleepingMechanismMovesWithinOneTick: sleeping disabled m
     glm::vec3 plungerAfter{0.0f, 0.0f, 0.0f};
     REQUIRE(world->BodyWorldPosition(sliderScene.plunger, plungerAfter));
     CHECK(glm::length(plungerAfter - plungerBefore) > 0.005f);
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+}
+
+TEST_CASE("T5 GREEN_HingeReturnCompletesAndRelaxes: return completion restores sleep tags and the island sleeps again")
+{
+    // ReturnHingeToRest pins both endpoints DISABLE_DEACTIVATION (like any
+    // enable). When the pre-step servo reaches rest it must apply the same
+    // shared-endpoint-aware relaxation as an explicit release; otherwise the
+    // island stays pinned awake forever. Completion + tags + eventual sleep
+    // is the discriminator.
+    T5Fixture f;
+    const T5HingeScene scene = T5BuildHingeScene(f);
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    PhysicsWorld* world = ctrl.TryGetPhysicsWorldMut();
+    REQUIRE(world != nullptr);
+
+    // Drive away from rest (rest = 0) so the return has distance to cover.
+    REQUIRE(world->SetHingeDrive(scene.flipper, 18.0f, 8.0f));
+    for (int i = 0; i < 30; ++i)
+        ctrl.Update(kFixedDt, bridge);
+    bool ok = false;
+    const float displaced = world->HingeAngle(scene.flipper, ok);
+    REQUIRE(ok);
+    REQUIRE(displaced > 0.3f);
+
+    REQUIRE(world->ReturnHingeToRest(scene.flipper));
+    const PhysicsBodyRecord* pinned = world->FindBody(scene.flipper);
+    REQUIRE(pinned != nullptr);
+    REQUIRE(pinned->body != nullptr);
+    CHECK(pinned->body->getActivationState() == DISABLE_DEACTIVATION);
+
+    // Run to the rest setpoint: the servo disengages the motor on completion.
+    bool completed = false;
+    for (int i = 0; i < 400 && !completed; ++i)
+    {
+        ctrl.Update(kFixedDt, bridge);
+        completed = !world->HingeMotorEnabled(scene.flipper, ok);
+        REQUIRE(ok);
+    }
+    REQUIRE(completed);
+    const float returned = world->HingeAngle(scene.flipper, ok);
+    REQUIRE(ok);
+    CHECK(std::abs(returned) < 0.05f);
+
+    // Completion relaxed both endpoints like release: the dynamic flipper
+    // returns to ACTIVE_TAG instead of staying pinned awake.
+    const PhysicsBodyRecord* relaxed = world->FindBody(scene.flipper);
+    REQUIRE(relaxed != nullptr);
+    REQUIRE(relaxed->body != nullptr);
+    CHECK(relaxed->body->getActivationState() == ACTIVE_TAG);
+
+    // With no enabled constraint left, the island eventually sleeps again.
+    bool slept = false;
+    for (int i = 0; i < 300 && !slept; ++i)
+    {
+        ctrl.Update(kFixedDt, bridge);
+        slept = !relaxed->body->isActive();
+    }
+    CHECK(slept);
     ctrl.Stop(f.Authoring(), bridge);
     CHECK(ctrl.PhysicsTotalHandles() == 0);
 }
@@ -1757,4 +1990,51 @@ TEST_CASE("T5 RED_InspectorMalformedUuidDiagnosed: malformed UUID text diagnoses
     CHECK_FALSE(TryParseOtherBodyUuid(anchor.ToString() + "00", out, error));
     CHECK_FALSE(TryParseOtherBodyUuid("  " + anchor.ToString(), out, error));
     CHECK(model.otherBody == anchor);
+}
+
+TEST_CASE("T5 RED_InspectorApplyBlockedWhileMalformed: Apply refuses while malformed text is retained even when another field is dirty")
+{
+    // The production Apply gate (SceneEditorUI.cpp BeginDisabled + guard)
+    // consults InspectorApplyBlocked: a dirty working copy must not commit
+    // while malformed otherBody text is active, or Apply would commit the
+    // other field under the stale otherBody and clear the invalid edit.
+    CHECK_FALSE(InspectorApplyBlocked(false, false, ""));
+    CHECK(InspectorApplyBlocked(true, false, ""));
+    CHECK(OtherBodyTextBlocksApply(true, "otherBody 'x' is not a valid UUID"));
+    CHECK_FALSE(OtherBodyTextBlocksApply(false, "stale"));
+    CHECK_FALSE(OtherBodyTextBlocksApply(true, ""));
+
+    // Malformed + dirty hinge: Apply blocked, raw text/error/working copy
+    // preserved, live model untouched (no partial commit).
+    DeterministicUuidProvider ids;
+    const UUID anchor = ids.CreateV4();
+    PhysicsHingeComponent live;
+    live.otherBody = anchor;
+    live.motorTargetVelocity = 18.0f;
+    PhysicsInspectorWork work;
+    work.hinge = live;
+    work.hingeDirty = true;
+    work.hinge->motorTargetVelocity = 42.0f; // another field edited
+    std::string rawText = "not-a-uuid";
+    std::string rawError;
+    UUID parsed;
+    REQUIRE_FALSE(TryParseOtherBodyUuid(rawText, parsed, rawError));
+    REQUIRE(OtherBodyTextBlocksApply(true, rawError));
+    CHECK(InspectorApplyBlocked(work.hingeConflict, true, rawError));
+    // The guard refuses: no commit is built, so the live value, the raw
+    // edit, the error, and the dirty working copy all survive intact.
+    CHECK(live.otherBody == anchor);
+    CHECK(live.motorTargetVelocity == 18.0f);
+    CHECK(rawText == "not-a-uuid");
+    CHECK_FALSE(rawError.empty());
+    CHECK(work.hingeDirty);
+    CHECK(work.hinge->motorTargetVelocity == 42.0f);
+
+    // Slider side obeys the same gate.
+    CHECK(InspectorApplyBlocked(false, true, rawError));
+    CHECK_FALSE(InspectorApplyBlocked(false, false, ""));
+
+    // Valid parse clears the block: empty text (world anchor) applies.
+    CHECK(TryParseOtherBodyUuid("", parsed, rawError));
+    CHECK_FALSE(InspectorApplyBlocked(false, false, rawError));
 }

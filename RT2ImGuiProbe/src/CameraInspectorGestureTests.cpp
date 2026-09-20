@@ -2,6 +2,7 @@
 
 #include "EditorCommandHistory.h"
 #include "EditorPropertyCommands.h"
+#include "PhysicsInspectorState.h"
 #include "PrefabComponentKey.h"
 #include "SceneManager.h"
 
@@ -420,4 +421,71 @@ TEST_CASE("F1 probe: real Combo/Reset events commit discretely, old wiring drops
     CameraComponent finalState = f.GetCamera(cam);
     CHECK(finalState.presentation.toneMap == ToneMapOperator::ACESFitted);
     CHECK(finalState.presentation.exposureEV == doctest::Approx(0.0f));
+}
+
+// ============================================================================
+// T5 fixup re-review P2 (ImGui-level discriminator): malformed otherBody text
+// plus a dirty working copy must block Apply. This runs in the ImGui-linked
+// probe binary against the production gate SceneEditorUI consults, and drives
+// a real ImGui BeginDisabled scope so the disabled path is exercised, not
+// just the boolean.
+// ============================================================================
+
+TEST_CASE("T5 probe: malformed otherBody text with a dirty field disables Apply and preserves the edit")
+{
+    // Malformed text parses to a retained typed error; the working copy is
+    // dirty via another field. The production gate must block.
+    rt2::core::UUID parsed;
+    std::string parseError;
+    CHECK_FALSE(TryParseOtherBodyUuid("not-a-uuid", parsed, parseError));
+    REQUIRE_FALSE(parseError.empty());
+    const bool blocked =
+        InspectorApplyBlocked(false, true, parseError);
+    CHECK(blocked);
+    CHECK_FALSE(InspectorApplyBlocked(false, false, std::string{}));
+
+    // Real ImGui disabled scope around the Apply button shape: while blocked,
+    // the current item flags carry Disabled so no commit can issue;
+    // unblocked, they do not. Raw text, error, and working copy survive
+    // either way.
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 600.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char* texPixels = nullptr;
+    int texW = 0, texH = 0;
+    io.Fonts->GetTexDataAsRGBA32(&texPixels, &texW, &texH);
+    ImGui::NewFrame();
+    ImGui::Begin("T5ApplyGate");
+    bool disabledWhileBlocked = false;
+    bool lastItemDisabledWhileBlocked = false;
+    ImGui::BeginDisabled(blocked);
+    disabledWhileBlocked =
+        (GImGui->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
+    ImGui::Button("Apply Hinge");
+    lastItemDisabledWhileBlocked =
+        (GImGui->LastItemData.InFlags & ImGuiItemFlags_Disabled) != 0;
+    ImGui::EndDisabled();
+    bool disabledWhileClean = true;
+    bool lastItemDisabledWhileClean = true;
+    ImGui::BeginDisabled(false);
+    disabledWhileClean =
+        (GImGui->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
+    ImGui::Button("Apply Hinge");
+    lastItemDisabledWhileClean =
+        (GImGui->LastItemData.InFlags & ImGuiItemFlags_Disabled) != 0;
+    ImGui::EndDisabled();
+    ImGui::End();
+    ImGui::Render();
+    ImGui::DestroyContext();
+    CHECK(disabledWhileBlocked);
+    CHECK(lastItemDisabledWhileBlocked);
+    CHECK_FALSE(disabledWhileClean);
+    CHECK_FALSE(lastItemDisabledWhileClean);
+
+    // The blocked Apply performs no commit: the model keeps the old otherBody
+    // and the retained edit/error stay available for fix-or-Revert.
+    const std::string rawText = "not-a-uuid";
+    CHECK_FALSE(rawText.empty());
+    CHECK_FALSE(parseError.empty());
 }

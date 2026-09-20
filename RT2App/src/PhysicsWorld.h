@@ -334,6 +334,21 @@ public:
     static void SetStagingTestThrow(bool fail);
     static bool StagingTestThrow();
 
+    // Test-only allocation-failure injection for the rebuild collection /
+    // reserve boundary (T5 fixup re-review P1). Collect fires before
+    // ConstraintsForBody materializes its vector; Reserve fires just before
+    // replacements.reserve. Both must translate to the typed Io Error with
+    // the live set untouched, exactly like a Build-path exhaustion. Default
+    // None; tests must clear after use. Never set outside tests.
+    enum class RebuildAllocThrowPhase : uint8_t
+    {
+        None = 0,
+        Collect = 1,
+        Reserve = 2,
+    };
+    static void SetRebuildAllocThrowPhase(RebuildAllocThrowPhase phase);
+    static RebuildAllocThrowPhase GetRebuildAllocThrowPhase();
+
     // Test-only allocation-failure injection for the whole candidate
     // construction sequence (narrow follow-up). Explicit phases replace the
     // earlier shared boolean, whose single flag could never reach the
@@ -445,6 +460,7 @@ private:
     static bool s_TestInjectCreateFailure;
     static bool s_TestPoseProbe;
     static bool s_StagingTestThrow;
+    static RebuildAllocThrowPhase s_RebuildAllocThrowPhase;
     static bool s_TeardownOrderLog;
     static std::vector<std::string> s_TeardownOrder;
     static CandidateThrowPoint s_CandidateThrowPoint;

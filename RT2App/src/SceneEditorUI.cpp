@@ -2286,31 +2286,49 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		{
 			if (m_PhysicsWork.hingeConflict)
 				ImGui::TextDisabled("Live state changed underneath (Undo/Redo): Revert to continue");
-			ImGui::BeginDisabled(m_PhysicsWork.hingeConflict);
+			// T5 fixup re-review P2: malformed otherBody text blocks Apply
+			// even when another field dirtied the working copy. Committing
+			// would apply the other field under the old otherBody and then
+			// clear the retained invalid edit on success — a silent revert.
+			const bool hingeApplyBlocked = InspectorApplyBlocked(
+				m_PhysicsWork.hingeConflict, m_HingeOtherBodyTextActive,
+				m_HingeOtherBodyError);
+			if (OtherBodyTextBlocksApply(m_HingeOtherBodyTextActive,
+			                              m_HingeOtherBodyError))
+				ImGui::TextDisabled("Fix the other-body UUID error (or Revert) before Apply");
+			ImGui::BeginDisabled(hingeApplyBlocked);
 			if (ImGui::Button("Apply Hinge"))
 			{
-				std::optional<PhysicsHingeComponent> before;
-				if (const auto* h = reg.try_get<PhysicsHingeComponent>(entity.id))
-					before = *h;
-				auto cmd = MakeSetPhysicsHingeCommandIfEffective(
-					targetUuid, before, m_PhysicsWork.hinge);
-				bool applied = !cmd;
-				if (cmd)
+				// Defensive refusal if the disabled state is ever bypassed:
+				// preserve raw text, error, and working copy with no commit.
+				if (hingeApplyBlocked)
 				{
-					const auto result = ExecuteCommandThroughHistory(
-						m_CommandHistory, *m_SceneMgr, std::move(cmd));
-					ApplyMutation(result);
-					applied = result.success;
 				}
-				if (applied)
+				else
 				{
-					std::optional<PhysicsHingeComponent> freshHinge;
+					std::optional<PhysicsHingeComponent> before;
 					if (const auto* h = reg.try_get<PhysicsHingeComponent>(entity.id))
-						freshHinge = *h;
-					m_PhysicsWork.AppliedHinge(freshHinge);
-					m_HingeOtherBodyText.clear();
-					m_HingeOtherBodyTextActive = false;
-					m_HingeOtherBodyError.clear();
+						before = *h;
+					auto cmd = MakeSetPhysicsHingeCommandIfEffective(
+						targetUuid, before, m_PhysicsWork.hinge);
+					bool applied = !cmd;
+					if (cmd)
+					{
+						const auto result = ExecuteCommandThroughHistory(
+							m_CommandHistory, *m_SceneMgr, std::move(cmd));
+						ApplyMutation(result);
+						applied = result.success;
+					}
+					if (applied)
+					{
+						std::optional<PhysicsHingeComponent> freshHinge;
+						if (const auto* h = reg.try_get<PhysicsHingeComponent>(entity.id))
+							freshHinge = *h;
+						m_PhysicsWork.AppliedHinge(freshHinge);
+						m_HingeOtherBodyText.clear();
+						m_HingeOtherBodyTextActive = false;
+						m_HingeOtherBodyError.clear();
+					}
 				}
 			}
 			ImGui::EndDisabled();
@@ -2442,31 +2460,47 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		{
 			if (m_PhysicsWork.sliderConflict)
 				ImGui::TextDisabled("Live state changed underneath (Undo/Redo): Revert to continue");
-			ImGui::BeginDisabled(m_PhysicsWork.sliderConflict);
+			// T5 fixup re-review P2: malformed otherBody text blocks Apply
+			// even when another field dirtied the working copy (see hinge).
+			const bool sliderApplyBlocked = InspectorApplyBlocked(
+				m_PhysicsWork.sliderConflict, m_SliderOtherBodyTextActive,
+				m_SliderOtherBodyError);
+			if (OtherBodyTextBlocksApply(m_SliderOtherBodyTextActive,
+			                              m_SliderOtherBodyError))
+				ImGui::TextDisabled("Fix the other-body UUID error (or Revert) before Apply");
+			ImGui::BeginDisabled(sliderApplyBlocked);
 			if (ImGui::Button("Apply Slider"))
 			{
-				std::optional<PhysicsSliderComponent> before;
-				if (const auto* sl = reg.try_get<PhysicsSliderComponent>(entity.id))
-					before = *sl;
-				auto cmd = MakeSetPhysicsSliderCommandIfEffective(
-					targetUuid, before, m_PhysicsWork.slider);
-				bool applied = !cmd;
-				if (cmd)
+				// Defensive refusal if the disabled state is ever bypassed:
+				// preserve raw text, error, and working copy with no commit.
+				if (sliderApplyBlocked)
 				{
-					const auto result = ExecuteCommandThroughHistory(
-						m_CommandHistory, *m_SceneMgr, std::move(cmd));
-					ApplyMutation(result);
-					applied = result.success;
 				}
-				if (applied)
+				else
 				{
-					std::optional<PhysicsSliderComponent> freshSlider;
+					std::optional<PhysicsSliderComponent> before;
 					if (const auto* sl = reg.try_get<PhysicsSliderComponent>(entity.id))
-						freshSlider = *sl;
-					m_PhysicsWork.AppliedSlider(freshSlider);
-					m_SliderOtherBodyText.clear();
-					m_SliderOtherBodyTextActive = false;
-					m_SliderOtherBodyError.clear();
+						before = *sl;
+					auto cmd = MakeSetPhysicsSliderCommandIfEffective(
+						targetUuid, before, m_PhysicsWork.slider);
+					bool applied = !cmd;
+					if (cmd)
+					{
+						const auto result = ExecuteCommandThroughHistory(
+							m_CommandHistory, *m_SceneMgr, std::move(cmd));
+						ApplyMutation(result);
+						applied = result.success;
+					}
+					if (applied)
+					{
+						std::optional<PhysicsSliderComponent> freshSlider;
+						if (const auto* sl = reg.try_get<PhysicsSliderComponent>(entity.id))
+							freshSlider = *sl;
+						m_PhysicsWork.AppliedSlider(freshSlider);
+						m_SliderOtherBodyText.clear();
+						m_SliderOtherBodyTextActive = false;
+						m_SliderOtherBodyError.clear();
+					}
 				}
 			}
 			ImGui::EndDisabled();
