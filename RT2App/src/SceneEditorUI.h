@@ -451,6 +451,17 @@ private:
 	// Policy (resync/conflict/reset/assetId) lives in PhysicsInspectorWork
 	// and is CPU-unit-tested; this member only carries it across frames.
 	PhysicsInspectorWork m_PhysicsWork;
+	// T5 review fixup F5: retained malformed otherBody UUID text per kind.
+	// While active, the InputText seeds from the retained text (not the model
+	// value) and the typed parse error renders beneath it; the working copy
+	// is untouched until the text parses or the user reverts. Cleared on
+	// target change, successful parse-to-empty-or-valid, Apply, and Revert.
+	std::string m_HingeOtherBodyText;
+	bool m_HingeOtherBodyTextActive = false;
+	std::string m_HingeOtherBodyError;
+	std::string m_SliderOtherBodyText;
+	bool m_SliderOtherBodyTextActive = false;
+	std::string m_SliderOtherBodyError;
 
 	// Pending-recovery surfacing (S6-C fixup P1 finding 2 / final closure P1
 	// finding 2): a live-preview session whose close failed against a still-live

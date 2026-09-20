@@ -1806,7 +1806,19 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	// change, resync clean copies after Undo/Redo,
 	// and flag dirty/live conflicts instead of overwriting restored state.
 	// Exact before-states are still read fresh at Apply.
+	// T5 review fixup F5: retained malformed UUID text is per-target, so a
+	// selection change drops it alongside the working-copy reseed.
+	const rt2::core::UUID physicsPrevTarget = m_PhysicsWork.target;
 	m_PhysicsWork.Sync(targetUuid, liveBody, liveShape, liveHinge, liveSlider);
+	if (m_PhysicsWork.target != physicsPrevTarget)
+	{
+		m_HingeOtherBodyText.clear();
+		m_HingeOtherBodyTextActive = false;
+		m_HingeOtherBodyError.clear();
+		m_SliderOtherBodyText.clear();
+		m_SliderOtherBodyTextActive = false;
+		m_SliderOtherBodyError.clear();
+	}
 
 	ImGui::Separator();
 	ImGui::Text("Physics (Bullet)");
@@ -2161,9 +2173,13 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	// ---- Hinge (T5) ----
 	// Minimal controls: the owner is this entity; otherBody is a UUID text
 	// field (empty = world anchor). Angles edit in degrees, stored radians.
+	// T5 review fixup F3: one constraint per owner — the Add button is
+	// replaced by an explanatory note while a slider is present.
 	if (!m_PhysicsWork.hinge.has_value())
 	{
-		if (ImGui::Button("Add Physics Hinge"))
+		if (m_PhysicsWork.slider.has_value())
+			ImGui::TextDisabled("Hinge unavailable: entity already has a slider (one constraint per owner)");
+		else if (ImGui::Button("Add Physics Hinge"))
 		{
 			PhysicsHingeComponent after{};
 			auto cmd = MakeSetPhysicsHingeCommandIfEffective(
@@ -2181,33 +2197,57 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		auto& work = *m_PhysicsWork.hinge;
 		ImGui::Text("Hinge (owner: this entity)");
 		char otherBuf[64];
-		snprintf(otherBuf, sizeof(otherBuf), "%s",
-		         work.otherBody.IsNull() ? "" : work.otherBody.ToString().c_str());
+		if (m_HingeOtherBodyTextActive)
+			snprintf(otherBuf, sizeof(otherBuf), "%s", m_HingeOtherBodyText.c_str());
+		else
+			snprintf(otherBuf, sizeof(otherBuf), "%s",
+			         work.otherBody.IsNull() ? "" : work.otherBody.ToString().c_str());
 		ImGui::SetNextItemWidth(220.0f);
 		const bool otherReturned = ImGui::InputText(
-			"Other body UUID (empty = world)", otherBuf, sizeof(otherBuf),
+			"Hinge other body UUID (empty = world)", otherBuf, sizeof(otherBuf),
 			ImGuiInputTextFlags_EnterReturnsTrue);
 		const bool otherEdited = ImGui::IsItemDeactivatedAfterEdit();
 		if (otherReturned || otherEdited)
 		{
-			if (otherBuf[0] == '\0')
+			rt2::core::UUID parsed;
+			std::string parseError;
+			if (!TryParseOtherBodyUuid(otherBuf, parsed, parseError))
 			{
+				// T5 review fixup F5: retain the malformed text and surface
+				// the typed error; the working copy is untouched until the
+				// text parses or the user reverts.
+				m_HingeOtherBodyText = otherBuf;
+				m_HingeOtherBodyTextActive = true;
+				m_HingeOtherBodyError = parseError;
+			}
+			else if (parsed.IsNull())
+			{
+				m_HingeOtherBodyText.clear();
+				m_HingeOtherBodyTextActive = false;
+				m_HingeOtherBodyError.clear();
 				if (!work.otherBody.IsNull())
 				{
 					work.otherBody = rt2::core::UUID{};
 					m_PhysicsWork.hingeDirty = true;
 				}
 			}
+			else if (!(parsed == work.otherBody))
+			{
+				m_HingeOtherBodyText.clear();
+				m_HingeOtherBodyTextActive = false;
+				m_HingeOtherBodyError.clear();
+				work.otherBody = parsed;
+				m_PhysicsWork.hingeDirty = true;
+			}
 			else
 			{
-				const rt2::core::UUID parsed = rt2::core::UUID::Parse(otherBuf);
-				if (!parsed.IsNull() && !(parsed == work.otherBody))
-				{
-					work.otherBody = parsed;
-					m_PhysicsWork.hingeDirty = true;
-				}
+				m_HingeOtherBodyText.clear();
+				m_HingeOtherBodyTextActive = false;
+				m_HingeOtherBodyError.clear();
 			}
 		}
+		if (m_HingeOtherBodyTextActive && !m_HingeOtherBodyError.empty())
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_HingeOtherBodyError.c_str());
 		if (ImGui::DragFloat3("Owner pivot", &work.ownerPivot[0], 0.01f))
 			m_PhysicsWork.hingeDirty = true;
 		if (ImGui::DragFloat3("Owner axis", &work.ownerAxis[0], 0.01f))
@@ -2234,7 +2274,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 			work.restAngle = glm::radians(restDeg);
 			m_PhysicsWork.hingeDirty = true;
 		}
-		if (ImGui::Checkbox("Motor enabled", &work.motorEnabled))
+		if (ImGui::Checkbox("Hinge motor enabled", &work.motorEnabled))
 			m_PhysicsWork.hingeDirty = true;
 		if (ImGui::DragFloat("Motor velocity (rad/s)", &work.motorTargetVelocity,
 		                     0.1f))
@@ -2268,6 +2308,9 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 					if (const auto* h = reg.try_get<PhysicsHingeComponent>(entity.id))
 						freshHinge = *h;
 					m_PhysicsWork.AppliedHinge(freshHinge);
+					m_HingeOtherBodyText.clear();
+					m_HingeOtherBodyTextActive = false;
+					m_HingeOtherBodyError.clear();
 				}
 			}
 			ImGui::EndDisabled();
@@ -2275,6 +2318,9 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 			if (ImGui::Button("Revert Hinge"))
 			{
 				m_PhysicsWork.RevertHinge(liveHinge);
+				m_HingeOtherBodyText.clear();
+				m_HingeOtherBodyTextActive = false;
+				m_HingeOtherBodyError.clear();
 			}
 		}
 		if (liveHinge.has_value() && ImGui::Button("Remove Physics Hinge"))
@@ -2290,15 +2336,24 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 					m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
 				if (result.success)
+				{
 					m_PhysicsWork.AppliedHinge(std::nullopt);
+					m_HingeOtherBodyText.clear();
+					m_HingeOtherBodyTextActive = false;
+					m_HingeOtherBodyError.clear();
+				}
 			}
 		}
 	}
 
 	// ---- Slider (T5) ----
+	// T5 review fixup F3: one constraint per owner — the Add button is
+	// replaced by an explanatory note while a hinge is present.
 	if (!m_PhysicsWork.slider.has_value())
 	{
-		if (ImGui::Button("Add Physics Slider"))
+		if (m_PhysicsWork.hinge.has_value())
+			ImGui::TextDisabled("Slider unavailable: entity already has a hinge (one constraint per owner)");
+		else if (ImGui::Button("Add Physics Slider"))
 		{
 			PhysicsSliderComponent after{};
 			auto cmd = MakeSetPhysicsSliderCommandIfEffective(
@@ -2316,33 +2371,57 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		auto& work = *m_PhysicsWork.slider;
 		ImGui::Text("Slider (owner: this entity)");
 		char otherBuf[64];
-		snprintf(otherBuf, sizeof(otherBuf), "%s",
-		         work.otherBody.IsNull() ? "" : work.otherBody.ToString().c_str());
+		if (m_SliderOtherBodyTextActive)
+			snprintf(otherBuf, sizeof(otherBuf), "%s", m_SliderOtherBodyText.c_str());
+		else
+			snprintf(otherBuf, sizeof(otherBuf), "%s",
+			         work.otherBody.IsNull() ? "" : work.otherBody.ToString().c_str());
 		ImGui::SetNextItemWidth(220.0f);
 		const bool otherReturned = ImGui::InputText(
-			"Other body UUID (empty = world)", otherBuf, sizeof(otherBuf),
+			"Slider other body UUID (empty = world)", otherBuf, sizeof(otherBuf),
 			ImGuiInputTextFlags_EnterReturnsTrue);
 		const bool otherEdited = ImGui::IsItemDeactivatedAfterEdit();
 		if (otherReturned || otherEdited)
 		{
-			if (otherBuf[0] == '\0')
+			rt2::core::UUID parsed;
+			std::string parseError;
+			if (!TryParseOtherBodyUuid(otherBuf, parsed, parseError))
 			{
+				// T5 review fixup F5: retain the malformed text and surface
+				// the typed error; the working copy is untouched until the
+				// text parses or the user reverts.
+				m_SliderOtherBodyText = otherBuf;
+				m_SliderOtherBodyTextActive = true;
+				m_SliderOtherBodyError = parseError;
+			}
+			else if (parsed.IsNull())
+			{
+				m_SliderOtherBodyText.clear();
+				m_SliderOtherBodyTextActive = false;
+				m_SliderOtherBodyError.clear();
 				if (!work.otherBody.IsNull())
 				{
 					work.otherBody = rt2::core::UUID{};
 					m_PhysicsWork.sliderDirty = true;
 				}
 			}
+			else if (!(parsed == work.otherBody))
+			{
+				m_SliderOtherBodyText.clear();
+				m_SliderOtherBodyTextActive = false;
+				m_SliderOtherBodyError.clear();
+				work.otherBody = parsed;
+				m_PhysicsWork.sliderDirty = true;
+			}
 			else
 			{
-				const rt2::core::UUID parsed = rt2::core::UUID::Parse(otherBuf);
-				if (!parsed.IsNull() && !(parsed == work.otherBody))
-				{
-					work.otherBody = parsed;
-					m_PhysicsWork.sliderDirty = true;
-				}
+				m_SliderOtherBodyText.clear();
+				m_SliderOtherBodyTextActive = false;
+				m_SliderOtherBodyError.clear();
 			}
 		}
+		if (m_SliderOtherBodyTextActive && !m_SliderOtherBodyError.empty())
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_SliderOtherBodyError.c_str());
 		if (ImGui::DragFloat3("Axis", &work.axis[0], 0.01f))
 			m_PhysicsWork.sliderDirty = true;
 		if (ImGui::DragFloat("Lower limit", &work.lowerLimit, 0.01f))
@@ -2351,7 +2430,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 			m_PhysicsWork.sliderDirty = true;
 		if (ImGui::DragFloat("Target position", &work.targetPosition, 0.01f))
 			m_PhysicsWork.sliderDirty = true;
-		if (ImGui::Checkbox("Motor enabled", &work.motorEnabled))
+		if (ImGui::Checkbox("Slider motor enabled", &work.motorEnabled))
 			m_PhysicsWork.sliderDirty = true;
 		if (ImGui::DragFloat("Motor velocity (u/s)", &work.motorTargetVelocity,
 		                     0.1f, 0.0f, 1000.0f, "%.3f"))
@@ -2385,6 +2464,9 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 					if (const auto* sl = reg.try_get<PhysicsSliderComponent>(entity.id))
 						freshSlider = *sl;
 					m_PhysicsWork.AppliedSlider(freshSlider);
+					m_SliderOtherBodyText.clear();
+					m_SliderOtherBodyTextActive = false;
+					m_SliderOtherBodyError.clear();
 				}
 			}
 			ImGui::EndDisabled();
@@ -2392,6 +2474,9 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 			if (ImGui::Button("Revert Slider"))
 			{
 				m_PhysicsWork.RevertSlider(liveSlider);
+				m_SliderOtherBodyText.clear();
+				m_SliderOtherBodyTextActive = false;
+				m_SliderOtherBodyError.clear();
 			}
 		}
 		if (liveSlider.has_value() && ImGui::Button("Remove Physics Slider"))
@@ -2407,7 +2492,12 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 					m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
 				if (result.success)
+				{
 					m_PhysicsWork.AppliedSlider(std::nullopt);
+					m_SliderOtherBodyText.clear();
+					m_SliderOtherBodyTextActive = false;
+					m_SliderOtherBodyError.clear();
+				}
 			}
 		}
 	}

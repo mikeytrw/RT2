@@ -1496,6 +1496,15 @@ bool RuntimeCommandSink::SetLocalTransform(const UUID& uuid, const EditableTRS& 
     // Q4: gate writes through the controller's authority. The sink does
     // not bypass the controller during OnSceneStop.
     if (!m_Controller.IsRuntimeMutable()) return false;
+    // T5 review fixup F1: a write aimed at a UUID in the frozen destroy set
+    // refuses loudly instead of mutating an entity about to be torn down.
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] SetLocalTransform refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
@@ -1611,6 +1620,13 @@ std::string RuntimeCommandSink::GetName(const UUID& uuid) const
 bool RuntimeCommandSink::SetName(const UUID& uuid, const std::string& name)
 {
     if (!m_Controller.IsRuntimeMutable()) return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] SetName refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
@@ -1638,6 +1654,13 @@ bool RuntimeCommandSink::GetVisible(const UUID& uuid, bool& out) const
 bool RuntimeCommandSink::SetVisible(const UUID& uuid, bool visible)
 {
     if (!m_Controller.IsRuntimeMutable()) return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] SetVisible refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
@@ -1665,6 +1688,13 @@ bool RuntimeCommandSink::GetLight(const UUID& uuid, LightComponent& out) const
 bool RuntimeCommandSink::SetLight(const UUID& uuid, const LightComponent& light)
 {
     if (!m_Controller.IsRuntimeMutable()) return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] SetLight refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
@@ -1696,6 +1726,13 @@ bool RuntimeCommandSink::GetCamera(const UUID& uuid, CameraComponent& out) const
 bool RuntimeCommandSink::SetCamera(const UUID& uuid, const CameraComponent& cam)
 {
     if (!m_Controller.IsRuntimeMutable()) return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] SetCamera refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
@@ -1714,6 +1751,13 @@ bool RuntimeCommandSink::SetCamera(const UUID& uuid, const CameraComponent& cam)
 bool RuntimeCommandSink::SetMaterialIndex(const UUID& uuid, int index)
 {
     if (!m_Controller.IsRuntimeMutable()) return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] set_material_index refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;

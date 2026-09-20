@@ -6108,6 +6108,16 @@ EditorMutationResult SceneManager::SetPhysicsHingeState(
 	}
 	if (value.has_value())
 	{
+		// T5 review fixup F3: one constraint per owner (hinge XOR slider).
+		// The runtime index is owner-keyed, so a co-located pair would be
+		// unaddressable and unrebuildable — refuse the second kind loudly.
+		if (m_EcsScene.registry.all_of<PhysicsSliderComponent>(e))
+		{
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+				entity.ToString(),
+				"SetPhysicsHingeState: entity already carries a PhysicsSliderComponent "
+				"(one constraint per owner: hinge XOR slider)");
+		}
 		std::string detail;
 		if (!T5HingeValueOk(entity, *value, detail))
 		{
@@ -6147,6 +6157,14 @@ EditorMutationResult SceneManager::SetPhysicsSliderState(
 	}
 	if (value.has_value())
 	{
+		// T5 review fixup F3: one constraint per owner (hinge XOR slider).
+		if (m_EcsScene.registry.all_of<PhysicsHingeComponent>(e))
+		{
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+				entity.ToString(),
+				"SetPhysicsSliderState: entity already carries a PhysicsHingeComponent "
+				"(one constraint per owner: hinge XOR slider)");
+		}
 		std::string detail;
 		if (!T5SliderValueOk(entity, *value, detail))
 		{

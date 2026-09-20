@@ -233,4 +233,52 @@ private:
     }
 };
 
+// T5 review fixup F5: typed otherBody UUID text parser shared by the hinge
+// and slider Inspector fields (CPU-only, unit-tested; the ImGui layer only
+// retains text and renders the error).
+//
+// Empty text clears to the world anchor (ok, no error). Well-formed hex
+// (canonical hyphenated, uppercase, or bare 32-char) parses — including an
+// explicit nil UUID, which also means the world anchor — without conflating
+// it with malformed input. Non-empty malformed text refuses with a typed
+// error naming the field and the expected shape; the caller retains the raw
+// text and surfaces the error instead of silently reverting to the model
+// value.
+inline bool TryParseOtherBodyUuid(const std::string& text,
+                                  rt2::core::UUID& out, std::string& error)
+{
+    if (text.empty())
+    {
+        out = rt2::core::UUID{};
+        error.clear();
+        return true;
+    }
+    int hexLen = 0;
+    for (char c : text)
+    {
+        if (c == '-')
+            continue;
+        const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                         (c >= 'A' && c <= 'F');
+        if (!hex || hexLen >= 32)
+        {
+            error = "otherBody '" + text +
+                    "' is not a valid UUID (expected 8-4-4-4-12 hex, "
+                    "empty = world anchor); edit preserved";
+            return false;
+        }
+        ++hexLen;
+    }
+    if (hexLen != 32)
+    {
+        error = "otherBody '" + text +
+                "' is not a valid UUID (expected 8-4-4-4-12 hex, "
+                "empty = world anchor); edit preserved";
+        return false;
+    }
+    out = rt2::core::UUID::Parse(text);
+    error.clear();
+    return true;
+}
+
 #endif // RT2_PHYSICS_INSPECTOR_STATE_H

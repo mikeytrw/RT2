@@ -178,6 +178,18 @@ public:
     void SetLifecycleObserver(IRuntimeLifecycleObserver* observer) { m_LifecycleObserver = observer; }
     IRuntimeLifecycleObserver* GetLifecycleObserver() const { return m_LifecycleObserver; }
 
+    // T5 review fixup F1: frozen destroy-UUID set for the active drain.
+    // While ApplyDeferredStructuralChanges iterates its moved-to-local batch,
+    // every explicitly queued destroy UUID (plus its registry subtree) is
+    // recorded here. RuntimeCommandSink setters refuse these UUIDs for the
+    // remainder of the drain (false + warn, no mutation); reads stay allowed.
+    // Empty outside a drain. Callback-enqueued work lands in the emptied
+    // m_PendingOperations (next safe point), never in the running batch.
+    bool IsUuidInDestroyDrain(const UUID& uuid) const
+    {
+        return m_DestroyingUuids.count(uuid) != 0;
+    }
+
     // ---- Phase 6 script dispatch ----------------------------------------
 
     // Injectable script dispatch (G1). Stored non-owning. Distinct from the
@@ -348,6 +360,9 @@ private:
     IInputService* m_InputService = nullptr;
     IRuntimeCommandSink* m_CommandSink = nullptr;
     std::vector<RuntimeStructuralOperation> m_PendingOperations;
+    // T5 review fixup F1: frozen destroy-UUID set, populated at drain start
+    // from the moved-to-local batch and cleared when the drain returns.
+    std::unordered_set<UUID> m_DestroyingUuids;
     RuntimeSceneMutator m_Mutator;
     bool m_Stopping = false;
 };

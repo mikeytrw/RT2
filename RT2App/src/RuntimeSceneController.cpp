@@ -600,15 +600,54 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
     if (!ValidatePendingBatch(err))
         return false;
 
-    // Phase 2: apply the batch atomically in enqueue order via the mutator.
+    // Phase 2: freeze the validated batch. Move the queue into one local
+    // vector and iterate it exactly once in enqueue order (T5 review fixup
+    // F1: the approved frozen-safe-point contract). From this moment the
+    // member queue is the NEXT safe point's queue: OnEntitiesDestroying
+    // callbacks that QueueCreate/QueueDestroy append there, so callback work
+    // can neither reallocate the vector under the active iteration nor be
+    // dropped by the end-of-drain clear.
+    std::vector<RuntimeStructuralOperation> batch;
+    batch.swap(m_PendingOperations);
+
+    // Frozen destroy-UUID set for the destroying-UUID command refusal: every
+    // explicitly queued destroy UUID plus its current registry subtree, so a
+    // callback write aimed anywhere inside a dying subtree refuses loudly
+    // instead of mutating an entity about to be torn down. Cleared on every
+    // drain exit below.
+    m_DestroyingUuids.clear();
+    for (const auto& op : batch)
+    {
+        if (auto* destroy = std::get_if<DestroyRuntimeSubtreeOperation>(&op))
+        {
+            m_DestroyingUuids.insert(destroy->uuid);
+            const auto root = doc.FindByUuid(destroy->uuid);
+            if (root != entt::null && doc.ecs.registry.valid(root))
+            {
+                std::vector<entt::entity> subtree;
+                SceneHierarchy::CollectSubtreePostOrder(
+                    doc.ecs.registry, root, subtree);
+                for (const auto e : subtree)
+                {
+                    if (const auto* idc =
+                            doc.ecs.registry.try_get<EntityIdComponent>(e))
+                        m_DestroyingUuids.insert(idc->id);
+                }
+            }
+        }
+    }
+
+    // Apply the frozen batch atomically in enqueue order via the mutator.
     // Post-validation, mutator failures are bugs — the validation phase
     // already checked every precondition (duplicate UUID, missing parent,
     // missing destroy target). A mutator Failure here means the validation
     // logic and the mutator disagree, which is a code bug. We assert in
-    // debug and surface the error + clear the queue in release (the runtime
-    // document may be partially mutated, but leaving the queue intact
-    // would retry the same bug every frame).
-    for (const auto& op : m_PendingOperations)
+    // debug and surface the error in release. The member queue is NOT
+    // cleared here: it holds only next-safe-point work submitted by
+    // callbacks during this drain, which must survive to the next frame
+    // (the failed local batch tail is dropped — it already passed
+    // validation, so re-running it would hit the same bug every frame).
+    for (const auto& op : batch)
     {
         if (auto* create = std::get_if<CreateRuntimeEntityOperation>(&op))
         {
@@ -617,11 +656,11 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
             {
                 // Post-validation mutator failure is a bug (validation and
                 // mutator disagree). Assert in debug so it's caught in
-                // testing; in release, surface the error and clear the
-                // queue to avoid retrying the same bug every frame.
+                // testing; in release, surface the error and preserve the
+                // next-safe-point queue for the following drain.
                 assert(false && "RuntimeSceneMutator::CreateEntity failed post-validation");
                 err = r.error;
-                m_PendingOperations.clear();
+                m_DestroyingUuids.clear();
                 return false;
             }
             createdUuids.push_back(create->uuid);
@@ -686,14 +725,16 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
             {
                 assert(false && "RuntimeSceneMutator::DestroySubtree failed post-validation");
                 err = r.error;
-                m_PendingOperations.clear();
+                m_DestroyingUuids.clear();
                 return false;
             }
         }
     }
 
-    // Phase 3: clear the queue. The batch is committed.
-    m_PendingOperations.clear();
+    // Phase 3: the frozen batch is committed. The member queue is NOT
+    // cleared: it holds only callback-submitted next-safe-point work, which
+    // the following frame's drain will validate and apply.
+    m_DestroyingUuids.clear();
 
     // Phase 4 (post-apply): the caller will run SceneGraph::UpdateWorldTransforms
     // next, then set prevWorldMatrix = worldMatrix for every created entity

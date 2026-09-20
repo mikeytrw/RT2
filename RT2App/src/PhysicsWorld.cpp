@@ -1263,11 +1263,13 @@ std::vector<UUID> PhysicsWorld::ConstraintsForBody(const UUID& bodyId) const
     return owners;
 }
 
-bool PhysicsWorld::StageOneHinge(PhysicsWorld& world,
+bool PhysicsWorld::BuildHinge(PhysicsWorld& world,
                                  const SceneDocument& runtime,
                                  const UUID& owner, entt::entity entity,
-                                 Error& err)
+                                 Error& err, BuiltHingeConstraint& out)
 {
+    if (s_StagingTestThrow)
+        throw std::bad_alloc();
     const auto& registry = runtime.ecs.registry;
     const std::string name = T4EntityName(registry, entity);
     const auto& hinge = registry.get<PhysicsHingeComponent>(entity);
@@ -1360,11 +1362,7 @@ bool PhysicsWorld::StageOneHinge(PhysicsWorld& world,
     {
         hingePtr->enableAngularMotor(true, hinge.motorTargetVelocity,
                                      hinge.motorMaxImpulse);
-        ownerBody->setActivationState(DISABLE_DEACTIVATION);
-        if (otherBody != nullptr)
-            otherBody->setActivationState(DISABLE_DEACTIVATION);
     }
-    world.m_World.addConstraint(hingePtr, true);
 
     PhysicsConstraintRecord rec;
     rec.ownerId = owner;
@@ -1378,16 +1376,50 @@ bool PhysicsWorld::StageOneHinge(PhysicsWorld& world,
     rec.restPosition = hinge.restAngle;
     rec.lowerLimit = hinge.minAngleLimit;
     rec.upperLimit = hinge.maxAngleLimit;
-    world.m_Constraints.push_back(std::move(owned));
-    world.m_ConstraintIndex.push_back(rec);
+    out.owned = std::move(owned);
+    out.rec = rec;
     return true;
 }
 
-bool PhysicsWorld::StageOneSlider(PhysicsWorld& world,
+void PhysicsWorld::CommitBuiltHinge(PhysicsWorld& world,
+                                    BuiltHingeConstraint& built)
+{
+    btHingeConstraint* hingePtr = built.owned.get();
+    world.m_World.addConstraint(hingePtr, true);
+    if (hingePtr->getEnableAngularMotor())
+    {
+        if (btRigidBody* ownerBody = T5RigidEndpoint(world, built.rec.ownerId))
+            ownerBody->setActivationState(DISABLE_DEACTIVATION);
+        if (!built.rec.otherId.IsNull())
+        {
+            if (btRigidBody* otherBody =
+                    T5RigidEndpoint(world, built.rec.otherId))
+                otherBody->setActivationState(DISABLE_DEACTIVATION);
+        }
+    }
+    world.m_Constraints.push_back(std::move(built.owned));
+    world.m_ConstraintIndex.push_back(built.rec);
+}
+
+bool PhysicsWorld::StageOneHinge(PhysicsWorld& world,
                                   const SceneDocument& runtime,
                                   const UUID& owner, entt::entity entity,
                                   Error& err)
 {
+    BuiltHingeConstraint built;
+    if (!BuildHinge(world, runtime, owner, entity, err, built))
+        return false;
+    CommitBuiltHinge(world, built);
+    return true;
+}
+
+bool PhysicsWorld::BuildSlider(PhysicsWorld& world,
+                                  const SceneDocument& runtime,
+                                  const UUID& owner, entt::entity entity,
+                                  Error& err, BuiltSliderConstraint& out)
+{
+    if (s_StagingTestThrow)
+        throw std::bad_alloc();
     const auto& registry = runtime.ecs.registry;
     const std::string name = T4EntityName(registry, entity);
     const auto& slider = registry.get<PhysicsSliderComponent>(entity);
@@ -1460,11 +1492,7 @@ bool PhysicsWorld::StageOneSlider(PhysicsWorld& world,
                            slider.motorTargetVelocity);
         sliderPtr->setTargetLinMotorVelocity(speed);
         sliderPtr->setPoweredLinMotor(true);
-        ownerBody->setActivationState(DISABLE_DEACTIVATION);
-        if (otherBody != nullptr)
-            otherBody->setActivationState(DISABLE_DEACTIVATION);
     }
-    world.m_World.addConstraint(sliderPtr, true);
 
     PhysicsConstraintRecord rec;
     rec.ownerId = owner;
@@ -1480,8 +1508,40 @@ bool PhysicsWorld::StageOneSlider(PhysicsWorld& world,
     rec.upperLimit = slider.upperLimit;
     // Staged local axis (normalized) for the release-impulse direction.
     rec.localAxis = FromBt(axisA);
-    world.m_Constraints.push_back(std::move(owned));
-    world.m_ConstraintIndex.push_back(rec);
+    out.owned = std::move(owned);
+    out.rec = rec;
+    return true;
+}
+
+void PhysicsWorld::CommitBuiltSlider(PhysicsWorld& world,
+                                     BuiltSliderConstraint& built)
+{
+    btSliderConstraint* sliderPtr = built.owned.get();
+    world.m_World.addConstraint(sliderPtr, true);
+    if (sliderPtr->getPoweredLinMotor())
+    {
+        if (btRigidBody* ownerBody = T5RigidEndpoint(world, built.rec.ownerId))
+            ownerBody->setActivationState(DISABLE_DEACTIVATION);
+        if (!built.rec.otherId.IsNull())
+        {
+            if (btRigidBody* otherBody =
+                    T5RigidEndpoint(world, built.rec.otherId))
+                otherBody->setActivationState(DISABLE_DEACTIVATION);
+        }
+    }
+    world.m_Constraints.push_back(std::move(built.owned));
+    world.m_ConstraintIndex.push_back(built.rec);
+}
+
+bool PhysicsWorld::StageOneSlider(PhysicsWorld& world,
+                                   const SceneDocument& runtime,
+                                   const UUID& owner, entt::entity entity,
+                                   Error& err)
+{
+    BuiltSliderConstraint built;
+    if (!BuildSlider(world, runtime, owner, entity, err, built))
+        return false;
+    CommitBuiltSlider(world, built);
     return true;
 }
 
@@ -1529,6 +1589,59 @@ bool PhysicsWorld::StageConstraints(PhysicsWorld& world,
     return true;
 }
 
+bool PhysicsWorld::ConstraintMotorEnabled(
+    const PhysicsConstraintRecord& rec) const
+{
+    if (rec.isHinge)
+        return rec.hinge != nullptr && rec.hinge->getEnableAngularMotor();
+    return rec.slider != nullptr && rec.slider->getPoweredLinMotor();
+}
+
+void PhysicsWorld::WakeConstraintEndpoints(const UUID& owner)
+{
+    // Enable path: both endpoints activate now and pin
+    // DISABLE_DEACTIVATION, exactly matching staged enabled motors, so a
+    // sleeping island moves on the immediately following fixed tick.
+    const PhysicsConstraintRecord* rec = FindConstraint(owner);
+    if (rec == nullptr)
+        return;
+    auto wake = [this](const UUID& id) {
+        const PhysicsBodyRecord* body = FindBody(id);
+        if (body != nullptr && body->body != nullptr)
+        {
+            body->body->activate(true);
+            body->body->setActivationState(DISABLE_DEACTIVATION);
+        }
+    };
+    wake(rec->ownerId);
+    if (!rec->otherId.IsNull())
+        wake(rec->otherId);
+}
+
+void PhysicsWorld::RelaxConstraintEndpoints(const UUID& owner)
+{
+    // Release path: an endpoint no other enabled constraint touches returns
+    // to ACTIVE_TAG — awake now, free to sleep later — instead of staying
+    // pinned awake forever.
+    const PhysicsConstraintRecord* rec = FindConstraint(owner);
+    if (rec == nullptr)
+        return;
+    auto relax = [this](const UUID& id) {
+        for (const auto& other : m_ConstraintIndex)
+        {
+            if ((other.ownerId == id || other.otherId == id) &&
+                ConstraintMotorEnabled(other))
+                return;
+        }
+        const PhysicsBodyRecord* body = FindBody(id);
+        if (body != nullptr && body->body != nullptr)
+            body->body->setActivationState(ACTIVE_TAG);
+    };
+    relax(rec->ownerId);
+    if (!rec->otherId.IsNull())
+        relax(rec->otherId);
+}
+
 // ---- T5 drive entry points (immediate; next fixed tick moves) ----
 
 bool PhysicsWorld::SetHingeDrive(const UUID& owner, float velocity,
@@ -1544,6 +1657,7 @@ bool PhysicsWorld::SetHingeDrive(const UUID& owner, float velocity,
     rec->driveSpeed = velocity;
     rec->driveMax = maxImpulse;
     rec->returning = false;
+    WakeConstraintEndpoints(owner);
     return true;
 }
 
@@ -1556,6 +1670,7 @@ bool PhysicsWorld::ReleaseHingeDrive(const UUID& owner)
     // never teleports the constrained body.
     rec->hinge->enableAngularMotor(false, 0.0f, 0.0f);
     rec->returning = false;
+    RelaxConstraintEndpoints(owner);
     return true;
 }
 
@@ -1570,6 +1685,7 @@ bool PhysicsWorld::ReturnHingeToRest(const UUID& owner)
     {
         rec->hinge->enableAngularMotor(false, 0.0f, 0.0f);
         rec->returning = false;
+        RelaxConstraintEndpoints(owner);
         return true;
     }
     float speed = rec->driveSpeed;
@@ -1581,6 +1697,7 @@ bool PhysicsWorld::ReturnHingeToRest(const UUID& owner)
     // until it disengages at the setpoint (a one-shot velocity alone would
     // orbit past it).
     rec->returning = true;
+    WakeConstraintEndpoints(owner);
     return true;
 }
 
@@ -1636,6 +1753,7 @@ bool PhysicsWorld::SetSliderTarget(const UUID& owner, float target)
     rec->slider->setMaxLinMotorForce(rec->driveMax);
     rec->slider->setPoweredLinMotor(true);
     rec->restPosition = target;
+    WakeConstraintEndpoints(owner);
     return true;
 }
 
@@ -1656,6 +1774,7 @@ bool PhysicsWorld::ReleaseSlider(const UUID& owner, float impulse)
         body->body->getWorldTransform().getBasis() * ToBt(rec->localAxis);
     body->body->activate(true);
     body->body->applyCentralImpulse(axisWorld * impulse);
+    RelaxConstraintEndpoints(owner);
     return true;
 }
 
@@ -1802,9 +1921,12 @@ bool PhysicsWorld::RemoveRuntimeBody(const UUID& bodyId, Error& err)
 bool PhysicsWorld::RebuildConstraintsForBody(SceneDocument& runtime,
                                              const UUID& bodyId, Error& err)
 {
-    // Atomic rebuild: validate + construct every affected replacement
-    // against a scratch check first (the live set is untouched), then swap.
-    // A failure leaves the previous constraints live and stepping.
+    // Atomic rebuild (T5 review fixup F2): every replacement is fully
+    // validated, frame-resolved, and allocated while the live set is
+    // untouched, then the live set is removed and the replacements commit.
+    // Any failure — values, endpoints, uniform scale, owner world frame,
+    // world-anchor agreement, or allocation — leaves the previous
+    // constraints live and stepping.
     const std::vector<UUID> affected = ConstraintsForBody(bodyId);
     if (affected.empty())
     {
@@ -1879,8 +2001,52 @@ bool PhysicsWorld::RebuildConstraintsForBody(SceneDocument& runtime,
             return false;
         }
     }
-    // All replacements validate: remove the old set first (constraints
-    // before anything else), then stage the new set from the document.
+    // Phase B: build every replacement detached from the world and both
+    // indexes. Late frame/scale/anchor failures — and allocation exhaustion,
+    // translated to a typed Error — return here with the live set intact.
+    struct BuiltReplacement
+    {
+        bool isHinge = true;
+        BuiltHingeConstraint hinge;
+        BuiltSliderConstraint slider;
+    };
+    std::vector<BuiltReplacement> replacements;
+    replacements.reserve(affected.size());
+    try
+    {
+        for (const auto& owner : affected)
+        {
+            const entt::entity entity = runtime.FindByUuid(owner);
+            const bool wantHinge =
+                registry.all_of<PhysicsHingeComponent>(entity);
+            BuiltReplacement replacement;
+            replacement.isHinge = wantHinge;
+            const bool ok =
+                wantHinge
+                    ? BuildHinge(*this, runtime, owner, entity, err,
+                                 replacement.hinge)
+                    : BuildSlider(*this, runtime, owner, entity, err,
+                                  replacement.slider);
+            if (!ok)
+            {
+                err.detail += " (rebuild refused; live set unchanged)";
+                return false;
+            }
+            replacements.push_back(std::move(replacement));
+        }
+    }
+    catch (const std::bad_alloc&)
+    {
+        err.code = Error::Io;
+        err.path = bodyId.ToString();
+        err.detail = "constraint rebuild for body " + bodyId.ToString() +
+                     " exhausted resources during staging "
+                     "(rebuild refused; live set unchanged)";
+        return false;
+    }
+    // Phase C: all replacements built — remove the old set (constraints
+    // before anything else), then commit the new set from the detached
+    // builds. Commit cannot fail.
     for (const auto& owner : affected)
     {
         const PhysicsConstraintRecord* live = FindConstraint(owner);
@@ -1905,21 +2071,12 @@ bool PhysicsWorld::RebuildConstraintsForBody(SceneDocument& runtime,
             }
         }
     }
-    for (const auto& owner : affected)
+    for (auto& replacement : replacements)
     {
-        const entt::entity entity = runtime.FindByUuid(owner);
-        const bool wantHinge = registry.all_of<PhysicsHingeComponent>(entity);
-        const bool ok = wantHinge
-                            ? StageOneHinge(*this, runtime, owner, entity, err)
-                            : StageOneSlider(*this, runtime, owner, entity,
-                                             err);
-        if (!ok)
-        {
-            // Validated above, so this is a code bug (validation and
-            // staging disagree) — loud, never a silent half-rebuild.
-            assert(false && "RebuildConstraintsForBody staged validated input");
-            return false;
-        }
+        if (replacement.isHinge)
+            CommitBuiltHinge(*this, replacement.hinge);
+        else
+            CommitBuiltSlider(*this, replacement.slider);
     }
     err = Error{};
     return true;
@@ -2152,6 +2309,21 @@ bool ValidatePhysicsForPlay(const SceneDocument& doc,
                             "PhysicsSliderComponent owner " +
                             owner.ToString() +
                             " has non-finite or negative motor params");
+        }
+    }
+
+    // T5 review fixup F3: one constraint per owner (hinge XOR slider). The
+    // runtime index is owner-keyed, so a co-located pair is unaddressable —
+    // refuse before anything stages. Reports the first offender in UUID
+    // order for determinism.
+    for (const auto& [owner, entity] : CollectOrdered<PhysicsHingeComponent>(registry))
+    {
+        if (registry.all_of<PhysicsSliderComponent>(entity))
+        {
+            return FailWith(err, Error::InvalidArgument, owner,
+                            "PhysicsHingeComponent owner " + owner.ToString() +
+                            " also carries a PhysicsSliderComponent "
+                            "(one constraint per owner: hinge XOR slider)");
         }
     }
 

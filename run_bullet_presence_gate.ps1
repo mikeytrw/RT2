@@ -128,7 +128,14 @@ $requiredCases = @(
     "T5 RED_PhysicsHingeSliderPrefabMemberRejected: linked members refuse hinge/slider",
     "T5 GREEN_PhysicsHingeSliderAuthoring: exact Undo/Redo through history",
     "T5 GREEN_InspectorHingeSliderPolicy: clean resync, dirty conflict, reset",
-    "T5 RED_HingeSliderAuthoringValidation: non-finite and out-of-range values refused"
+    "T5 RED_HingeSliderAuthoringValidation: non-finite and out-of-range values refused",
+    "T5 RED_HingeSliderCoexistenceRefused: second kind on one owner refuses",
+    "T5 RED_OnDestroyEnqueueDeferred: OnDestroy-enqueued work defers to the next safe point",
+    "T5 RED_CommandTargetingDestroyingUuidRejected: writes to destroying UUIDs refuse without mutation",
+    "T5 GREEN_CreateThenDestroySameUuidClean: validated create-then-destroy completes in one drain",
+    "T5 GREEN_RebuildAtomicPostDryRunFailure: late frame/allocation failure preserves the live constraint",
+    "T5 GREEN_WakeSleepingMechanismMovesWithinOneTick: sleeping disabled mechanisms respond within one tick",
+    "T5 RED_InspectorMalformedUuidDiagnosed: malformed UUID text diagnoses and preserves the edit"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }

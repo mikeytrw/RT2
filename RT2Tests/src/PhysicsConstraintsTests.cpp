@@ -23,6 +23,7 @@
 #include "PhysicsWorld.h"
 #include "RuntimeSceneController.h"
 #include "RuntimeLifecycleObserver.h"
+#include "ScriptSystem.h"
 #include "SceneGraph.h"
 #include "SceneManager.h"
 #include "EditorCommandHistory.h"
@@ -702,10 +703,16 @@ TEST_CASE("T5 GREEN_ExternalWorldAnchorsPlay: external and world anchors survive
                                                 T5BoxShape(0.5f, 0.5f, 0.5f));
 
     const T5HingeScene scene = T5BuildHingeScene(f);
-    // Rewire the hinge at the outside body; add a world-anchored slider on
-    // the flipper (joint centered on the owner at build).
+    // Rewire the hinge at the outside body; add a world-anchored slider on a
+    // separate owner (one constraint per owner: hinge XOR slider, T5 review
+    // fixup F3 — joint centered on the owner at build).
     f.Registry().get<PhysicsHingeComponent>(f.Handle(scene.flipper)).otherBody =
         external;
+    const UUID sliderOwner = f.Create("SliderOwner");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(sliderOwner),
+                                               T5DynamicBody(1.0f));
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(sliderOwner),
+                                                T5BoxShape(0.12f, 0.12f, 0.12f));
     PhysicsSliderComponent anchored;
     anchored.otherBody = UUID::Nil();
     anchored.axis = {0.0f, 0.0f, 1.0f};
@@ -715,7 +722,7 @@ TEST_CASE("T5 GREEN_ExternalWorldAnchorsPlay: external and world anchors survive
     anchored.motorTargetVelocity = 1.0f;
     anchored.motorMaxForce = 10.0f;
     anchored.motorEnabled = false;
-    f.Registry().emplace<PhysicsSliderComponent>(f.Handle(scene.flipper),
+    f.Registry().emplace<PhysicsSliderComponent>(f.Handle(sliderOwner),
                                                  anchored);
 
     const auto uuids = f.manager.ReserveKnownUuids(2);
@@ -736,18 +743,15 @@ TEST_CASE("T5 GREEN_ExternalWorldAnchorsPlay: external and world anchors survive
         f.Registry().try_get<PhysicsHingeComponent>(copyEntity);
     REQUIRE(copyHinge != nullptr);
     CHECK(copyHinge->otherBody == external);
-    const auto* copySlider =
-        f.Registry().try_get<PhysicsSliderComponent>(copyEntity);
-    REQUIRE(copySlider != nullptr);
-    CHECK(copySlider->otherBody.IsNull());
+    CHECK_FALSE(f.Registry().all_of<PhysicsSliderComponent>(copyEntity));
 
     T5NullBridge bridge;
     Error err;
     RuntimeSceneController ctrl;
     REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
-    // Original hinge + original world slider + copied hinge + copied world
-    // slider: external refs stay external, world anchors stay world.
-    CHECK(ctrl.PhysicsConstraintCount() == 4);
+    // Original hinge + separate world slider + copied hinge: external refs
+    // stay external, world anchors stay world.
+    CHECK(ctrl.PhysicsConstraintCount() == 3);
     ctrl.Stop(f.Authoring(), bridge);
     CHECK(ctrl.PhysicsTotalHandles() == 0);
 }
@@ -1140,12 +1144,68 @@ TEST_CASE("T5 RED_PhysicsHingeSliderPrefabMemberRejected: linked members refuse 
     CHECK_FALSE(history.Execute(std::move(sliderCmd), f.manager).success);
     CHECK_FALSE(history.CanUndo());
 
-    // Ordinary entities succeed (control).
-    const UUID plain = f.Create("Plain");
-    REQUIRE(f.manager.SetPhysicsHingeState(plain, hinge).success);
-    REQUIRE(f.manager.SetPhysicsSliderState(plain, slider).success);
-    CHECK(f.manager.GetPhysicsHinge(plain) == hinge);
-    CHECK(f.manager.GetPhysicsSlider(plain) == slider);
+    // Ordinary entities succeed (control): one kind per owner (hinge XOR
+    // slider, T5 review fixup F3).
+    const UUID plainHinge = f.Create("PlainHinge");
+    REQUIRE(f.manager.SetPhysicsHingeState(plainHinge, hinge).success);
+    CHECK(f.manager.GetPhysicsHinge(plainHinge) == hinge);
+    const UUID plainSlider = f.Create("PlainSlider");
+    REQUIRE(f.manager.SetPhysicsSliderState(plainSlider, slider).success);
+    CHECK(f.manager.GetPhysicsSlider(plainSlider) == slider);
+}
+
+TEST_CASE("T5 RED_HingeSliderCoexistenceRefused: second kind on one owner refuses")
+{
+    // One constraint per owner: adding a slider where a hinge lives (and
+    // vice versa) refuses loudly with no mutation; removing the first kind
+    // re-admits the second. The Undo/Redo commands surface the same refusal
+    // without recording.
+    T5Fixture f;
+    const UUID id = f.Create("Joint");
+    EditorCommandHistory history;
+
+    PhysicsHingeComponent hinge;
+    PhysicsSliderComponent slider;
+    REQUIRE(f.manager.SetPhysicsHingeState(id, hinge).success);
+
+    auto sliderCmd = MakeSetPhysicsSliderCommandIfEffective(
+        id, std::nullopt, slider);
+    REQUIRE(sliderCmd != nullptr);
+    CHECK_FALSE(history.Execute(std::move(sliderCmd), f.manager).success);
+    CHECK_FALSE(history.CanUndo());
+    CHECK(f.manager.GetPhysicsHinge(id) == hinge);
+    CHECK_FALSE(f.manager.GetPhysicsSlider(id).has_value());
+
+    CHECK_FALSE(f.manager.SetPhysicsSliderState(id, slider).success);
+    CHECK_FALSE(f.manager.GetPhysicsSlider(id).has_value());
+
+    // Symmetric: a slider owner refuses a hinge.
+    const UUID id2 = f.Create("Joint2");
+    REQUIRE(f.manager.SetPhysicsSliderState(id2, slider).success);
+    CHECK_FALSE(f.manager.SetPhysicsHingeState(id2, hinge).success);
+    CHECK_FALSE(f.manager.GetPhysicsHinge(id2).has_value());
+
+    // Removing the first kind re-admits the second.
+    REQUIRE(f.manager.SetPhysicsHingeState(id, std::nullopt).success);
+    REQUIRE(f.manager.SetPhysicsSliderState(id, slider).success);
+    CHECK(f.manager.GetPhysicsSlider(id) == slider);
+
+    // A co-located pair smuggled past authoring (registry-level, e.g. a
+    // legacy file) refuses Play with the owner UUID named and zero residue.
+    T5Fixture g;
+    const UUID both = g.Create("Both");
+    g.Registry().emplace<PhysicsBodyComponent>(g.Handle(both),
+                                               T5DynamicBody(1.0f));
+    g.Registry().emplace<PhysicsShapeComponent>(g.Handle(both),
+                                                T5BoxShape(0.2f, 0.2f, 0.2f));
+    g.Registry().emplace<PhysicsHingeComponent>(g.Handle(both), hinge);
+    g.Registry().emplace<PhysicsSliderComponent>(g.Handle(both), slider);
+    T5NullBridge bridge;
+    T5NoopObserver obs;
+    Error err;
+    RuntimeSceneController ctrl;
+    CHECK_FALSE(ctrl.Play(g.Authoring(), bridge, err));
+    T5CheckCleanRefusal(ctrl, bridge, obs, err, both);
 }
 
 TEST_CASE("T5 GREEN_PhysicsHingeSliderAuthoring: exact Undo/Redo through history")
@@ -1184,12 +1244,14 @@ TEST_CASE("T5 GREEN_PhysicsHingeSliderAuthoring: exact Undo/Redo through history
     REQUIRE(history.Redo(f.manager).success);
     CHECK(f.manager.GetPhysicsHinge(id) == hingeEdit);
 
-    // Add slider, remove hinge, undo the removal.
+    // Add slider on a separate owner (hinge XOR slider per owner, T5 review
+    // fixup F3), remove hinge, undo the removal.
+    const UUID sliderOwner = f.Create("SliderJoint");
     auto addSlider = MakeSetPhysicsSliderCommandIfEffective(
-        id, std::nullopt, slider);
+        sliderOwner, std::nullopt, slider);
     REQUIRE(addSlider != nullptr);
     REQUIRE(history.Execute(std::move(addSlider), f.manager).success);
-    CHECK(f.manager.GetPhysicsSlider(id) == slider);
+    CHECK(f.manager.GetPhysicsSlider(sliderOwner) == slider);
     auto removeHinge = MakeSetPhysicsHingeCommandIfEffective(
         id, hingeEdit, std::nullopt);
     REQUIRE(removeHinge != nullptr);
@@ -1198,16 +1260,16 @@ TEST_CASE("T5 GREEN_PhysicsHingeSliderAuthoring: exact Undo/Redo through history
     REQUIRE(history.Undo(f.manager).success);
     CHECK(f.manager.GetPhysicsHinge(id) == hingeEdit);
 
-    // Slider edit with exact redo.
+    // Slider edit with exact redo (on the slider's own owner).
     auto editSlider = MakeSetPhysicsSliderCommandIfEffective(
-        id, slider, sliderEdit);
+        sliderOwner, slider, sliderEdit);
     REQUIRE(editSlider != nullptr);
     REQUIRE(history.Execute(std::move(editSlider), f.manager).success);
-    CHECK(f.manager.GetPhysicsSlider(id) == sliderEdit);
+    CHECK(f.manager.GetPhysicsSlider(sliderOwner) == sliderEdit);
     REQUIRE(history.Undo(f.manager).success);
-    CHECK(f.manager.GetPhysicsSlider(id) == slider);
+    CHECK(f.manager.GetPhysicsSlider(sliderOwner) == slider);
     REQUIRE(history.Redo(f.manager).success);
-    CHECK(f.manager.GetPhysicsSlider(id) == sliderEdit);
+    CHECK(f.manager.GetPhysicsSlider(sliderOwner) == sliderEdit);
 
     // An invalid after-state surfaces the failure without recording.
     const size_t depth = history.UndoDepthForTest();
@@ -1331,4 +1393,368 @@ TEST_CASE("T5 RED_HingeSliderAuthoringValidation: non-finite and out-of-range va
     CHECK(vel == doctest::Approx(18.0f));
     CHECK(imp == doctest::Approx(8.0f));
     ctrl.Stop(g.Authoring(), bridge);
+}
+
+// ============================================================================
+// T5 review fixup F1: frozen safe-point drain (production-path reentrancy).
+// A recording IRuntimeScriptDispatch stands in for Lua on_destroy: it queues
+// structural work and issues sink writes from inside OnEntitiesDestroying,
+// exactly the re-entrant path ScriptSystem's on_destroy takes.
+// ============================================================================
+
+class T5DrainProbeDispatch final : public IRuntimeScriptDispatch
+{
+public:
+    RuntimeSceneController* ctrl = nullptr;
+    RuntimeCommandSink* sink = nullptr;
+
+    // One-shot behaviors, consumed by the first OnEntitiesDestroying call.
+    bool queueDestroyArmed = false;
+    UUID queuedDestroyTarget;
+    bool queueCreateArmed = false;
+    std::string queuedCreateName;
+    Result<UUID> queuedCreateResult;
+    bool destroyingWriteArmed = false;
+    UUID writeTarget;
+    glm::vec3 writePos{0.0f, 0.0f, 0.0f};
+    bool writeResult = true;
+    glm::vec3 postWritePos{0.0f, 0.0f, 0.0f};
+    bool postWriteOk = false;
+
+    int destroyCallCount = 0;
+    std::vector<std::vector<UUID>> destroyCalls;
+
+    void OnFixedUpdate(float) override {}
+    void OnUpdate(float) override {}
+    void SyncScriptEnvironments() override {}
+    void OnEntitiesDestroying(const std::vector<UUID>& uuids) override
+    {
+        ++destroyCallCount;
+        destroyCalls.push_back(uuids);
+        if (destroyingWriteArmed && sink != nullptr)
+        {
+            destroyingWriteArmed = false;
+            writeResult = sink->SetPosition(writeTarget, writePos);
+            postWriteOk = sink->GetPosition(writeTarget, postWritePos);
+        }
+        if (queueDestroyArmed && ctrl != nullptr)
+        {
+            queueDestroyArmed = false;
+            ctrl->QueueDestroyRuntimeEntity(queuedDestroyTarget);
+        }
+        if (queueCreateArmed && ctrl != nullptr)
+        {
+            queueCreateArmed = false;
+            RuntimeEntityCreateDesc desc;
+            desc.name = queuedCreateName;
+            queuedCreateResult = ctrl->QueueCreateRuntimeEntity(desc);
+        }
+    }
+};
+
+TEST_CASE("T5 RED_OnDestroyEnqueueDeferred: OnDestroy-enqueued work defers to the next safe point")
+{
+    // The frozen-batch contract: callback submissions land in the emptied
+    // member queue (next safe point), never in the running batch — no live-
+    // vector invalidation, no dropped work. Without the freeze, the queued
+    // destroy either corrupts the active iteration or is dropped by the
+    // end-of-drain clear.
+    T5Fixture f;
+    const UUID a = f.Create("A");
+    const UUID b = f.Create("B");
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    DeterministicUuidProvider runtimeIds;
+    ctrl.SetRuntimeUuidProvider(&runtimeIds);
+    T5DrainProbeDispatch probe;
+    probe.ctrl = &ctrl;
+    ctrl.SetScriptDispatch(&probe);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    probe.queueDestroyArmed = true;
+    probe.queuedDestroyTarget = b;
+    probe.queueCreateArmed = true;
+    probe.queuedCreateName = "Late";
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(a).IsOk());
+    ctrl.Update(kFixedDt, bridge);
+
+    // First drain: A destroyed with its callback; B and the create deferred.
+    REQUIRE(probe.destroyCallCount == 1);
+    REQUIRE(probe.destroyCalls.front().size() == 1);
+    CHECK(probe.destroyCalls.front().front() == a);
+    CHECK(probe.queuedCreateResult.IsOk());
+    const SceneDocument* rt = ctrl.TryGetRuntimeScene();
+    REQUIRE(rt != nullptr);
+    CHECK_FALSE(rt->uuidIndex.Contains(a));
+    CHECK(rt->uuidIndex.Contains(b));
+    CHECK(ctrl.PendingOperationCount() == 2);
+
+    ctrl.Update(kFixedDt, bridge);
+
+    // Second drain: B destroyed with its own callback, the create applied.
+    REQUIRE(probe.destroyCallCount == 2);
+    CHECK(probe.destroyCalls.back().front() == b);
+    CHECK_FALSE(rt->uuidIndex.Contains(b));
+    CHECK(rt->uuidIndex.Contains(probe.queuedCreateResult.value));
+    CHECK(ctrl.PendingOperationCount() == 0);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T5 RED_CommandTargetingDestroyingUuidRejected: writes to destroying UUIDs refuse without mutation")
+{
+    // A sink write aimed at a UUID in the frozen destroy set refuses (false,
+    // no mutation) even though the entity is still alive at callback time.
+    // Reads stay allowed. The drain itself completes normally afterwards.
+    T5Fixture f;
+    const UUID a = f.Create("A");
+    const UUID b = f.Create("B");
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    DeterministicUuidProvider runtimeIds;
+    ctrl.SetRuntimeUuidProvider(&runtimeIds);
+    RuntimeCommandSink sink(ctrl);
+    T5DrainProbeDispatch probe;
+    probe.ctrl = &ctrl;
+    probe.sink = &sink;
+    ctrl.SetScriptDispatch(&probe);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    const SceneDocument* rt = ctrl.TryGetRuntimeScene();
+    REQUIRE(rt != nullptr);
+    const glm::vec3 before =
+        rt->ecs.registry.get<Transform>(rt->FindByUuid(b)).translation;
+
+    probe.destroyingWriteArmed = true;
+    probe.writeTarget = b;
+    probe.writePos = {5.0f, 5.0f, 5.0f};
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(a).IsOk());
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(b).IsOk());
+    ctrl.Update(kFixedDt, bridge);
+
+    CHECK_FALSE(probe.writeResult);
+    REQUIRE(probe.postWriteOk);
+    CHECK(probe.postWritePos == before);
+    CHECK(probe.destroyCallCount == 2);
+    CHECK_FALSE(rt->uuidIndex.Contains(a));
+    CHECK_FALSE(rt->uuidIndex.Contains(b));
+    CHECK(ctrl.PendingOperationCount() == 0);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T5 GREEN_CreateThenDestroySameUuidClean: validated create-then-destroy completes in one drain")
+{
+    // The frozen batch preserves enqueue order: the create applies at its
+    // position so the destroy finds the entity it was validated against, the
+    // destroy completes with its OnDestroy, and no residue remains — while
+    // OnDestroy-enqueued work still defers.
+    T5Fixture f;
+    const UUID keep = f.Create("Keep");
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    DeterministicUuidProvider runtimeIds;
+    ctrl.SetRuntimeUuidProvider(&runtimeIds);
+    T5DrainProbeDispatch probe;
+    probe.ctrl = &ctrl;
+    ctrl.SetScriptDispatch(&probe);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    RuntimeEntityCreateDesc desc;
+    desc.name = "Ephemeral";
+    auto rC = ctrl.QueueCreateRuntimeEntity(desc);
+    REQUIRE(rC.IsOk());
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(rC.value).IsOk());
+    // OnDestroy-enqueued work must still defer past this drain.
+    probe.queueCreateArmed = true;
+    probe.queuedCreateName = "Deferred";
+    ctrl.Update(kFixedDt, bridge);
+
+    REQUIRE(probe.destroyCallCount == 1);
+    REQUIRE(probe.destroyCalls.front().size() == 1);
+    CHECK(probe.destroyCalls.front().front() == rC.value);
+    const SceneDocument* rt = ctrl.TryGetRuntimeScene();
+    REQUIRE(rt != nullptr);
+    CHECK_FALSE(rt->uuidIndex.Contains(rC.value));
+    CHECK(rt->uuidIndex.Contains(keep));
+    // Only the callback-enqueued create remains, for the next safe point.
+    CHECK(ctrl.PendingOperationCount() == 1);
+    ctrl.Update(kFixedDt, bridge);
+    CHECK(rt->uuidIndex.Contains(probe.queuedCreateResult.value));
+    CHECK(ctrl.PendingOperationCount() == 0);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+// ============================================================================
+// T5 review fixup F2: failure-atomic rebuild against post-dry-run failures.
+// ============================================================================
+
+TEST_CASE("T5 GREEN_RebuildAtomicPostDryRunFailure: late frame/allocation failure preserves the live constraint")
+{
+    T5Fixture f;
+    const T5HingeScene scene = T5BuildHingeScene(f);
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    PhysicsWorld* world = ctrl.TryGetPhysicsWorldMut();
+    REQUIRE(world != nullptr);
+    SceneDocument* runtime = ctrl.TryGetRuntimeSceneMut();
+    REQUIRE(runtime != nullptr);
+
+    // Control: a valid retune rebuilds atomically onto the live constraint.
+    runtime->ecs.registry.get<PhysicsHingeComponent>(
+        runtime->FindByUuid(scene.flipper)).motorTargetVelocity = 30.0f;
+    Error rerr;
+    REQUIRE(world->RebuildConstraintsForBody(*runtime, scene.flipper, rerr));
+    CHECK(rerr.IsOk());
+    CHECK(ctrl.PhysicsConstraintCount() == 1);
+
+    // Allocation exhaustion during staging refuses with a typed Error and
+    // the previous live set keeps stepping.
+    PhysicsWorld::SetStagingTestThrow(true);
+    CHECK_FALSE(world->RebuildConstraintsForBody(*runtime, scene.flipper, rerr));
+    PhysicsWorld::SetStagingTestThrow(false);
+    CHECK_FALSE(rerr.IsOk());
+    CHECK(rerr.code == Error::Io);
+    CHECK(ctrl.PhysicsConstraintCount() == 1);
+
+    // A post-dry-run frame failure: non-uniform owner scale passes the dry
+    // run (values + endpoint presence) but fails the Build uniform-scale
+    // gate that the old code reached only after destroying the live set.
+    runtime->ecs.registry.get<Transform>(
+        runtime->FindByUuid(scene.flipper)).scale = {2.0f, 1.0f, 1.0f};
+    CHECK_FALSE(world->RebuildConstraintsForBody(*runtime, scene.flipper, rerr));
+    CHECK_FALSE(rerr.IsOk());
+    CHECK(rerr.path == scene.flipper.ToString());
+    CHECK(ctrl.PhysicsConstraintCount() == 1);
+    float vel = 0.0f, imp = 0.0f;
+    REQUIRE(world->HingeMotorParams(scene.flipper, vel, imp));
+    CHECK(vel == doctest::Approx(30.0f));
+    CHECK(imp == doctest::Approx(8.0f));
+
+    // The preserved constraint is live and stepping: the staged motor still
+    // drives the angle on the next tick.
+    bool ok = false;
+    const float hingeBefore = world->HingeAngle(scene.flipper, ok);
+    REQUIRE(ok);
+    ctrl.Update(kFixedDt, bridge);
+    const float hingeAfter = world->HingeAngle(scene.flipper, ok);
+    REQUIRE(ok);
+    CHECK(hingeAfter > hingeBefore + 0.01f);
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+}
+
+// ============================================================================
+// T5 review fixup F4: sleeping mechanisms wake on live drive commands.
+// ============================================================================
+
+TEST_CASE("T5 GREEN_WakeSleepingMechanismMovesWithinOneTick: sleeping disabled mechanisms respond within one tick")
+{
+    // Initially disabled hinge and slider islands are left to sleep, then
+    // live drive commands must move them within exactly one fixed tick. The
+    // pre-asserted sleep state is the discriminator: without endpoint
+    // activation the commands only assign motor fields on a sleeping island.
+    T5Fixture f;
+    const T5HingeScene hingeScene = T5BuildHingeScene(f, false);
+    const T5SliderScene sliderScene =
+        T5BuildSliderScene(f, 0.3f, false, false);
+
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    PhysicsWorld* world = ctrl.TryGetPhysicsWorldMut();
+    REQUIRE(world != nullptr);
+
+    for (int i = 0; i < 180; ++i)
+        ctrl.Update(kFixedDt, bridge);
+
+    const PhysicsBodyRecord* hingeRec = world->FindBody(hingeScene.flipper);
+    REQUIRE(hingeRec != nullptr);
+    REQUIRE(hingeRec->body != nullptr);
+    const PhysicsBodyRecord* sliderRec = world->FindBody(sliderScene.plunger);
+    REQUIRE(sliderRec != nullptr);
+    REQUIRE(sliderRec->body != nullptr);
+    CHECK_FALSE(hingeRec->body->isActive());
+    CHECK_FALSE(sliderRec->body->isActive());
+
+    REQUIRE(world->SetHingeDrive(hingeScene.flipper, 18.0f, 8.0f));
+    REQUIRE(world->SetSliderTarget(sliderScene.plunger, 0.3f));
+    glm::vec3 plungerBefore{0.0f, 0.0f, 0.0f};
+    REQUIRE(world->BodyWorldPosition(sliderScene.plunger, plungerBefore));
+
+    ctrl.Pause();
+    REQUIRE(ctrl.Step(bridge));
+
+    bool ok = false;
+    CHECK(std::abs(world->HingeAngle(hingeScene.flipper, ok)) > 0.01f);
+    REQUIRE(ok);
+    glm::vec3 plungerAfter{0.0f, 0.0f, 0.0f};
+    REQUIRE(world->BodyWorldPosition(sliderScene.plunger, plungerAfter));
+    CHECK(glm::length(plungerAfter - plungerBefore) > 0.005f);
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.PhysicsTotalHandles() == 0);
+}
+
+// ============================================================================
+// T5 review fixup F5: malformed Inspector UUID text diagnoses loudly.
+// The ImGui retention/error wiring cannot link into the CPU-only suite; this
+// probes the CPU-testable parser plus the working-copy preservation rule the
+// wiring relies on: malformed text never mutates the model value.
+// ============================================================================
+
+TEST_CASE("T5 RED_InspectorMalformedUuidDiagnosed: malformed UUID text diagnoses and preserves the edit")
+{
+    UUID out;
+    std::string error;
+
+    // Empty text clears to the world anchor.
+    CHECK(TryParseOtherBodyUuid("", out, error));
+    CHECK(out.IsNull());
+    CHECK(error.empty());
+
+    // Canonical, uppercase, and bare-hex forms all parse.
+    DeterministicUuidProvider ids;
+    const UUID anchor = ids.CreateV4();
+    CHECK(TryParseOtherBodyUuid(anchor.ToString(), out, error));
+    CHECK(out == anchor);
+    CHECK(error.empty());
+    std::string upper = anchor.ToString();
+    for (char& c : upper)
+        if (c >= 'a' && c <= 'f')
+            c = static_cast<char>(c - 'a' + 'A');
+    CHECK(TryParseOtherBodyUuid(upper, out, error));
+    CHECK(out == anchor);
+    CHECK(error.empty());
+    std::string bare;
+    for (char c : anchor.ToString())
+        if (c != '-')
+            bare.push_back(c);
+    CHECK(TryParseOtherBodyUuid(bare, out, error));
+    CHECK(out == anchor);
+    CHECK(error.empty());
+
+    // An explicit nil UUID is the world anchor, not malformed input.
+    CHECK(TryParseOtherBodyUuid(UUID{}.ToString(), out, error));
+    CHECK(out.IsNull());
+    CHECK(error.empty());
+
+    // Malformed text refuses with a typed diagnostic naming the field, the
+    // rejected text, and the expected shape — and the model value is
+    // untouched, so the UI can retain the edit instead of reverting.
+    PhysicsHingeComponent model;
+    model.otherBody = anchor;
+    CHECK_FALSE(TryParseOtherBodyUuid("not-a-uuid", out, error));
+    CHECK(error.find("otherBody") != std::string::npos);
+    CHECK(error.find("not-a-uuid") != std::string::npos);
+    CHECK(error.find("8-4-4-4-12") != std::string::npos);
+    CHECK(model.otherBody == anchor);
+    CHECK_FALSE(TryParseOtherBodyUuid("xyz", out, error));
+    CHECK_FALSE(TryParseOtherBodyUuid("gggggggg-0000-4000-8000-000000000000", out, error));
+    CHECK_FALSE(TryParseOtherBodyUuid(anchor.ToString() + "00", out, error));
+    CHECK_FALSE(TryParseOtherBodyUuid("  " + anchor.ToString(), out, error));
+    CHECK(model.otherBody == anchor);
 }

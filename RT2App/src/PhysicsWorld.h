@@ -399,6 +399,44 @@ private:
                                const SceneDocument& runtime,
                                const UUID& owner, entt::entity entity,
                                Error& err);
+    // T5 review fixup F2: failure-atomic rebuild support. Build validates the
+    // component, resolves frames, and allocates the Bullet constraint WITHOUT
+    // touching the dynamics world or either index, so a late frame/scale/
+    // world-anchor/allocation failure leaves the live set untouched. Commit
+    // adds one built constraint to the world and both indices (plus the
+    // staged motor-enabled deactivation policy) and cannot fail.
+    // StageOneHinge/Slider are Build+Commit; RebuildConstraintsForBody Builds
+    // every replacement first, then removes the live set, then Commits.
+    struct BuiltHingeConstraint
+    {
+        std::unique_ptr<btHingeConstraint> owned;
+        PhysicsConstraintRecord rec;
+    };
+    struct BuiltSliderConstraint
+    {
+        std::unique_ptr<btSliderConstraint> owned;
+        PhysicsConstraintRecord rec;
+    };
+    static bool BuildHinge(PhysicsWorld& world,
+                           const SceneDocument& runtime, const UUID& owner,
+                           entt::entity entity, Error& err,
+                           BuiltHingeConstraint& out);
+    static bool BuildSlider(PhysicsWorld& world,
+                            const SceneDocument& runtime, const UUID& owner,
+                            entt::entity entity, Error& err,
+                            BuiltSliderConstraint& out);
+    static void CommitBuiltHinge(PhysicsWorld& world,
+                                 BuiltHingeConstraint& built);
+    static void CommitBuiltSlider(PhysicsWorld& world,
+                                  BuiltSliderConstraint& built);
+    // T5 review fixup F4: endpoint wake policy shared by the live drive
+    // entry points. Enabling a motor (drive/return/target) activates both
+    // endpoints and pins DISABLE_DEACTIVATION, matching staged enabled
+    // motors; releasing restores ACTIVE_TAG on an endpoint no other enabled
+    // constraint touches, so it may sleep again.
+    void WakeConstraintEndpoints(const UUID& owner);
+    void RelaxConstraintEndpoints(const UUID& owner);
+    bool ConstraintMotorEnabled(const PhysicsConstraintRecord& rec) const;
 
     // Bullet teardown order: constraints first, then ghosts/bodies, then
     // shapes, then the world itself (Bullet requirement; plan section 3).
