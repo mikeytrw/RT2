@@ -178,11 +178,15 @@ public:
     void SetLifecycleObserver(IRuntimeLifecycleObserver* observer) { m_LifecycleObserver = observer; }
     IRuntimeLifecycleObserver* GetLifecycleObserver() const { return m_LifecycleObserver; }
 
-    // T5 review fixup F1: frozen destroy-UUID set for the active drain.
-    // While ApplyDeferredStructuralChanges iterates its moved-to-local batch,
-    // every explicitly queued destroy UUID (plus its registry subtree) is
-    // recorded here. RuntimeCommandSink setters refuse these UUIDs for the
-    // remainder of the drain (false + warn, no mutation); reads stay allowed.
+    // T5 review fixup F1 + final re-review P1: frozen destroy-UUID set for
+    // the active drain. While ApplyDeferredStructuralChanges iterates its
+    // moved-to-local batch, every explicitly queued destroy UUID (plus its
+    // registry subtree) is recorded here, and each destroy position merges
+    // the recollected actual callback subtree before OnEntitiesDestroying —
+    // which additionally covers descendants created earlier in the same
+    // batch (invisible at precompute time). QueueCreate/QueueDestroy and
+    // RuntimeCommandSink setters refuse these UUIDs for the remainder of
+    // the drain (typed false + warn, no mutation); reads stay allowed.
     // Empty outside a drain. Callback-enqueued work lands in the emptied
     // m_PendingOperations (next safe point), never in the running batch.
     bool IsUuidInDestroyDrain(const UUID& uuid) const

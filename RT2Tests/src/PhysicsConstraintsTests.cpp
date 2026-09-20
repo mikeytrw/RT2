@@ -1430,6 +1430,16 @@ public:
     bool subtreeDestroyTried = false;
     Result<UUID> dyingParentCreateResult;
     bool dyingParentCreateTried = false;
+    // T5 final re-review P1: sink-write refusal against the actual dying
+    // child (possibly batch-created and absent at precompute). Captured
+    // only when a sink is wired; skipped otherwise so earlier tests that
+    // leave sink null are unaffected.
+    bool structuralWriteTried = false;
+    bool structuralWriteRefused = false;
+    bool structuralPreOk = false;
+    bool structuralPostOk = false;
+    glm::vec3 structuralPrePos{0.0f, 0.0f, 0.0f};
+    glm::vec3 structuralPostPos{0.0f, 0.0f, 0.0f};
 
     int destroyCallCount = 0;
     std::vector<std::vector<UUID>> destroyCalls;
@@ -1479,6 +1489,20 @@ public:
                 {
                     subtreeDestroyTried = true;
                     subtreeDestroyResult = ctrl->QueueDestroyRuntimeEntity(uuids.back());
+                }
+                // Sink write at the dying child: must refuse with no
+                // mutation even though the entity is still observable.
+                // uuids.front() is post-order-first, i.e. the child when
+                // the dying set is a parent+child subtree.
+                if (sink != nullptr)
+                {
+                    structuralWriteTried = true;
+                    structuralPreOk =
+                        sink->GetPosition(uuids.front(), structuralPrePos);
+                    structuralWriteRefused = !sink->SetPosition(
+                        uuids.front(), writePos);
+                    structuralPostOk =
+                        sink->GetPosition(uuids.front(), structuralPostPos);
                 }
             }
             // Unrelated callback work must still defer, not refuse: queue
@@ -1676,6 +1700,97 @@ TEST_CASE("T5 RED_DestroyDrainStructuralRefused: OnDestroy self/dying-subtree st
     REQUIRE(rt != nullptr);
     CHECK_FALSE(rt->uuidIndex.Contains(parent));
     CHECK_FALSE(rt->uuidIndex.Contains(child));
+    CHECK(rt->uuidIndex.Contains(keep));
+    // Only the unrelated unparented create deferred to the next safe point.
+    REQUIRE(probe.queuedCreateResult.IsOk());
+    CHECK(ctrl.PendingOperationCount() == 1);
+
+    // The next queue remains usable: the good create drains, and later
+    // structural work validates cleanly instead of hitting a poisoned entry.
+    ctrl.Update(kFixedDt, bridge);
+    CHECK(rt->uuidIndex.Contains(probe.queuedCreateResult.value));
+    CHECK(ctrl.PendingOperationCount() == 0);
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(keep).IsOk());
+    ctrl.Update(kFixedDt, bridge);
+    CHECK_FALSE(rt->uuidIndex.Contains(keep));
+    CHECK(ctrl.PendingOperationCount() == 0);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T5 RED_DestroyDrainBatchCreatedDescendantRefused: callback work targeting a same-batch-created dying child refuses without poisoning the next queue")
+{
+    // The frozen destroy set is precomputed from the current registry, so a
+    // descendant created earlier in the same frozen batch (create A, create
+    // B parented to queued A, destroy A) is absent from it: at precompute
+    // time neither A nor B exists. The destroy position recollects the real
+    // subtree [B, A] and must merge it into the frozen set BEFORE
+    // OnEntitiesDestroying, or on_destroy can accept QueueDestroy(B), a
+    // create parented under B, or a sink write to B — each of which lands
+    // in the next queue, fails validation forever (the queue is retained on
+    // failure), and blocks all later structural work. Unrelated callback
+    // work must still defer and drain cleanly afterwards.
+    T5Fixture f;
+    const UUID keep = f.Create("Keep");
+    T5NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    DeterministicUuidProvider runtimeIds;
+    ctrl.SetRuntimeUuidProvider(&runtimeIds);
+    RuntimeCommandSink sink(ctrl);
+    T5DrainProbeDispatch probe;
+    probe.ctrl = &ctrl;
+    probe.sink = &sink;
+    ctrl.SetScriptDispatch(&probe);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    // The valid FIFO batch from Phase4LifecycleTests:404-441.
+    RuntimeEntityCreateDesc descA;
+    descA.name = "A";
+    auto rA = ctrl.QueueCreateRuntimeEntity(descA);
+    REQUIRE(rA.IsOk());
+    RuntimeEntityCreateDesc descB;
+    descB.name = "B";
+    descB.parentUuid = rA.value;
+    auto rB = ctrl.QueueCreateRuntimeEntity(descB);
+    REQUIRE(rB.IsOk());
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(rA.value).IsOk());
+
+    probe.structuralRefusalArmed = true;
+    probe.writePos = {5.0f, 5.0f, 5.0f};
+    ctrl.Update(kFixedDt, bridge);
+
+    // The destroy ran with its real post-order dying set [B, A]: the child
+    // first, even though B was created by this same batch.
+    REQUIRE(probe.destroyCallCount == 1);
+    REQUIRE(probe.destroyCalls.front().size() == 2);
+    CHECK(probe.destroyCalls.front().front() == rB.value);
+    CHECK(probe.destroyCalls.front().back() == rA.value);
+
+    // Destroy of the batch-created child refuses with a typed error.
+    REQUIRE(probe.selfDestroyTried);
+    CHECK_FALSE(probe.selfDestroyResult.IsOk());
+    CHECK(probe.selfDestroyResult.error.code == Error::InvalidEntity);
+    // A create parented under the batch-created child refuses the same way.
+    REQUIRE(probe.dyingParentCreateTried);
+    CHECK_FALSE(probe.dyingParentCreateResult.IsOk());
+    CHECK(probe.dyingParentCreateResult.error.code == Error::InvalidEntity);
+    // Re-destroy of the batch root refuses as well.
+    REQUIRE(probe.subtreeDestroyTried);
+    CHECK_FALSE(probe.subtreeDestroyResult.IsOk());
+    CHECK(probe.subtreeDestroyResult.error.code == Error::InvalidEntity);
+    // A sink write at the batch-created child refuses with no mutation,
+    // even though B was still observable at callback time.
+    REQUIRE(probe.structuralWriteTried);
+    REQUIRE(probe.structuralPreOk);
+    CHECK(probe.structuralWriteRefused);
+    REQUIRE(probe.structuralPostOk);
+    CHECK(probe.structuralPostPos == probe.structuralPrePos);
+
+    // Both batch entities are gone; the refused ops never entered the queue.
+    const SceneDocument* rt = ctrl.TryGetRuntimeScene();
+    REQUIRE(rt != nullptr);
+    CHECK_FALSE(rt->uuidIndex.Contains(rA.value));
+    CHECK_FALSE(rt->uuidIndex.Contains(rB.value));
     CHECK(rt->uuidIndex.Contains(keep));
     // Only the unrelated unparented create deferred to the next safe point.
     REQUIRE(probe.queuedCreateResult.IsOk());

@@ -628,8 +628,10 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
     // Frozen destroy-UUID set for the destroying-UUID command refusal: every
     // explicitly queued destroy UUID plus its current registry subtree, so a
     // callback write aimed anywhere inside a dying subtree refuses loudly
-    // instead of mutating an entity about to be torn down. Cleared on every
-    // drain exit below.
+    // instead of mutating an entity about to be torn down. Each destroy
+    // position additionally merges the recollected actual subtree before
+    // OnEntitiesDestroying (see below), closing the batch-created-descendant
+    // gap. Cleared on every drain exit below.
     m_DestroyingUuids.clear();
     for (const auto& op : batch)
     {
@@ -702,6 +704,21 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
                         if (const auto* idc =
                                 doc.ecs.registry.try_get<EntityIdComponent>(e))
                             uuids.push_back(idc->id);
+
+                    // T5 final re-review P1: the precomputed frozen set
+                    // cannot see descendants created earlier in this same
+                    // one-pass batch (create A, create B parented to A,
+                    // destroy A): at precompute time neither exists in the
+                    // registry, yet the recollect above now observes the
+                    // real dying subtree [B, A]. Merge those actual
+                    // callback UUIDs into the frozen set BEFORE the
+                    // callbacks run, so QueueDestroy/create-under-B and
+                    // sink writes targeting the batch-created child
+                    // refuse loudly instead of poisoning the next queue.
+                    // The set stays frozen for the rest of the drain and
+                    // is cleared on drain exit; enqueue order is untouched.
+                    for (const auto& id : uuids)
+                        m_DestroyingUuids.insert(id);
 
                     if (!uuids.empty())
                         m_ScriptDispatch->OnEntitiesDestroying(uuids);
