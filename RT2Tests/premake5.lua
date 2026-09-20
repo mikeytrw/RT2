@@ -58,6 +58,9 @@
     -- Bullet T5: driven hinge/slider constraint tests (same rationale).
     files { "src/PhysicsConstraintsTests.cpp" }
 
+    -- Bullet T6: deterministic physics events + safe-point tests (same rationale).
+    files { "src/PhysicsEventsTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

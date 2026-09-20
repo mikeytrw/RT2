@@ -135,7 +135,20 @@ $requiredCases = @(
     "T5 GREEN_CreateThenDestroySameUuidClean: validated create-then-destroy completes in one drain",
     "T5 GREEN_RebuildAtomicPostDryRunFailure: late frame/allocation failure preserves the live constraint",
     "T5 GREEN_WakeSleepingMechanismMovesWithinOneTick: sleeping disabled mechanisms respond within one tick",
-    "T5 RED_InspectorMalformedUuidDiagnosed: malformed UUID text diagnoses and preserves the edit"
+    "T5 RED_InspectorMalformedUuidDiagnosed: malformed UUID text diagnoses and preserves the edit",
+    # T6: deterministic physics events + safe point.
+    "T6 GREEN_CanonicalPairOrder: swap canonicalizes the pair and flips the normal",
+    "T6 GREEN_MultiTickAccumulationAndDedup: one coalesced contact per pair per tick, preserved across ticks",
+    "T6 GREEN_GhostPassThrough: ball falls through the trigger with Enter/Stay/Exit and no contact response",
+    "T6 GREEN_TwoScriptsSameSnapshot: two OnUpdate consumers see identical non-consuming data",
+    "T6 GREEN_DestroyFilteredEvents: events for a drain-destroyed UUID never reach OnUpdate",
+    "T6 GREEN_DestroyGhostPurgesOverlapNoPhantomExit: destroying an overlapped ghost emits no Exit",
+    "T6 GREEN_CreateThenDestroySameUuidClean: create-then-destroy drains once with selective event filtering",
+    "T6 RED_OnDestroyEnqueueDeferred: callback work defers past the drain while event flow continues",
+    "T6 RED_CommandTargetingDestroyingUuidRejected: kinematic write refuses inside the drain without mutation",
+    "T6 GREEN_ValidationFailurePreservesBatchAndEvents: failed validation mutates nothing while events flow",
+    "T6 GREEN_ZeroTickPublishesFreshEmptySnapshot: a tickless frame never serves stale data",
+    "T6 GREEN_StopClearsSnapshotAndOverlapHistory: re-Play starts with Enter, never a phantom Exit"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
