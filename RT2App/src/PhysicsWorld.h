@@ -175,6 +175,16 @@ public:
     // Bullet drawer (normally null).
     bool HasDebugDrawerForTests() { return m_World.getDebugDrawer() != nullptr; }
 
+    // Test-only sentinel seam for the T8 drawer-restoration proof: install
+    // and observe the live Bullet drawer so tests assert exact RAII pointer
+    // identity (not only nullness) across successful and failed captures.
+    // Production never calls these; capture's guard is the only writer.
+    void SetDebugDrawerForTests(btIDebugDraw* drawer)
+    {
+        m_World.setDebugDrawer(drawer);
+    }
+    btIDebugDraw* DebugDrawerForTests() { return m_World.getDebugDrawer(); }
+
     // Test/preset helper: linear velocity write for simulated rigid bodies.
     // Returns false (mutating nothing) for Static bodies, ghosts, and unknown
     // UUIDs. Velocity (like impulse) is a legal Dynamic control — only pose

@@ -24,6 +24,7 @@
 
 #include <doctest/doctest.h>
 #include "EditorViewportIcons.h"
+#include "PhysicsCollisionAssetProvider.h"
 #include "PhysicsDebugCapture.h"
 #include "PhysicsDebugLines.h"
 #include "PhysicsWorld.h"
@@ -58,6 +59,8 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/constants.hpp>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 using namespace rt2::core;
@@ -162,6 +165,10 @@ PhysicsShapeComponent T8SphereShape(float radius)
     return shape;
 }
 
+// Defined with the other file-local helpers below; the required-playfield
+// builder (a fixture member above) needs it first.
+AssetReference T8ModelRef(const std::string& path, const std::string& key);
+
 struct T8Fixture
 {
     DeterministicUuidProvider ids;
@@ -171,7 +178,7 @@ struct T8Fixture
     T8NoopObserver observer;
 
     // Owned UUIDs for owner-identity assertions.
-    UUID ground, ball, platform, trigger, hingeOwner;
+    UUID ground, ball, platform, trigger, hingeOwner, ramp;
 
     T8Fixture() { manager.SetUuidProvider(&ids); }
 
@@ -253,6 +260,120 @@ struct T8Fixture
         ctrl.SetCollisionProvider(nullptr);
         return ctrl.Play(manager.AuthoringDoc(), bridge, err);
     }
+
+    // Required acceptance playfield for the frame-alignment proof:
+    // provider-backed static triangle ramp ("ramp.obj" must already exist in
+    // the provider context dir), dynamic ball, kinematic platform, static
+    // trigger, a driven hinge (ball -> platform), a driven nil-otherBody
+    // hinge (platform -> world anchor), and a driven slider
+    // (platform -> ball). Drive params are authored data; T5 builds no Bullet
+    // constraints on this branch, so the constraint census stays zero while
+    // the adapter visualizes the persisted components.
+    void BuildRequiredPlayfield()
+    {
+        {
+            const UUID uuid = manager.CreateEmpty("Ramp").affectedEntities.front();
+            auto e = manager.FindEntityByUuid(uuid);
+            manager.GetECS().registry.emplace<PhysicsBodyComponent>(e, T8StaticBody());
+            PhysicsShapeComponent rampShape;
+            rampShape.shape = PhysicsShapeKind::StaticTriMesh;
+            rampShape.triMesh = T8ModelRef("ramp.obj", "obj:whole-model");
+            manager.GetECS().registry.emplace<PhysicsShapeComponent>(e, rampShape);
+            auto& tf = manager.GetECS().registry.get<Transform>(e);
+            tf.translation = { -4.0f, 0.0f, 0.0f };
+            SceneGraph::MarkDirty(manager.GetECS().registry, e);
+            ramp = uuid;
+        }
+
+        {
+            const UUID uuid = manager.CreateEmpty("Ball").affectedEntities.front();
+            auto e = manager.FindEntityByUuid(uuid);
+            manager.GetECS().registry.emplace<PhysicsBodyComponent>(e, T8DynamicBody());
+            manager.GetECS().registry.emplace<PhysicsShapeComponent>(e, T8SphereShape(0.5f));
+            auto& tf = manager.GetECS().registry.get<Transform>(e);
+            tf.translation = { 0.0f, 1.0f, 0.0f };
+            tf.rotation = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0, 1, 0));
+            tf.scale = glm::vec3(2.0f);
+            SceneGraph::MarkDirty(manager.GetECS().registry, e);
+            ball = uuid;
+            hingeOwner = uuid;
+        }
+
+        {
+            const UUID uuid = manager.CreateEmpty("Platform").affectedEntities.front();
+            auto e = manager.FindEntityByUuid(uuid);
+            manager.GetECS().registry.emplace<PhysicsBodyComponent>(e, T8KinematicBody());
+            manager.GetECS().registry.emplace<PhysicsShapeComponent>(e, T8BoxShape(0.5f));
+            auto& tf = manager.GetECS().registry.get<Transform>(e);
+            tf.translation = { 2.0f, 0.5f, 0.0f };
+            tf.rotation = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0, 0, 1));
+            tf.scale = glm::vec3(1.5f);
+            SceneGraph::MarkDirty(manager.GetECS().registry, e);
+            platform = uuid;
+        }
+
+        {
+            PhysicsBodyComponent triggerBody = T8StaticBody();
+            triggerBody.layer = PhysicsLayer::Trigger;
+            triggerBody.mask = PhysicsLayer::Dynamic;
+            PhysicsShapeComponent triggerShape = T8BoxShape(0.5f);
+            triggerShape.isTrigger = true;
+            trigger = AddBox("Trigger", { -2.0f, 0.5f, 0.0f },
+                triggerBody, triggerShape);
+        }
+
+        // Driven hinge: owner ball, otherBody platform (both live bodies).
+        {
+            auto e = manager.FindEntityByUuid(ball);
+            PhysicsHingeComponent hinge;
+            hinge.otherBody = platform;
+            hinge.ownerPivot = { 0.25f, 0.5f, -0.25f };
+            hinge.ownerAxis = { 0.0f, 0.0f, 1.0f };
+            hinge.otherPivot = { 0.5f, 0.0f, 0.0f };
+            hinge.otherAxis = { 1.0f, 0.0f, 0.0f };
+            hinge.minAngleLimit = 0.0f;
+            hinge.maxAngleLimit = 1.0f;
+            hinge.driveMode = 0;
+            hinge.motorTargetVelocity = 2.0f;
+            hinge.motorMaxImpulse = 1.5f;
+            hinge.motorEnabled = true;
+            manager.GetECS().registry.emplace<PhysicsHingeComponent>(e, hinge);
+        }
+
+        // Driven nil-otherBody hinge: owner platform, world anchor. The other
+        // frame is authored in world space and must capture verbatim.
+        {
+            auto e = manager.FindEntityByUuid(platform);
+            PhysicsHingeComponent hinge;
+            hinge.otherBody = UUID{};
+            hinge.ownerPivot = { 0.0f, 0.5f, 0.0f };
+            hinge.ownerAxis = { 1.0f, 0.0f, 0.0f };
+            hinge.otherPivot = { 3.0f, 2.0f, -1.0f };
+            hinge.otherAxis = { 0.0f, 1.0f, 0.0f };
+            hinge.minAngleLimit = -0.5f;
+            hinge.maxAngleLimit = 0.5f;
+            hinge.driveMode = 0;
+            hinge.motorTargetVelocity = -1.0f;
+            hinge.motorMaxImpulse = 0.75f;
+            hinge.motorEnabled = true;
+            manager.GetECS().registry.emplace<PhysicsHingeComponent>(e, hinge);
+        }
+
+        // Driven slider: owner platform, non-null otherBody ball.
+        {
+            auto e = manager.FindEntityByUuid(platform);
+            PhysicsSliderComponent slider;
+            slider.otherBody = ball;
+            slider.axis = { 1.0f, 0.0f, 0.0f };
+            slider.lowerLimit = 0.25f;
+            slider.upperLimit = 0.75f;
+            slider.targetPosition = 0.5f;
+            slider.motorTargetVelocity = 1.0f;
+            slider.motorMaxForce = 5.0f;
+            slider.motorEnabled = true;
+            manager.GetECS().registry.emplace<PhysicsSliderComponent>(e, slider);
+        }
+    }
 };
 
 bool T8DumpSorted(const PhysicsDebugLines& lines)
@@ -279,6 +400,87 @@ bool T8HasSegment(const PhysicsDebugLines& lines, const UUID& owner,
             return true;
     return false;
 }
+
+const PhysicsDebugSegment* T8FindSegment(const PhysicsDebugLines& lines,
+                                         const UUID& owner, const glm::vec3& a,
+                                         const glm::vec3& b)
+{
+    for (const auto& s : lines.segments)
+        if (s.owner == owner && s.kind == PhysicsDebugLineKind::Constraint &&
+            glm::length(s.a - a) < 1e-4f && glm::length(s.b - b) < 1e-4f)
+            return &s;
+    return nullptr;
+}
+
+// Pin exact screen pixels for a world point through one view. Expected values
+// are independently calculated literals (see the alignment test table), so a
+// wrong captured frame or a wrong projection fails here — inequality between
+// two endpoints would not discriminate.
+void T8CheckPixels(const glm::vec3& world, const glm::mat4& viewProj,
+                   float expX, float expY)
+{
+    glm::vec2 screen{ 0.0f };
+    float depth = 0.0f;
+    REQUIRE(ProjectToViewport(world, viewProj, kImageMin, kImageSize,
+        screen, depth));
+    CHECK(screen.x == doctest::Approx(expX).epsilon(1e-3));
+    CHECK(screen.y == doctest::Approx(expY).epsilon(1e-3));
+}
+
+AssetReference T8ModelRef(const std::string& path, const std::string& key)
+{
+    AssetReference ref;
+    ref.kind = AssetKind::Model;
+    ref.path = path;
+    ref.sourceKey = key;
+    return ref;
+}
+
+void T8WriteTextFile(const std::filesystem::path& path, const std::string& text)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    REQUIRE_MESSAGE(!ec, "T8 fixture directory creation failed");
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    REQUIRE_MESSAGE(out.is_open(), "T8 fixture file open failed");
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    out.flush();
+    REQUIRE_MESSAGE(out.good(), "T8 fixture file write failed");
+}
+
+// Own temp dir (distinct from the T4 collision dir) holding the required
+// static triangle ramp OBJ.
+struct T8TempDir
+{
+    std::filesystem::path dir;
+    T8TempDir()
+    {
+        dir = std::filesystem::temp_directory_path() / "t8_debug_ramp";
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        REQUIRE_MESSAGE(!ec, "T8 fixture cleanup failed");
+        std::filesystem::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "T8 fixture directory creation failed");
+    }
+    ~T8TempDir()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+// Sloped static triangle ramp (both windings, mirroring the T4 ramp proof so
+// contact never depends on triangle sidedness).
+const char* kT8RampObj =
+    "v 0 2 -1\nv 4 0 -1\nv 4 0 1\nv 0 2 1\n"
+    "f 1 2 3\nf 1 3 4\nf 1 4 3\nf 1 3 2\n";
+
+// Clears the deterministic allocation-failure arm even when a test aborts
+// early, so one injected failure can never poison a later test's capture.
+struct T8ThrowGuard
+{
+    ~T8ThrowGuard() { PhysicsDebugDrawer::SetTestThrowOnNextLine(false); }
+};
 
 } // namespace
 
@@ -452,55 +654,141 @@ TEST_CASE("T8 RED_InvalidGeometryKeepsT4Diagnostic: missing colliders refuse Pla
     CHECK(ctrl.GetPhysicsDebugLines().Empty());
 }
 
-TEST_CASE("T8 GREEN_ConstraintFramesUseWorldTransforms: rotated scaled local frames and world anchor capture exact endpoints")
+TEST_CASE("T8 GREEN_ConstraintFramesUseWorldTransforms: required ramp/dynamic/driven-hinge/driven-slider/trigger fixture captures exact endpoints and exact top/side pixels")
 {
+    T8TempDir assets;
+    T8WriteTextFile(assets.dir / "ramp.obj", kT8RampObj);
+    PhysicsCollisionAssetProvider provider;
+    provider.SetContext(AssetResolutionContext{ assets.dir, nullptr });
+
     T8Fixture fx;
-    fx.BuildPlayfield();
-    auto ball = fx.manager.FindEntityByUuid(fx.ball);
-    auto platform = fx.manager.FindEntityByUuid(fx.platform);
-    auto& ballTf = fx.manager.GetECS().registry.get<Transform>(ball);
-    ballTf.rotation = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0, 1, 0));
-    ballTf.scale = glm::vec3(2.0f);
-    auto& platformTf = fx.manager.GetECS().registry.get<Transform>(platform);
-    platformTf.rotation = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0, 0, 1));
-    platformTf.scale = glm::vec3(1.5f);
-    SceneGraph::MarkDirty(fx.manager.GetECS().registry, ball);
-    SceneGraph::MarkDirty(fx.manager.GetECS().registry, platform);
-    auto& hinge = fx.manager.GetECS().registry.get<PhysicsHingeComponent>(ball);
-    hinge.ownerPivot = { 0.25f, 0.5f, -0.25f };
-    hinge.ownerAxis = { 0, 0, 1 };
-    hinge.otherPivot = { 0.5f, 0, 0 };
-    hinge.otherAxis = { 1, 0, 0 };
-    auto& slider = fx.manager.GetECS().registry.get<PhysicsSliderComponent>(platform);
-    slider.otherBody = fx.ball;
-    slider.axis = { 1, 0, 0 };
-    slider.lowerLimit = 0.25f;
-    slider.upperLimit = 0.75f;
+    fx.BuildRequiredPlayfield();
+    // NOTE: T8Fixture::Play pins a null provider; the required fixture needs
+    // the live provider, so Play through the controller directly.
+    fx.ctrl.SetCollisionProvider(&provider);
+
     Error err;
-    REQUIRE(fx.Play(err));
-    const auto& lines = fx.ctrl.GetPhysicsDebugLines();
+    REQUIRE(fx.ctrl.Play(fx.manager.AuthoringDoc(), fx.bridge, err));
+    CHECK(err.IsOk());
+
+    // T5 builds no Bullet constraints on this branch: the constraint census
+    // stays zero while the adapter visualizes the persisted components.
+    CHECK(fx.ctrl.PhysicsConstraintCount() == 0);
+
+    // The acceptance fixture is literally driven: motor params are authored
+    // on the persisted hinge/slider components (read back from authoring).
+    {
+        auto ballE = fx.manager.FindEntityByUuid(fx.ball);
+        const bool ballResolved = (ballE != entt::null);
+        REQUIRE(ballResolved);
+        const auto& hinge =
+            fx.manager.GetECS().registry.get<PhysicsHingeComponent>(ballE);
+        CHECK(hinge.motorEnabled);
+        CHECK(hinge.motorTargetVelocity == doctest::Approx(2.0f));
+        CHECK(hinge.motorMaxImpulse == doctest::Approx(1.5f));
+        CHECK_FALSE(hinge.otherBody.IsNull());
+
+        auto platE = fx.manager.FindEntityByUuid(fx.platform);
+        const bool platResolved = (platE != entt::null);
+        REQUIRE(platResolved);
+        const auto& worldHinge =
+            fx.manager.GetECS().registry.get<PhysicsHingeComponent>(platE);
+        CHECK(worldHinge.motorEnabled);
+        CHECK(worldHinge.otherBody.IsNull());
+        const auto& slider =
+            fx.manager.GetECS().registry.get<PhysicsSliderComponent>(platE);
+        CHECK(slider.motorEnabled);
+        CHECK(slider.motorTargetVelocity == doctest::Approx(1.0f));
+        CHECK(slider.motorMaxForce == doctest::Approx(5.0f));
+        CHECK(slider.otherBody == fx.ball);
+    }
+
+    const PhysicsDebugLines& lines = fx.ctrl.GetPhysicsDebugLines();
+    // Fixture census: provider-backed ramp stages and captures, dynamic ball,
+    // kinematic platform, and trigger volume are all present.
+    CHECK(T8OwnerPresent(lines, fx.ramp));
+    CHECK(T8OwnerPresent(lines, fx.ball));
+    CHECK(T8OwnerPresent(lines, fx.platform));
+    CHECK(T8OwnerPresent(lines, fx.trigger));
+    CHECK(lines.CountByKind(PhysicsDebugLineKind::Static) > 0);
+    CHECK(lines.CountByKind(PhysicsDebugLineKind::Trigger) > 0);
+    CHECK(lines.CountByKind(PhysicsDebugLineKind::Constraint) > 0);
+
+    // Exact world endpoints, hand-derived from the authored frames through
+    // the full Play-time world matrices (ball: T(0,1,0) R_y(90) S2;
+    // platform: T(2,0.5,0) R_z(90) S1.5):
+    //   hinge owner pivot (0.25,0.5,-0.25) -> (-0.5,2.0,-0.5),
+    //     axis (0,0,1) -> (1,0,0), len 0.5;
+    //   hinge other pivot (0.5,0,0) -> (2.0,1.25,0.0),
+    //     axis (1,0,0) -> (0,1,0), len 0.5;
+    //   slider origin (2.0,0.5,0.0), axis (1,0,0) -> (0,1,0), lo/hi .25/.75;
+    //   nil-hinge owner pivot (0,0.5,0) -> (1.25,0.5,0.0),
+    //     axis (1,0,0) -> (0,1,0), len 0.5;
+    //   nil-hinge other frame verbatim world: (3,2,-1), axis (0,1,0).
     const glm::vec3 hingePivot(-0.5f, 2.0f, -0.5f);
     const glm::vec3 hingeEnd(0.0f, 2.0f, -0.5f);
     const glm::vec3 otherPivot(2.0f, 1.25f, 0.0f);
     const glm::vec3 otherEnd(2.0f, 1.75f, 0.0f);
     const glm::vec3 sliderA(2.0f, 0.75f, 0.0f);
     const glm::vec3 sliderB(2.0f, 1.25f, 0.0f);
+    const glm::vec3 nilOwnerA(1.25f, 0.5f, 0.0f);
+    const glm::vec3 nilOwnerB(1.25f, 1.0f, 0.0f);
+    const glm::vec3 nilWorldA(3.0f, 2.0f, -1.0f);
+    const glm::vec3 nilWorldB(3.0f, 2.5f, -1.0f);
     CHECK(T8HasSegment(lines, fx.ball, hingePivot, hingeEnd));
     CHECK(T8HasSegment(lines, fx.ball, otherPivot, otherEnd));
     CHECK(T8HasSegment(lines, fx.platform, sliderA, sliderB));
-    glm::vec2 topA, topB, sideA, sideB; float d = 0.0f, d2 = 0.0f;
-    REQUIRE(ProjectToViewport(hingePivot, T8TopViewProj(), kImageMin, kImageSize, topA, d));
-    REQUIRE(ProjectToViewport(hingeEnd, T8TopViewProj(), kImageMin, kImageSize, topB, d2));
-    REQUIRE(ProjectToViewport(hingePivot, T8SideViewProj(), kImageMin, kImageSize, sideA, d));
-    REQUIRE(ProjectToViewport(hingeEnd, T8SideViewProj(), kImageMin, kImageSize, sideB, d2));
-    CHECK(topA != topB);
-    CHECK(sideA != sideB);
+    // Nil-otherBody discriminator: the owner frame is transformed, the world
+    // anchor is verbatim.
+    CHECK(T8HasSegment(lines, fx.platform, nilOwnerA, nilOwnerB));
+    CHECK(T8HasSegment(lines, fx.platform, nilWorldA, nilWorldB));
+
+    // Exact top/side pixels for the CAPTURED endpoints (found in the DTO, not
+    // re-projected constants). Independently calculated literals: any wrong
+    // frame or wrong projection misses these by far more than tolerance.
+    struct T8PixelRow
+    {
+        UUID owner;
+        glm::vec3 a, b;
+        float topAx, topAy, topBx, topBy;
+        float sideAx, sideAy, sideBx, sideBy;
+    };
+    const T8PixelRow rows[] = {
+        { fx.ball, hingePivot, hingeEnd,
+          454.73f, 304.73f, 500.00f, 304.73f,
+          534.49f, 281.02f, 536.21f, 277.57f },
+        { fx.ball, otherPivot, otherEnd,
+          665.55f, 350.00f, 675.58f, 350.00f,
+          500.00f, 327.37f, 500.00f, 282.10f },
+        { fx.platform, sliderA, sliderB,
+          656.60f, 350.00f, 665.55f, 350.00f,
+          500.00f, 372.63f, 500.00f, 327.37f },
+        { fx.platform, nilOwnerA, nilOwnerB,
+          595.30f, 350.00f, 600.59f, 350.00f,
+          500.00f, 391.39f, 500.00f, 350.00f },
+        { fx.platform, nilWorldA, nilWorldB,
+          771.60f, 259.47f, 789.71f, 253.43f,
+          603.47f, 246.53f, 603.47f, 194.80f },
+    };
+    const glm::mat4 top = T8TopViewProj();
+    const glm::mat4 side = T8SideViewProj();
+    for (const auto& row : rows)
+    {
+        const PhysicsDebugSegment* seg =
+            T8FindSegment(lines, row.owner, row.a, row.b);
+        REQUIRE_MESSAGE(seg != nullptr, "captured constraint segment missing");
+        T8CheckPixels(seg->a, top, row.topAx, row.topAy);
+        T8CheckPixels(seg->b, top, row.topBx, row.topBy);
+        T8CheckPixels(seg->a, side, row.sideAx, row.sideAy);
+        T8CheckPixels(seg->b, side, row.sideBx, row.sideBy);
+    }
+
     fx.ctrl.Stop(fx.manager.AuthoringDoc(), fx.bridge);
 }
 
 TEST_CASE("T8 RED_DebugCaptureAllocationIsTypedAndAtomic: drawer detaches and snapshot never publishes partial output")
 {
-    struct Guard { ~Guard() { PhysicsDebugDrawer::SetTestThrowOnNextLine(false); } } guard;
+    T8ThrowGuard guard;
     T8Fixture fx;
     fx.BuildPlayfield();
     PhysicsDebugDrawer::SetTestThrowOnNextLine(true);
@@ -511,4 +799,109 @@ TEST_CASE("T8 RED_DebugCaptureAllocationIsTypedAndAtomic: drawer detaches and sn
     CHECK(fx.ctrl.TryGetRuntimeScene() == nullptr);
     CHECK(fx.ctrl.TryGetPhysicsWorld() == nullptr);
     CHECK(fx.ctrl.GetPhysicsDebugLines().Empty());
+}
+
+TEST_CASE("T8 RED_DebugCaptureUpdateFailureRetainsSnapshot: injected Update failure keeps Playing, the prior dump, and a detached drawer")
+{
+    T8ThrowGuard guard;
+    T8Fixture fx;
+    fx.BuildPlayfield();
+
+    Error err;
+    REQUIRE(fx.Play(err));
+    REQUIRE(fx.ctrl.GetState() == SceneRunState::Playing);
+    const std::string before = fx.ctrl.DumpPhysicsDebugLines();
+    REQUIRE_FALSE(before.empty());
+    REQUIRE(fx.ctrl.LastPhysicsDebugError().IsOk());
+    PhysicsWorld* world = fx.ctrl.TryGetPhysicsWorldMut();
+    REQUIRE(world != nullptr);
+    REQUIRE_FALSE(world->HasDebugDrawerForTests());
+
+    // One injected capture failure during Playing Update: the tick still
+    // simulates, but the snapshot must not be replaced by partial output.
+    PhysicsDebugDrawer::SetTestThrowOnNextLine(true);
+    fx.ctrl.Update(kFixedDt, fx.bridge);
+    CHECK(fx.ctrl.GetState() == SceneRunState::Playing);
+    CHECK(fx.ctrl.TryGetPhysicsWorld() == world);
+    CHECK(fx.ctrl.LastPhysicsDebugError().code == Error::Io);
+    CHECK(fx.ctrl.DumpPhysicsDebugLines() == before);
+    CHECK(fx.ctrl.PhysicsDebugLineCount() > 0);
+    CHECK_FALSE(world->HasDebugDrawerForTests());
+
+    // Recovery: the next clean Update clears the typed error and refreshes.
+    fx.ctrl.Update(kFixedDt, fx.bridge);
+    CHECK(fx.ctrl.LastPhysicsDebugError().IsOk());
+    CHECK_FALSE(fx.ctrl.DumpPhysicsDebugLines().empty());
+    CHECK_FALSE(world->HasDebugDrawerForTests());
+
+    fx.ctrl.Stop(fx.manager.AuthoringDoc(), fx.bridge);
+}
+
+TEST_CASE("T8 RED_DebugCaptureStepFailureRetainsSnapshot: injected paused-Step failure returns false after one tick with state, dump, and drawer intact")
+{
+    T8ThrowGuard guard;
+    T8Fixture fx;
+    fx.BuildPlayfield();
+
+    Error err;
+    REQUIRE(fx.Play(err));
+    fx.ctrl.Pause();
+    REQUIRE(fx.ctrl.GetState() == SceneRunState::Paused);
+    const std::string before = fx.ctrl.DumpPhysicsDebugLines();
+    REQUIRE_FALSE(before.empty());
+    const uint64_t stepsBefore = fx.ctrl.PhysicsStepCount();
+    PhysicsWorld* world = fx.ctrl.TryGetPhysicsWorldMut();
+    REQUIRE(world != nullptr);
+    REQUIRE_FALSE(world->HasDebugDrawerForTests());
+
+    // The paused Step completes exactly one physics tick, then its capture
+    // fails: Step reports false without a half-committed lifecycle.
+    PhysicsDebugDrawer::SetTestThrowOnNextLine(true);
+    CHECK_FALSE(fx.ctrl.Step(fx.bridge));
+    CHECK(fx.ctrl.PhysicsStepCount() == stepsBefore + 1);
+    CHECK(fx.ctrl.GetState() == SceneRunState::Paused);
+    CHECK(fx.ctrl.TryGetPhysicsWorld() == world);
+    CHECK(fx.ctrl.LastPhysicsDebugError().code == Error::Io);
+    CHECK(fx.ctrl.DumpPhysicsDebugLines() == before);
+    CHECK_FALSE(world->HasDebugDrawerForTests());
+
+    fx.ctrl.Stop(fx.manager.AuthoringDoc(), fx.bridge);
+}
+
+TEST_CASE("T8 RED_DebugCaptureRestoresPriorDrawer: RAII restores the exact pre-existing Bullet drawer on success and failure")
+{
+    T8ThrowGuard guard;
+    T8Fixture fx;
+    fx.BuildPlayfield();
+
+    Error err;
+    REQUIRE(fx.Play(err));
+    PhysicsWorld* world = fx.ctrl.TryGetPhysicsWorldMut();
+    REQUIRE(world != nullptr);
+    REQUIRE(world->DebugDrawerForTests() == nullptr);
+
+    // Inert sentinel: never begins a capture, so its own drawLine is a
+    // no-op; only its pointer identity is observed.
+    PhysicsDebugDrawer sentinel;
+    world->SetDebugDrawerForTests(&sentinel);
+
+    // Success path restores the exact sentinel (not merely "a" drawer).
+    fx.ctrl.Update(kFixedDt, fx.bridge);
+    CHECK(fx.ctrl.LastPhysicsDebugError().IsOk());
+    CHECK(world->DebugDrawerForTests() == &sentinel);
+    CHECK_FALSE(fx.ctrl.DumpPhysicsDebugLines().empty());
+
+    // Failure path restores the exact sentinel too — never null, never the
+    // destroyed temporary.
+    PhysicsDebugDrawer::SetTestThrowOnNextLine(true);
+    fx.ctrl.Update(kFixedDt, fx.bridge);
+    CHECK(fx.ctrl.LastPhysicsDebugError().code == Error::Io);
+    CHECK(world->DebugDrawerForTests() == &sentinel);
+
+    world->SetDebugDrawerForTests(nullptr);
+    fx.ctrl.Update(kFixedDt, fx.bridge);
+    CHECK(fx.ctrl.LastPhysicsDebugError().IsOk());
+    CHECK_FALSE(world->HasDebugDrawerForTests());
+
+    fx.ctrl.Stop(fx.manager.AuthoringDoc(), fx.bridge);
 }
