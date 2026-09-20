@@ -7,6 +7,7 @@
 #include "ISceneRenderBridge.h"
 #include "IPhysicsCollisionAssetProvider.h"
 #include "PhysicsWorld.h"
+#include "PhysicsEvents.h"
 #include "RuntimeLifecycleObserver.h"
 #include "RuntimeSceneMutator.h"
 #include "IRuntimeScriptDispatch.h"
@@ -296,6 +297,21 @@ public:
         return m_PhysicsWorld ? m_PhysicsWorld->StepCount() : 0;
     }
 
+    // ---- T6 deterministic physics events --------------------------------
+    //
+    // The immutable per-frame snapshot (PhysicsEvents.h rules): scraped
+    // after every fixed tick, accumulated across the frame's 0-5 ticks,
+    // filtered for drain-destroyed UUIDs, and published before OnUpdate.
+    // Non-consuming: every script consumer in the frame reads these same
+    // contents regardless of UUID-sorted callback order. Empty when no
+    // physics world is committed, when zero ticks ran (fresh empty, never
+    // stale), and after Stop. No new engine lifecycle callbacks are added:
+    // scripts poll this inside the existing OnUpdate.
+    const std::vector<PhysicsEvent>& PhysicsEvents() const
+    {
+        return m_PhysicsSnapshot;
+    }
+
     // Test-only accumulator read-out. Failed Play must leave it zero; Step
     // must not advance it.
     float DebugAccumulator() const { return m_Accumulator; }
@@ -334,8 +350,15 @@ private:
     // after the next UpdateWorldTransforms pass. Returns true if any
     // structural operation was applied this frame (so the caller picks
     // FullSync instead of TransformSync).
+    //
+    // T6: `destroyedUuids` is filled with every UUID torn down by this batch
+    // (each destroy op's recollected subtree at its apply position) so the
+    // caller can filter the frame's physics event snapshot before OnUpdate.
+    // Cleared on entry; empty when nothing was destroyed or validation
+    // failed (no partial teardown exists on failure).
     bool ApplyDeferredStructuralChanges(Error& err,
-                                        std::vector<UUID>& createdUuids);
+                                        std::vector<UUID>& createdUuids,
+                                        std::vector<UUID>& destroyedUuids);
 
     // Helper: collect UUIDs of pending create operations so a second create
     // with a provider-duplicate UUID does not collide with a queued-but-
@@ -367,6 +390,24 @@ private:
     // T5 review fixup F1: frozen destroy-UUID set, populated at drain start
     // from the moved-to-local batch and cleared when the drain returns.
     std::unordered_set<UUID> m_DestroyingUuids;
+    // T6 frame event staging: per-tick scrape output accumulates here across
+    // the frame's fixed ticks (BeginPhysicsFrame clears it), then
+    // PublishPhysicsSnapshot filters destroy UUIDs, collapses exact dups,
+    // and moves the result into m_PhysicsSnapshot before OnUpdate.
+    std::vector<PhysicsEvent> m_FrameEventAccum;
+    // T6 published snapshot (see the PhysicsEvents() accessor contract).
+    std::vector<PhysicsEvent> m_PhysicsSnapshot;
+    // T6 frame-local fixed-tick sequence stamped on scraped events (0..4).
+    uint32_t m_PhysicsTickIndex = 0;
+    // T6: clear the per-tick staging and restart the tick sequence. Called
+    // at the top of every Update/Step frame so zero-tick frames publish a
+    // fresh empty snapshot instead of stale prior-frame data.
+    void BeginPhysicsFrame();
+    // T6: filter m_FrameEventAccum for destroyedUuids, collapse exact
+    // duplicates keeping first occurrence, publish into m_PhysicsSnapshot,
+    // and clear the staging. Called after the safe-point drain and before
+    // SyncScriptEnvironments/OnUpdate on every Update/Step frame.
+    void PublishPhysicsSnapshot(const std::vector<UUID>& destroyedUuids);
     RuntimeSceneMutator m_Mutator;
     bool m_Stopping = false;
 };

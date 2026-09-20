@@ -110,6 +110,11 @@ void PhysicsWorld::Shutdown()
     m_TriangleMeshes.clear();
     m_BodyIndex.clear();
     m_Shapes.clear();
+    // T6: overlap history dies with the world. A world that survived Stop
+    // would otherwise report a stale Exit on the next session's first tick;
+    // Stop destroys the world, and ClearEventHistory covers the explicit
+    // reset path before that.
+    m_PrevOverlaps.clear();
 }
 
 Result<std::unique_ptr<PhysicsWorld>> PhysicsWorld::Create(
@@ -416,7 +421,7 @@ void PhysicsWorld::PostStepSync(SceneDocument& runtime)
 }
 
 // ============================================================================
-// T4 sync + introspection (member definitions at rt2::core scope)
+// T6 sync + introspection (member definitions at rt2::core scope)
 // ============================================================================
 
 void PhysicsWorld::Step(float dt)
@@ -428,6 +433,212 @@ void PhysicsWorld::Step(float dt)
     // untouched) trivially correct and Lua on_fixed_update ordering stable.
     m_World.stepSimulation(dt, 0);
     ++m_StepCount;
+}
+
+namespace {
+
+// T6 scrape helper: map a live Bullet collision object back to its
+// Authoring UUID through the companion map (bodies XOR ghosts). Linear scan:
+// N is toy-scale, and scan order never affects output because every
+// collection point below sorts by UUID before emitting.
+const UUID* T6UuidForObject(const std::vector<PhysicsBodyRecord>& index,
+                            const btCollisionObject* object)
+{
+    for (const auto& rec : index)
+    {
+        if (rec.body == object || rec.ghost == object)
+            return &rec.id;
+    }
+    return nullptr;
+}
+
+glm::vec3 T6ToGlm(const btVector3& v)
+{
+    return glm::vec3(v.x(), v.y(), v.z());
+}
+
+} // namespace
+
+void PhysicsWorld::ClearEventHistory()
+{
+    m_PrevOverlaps.clear();
+}
+
+void PhysicsWorld::AppendTickEvents(std::vector<PhysicsEvent>& out,
+                                    uint32_t tickIndex)
+{
+    // ---- Contacts: one coalesced event per unordered pair per tick ------
+    // Manifolds iterate in Bullet solver order (not UUID order), so raw
+    // points are collected, sorted by canonical pair, then coalesced: the
+    // stored impulse is the tick's summed applied impulse, the position the
+    // mean, the normal the normalized mean. Points with zero applied impulse
+    // (speculative contacts the solver did not act on) carry no event.
+    struct RawPoint
+    {
+        UUID a;
+        UUID b;
+        glm::vec3 pos;
+        glm::vec3 nrm;
+        float imp = 0.0f;
+    };
+    std::vector<RawPoint> raw;
+    const int manifoldCount = m_Dispatcher.getNumManifolds();
+    for (int i = 0; i < manifoldCount; ++i)
+    {
+        btPersistentManifold* manifold =
+            m_Dispatcher.getManifoldByIndexInternal(i);
+        if (manifold == nullptr)
+            continue;
+        const btCollisionObject* o0 = manifold->getBody0();
+        const btCollisionObject* o1 = manifold->getBody1();
+        const UUID* id0 = T6UuidForObject(m_BodyIndex, o0);
+        const UUID* id1 = T6UuidForObject(m_BodyIndex, o1);
+        if (id0 == nullptr || id1 == nullptr)
+            continue;
+        // Ghosts carry no contact response and never own manifolds; skip
+        // defensively so a trigger can never produce a Contact event.
+        const PhysicsBodyRecord* r0 = FindBody(*id0);
+        const PhysicsBodyRecord* r1 = FindBody(*id1);
+        if (r0 == nullptr || r1 == nullptr || r0->isTrigger || r1->isTrigger)
+            continue;
+        const int pointCount = manifold->getNumContacts();
+        for (int j = 0; j < pointCount; ++j)
+        {
+            const btManifoldPoint& pt = manifold->getContactPoint(j);
+            const float impulse = pt.getAppliedImpulse();
+            if (!(impulse > 0.0f))
+                continue;
+            UUID a;
+            UUID b;
+            glm::vec3 n;
+            CanonicalizePhysicsPair(*id0, *id1,
+                                    T6ToGlm(pt.m_normalWorldOnB), a, b, n);
+            RawPoint p;
+            p.a = a;
+            p.b = b;
+            p.pos = T6ToGlm(pt.getPositionWorldOnB());
+            p.nrm = n;
+            p.imp = impulse;
+            raw.push_back(p);
+        }
+    }
+    std::sort(raw.begin(), raw.end(),
+              [](const RawPoint& x, const RawPoint& y) {
+                  if (x.a != y.a)
+                      return x.a < y.a;
+                  return x.b < y.b;
+              });
+    for (size_t i = 0; i < raw.size();)
+    {
+        size_t j = i + 1;
+        glm::vec3 posSum = raw[i].pos;
+        glm::vec3 nrmSum = raw[i].nrm;
+        float impSum = raw[i].imp;
+        while (j < raw.size() && raw[j].a == raw[i].a && raw[j].b == raw[i].b)
+        {
+            posSum += raw[j].pos;
+            nrmSum += raw[j].nrm;
+            impSum += raw[j].imp;
+            ++j;
+        }
+        const float count = (float)(j - i);
+        glm::vec3 nrm = nrmSum;
+        const float len = glm::length(nrm);
+        // Antiparallel manifold normals summing near zero are degenerate;
+        // fall back to the run's first normal rather than emitting NaN.
+        nrm = (len > 1e-9f) ? (nrm / len) : raw[i].nrm;
+        PhysicsEvent e;
+        e.kind = PhysicsEventKind::Contact;
+        e.bodyA = raw[i].a;
+        e.bodyB = raw[i].b;
+        e.position = posSum / count;
+        e.normal = nrm;
+        e.impulse = impSum;
+        e.tickIndex = tickIndex;
+        out.push_back(e);
+        i = j;
+    }
+
+    // ---- Ghosts: overlap set-diff against the previous tick --------------
+    // Ghost records are visited in UUID order; the overlap sets below are
+    // std::set (UUID order), so Enter/Stay/Exit emission is canonical with
+    // no dependence on broadphase pair order.
+    std::vector<const PhysicsBodyRecord*> ghosts;
+    for (const auto& rec : m_BodyIndex)
+    {
+        if (rec.ghost != nullptr)
+            ghosts.push_back(&rec);
+    }
+    std::sort(ghosts.begin(), ghosts.end(),
+              [](const PhysicsBodyRecord* x, const PhysicsBodyRecord* y) {
+                  return x->id < y->id;
+              });
+    std::set<std::pair<UUID, UUID>> current;
+    for (const PhysicsBodyRecord* rec : ghosts)
+    {
+        btHashedOverlappingPairCache* cache =
+            rec->ghost->getOverlappingPairCache();
+        if (cache == nullptr)
+            continue;
+        btBroadphasePairArray& pairs = cache->getOverlappingPairArray();
+        const int pairCount = cache->getNumOverlappingPairs();
+        for (int k = 0; k < pairCount; ++k)
+        {
+            const auto* proxy0 = pairs[k].m_pProxy0;
+            const auto* proxy1 = pairs[k].m_pProxy1;
+            if (proxy0 == nullptr || proxy1 == nullptr)
+                continue;
+            const auto* c0 =
+                static_cast<const btCollisionObject*>(proxy0->m_clientObject);
+            const auto* c1 =
+                static_cast<const btCollisionObject*>(proxy1->m_clientObject);
+            const btCollisionObject* other =
+                (c0 == rec->ghost) ? c1 : c0;
+            if (other == nullptr || other == rec->ghost)
+                continue;
+            const UUID* otherId = T6UuidForObject(m_BodyIndex, other);
+            if (otherId == nullptr || *otherId == rec->id)
+                continue;
+            const UUID lo = (*otherId < rec->id) ? *otherId : rec->id;
+            const UUID hi = (*otherId < rec->id) ? rec->id : *otherId;
+            current.emplace(lo, hi);
+        }
+    }
+    // Trigger payload: pair midpoint as position, canonical bodyA -> bodyB
+    // direction as normal (+Y when coincident or unresolvable), impulse 0.
+    auto emitTrigger = [this, tickIndex, &out](
+                           PhysicsEventKind kind, const UUID& a, const UUID& b) {
+        PhysicsEvent e;
+        e.kind = kind;
+        e.bodyA = a;
+        e.bodyB = b;
+        glm::vec3 pa{0.0f, 0.0f, 0.0f};
+        glm::vec3 pb{0.0f, 0.0f, 0.0f};
+        const bool oka = BodyWorldPosition(a, pa);
+        const bool okb = BodyWorldPosition(b, pb);
+        e.position = (oka && okb) ? (pa + pb) * 0.5f : (oka ? pa : pb);
+        const glm::vec3 d = pb - pa;
+        const float len = glm::length(d);
+        e.normal = (oka && okb && len > 1e-9f)
+                       ? (d / len)
+                       : glm::vec3{0.0f, 1.0f, 0.0f};
+        e.impulse = 0.0f;
+        e.tickIndex = tickIndex;
+        out.push_back(e);
+    };
+    for (const auto& p : current)
+    {
+        emitTrigger(m_PrevOverlaps.count(p) != 0
+                        ? PhysicsEventKind::TriggerStay
+                        : PhysicsEventKind::TriggerEnter,
+                    p.first, p.second);
+    }
+    for (const auto& p : m_PrevOverlaps)
+    {
+        if (current.count(p) == 0)
+            emitTrigger(PhysicsEventKind::TriggerExit, p.first, p.second);
+    }
+    m_PrevOverlaps = current;
 }
 
 void PhysicsWorld::SetTestInjectCreateFailure(bool fail)
@@ -1852,6 +2063,18 @@ void PhysicsWorld::RemoveSubtreePhysics(const std::vector<UUID>& uuids)
     {
         Error ignored;
         RemoveRuntimeBody(uuid, ignored);
+    }
+    // T6: purge the overlap history of removed UUIDs. Without this, a body
+    // destroyed while overlapping its ghost would leave a stale pair behind
+    // and fabricate a TriggerExit on a later tick for a UUID that no longer
+    // resolves.
+    for (auto it = m_PrevOverlaps.begin(); it != m_PrevOverlaps.end();)
+    {
+        if (std::find(uuids.begin(), uuids.end(), it->first) != uuids.end() ||
+            std::find(uuids.begin(), uuids.end(), it->second) != uuids.end())
+            it = m_PrevOverlaps.erase(it);
+        else
+            ++it;
     }
 }
 

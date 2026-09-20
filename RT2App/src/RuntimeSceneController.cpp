@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cstdio>
 #include <new>
+#include <set>
 #include <unordered_set>
 #include <vector>
 
@@ -129,6 +130,13 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     // input and mutate the runtime world through the controlled channel.
     m_State = SceneRunState::Playing;
     m_Accumulator = 0.0f;
+    // T6: a fresh Play session starts with no staged ticks and an empty
+    // published snapshot. The committed PhysicsWorld is newly constructed,
+    // so its ghost-overlap history is empty by construction (the first
+    // overlap reports TriggerEnter, never a stale Exit).
+    m_FrameEventAccum.clear();
+    m_PhysicsSnapshot.clear();
+    m_PhysicsTickIndex = 0;
 
     if (m_LifecycleObserver)
         m_LifecycleObserver->OnSceneStart(*m_Runtime, m_InputService, m_CommandSink);
@@ -174,6 +182,10 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
 
     constexpr float dt = kFixedDt;
 
+    // T6: restart the frame's event staging so this Step publishes exactly
+    // this tick's snapshot.
+    BeginPhysicsFrame();
+
     // Snapshot prev transforms before the step.
     SnapshotPrevTransforms();
 
@@ -185,10 +197,16 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     // tick regardless of Pause state.
     Error drainErr;
     std::vector<UUID> createdThisBatch;
-    const bool structural = ApplyDeferredStructuralChanges(drainErr, createdThisBatch);
+    std::vector<UUID> destroyedThisBatch;
+    const bool structural = ApplyDeferredStructuralChanges(
+        drainErr, createdThisBatch, destroyedThisBatch);
     if (!drainErr.IsOk())
         printf("[Runtime] Step deferred-queue validation failed: %s (queue left intact)\n",
                drainErr.Format().c_str());
+
+    // T6: filter drain-destroyed UUIDs and publish the immutable snapshot
+    // before any script observes it.
+    PublishPhysicsSnapshot(destroyedThisBatch);
 
     // Phase 6: sync script environments with the runtime registry after the
     // safe point (G2). Fires OnCreate for newly applied entities, OnDestroy
@@ -268,7 +286,15 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
     //    same census in release). The real destructor is the destruction
     //    boundary: it runs here, while m_Runtime is still alive — reversing
     //    these two resets is caught by the Stop-order test's destroy probe.
+    //    T6: clear the ghost-overlap history explicitly first (no fabricated
+    //    stale events can outlive the session) and drop the published
+    //    snapshot so post-Stop observers never read prior-session data.
+    if (m_PhysicsWorld)
+        m_PhysicsWorld->ClearEventHistory();
     m_PhysicsWorld.reset();
+    m_FrameEventAccum.clear();
+    m_PhysicsSnapshot.clear();
+    m_PhysicsTickIndex = 0;
     assert(PhysicsWorld::LiveWorldCount() == m_PhysicsLiveBaseline &&
            "PhysicsWorld destroyed on Stop must restore the live baseline");
 
@@ -316,6 +342,11 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
     // Clamp frame time to avoid spiral-of-death after stalls.
     float dt = std::min(frameDt, kMaxFrameTime);
 
+    // T6: restart the frame's event staging. A frame that runs zero fixed
+    // ticks therefore publishes a fresh empty snapshot below, never stale
+    // prior-frame data.
+    BeginPhysicsFrame();
+
     // Snapshot prev transforms before simulation.
     SnapshotPrevTransforms();
 
@@ -337,10 +368,16 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
     // SceneGraph::UpdateWorldTransforms and the batched sync.
     Error drainErr;
     std::vector<UUID> createdThisBatch;
-    const bool structural = ApplyDeferredStructuralChanges(drainErr, createdThisBatch);
+    std::vector<UUID> destroyedThisBatch;
+    const bool structural = ApplyDeferredStructuralChanges(
+        drainErr, createdThisBatch, destroyedThisBatch);
     if (!drainErr.IsOk())
         printf("[Runtime] Update deferred-queue validation failed: %s (queue left intact)\n",
                drainErr.Format().c_str());
+
+    // T6: filter drain-destroyed UUIDs and publish the immutable snapshot
+    // before SyncScriptEnvironments/OnUpdate observe it.
+    PublishPhysicsSnapshot(destroyedThisBatch);
 
     // Phase 6: sync script environments with the runtime registry after the
     // safe point (G2). Fires OnCreate for newly applied entities, OnDestroy
@@ -597,9 +634,11 @@ bool RuntimeSceneController::ValidatePendingBatch(Error& err) const
 }
 
 bool RuntimeSceneController::ApplyDeferredStructuralChanges(
-    Error& err, std::vector<UUID>& createdUuids)
+    Error& err, std::vector<UUID>& createdUuids,
+    std::vector<UUID>& destroyedUuids)
 {
     createdUuids.clear();
+    destroyedUuids.clear();
 
     if (!m_Runtime)
         return false;
@@ -749,6 +788,32 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
                             subtreeUuids.push_back(idc->id);
                     if (!subtreeUuids.empty())
                         m_PhysicsWorld->RemoveSubtreePhysics(subtreeUuids);
+                    // T6: record the recollected dying subtree for the
+                    // snapshot destroy filter. Recollection (not the frozen
+                    // precompute) is what sees descendants created earlier
+                    // in this same one-pass batch, so a create-then-destroy
+                    // UUID's tick events are filtered even though the UUID
+                    // did not exist at drain start.
+                    destroyedUuids.insert(destroyedUuids.end(),
+                                          subtreeUuids.begin(),
+                                          subtreeUuids.end());
+                }
+            }
+            else
+            {
+                // T6: no physics world, but the ECS teardown below still
+                // destroys these UUIDs — record them for the snapshot
+                // filter from the same recollected subtree.
+                const auto root = doc.FindByUuid(destroy->uuid);
+                if (root != entt::null && doc.ecs.registry.valid(root))
+                {
+                    std::vector<entt::entity> subtree;
+                    SceneHierarchy::CollectSubtreePostOrder(
+                        doc.ecs.registry, root, subtree);
+                    for (auto e : subtree)
+                        if (const auto* idc =
+                                doc.ecs.registry.try_get<EntityIdComponent>(e))
+                            destroyedUuids.push_back(idc->id);
                 }
             }
 
@@ -775,6 +840,48 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
     // after UpdateWorldTransforms.
 
     return true;
+}
+
+// ============================================================================
+// T6 frame event snapshot (staging + publish)
+// ============================================================================
+
+void RuntimeSceneController::BeginPhysicsFrame()
+{
+    m_FrameEventAccum.clear();
+    m_PhysicsTickIndex = 0;
+}
+
+void RuntimeSceneController::PublishPhysicsSnapshot(
+    const std::vector<UUID>& destroyedUuids)
+{
+    // Destroy filter: tick events referencing a UUID torn down by this
+    // frame's drain never reach OnUpdate (the bodies are gone; delivering
+    // their last-tick contacts would observe a destroyed entity).
+    std::unordered_set<UUID> dead;
+    dead.reserve(destroyedUuids.size() * 2 + 1);
+    for (const auto& uuid : destroyedUuids)
+        dead.insert(uuid);
+    std::vector<PhysicsEvent> snapshot;
+    snapshot.reserve(m_FrameEventAccum.size());
+    for (const auto& e : m_FrameEventAccum)
+    {
+        if (dead.count(e.bodyA) != 0 || dead.count(e.bodyB) != 0)
+            continue;
+        snapshot.push_back(e);
+    }
+    // Exact-dup collapse keeping first occurrence: order-preserving safety
+    // net over the per-tick per-pair coalescing (PhysicsEvents.h rule 6).
+    std::set<PhysicsEvent> seen;
+    std::vector<PhysicsEvent> published;
+    published.reserve(snapshot.size());
+    for (const auto& e : snapshot)
+    {
+        if (seen.insert(e).second)
+            published.push_back(e);
+    }
+    m_PhysicsSnapshot = std::move(published);
+    m_FrameEventAccum.clear();
 }
 
 // ============================================================================
@@ -861,6 +968,12 @@ void RuntimeSceneController::RunFixedTick(float dt)
         m_PhysicsWorld->PreStepSync(*m_Runtime);
         m_PhysicsWorld->Step(dt);
         m_PhysicsWorld->PostStepSync(*m_Runtime);
+        // T6: scrape this tick's contact manifolds and ghost overlaps into
+        // the frame accumulator. The tick index stamps the frame-local
+        // sequence (0..4); PublishPhysicsSnapshot (after the safe-point
+        // drain) filters destroys and publishes before OnUpdate.
+        m_PhysicsWorld->AppendTickEvents(m_FrameEventAccum,
+                                         m_PhysicsTickIndex++);
     }
 }
 

@@ -6,6 +6,7 @@
 #include "core/Error.h"
 #include "core/UUID.h"
 #include "PhysicsComponents.h"
+#include "PhysicsEvents.h"
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionDispatch/btGhostObject.h>
@@ -19,6 +20,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -171,6 +173,31 @@ public:
     // the only substepper: callers pass kFixedDt once per RT2 fixed tick and
     // this performs stepSimulation(dt, 0) — never an inner substep loop.
     void Step(float dt);
+
+    // ---- T6 deterministic physics events ---------------------------------
+    //
+    // Scrape-after-step (called by the controller once per fixed tick, after
+    // PostStepSync): contact manifolds coalesce per unordered UUID pair
+    // (rule 2 in PhysicsEvents.h) and ghost overlaps diff against the
+    // previous tick's overlap set into TriggerEnter/Stay/Exit (rule 3), all
+    // appended in canonical in-tick order (contacts, then enters, stays,
+    // exits; UUID order within each group). tickIndex labels the frame-local
+    // fixed-tick sequence (0..4) the caller passes in. The controller
+    // accumulates up to kMaxSubsteps ticks per frame and publishes the
+    // immutable snapshot (destroy filter + exact-dup collapse) before
+    // OnUpdate; this method never publishes, filters destroys, or clears
+    // history — it only appends one tick's canonical events.
+    void AppendTickEvents(std::vector<PhysicsEvent>& out, uint32_t tickIndex);
+
+    // Clear the ghost-overlap history without emitting anything (Stop/reset
+    // seam, rule 3). The next observed overlap reports TriggerEnter, never a
+    // stale Exit. Also invoked implicitly by body removal (purged pairs) and
+    // world destruction.
+    void ClearEventHistory();
+
+    // Test seam: live overlap pairs carried from the previous tick. Zero when
+    // nothing overlaps; Stop/reset returns it to zero.
+    size_t PrevOverlapCount() const { return m_PrevOverlaps.size(); }
 
     // T4 fixed-tick authority sync (called by the controller around Step;
     // see RuntimeSceneController::RunFixedTick):
@@ -489,6 +516,12 @@ private:
     // handle. Constraint build (T5) and event scrape (T6) read this; the
     // ECS components never hold Bullet pointers.
     std::vector<PhysicsBodyRecord> m_BodyIndex;
+    // T6 ghost-overlap history: canonical UUID pairs overlapping on the
+    // previous tick. Diffed per tick into TriggerEnter/Stay/Exit; cleared on
+    // Stop/reset (ClearEventHistory), purged on body removal, dropped with
+    // the world on destruction. Never fabricated: an empty history yields
+    // Enter on first overlap, never Exit.
+    std::set<std::pair<UUID, UUID>> m_PrevOverlaps;
 
     uint64_t m_StepCount = 0;
 };
