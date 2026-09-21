@@ -178,13 +178,15 @@ public:
     //
     // Scrape-after-step (called by the controller once per fixed tick, after
     // PostStepSync): contact manifolds coalesce per unordered UUID pair
-    // (rule 2 in PhysicsEvents.h) and ghost overlaps diff against the
-    // previous tick's overlap set into TriggerEnter/Stay/Exit (rule 3), all
-    // appended in canonical in-tick order (contacts, then enters, stays,
-    // exits; UUID order within each group). tickIndex labels the frame-local
-    // fixed-tick sequence (0..4) the caller passes in. The controller
-    // accumulates up to kMaxSubsteps ticks per frame and publishes the
-    // immutable snapshot (destroy filter + exact-dup collapse) before
+    // (rule 2 in PhysicsEvents.h — touch qualifies by solver impulse or by
+    // penetration, so zero-impulse manifolds are preserved) and ghost
+    // broadphase pairs narrowphase-confirm before joining the overlap set,
+    // which diffs into TriggerEnter/Stay/Exit (rule 3), all appended in
+    // canonical in-tick group order (contacts, then all enters, then all
+    // stays, then all exits; UUID order within each group). tickIndex labels
+    // the frame-local fixed-tick sequence (0..4) the caller passes in. The
+    // controller accumulates up to kMaxSubsteps ticks per frame and publishes
+    // the immutable snapshot (destroy filter + exact-dup collapse) before
     // OnUpdate; this method never publishes, filters destroys, or clears
     // history — it only appends one tick's canonical events.
     void AppendTickEvents(std::vector<PhysicsEvent>& out, uint32_t tickIndex);

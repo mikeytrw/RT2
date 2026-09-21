@@ -27,15 +27,22 @@
 //      the stored normal always points from bodyB toward bodyA.
 //   2. Per-tick contact coalescing: one tick's manifold points for the same
 //      unordered pair collapse into ONE Contact event (impulse = sum of the
-//      tick's positive applied impulses, position = mean, normal =
-//      normalized mean). A resting box pair therefore yields exactly one
-//      Contact per tick no matter how many manifold points Bullet reports —
-//      repeated manifold points can never create nondeterministic duplicates.
-//   3. Trigger set-diff: ghost overlaps are diffed per tick against the
-//      previous tick's overlap set — new pairs emit TriggerEnter, continuing
-//      pairs TriggerStay, vanished pairs TriggerExit. Overlap history is
-//      owned by PhysicsWorld and cleared on Stop/reset and purged on body
-//      removal, so no stale Enter/Exit is ever fabricated.
+//      tick's applied impulses, position = mean, normal = normalized mean).
+//      Contact is narrowphase-confirmed touch, not impact: points the solver
+//      acted on qualify by impulse, and touching/penetrating points qualify
+//      even when the solver left the impulse at zero (re-review P1(3)) — so
+//      the stored impulse is >= 0, never a filtered positive. A resting box
+//      pair therefore yields exactly one Contact per tick no matter how many
+//      manifold points Bullet reports — repeated manifold points can never
+//      create nondeterministic duplicates.
+//   3. Trigger set-diff: ghost broadphase pairs are only candidates; each is
+//      narrowphase-confirmed (re-review P1(2)) before joining the overlap
+//      set, which is then diffed per tick against the previous tick's set —
+//      new pairs emit TriggerEnter, continuing pairs TriggerStay, vanished
+//      pairs TriggerExit. Emission is grouped by kind: all enters (pair
+//      order), then all stays, then all exits (re-review P2(4)). Overlap
+//      history is owned by PhysicsWorld and cleared on Stop/reset and purged
+//      on body removal, so no stale Enter/Exit is ever fabricated.
 //   4. Frame accumulation: the snapshot concatenates each tick's events in
 //      tick order (tickIndex 0..4, the kMaxSubsteps cap). Zero ticks publish
 //      a fresh empty snapshot — never stale prior-frame data. Five ticks
@@ -52,7 +59,8 @@
 //
 // Field semantics: Contact carries the coalesced world position, the
 // canonical normal (bodyB -> bodyA, Bullet's manifold convention preserved
-// through the canonical swap), and the summed applied impulse (> 0).
+// through the canonical swap), and the summed applied impulse (>= 0; zero
+// when the solver left a real touching manifold untouched).
 // Trigger events carry the pair midpoint as position, the canonical
 // bodyA -> bodyB direction as normal (or +Y when coincident), and impulse 0.
 // ============================================================================

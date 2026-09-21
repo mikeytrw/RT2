@@ -848,7 +848,15 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
 
 void RuntimeSceneController::BeginPhysicsFrame()
 {
+    // T6 re-review P1(1): the published snapshot clears here, not only at
+    // PublishPhysicsSnapshot. Otherwise frame N's events stay readable
+    // through PhysicsEvents() during frame N+1's OnFixedUpdate and
+    // OnEntitiesDestroying — before the drain filter runs — contradicting
+    // the contract that events are visible exactly inside OnUpdate and that
+    // on_destroy receives no physics events. The per-tick staging still
+    // accumulates below; only the published (previous-frame) view resets.
     m_FrameEventAccum.clear();
+    m_PhysicsSnapshot.clear();
     m_PhysicsTickIndex = 0;
 }
 

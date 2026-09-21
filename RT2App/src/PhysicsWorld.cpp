@@ -457,6 +457,61 @@ glm::vec3 T6ToGlm(const btVector3& v)
     return glm::vec3(v.x(), v.y(), v.z());
 }
 
+// T6 re-review P1(2): narrowphase confirmation for one ghost-cache
+// candidate pair. Reports touching (distance <= 0) narrowphase points only.
+struct T6OverlapConfirmCallback : public btCollisionWorld::ContactResultCallback
+{
+    bool confirmed = false;
+
+    btScalar addSingleResult(
+        btManifoldPoint& cp, const btCollisionObjectWrapper* colObj0Wrap,
+        int partId0, int index0,
+        const btCollisionObjectWrapper* colObj1Wrap, int partId1,
+        int index1) override
+    {
+        (void)colObj0Wrap;
+        (void)partId0;
+        (void)index0;
+        (void)colObj1Wrap;
+        (void)partId1;
+        (void)index1;
+        if (cp.getDistance() <= btScalar(0))
+            confirmed = true;
+        return btScalar(0);
+    }
+};
+
+// The ghost pair cache is broadphase-AABB-based, so a cached pair is only a
+// candidate: a rotated thin trigger reports pairs whose shapes never touch.
+// contactPairTest runs the narrowphase directly (bypassing the
+// no-contact-response flags, exactly like the collision query path), and the
+// pair joins the overlap set only when at least one touching point exists.
+bool T6NarrowphaseOverlapConfirmed(btDiscreteDynamicsWorld& world,
+                                   btCollisionObject* a, btCollisionObject* b)
+{
+    if (a == nullptr || b == nullptr || a == b)
+        return false;
+    T6OverlapConfirmCallback cb;
+    cb.m_closestDistanceThreshold = btScalar(0);
+    world.contactPairTest(a, b, cb);
+    return cb.confirmed;
+}
+
+void T6LiveObjectFor(std::vector<PhysicsBodyRecord>& index, const UUID& id,
+                     btCollisionObject*& out)
+{
+    out = nullptr;
+    for (auto& rec : index)
+    {
+        if (!(rec.id == id))
+            continue;
+        out = (rec.body != nullptr)
+                  ? static_cast<btCollisionObject*>(rec.body)
+                  : static_cast<btCollisionObject*>(rec.ghost);
+        return;
+    }
+}
+
 } // namespace
 
 void PhysicsWorld::ClearEventHistory()
@@ -506,7 +561,15 @@ void PhysicsWorld::AppendTickEvents(std::vector<PhysicsEvent>& out,
         {
             const btManifoldPoint& pt = manifold->getContactPoint(j);
             const float impulse = pt.getAppliedImpulse();
-            if (!(impulse > 0.0f))
+            const float distance = pt.getDistance();
+            // T6 re-review P1(3): Contact is narrowphase-confirmed touch,
+            // not impact. Points the solver acted on qualify by impulse;
+            // touching/penetrating points qualify by distance even when the
+            // solver left the applied impulse at zero (e.g. a
+            // static-vs-kinematic manifold the solver does not act on).
+            // Speculative separating points the solver ignored carry no
+            // event. The stored impulse keeps its real value, including 0.
+            if (!(impulse > 0.0f) && !(distance <= 0.0f))
                 continue;
             UUID a;
             UUID b;
@@ -559,10 +622,12 @@ void PhysicsWorld::AppendTickEvents(std::vector<PhysicsEvent>& out,
         i = j;
     }
 
-    // ---- Ghosts: overlap set-diff against the previous tick --------------
+    // ---- Ghosts: narrowphase-confirmed overlap set-diff ------------------
     // Ghost records are visited in UUID order; the overlap sets below are
     // std::set (UUID order), so Enter/Stay/Exit emission is canonical with
-    // no dependence on broadphase pair order.
+    // no dependence on broadphase pair order. Emission is grouped by kind
+    // (re-review P2(4)): all enters in pair order, then all stays, then all
+    // exits — never interleaved by pair.
     std::vector<const PhysicsBodyRecord*> ghosts;
     for (const auto& rec : m_BodyIndex)
     {
@@ -573,7 +638,7 @@ void PhysicsWorld::AppendTickEvents(std::vector<PhysicsEvent>& out,
               [](const PhysicsBodyRecord* x, const PhysicsBodyRecord* y) {
                   return x->id < y->id;
               });
-    std::set<std::pair<UUID, UUID>> current;
+    std::set<std::pair<UUID, UUID>> candidates;
     for (const PhysicsBodyRecord* rec : ghosts)
     {
         btHashedOverlappingPairCache* cache =
@@ -601,8 +666,21 @@ void PhysicsWorld::AppendTickEvents(std::vector<PhysicsEvent>& out,
                 continue;
             const UUID lo = (*otherId < rec->id) ? *otherId : rec->id;
             const UUID hi = (*otherId < rec->id) ? rec->id : *otherId;
-            current.emplace(lo, hi);
+            candidates.emplace(lo, hi);
         }
+    }
+    // T6 re-review P1(2): confirm every broadphase candidate with the
+    // narrowphase before it joins the overlap set, so AABB-only pairs
+    // (rotated thin triggers, near misses) never emit Enter/Stay.
+    std::set<std::pair<UUID, UUID>> current;
+    for (const auto& p : candidates)
+    {
+        btCollisionObject* a = nullptr;
+        btCollisionObject* b = nullptr;
+        T6LiveObjectFor(m_BodyIndex, p.first, a);
+        T6LiveObjectFor(m_BodyIndex, p.second, b);
+        if (T6NarrowphaseOverlapConfirmed(m_World, a, b))
+            current.insert(p);
     }
     // Trigger payload: pair midpoint as position, canonical bodyA -> bodyB
     // direction as normal (+Y when coincident or unresolvable), impulse 0.
@@ -628,10 +706,13 @@ void PhysicsWorld::AppendTickEvents(std::vector<PhysicsEvent>& out,
     };
     for (const auto& p : current)
     {
-        emitTrigger(m_PrevOverlaps.count(p) != 0
-                        ? PhysicsEventKind::TriggerStay
-                        : PhysicsEventKind::TriggerEnter,
-                    p.first, p.second);
+        if (m_PrevOverlaps.count(p) == 0)
+            emitTrigger(PhysicsEventKind::TriggerEnter, p.first, p.second);
+    }
+    for (const auto& p : current)
+    {
+        if (m_PrevOverlaps.count(p) != 0)
+            emitTrigger(PhysicsEventKind::TriggerStay, p.first, p.second);
     }
     for (const auto& p : m_PrevOverlaps)
     {

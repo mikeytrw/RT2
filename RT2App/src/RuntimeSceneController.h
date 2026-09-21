@@ -303,10 +303,13 @@ public:
     // after every fixed tick, accumulated across the frame's 0-5 ticks,
     // filtered for drain-destroyed UUIDs, and published before OnUpdate.
     // Non-consuming: every script consumer in the frame reads these same
-    // contents regardless of UUID-sorted callback order. Empty when no
-    // physics world is committed, when zero ticks ran (fresh empty, never
-    // stale), and after Stop. No new engine lifecycle callbacks are added:
-    // scripts poll this inside the existing OnUpdate.
+    // contents regardless of UUID-sorted callback order. Visible exactly
+    // inside OnUpdate: BeginPhysicsFrame clears the previously published
+    // snapshot, so OnFixedUpdate and OnEntitiesDestroying always observe an
+    // empty snapshot (re-review P1(1)) and on_destroy receives no physics
+    // events. Empty when no physics world is committed, when zero ticks ran
+    // (fresh empty, never stale), and after Stop. No new engine lifecycle
+    // callbacks are added: scripts poll this inside the existing OnUpdate.
     const std::vector<PhysicsEvent>& PhysicsEvents() const
     {
         return m_PhysicsSnapshot;
@@ -399,9 +402,12 @@ private:
     std::vector<PhysicsEvent> m_PhysicsSnapshot;
     // T6 frame-local fixed-tick sequence stamped on scraped events (0..4).
     uint32_t m_PhysicsTickIndex = 0;
-    // T6: clear the per-tick staging and restart the tick sequence. Called
-    // at the top of every Update/Step frame so zero-tick frames publish a
-    // fresh empty snapshot instead of stale prior-frame data.
+    // T6: clear the per-tick staging AND the previously published snapshot,
+    // then restart the tick sequence. Called at the top of every Update/Step
+    // frame so zero-tick frames publish a fresh empty snapshot instead of
+    // stale prior-frame data, and so pre-publication callbacks
+    // (OnFixedUpdate, OnEntitiesDestroying) never observe the previous
+    // frame's events (re-review P1(1)).
     void BeginPhysicsFrame();
     // T6: filter m_FrameEventAccum for destroyedUuids, collapse exact
     // duplicates keeping first occurrence, publish into m_PhysicsSnapshot,
