@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -304,6 +305,203 @@ bool PhysicsWorld::SetBodyLinearVelocity(const UUID& id,
     rec->body->setLinearVelocity(
         btVector3(velocity.x, velocity.y, velocity.z));
     rec->body->activate();
+    return true;
+}
+
+// ============================================================================
+// T7 bounded Lua physics controls
+// ============================================================================
+
+bool PhysicsWorld::GetBodyLinearVelocity(const UUID& id,
+                                         glm::vec3& out) const
+{
+    const PhysicsBodyRecord* rec = FindBody(id);
+    if (rec == nullptr || rec->body == nullptr)
+        return false;
+    const btVector3& v = rec->body->getLinearVelocity();
+    out = glm::vec3(v.x(), v.y(), v.z());
+    return true;
+}
+
+bool PhysicsWorld::GetBodyAngularVelocity(const UUID& id,
+                                          glm::vec3& out) const
+{
+    const PhysicsBodyRecord* rec = FindBody(id);
+    if (rec == nullptr || rec->body == nullptr)
+        return false;
+    const btVector3& w = rec->body->getAngularVelocity();
+    out = glm::vec3(w.x(), w.y(), w.z());
+    return true;
+}
+
+bool PhysicsWorld::ApplyBodyImpulse(const UUID& id, const glm::vec3& impulse)
+{
+    if (!std::isfinite(impulse.x) || !std::isfinite(impulse.y) ||
+        !std::isfinite(impulse.z))
+        return false;
+    PhysicsBodyRecord* rec = FindBodyMut(m_BodyIndex, id);
+    // Dynamic only: Static bodies never move and Kinematic bodies have
+    // effectively infinite mass, so an impulse on either refuses loudly
+    // instead of vanishing into the solver.
+    if (rec == nullptr || rec->body == nullptr ||
+        rec->kind != PhysicsBodyKind::Dynamic)
+        return false;
+    rec->body->activate();
+    rec->body->applyCentralImpulse(
+        btVector3(impulse.x, impulse.y, impulse.z));
+    return true;
+}
+
+bool PhysicsWorld::ResetBodyPose(SceneDocument& runtime, const UUID& id,
+                                 const glm::vec3& position,
+                                 const glm::quat& rotation,
+                                 bool hasLinearVelocity,
+                                 const glm::vec3& linearVelocity,
+                                 bool hasAngularVelocity,
+                                 const glm::vec3& angularVelocity)
+{
+    // ---- Phase 1: validate EVERYTHING before mutating anything ------------
+    // A failed reset changes no Bullet state, no ECS state, and no overlap
+    // history (the ticket's "no partial state change" failure check).
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+        !std::isfinite(position.z) ||
+        std::fabs(position.x) > (float)FLT_MAX ||
+        std::fabs(position.y) > (float)FLT_MAX ||
+        std::fabs(position.z) > (float)FLT_MAX)
+        return false;
+    if (!std::isfinite(rotation.x) || !std::isfinite(rotation.y) ||
+        !std::isfinite(rotation.z) || !std::isfinite(rotation.w))
+        return false;
+    // Overflow-safe norm in double precision (same discipline as the sink's
+    // transform gate): finite near-FLT_MAX components must not overflow the
+    // norm, and the normalized output is re-validated.
+    const double dx = (double)rotation.x;
+    const double dy = (double)rotation.y;
+    const double dz = (double)rotation.z;
+    const double dw = (double)rotation.w;
+    const double norm =
+        std::sqrt(dx * dx + dy * dy + dz * dz + dw * dw);
+    if (!std::isfinite(norm) || !(norm > 1e-6) || norm > (double)FLT_MAX)
+        return false;
+    // glm::quat stores (w, x, y, z).
+    const glm::quat unitRotation{(float)(dw / norm), (float)(dx / norm),
+                                 (float)(dy / norm), (float)(dz / norm)};
+    if (!std::isfinite(unitRotation.x) || !std::isfinite(unitRotation.y) ||
+        !std::isfinite(unitRotation.z) || !std::isfinite(unitRotation.w))
+        return false;
+    if (hasLinearVelocity &&
+        (!std::isfinite(linearVelocity.x) ||
+         !std::isfinite(linearVelocity.y) ||
+         !std::isfinite(linearVelocity.z)))
+        return false;
+    if (hasAngularVelocity &&
+        (!std::isfinite(angularVelocity.x) ||
+         !std::isfinite(angularVelocity.y) ||
+         !std::isfinite(angularVelocity.z)))
+        return false;
+
+    auto& reg = runtime.ecs.registry;
+    const auto entity = runtime.FindByUuid(id);
+    if (entity == entt::null || !reg.valid(entity))
+        return false;
+    auto* tf = reg.try_get<Transform>(entity);
+    if (tf == nullptr)
+        return false;
+    const auto* bodyComp = reg.try_get<PhysicsBodyComponent>(entity);
+    if (bodyComp == nullptr ||
+        bodyComp->kind == PhysicsBodyKind::Static)
+        return false;
+    PhysicsBodyRecord* rec = FindBodyMut(m_BodyIndex, id);
+    if (rec == nullptr || (rec->body == nullptr && rec->ghost == nullptr))
+        return false;
+
+    const glm::vec3 newLinear =
+        hasLinearVelocity ? linearVelocity : glm::vec3{0.0f, 0.0f, 0.0f};
+    const glm::vec3 newAngular =
+        hasAngularVelocity ? angularVelocity : glm::vec3{0.0f, 0.0f, 0.0f};
+    const btTransform newPose(
+        btQuaternion(unitRotation.x, unitRotation.y, unitRotation.z,
+                     unitRotation.w),
+        btVector3(position.x, position.y, position.z));
+
+    // ---- Phase 2: atomic apply -------------------------------------------
+    if (rec->body != nullptr)
+    {
+        btRigidBody* body = rec->body;
+        if (rec->motion != nullptr)
+            rec->motion->setWorldTransform(newPose);
+        body->setWorldTransform(newPose);
+        // Interpolation must restart at the new pose: otherwise the next
+        // step interpolates from the stale pre-reset transform and the body
+        // visibly sweeps through the teleport for one frame.
+        body->setInterpolationWorldTransform(newPose);
+        body->setInterpolationLinearVelocity(
+            btVector3(newLinear.x, newLinear.y, newLinear.z));
+        body->setInterpolationAngularVelocity(
+            btVector3(newAngular.x, newAngular.y, newAngular.z));
+        body->clearForces();
+        body->setLinearVelocity(
+            btVector3(newLinear.x, newLinear.y, newLinear.z));
+        body->setAngularVelocity(
+            btVector3(newAngular.x, newAngular.y, newAngular.z));
+        body->activate();
+        // Broadphase/contact refresh: drop the proxy's stale pairs (they
+        // describe the pre-reset AABB) and clear every manifold touching
+        // this body, so the next scrape cannot report a Contact for a
+        // collision that no longer exists. Pairs re-form on the next step
+        // iff the body still overlaps.
+        btBroadphaseProxy* proxy = body->getBroadphaseHandle();
+        if (proxy != nullptr)
+        {
+            m_World.getBroadphase()->getOverlappingPairCache()
+                ->cleanProxyFromPairs(proxy, &m_Dispatcher);
+        }
+        for (int i = m_Dispatcher.getNumManifolds() - 1; i >= 0; --i)
+        {
+            btPersistentManifold* manifold =
+                m_Dispatcher.getManifoldByIndexInternal(i);
+            if (manifold != nullptr &&
+                (manifold->getBody0() == body ||
+                 manifold->getBody1() == body))
+                m_Dispatcher.clearManifold(manifold);
+        }
+        m_World.updateSingleAabb(body);
+    }
+    else
+    {
+        // Ghost-only entity (trigger): same pose + refresh treatment on the
+        // ghost object. Ghosts carry no velocity/forces; the ECS pose and
+        // overlap purge below still apply.
+        rec->ghost->setWorldTransform(newPose);
+        btBroadphaseProxy* proxy = rec->ghost->getBroadphaseHandle();
+        if (proxy != nullptr)
+        {
+            m_World.getBroadphase()->getOverlappingPairCache()
+                ->cleanProxyFromPairs(proxy, &m_Dispatcher);
+        }
+        m_World.updateSingleAabb(rec->ghost);
+    }
+    // Overlap-history purge: pairs mentioning this UUID describe the
+    // pre-reset location. Without this the next tick would fabricate a
+    // TriggerExit for an overlap that ended by teleport, not by motion.
+    for (auto it = m_PrevOverlaps.begin(); it != m_PrevOverlaps.end();)
+    {
+        if (it->first == id || it->second == id)
+            it = m_PrevOverlaps.erase(it);
+        else
+            ++it;
+    }
+
+    // ECS authority write-back (roots-only: local == world): the same pose,
+    // marked dirty, with world matrices refreshed and prevWorldMatrix
+    // re-snapped so the reset produces no one-frame motion-vector spike.
+    // Kinematic scale is untouched (collision scale stays baked at Play).
+    tf->translation = position;
+    tf->rotation = unitRotation;
+    SceneGraph::SetLocalDirty(reg, entity);
+    SceneGraph::UpdateWorldTransforms(reg);
+    if (auto* refreshed = reg.try_get<Transform>(entity))
+        refreshed->prevWorldMatrix = refreshed->worldMatrix;
     return true;
 }
 

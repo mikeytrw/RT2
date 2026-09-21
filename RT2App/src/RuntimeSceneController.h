@@ -108,6 +108,54 @@ using RuntimeStructuralOperation =
     std::variant<CreateRuntimeEntityOperation,
                  DestroyRuntimeSubtreeOperation>;
 
+// ---- T7 queued physics commands -------------------------------------------
+//
+// Bounded Lua physics mutations (velocity, impulse, hinge/slider drive,
+// body-pose reset) never touch Bullet inline from a script callback. They
+// enqueue here — validated at queue time (finite args, live body of a
+// suitable kind, session mutable, target outside the frozen destroy set) —
+// and the drain applies them in FIFO order at the next pre-step boundary
+// inside RunFixedTick (after OnFixedUpdate + Motion, before PreStepSync),
+// so:
+//
+//   - setters called from OnFixedUpdate affect the immediately following
+//     step of the same tick;
+//   - setters called from OnUpdate affect the next frame's first tick;
+//   - no Bullet state mutates while script iteration (or the structural
+//     drain) is running;
+//   - reload, quarantine, and Stop clear the queue, so no stale command
+//     outlives the script environment that issued it.
+//
+// Apply-time failures (the body died since queue time — possible only via
+// the structural drain, which runs after the fixed ticks) skip silently:
+// the queue-time validation already proved the command well-formed, so a
+// missing handle at apply time is a raced teardown, not a script bug.
+enum class QueuedPhysicsCommandKind : uint8_t
+{
+    SetLinearVelocity = 0,
+    ApplyImpulse      = 1,
+    SetHingeDrive     = 2,
+    ReleaseHingeDrive = 3,
+    SetSliderTarget   = 4,
+    ReleaseSlider     = 5,
+    ResetBodyPose     = 6,
+};
+
+struct QueuedPhysicsCommand
+{
+    QueuedPhysicsCommandKind kind = QueuedPhysicsCommandKind::SetLinearVelocity;
+    UUID target; // Authoring UUID of the body (or constraint owner)
+    glm::vec3 vector = {0.0f, 0.0f, 0.0f}; // velocity / impulse
+    glm::vec3 position = {0.0f, 0.0f, 0.0f}; // reset pose translation
+    glm::quat rotation = glm::quat{1.0f, 0.0f, 0.0f, 0.0f}; // reset rotation
+    glm::vec3 resetLinear = {0.0f, 0.0f, 0.0f}; // reset linear velocity
+    glm::vec3 resetAngular = {0.0f, 0.0f, 0.0f}; // reset angular velocity
+    bool hasResetLinear = false;
+    bool hasResetAngular = false;
+    float paramA = 0.0f; // hinge velocity / slider target / slider impulse
+    float paramB = 0.0f; // hinge max impulse
+};
+
 class RuntimeSceneController
 {
 public:
@@ -242,6 +290,40 @@ public:
     std::vector<RuntimeStructuralOperation> PendingOperations() const
     {
         return m_PendingOperations;
+    }
+
+    // ---- T7 queued physics commands (validated enqueue, pre-step drain) ---
+    //
+    // Every method validates before enqueueing and returns false (mutating
+    // nothing, enqueueing nothing) when the session is not mutable, the
+    // target lies in the frozen destroy set (T6 refusal, loud warn), no
+    // physics world is committed, the arguments are non-finite/out-of-range,
+    // or the target is not a live body (or constraint owner) of a suitable
+    // kind. Loud printf + false follows docs/scripting.md:97-111; the
+    // IsRuntimeMutable gate stays silent like the existing sink setters.
+    bool QueueSetLinearVelocity(const UUID& target, const glm::vec3& velocity);
+    bool QueueApplyImpulse(const UUID& target, const glm::vec3& impulse);
+    bool QueueSetHingeDrive(const UUID& owner, float velocity,
+                            float maxImpulse);
+    bool QueueReleaseHingeDrive(const UUID& owner);
+    bool QueueSetSliderTarget(const UUID& owner, float target);
+    bool QueueReleaseSlider(const UUID& owner, float impulse);
+    bool QueueResetBodyPose(const UUID& target, const glm::vec3& position,
+                            const glm::quat& rotation, bool hasLinearVelocity,
+                            const glm::vec3& linearVelocity,
+                            bool hasAngularVelocity,
+                            const glm::vec3& angularVelocity);
+
+    // Drop all queued-but-unapplied physics commands (reload, quarantine,
+    // and Stop call this: no stale command outlives its issuing
+    // environment). Silent: the caller already diagnosed the reason.
+    void ClearQueuedPhysicsCommands() { m_PhysicsCommands.clear(); }
+    // Test seam: commands waiting for the next pre-step boundary. Zero in
+    // Edit, after Stop, after a drain with no new script writes, and after
+    // any reload/quarantine clear.
+    size_t QueuedPhysicsCommandCount() const
+    {
+        return m_PhysicsCommands.size();
     }
 
     // ---- T3 physics world lifecycle -------------------------------------
@@ -400,6 +482,9 @@ private:
     std::vector<PhysicsEvent> m_FrameEventAccum;
     // T6 published snapshot (see the PhysicsEvents() accessor contract).
     std::vector<PhysicsEvent> m_PhysicsSnapshot;
+    // T7 queued physics commands (validated at queue time, drained at the
+    // next pre-step boundary; cleared on reload, quarantine, and Stop).
+    std::vector<QueuedPhysicsCommand> m_PhysicsCommands;
     // T6 frame-local fixed-tick sequence stamped on scraped events (0..4).
     uint32_t m_PhysicsTickIndex = 0;
     // T6: clear the per-tick staging AND the previously published snapshot,
@@ -414,6 +499,18 @@ private:
     // and clear the staging. Called after the safe-point drain and before
     // SyncScriptEnvironments/OnUpdate on every Update/Step frame.
     void PublishPhysicsSnapshot(const std::vector<UUID>& destroyedUuids);
+    // T7: apply every queued physics command in FIFO order at the pre-step
+    // boundary (called from RunFixedTick after OnFixedUpdate + Motion,
+    // before PreStepSync). Re-checks world/destroy-set/liveness per command
+    // and skips raced teardowns silently; clears the queue even when the
+    // world is gone.
+    void DrainPhysicsCommands();
+    // T7 queue-time guards shared by every Queue*Physics* entry point (see
+    // the .cpp for the refusal contract). Null return from QueuePhysicsBody
+    // means the caller already refused loudly.
+    bool QueuePhysicsGuard(const UUID& target, const char* opName);
+    const PhysicsBodyComponent* QueuePhysicsBody(const UUID& target,
+                                                const char* opName);
     RuntimeSceneMutator m_Mutator;
     bool m_Stopping = false;
 };

@@ -320,6 +320,19 @@ public:
     bool GetCamera(const UUID& uuid, CameraComponent& out) const override;
     bool SetCamera(const UUID& uuid, const CameraComponent& cam) override;
     bool SetMaterialIndex(const UUID& uuid, int index) override;
+    bool GetLinearVelocity(const UUID& uuid, glm::vec3& out) const override;
+    bool GetAngularVelocity(const UUID& uuid, glm::vec3& out) const override;
+    bool SetLinearVelocity(const UUID& uuid, const glm::vec3& velocity) override;
+    bool ApplyImpulse(const UUID& uuid, const glm::vec3& impulse) override;
+    bool SetHingeDrive(const UUID& owner, float velocity,
+                       float maxImpulse) override;
+    bool ReleaseHingeDrive(const UUID& owner) override;
+    bool SetSliderTarget(const UUID& owner, float target) override;
+    bool ReleaseSlider(const UUID& owner, float impulse) override;
+    bool ResetBodyPose(const UUID& uuid, const PhysicsPoseReset& reset) override;
+    std::vector<PhysicsEvent> GetPhysicsEvents() const override;
+    void ClearQueuedPhysicsCommands() override;
+    size_t QueuedPhysicsCommandCount() const override;
     bool IsAlive(const UUID& uuid) const override;
     UUID FindByName(const std::string& name) const override;
     SceneRunState GetRunState() const override;

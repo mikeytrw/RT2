@@ -1,13 +1,13 @@
 #!/usr/bin/env pwsh
-# run_bullet_presence_gate.ps1 - assert the named T1/T2/T3/T4 Bullet cases exist
+# run_bullet_presence_gate.ps1 - assert the named T1/T2/T3/T4/T5/T6/T7 Bullet cases exist
 # in the built RT2Tests executables.
 #
 # Usage: pwsh run_bullet_presence_gate.ps1 [-Configuration Release|Debug|Both]
 #
-# A zero exit from RT2Tests proves nothing about T1/T2/T3/T4 when the tracked
+# A zero exit from RT2Tests proves nothing about T1-T7 when the tracked
 # Visual Studio projects silently omit their translation units (a 1218-case
 # false green passed while exercising none of the new tests). This gate
-# enumerates --list-test-cases and requires every named T1/T2/T3/T4 case, so a
+# enumerates --list-test-cases and requires every named T1-T7 case, so a
 # build that drops them fails loudly instead of passing silently.
 #
 # Exits 0 when every named case is present in every checked binary, 1
@@ -155,6 +155,27 @@ $requiredCases = @(
     "T6 GREEN_ZeroImpulseContactPreserved: a real touching manifold reports even with zero solver impulse",
     "T6 GREEN_MixedTriggerGroupOrder: one tick emits contacts, enters, stays, exits in canonical order",
     "T6 GREEN_ContactAggregationExactMeanAndSum: coalesced Contact carries the exact mean position and summed impulse"
+    # T7: bounded Lua physics controls.
+    "T7 GREEN_QueuedCommandsDrainAtPreStep: sink writes queue without touching Bullet until the next tick",
+    "T7 GREEN_FixedUpdateVelocitySameTick: Lua set from OnFixedUpdate moves the same tick's step",
+    "T7 GREEN_VelocityWriteReadRoundTrip: Lua set from OnUpdate reads back the next frame",
+    "T7 GREEN_ApplyImpulseChangesVelocity: central impulse obeys J equals m times dv",
+    "T7 GREEN_HingeDriveReleaseAtTickBoundary: Lua drive moves the arm within one tick and release parks the motor",
+    "T7 GREEN_SliderTargetReleaseAtTickBoundary: Lua target walks the plunger and release cuts the motor",
+    "T7 GREEN_PhysicsEventsTwoLuaScriptsIdentical: two OnUpdate polls receive identical ordered events",
+    "T7 GREEN_PhysicsEventsPollValidOnlyInOnUpdate: Lua sees empty pre-publication and data in OnUpdate",
+    "T7 GREEN_ResetBodyPoseReusesBody: trigger event, reset, impulse with no new entity and clean overlap state",
+    "T7 GREEN_ResetKinematicPoseAndMotion: kinematic reset lands exactly and authored motion stays green",
+    "T7 GREEN_ReloadClearsQueuedCommands: a reload drops unapplied physics work",
+    "T7 GREEN_QuarantineClearsQueuedCommands: a failing script cannot keep moving bodies",
+    "T7 GREEN_StopClearsQueuedCommands: re-Play inherits no stale physics work",
+    "T7 GREEN_SpawnCarriesNoPhysicsBody: runtime spawn cannot mint simulated bodies",
+    "T7 RED_DynamicSetPositionRefusedWhileResetGreen: pose authority stays with the solver except through reset",
+    "T7 RED_ResetRefusalsMutationFree: static, missing, destroying, and malformed resets change nothing",
+    "T7 RED_InvalidOpsLoudMutationFree: wrong UUID, kind, and arguments refuse without enqueueing",
+    "T7 RED_DestroyingUuidPhysicsRefused: drain-time physics writes refuse like the T6 transform gate",
+    "T7 RED_NoWidenedLuaSurface: queries, arbitrary constraints, and teleport stay out of Lua",
+    "T7 GREEN_PrefabPhysicsComplete: sources carry physics, members refuse attach, edit, and remove"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
@@ -175,13 +196,13 @@ foreach ($config in $configs) {
         }
     }
     if ($missing.Count -gt 0) {
-        Write-Host "[$config] FAIL: $($missing.Count) named T1/T2/T3/T4 cases absent from $exe" -ForegroundColor Red
+        Write-Host "[$config] FAIL: $($missing.Count) named T1-T7 cases absent from $exe" -ForegroundColor Red
         foreach ($case in $missing) {
             Write-Host "  missing: $case" -ForegroundColor Red
         }
         $failed++
     } else {
-        Write-Host "[$config] PASS: all $($requiredCases.Count) named T1/T2/T3/T4 cases present" -ForegroundColor Green
+        Write-Host "[$config] PASS: all $($requiredCases.Count) named T1-T7 cases present" -ForegroundColor Green
     }
 }
 

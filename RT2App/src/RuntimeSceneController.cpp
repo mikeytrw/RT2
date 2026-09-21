@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <new>
 #include <set>
@@ -29,6 +31,10 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
 
     m_Stopping = false;
     m_PendingOperations.clear();
+    // T7: a fresh Play session starts with no queued physics commands (a
+    // previous session's Stop already cleared them; this is defense in
+    // depth for the same invariant).
+    m_PhysicsCommands.clear();
 
     // T3 candidate-commit step 1: validate the physics early invariants on
     // the authoring document BEFORE anything is staged. Loud typed Error
@@ -298,8 +304,11 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
     assert(PhysicsWorld::LiveWorldCount() == m_PhysicsLiveBaseline &&
            "PhysicsWorld destroyed on Stop must restore the live baseline");
 
-    // 4. Clear any pending operations (they are runtime-only).
+    // 4. Clear any pending operations (they are runtime-only). T7: queued
+    // physics commands are runtime-only too — a re-Play must never inherit
+    // a stale velocity/impulse/reset from the previous session.
     m_PendingOperations.clear();
+    m_PhysicsCommands.clear();
 
     // 5. Destroy the runtime document and all runtime-only state.
     m_Runtime.reset();
@@ -893,6 +902,407 @@ void RuntimeSceneController::PublishPhysicsSnapshot(
 }
 
 // ============================================================================
+// T7 queued physics commands (validated enqueue, pre-step drain)
+// ============================================================================
+
+namespace {
+
+// T7 queue-time finite/range gate shared by every vector argument: Bullet
+// stores velocities/impulses/positions in float, so a non-finite or
+// out-of-float-range double must refuse BEFORE the cast (same discipline as
+// the sink's set_position gate) — math.huge, NaN, and 1e300 never reach the
+// queue, the drain, or Bullet.
+bool T7FiniteVector(const glm::vec3& v)
+{
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
+           std::fabs(v.x) <= (float)FLT_MAX &&
+           std::fabs(v.y) <= (float)FLT_MAX &&
+           std::fabs(v.z) <= (float)FLT_MAX;
+}
+
+} // namespace
+
+// Queue-time guard shared by every T7 enqueue: session mutability (silent
+// false, like the existing sink setters), frozen destroy set (loud false +
+// warn, the T6 refusal), and a committed physics world (loud false + warn).
+// Returns true when the caller may proceed to per-op validation.
+bool RuntimeSceneController::QueuePhysicsGuard(const UUID& target,
+                                              const char* opName)
+{
+    if (!IsRuntimeMutable())
+        return false;
+    if (IsUuidInDestroyDrain(target))
+    {
+        printf("[Physics] %s refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               opName, target.ToString().c_str());
+        return false;
+    }
+    if (!m_Runtime || !m_PhysicsWorld)
+    {
+        printf("[Physics] %s refused for %s (no live physics world)\n",
+               opName, target.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+// Queue-time body resolution: the UUID must resolve in the runtime document
+// to an entity carrying a PhysicsBodyComponent. Returns the component (or
+// null after a loud refusal) so each op can apply its kind rule.
+const PhysicsBodyComponent* RuntimeSceneController::QueuePhysicsBody(
+    const UUID& target, const char* opName)
+{
+    const auto entity = m_Runtime->FindByUuid(target);
+    if (entity == entt::null || !m_Runtime->ecs.registry.valid(entity))
+    {
+        printf("[Physics] %s refused for %s (unknown entity)\n",
+               opName, target.ToString().c_str());
+        return nullptr;
+    }
+    const auto* body = m_Runtime->ecs.registry.try_get<PhysicsBodyComponent>(entity);
+    if (body == nullptr)
+    {
+        printf("[Physics] %s refused for %s (no physics body)\n",
+               opName, target.ToString().c_str());
+        return nullptr;
+    }
+    return body;
+}
+
+bool RuntimeSceneController::QueueSetLinearVelocity(
+    const UUID& target, const glm::vec3& velocity)
+{
+    constexpr const char* kOp = "set_velocity";
+    if (!QueuePhysicsGuard(target, kOp))
+        return false;
+    if (!T7FiniteVector(velocity))
+    {
+        printf("[Physics] %s refused for %s (non-finite velocity)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    const auto* body = QueuePhysicsBody(target, kOp);
+    if (body == nullptr)
+        return false;
+    if (body->kind == PhysicsBodyKind::Static)
+    {
+        printf("[Physics] %s refused for %s "
+               "(Static bodies are simulation-owned)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    if (m_PhysicsWorld->FindBody(target) == nullptr)
+    {
+        printf("[Physics] %s refused for %s (no live Bullet body)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    QueuedPhysicsCommand cmd;
+    cmd.kind = QueuedPhysicsCommandKind::SetLinearVelocity;
+    cmd.target = target;
+    cmd.vector = velocity;
+    m_PhysicsCommands.push_back(cmd);
+    return true;
+}
+
+bool RuntimeSceneController::QueueApplyImpulse(const UUID& target,
+                                              const glm::vec3& impulse)
+{
+    constexpr const char* kOp = "apply_impulse";
+    if (!QueuePhysicsGuard(target, kOp))
+        return false;
+    if (!T7FiniteVector(impulse))
+    {
+        printf("[Physics] %s refused for %s (non-finite impulse)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    const auto* body = QueuePhysicsBody(target, kOp);
+    if (body == nullptr)
+        return false;
+    // Dynamic only (the PhysicsWorld entry point enforces the same rule at
+    // apply time; refusing here too keeps the refusal loud and immediate).
+    if (body->kind != PhysicsBodyKind::Dynamic)
+    {
+        printf("[Physics] %s refused for %s "
+               "(impulse applies to Dynamic bodies only)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    if (m_PhysicsWorld->FindBody(target) == nullptr)
+    {
+        printf("[Physics] %s refused for %s (no live Bullet body)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    QueuedPhysicsCommand cmd;
+    cmd.kind = QueuedPhysicsCommandKind::ApplyImpulse;
+    cmd.target = target;
+    cmd.vector = impulse;
+    m_PhysicsCommands.push_back(cmd);
+    return true;
+}
+
+bool RuntimeSceneController::QueueSetHingeDrive(const UUID& owner,
+                                               float velocity,
+                                               float maxImpulse)
+{
+    constexpr const char* kOp = "set_hinge_drive";
+    if (!QueuePhysicsGuard(owner, kOp))
+        return false;
+    if (!std::isfinite(velocity) || !std::isfinite(maxImpulse) ||
+        maxImpulse < 0.0f)
+    {
+        printf("[Physics] %s refused for %s (bad drive parameters)\n",
+               kOp, owner.ToString().c_str());
+        return false;
+    }
+    const auto* body = QueuePhysicsBody(owner, kOp);
+    if (body == nullptr)
+        return false;
+    const PhysicsConstraintRecord* rec =
+        m_PhysicsWorld->FindConstraint(owner);
+    if (rec == nullptr || !rec->isHinge)
+    {
+        printf("[Physics] %s refused for %s (no hinge constraint)\n",
+               kOp, owner.ToString().c_str());
+        return false;
+    }
+    QueuedPhysicsCommand cmd;
+    cmd.kind = QueuedPhysicsCommandKind::SetHingeDrive;
+    cmd.target = owner;
+    cmd.paramA = velocity;
+    cmd.paramB = maxImpulse;
+    m_PhysicsCommands.push_back(cmd);
+    return true;
+}
+
+bool RuntimeSceneController::QueueReleaseHingeDrive(const UUID& owner)
+{
+    constexpr const char* kOp = "release_hinge";
+    if (!QueuePhysicsGuard(owner, kOp))
+        return false;
+    if (QueuePhysicsBody(owner, kOp) == nullptr)
+        return false;
+    const PhysicsConstraintRecord* rec =
+        m_PhysicsWorld->FindConstraint(owner);
+    if (rec == nullptr || !rec->isHinge)
+    {
+        printf("[Physics] %s refused for %s (no hinge constraint)\n",
+               kOp, owner.ToString().c_str());
+        return false;
+    }
+    QueuedPhysicsCommand cmd;
+    cmd.kind = QueuedPhysicsCommandKind::ReleaseHingeDrive;
+    cmd.target = owner;
+    m_PhysicsCommands.push_back(cmd);
+    return true;
+}
+
+bool RuntimeSceneController::QueueSetSliderTarget(const UUID& owner,
+                                                 float target)
+{
+    constexpr const char* kOp = "set_slider_target";
+    if (!QueuePhysicsGuard(owner, kOp))
+        return false;
+    if (!std::isfinite(target))
+    {
+        printf("[Physics] %s refused for %s (non-finite target)\n",
+               kOp, owner.ToString().c_str());
+        return false;
+    }
+    if (QueuePhysicsBody(owner, kOp) == nullptr)
+        return false;
+    const PhysicsConstraintRecord* rec =
+        m_PhysicsWorld->FindConstraint(owner);
+    if (rec == nullptr || rec->isHinge)
+    {
+        printf("[Physics] %s refused for %s (no slider constraint)\n",
+               kOp, owner.ToString().c_str());
+        return false;
+    }
+    // Outside the limits is a loud refusal, never a clamp (same rule as the
+    // immediate C++ entry point — the queue-time check keeps it immediate).
+    if (target < rec->lowerLimit || target > rec->upperLimit)
+    {
+        printf("[Physics] %s refused for %s "
+               "(target outside slider limits)\n",
+               kOp, owner.ToString().c_str());
+        return false;
+    }
+    QueuedPhysicsCommand cmd;
+    cmd.kind = QueuedPhysicsCommandKind::SetSliderTarget;
+    cmd.target = owner;
+    cmd.paramA = target;
+    m_PhysicsCommands.push_back(cmd);
+    return true;
+}
+
+bool RuntimeSceneController::QueueReleaseSlider(const UUID& owner,
+                                               float impulse)
+{
+    constexpr const char* kOp = "release_slider";
+    if (!QueuePhysicsGuard(owner, kOp))
+        return false;
+    if (!std::isfinite(impulse))
+    {
+        printf("[Physics] %s refused for %s (non-finite impulse)\n",
+               kOp, owner.ToString().c_str());
+        return false;
+    }
+    if (QueuePhysicsBody(owner, kOp) == nullptr)
+        return false;
+    const PhysicsConstraintRecord* rec =
+        m_PhysicsWorld->FindConstraint(owner);
+    if (rec == nullptr || rec->isHinge)
+    {
+        printf("[Physics] %s refused for %s (no slider constraint)\n",
+               kOp, owner.ToString().c_str());
+        return false;
+    }
+    QueuedPhysicsCommand cmd;
+    cmd.kind = QueuedPhysicsCommandKind::ReleaseSlider;
+    cmd.target = owner;
+    cmd.paramA = impulse;
+    m_PhysicsCommands.push_back(cmd);
+    return true;
+}
+
+bool RuntimeSceneController::QueueResetBodyPose(
+    const UUID& target, const glm::vec3& position, const glm::quat& rotation,
+    bool hasLinearVelocity, const glm::vec3& linearVelocity,
+    bool hasAngularVelocity, const glm::vec3& angularVelocity)
+{
+    constexpr const char* kOp = "reset_body_pose";
+    if (!QueuePhysicsGuard(target, kOp))
+        return false;
+    // Shape validation here is queue-time loudness only: ResetBodyPose
+    // re-validates the same predicates atomically at apply time (no partial
+    // state change on any failure), so a command that passes here cannot
+    // half-apply there.
+    if (!T7FiniteVector(position))
+    {
+        printf("[Physics] %s refused for %s (non-finite position)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    if (!std::isfinite(rotation.x) || !std::isfinite(rotation.y) ||
+        !std::isfinite(rotation.z) || !std::isfinite(rotation.w))
+    {
+        printf("[Physics] %s refused for %s (non-finite rotation)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    // Degenerate (non-normalizable) rotations refuse here too: the apply
+    // path re-validates, but the queue must never hold a command that is
+    // known-bad at enqueue time (same overflow-safe norm discipline as the
+    // sink transform gate and the apply path).
+    {
+        const double dx = (double)rotation.x;
+        const double dy = (double)rotation.y;
+        const double dz = (double)rotation.z;
+        const double dw = (double)rotation.w;
+        const double norm =
+            std::sqrt(dx * dx + dy * dy + dz * dz + dw * dw);
+        if (!std::isfinite(norm) || !(norm > 1e-6) || norm > (double)FLT_MAX)
+        {
+            printf("[Physics] %s refused for %s (degenerate rotation)\n",
+                   kOp, target.ToString().c_str());
+            return false;
+        }
+    }
+    if ((hasLinearVelocity && !T7FiniteVector(linearVelocity)) ||
+        (hasAngularVelocity && !T7FiniteVector(angularVelocity)))
+    {
+        printf("[Physics] %s refused for %s (non-finite velocity)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    const auto* body = QueuePhysicsBody(target, kOp);
+    if (body == nullptr)
+        return false;
+    // Dynamic/Kinematic only. Static refuses (baked at Play); pure ghosts
+    // without a body component never reach here (QueuePhysicsBody).
+    if (body->kind == PhysicsBodyKind::Static)
+    {
+        printf("[Physics] %s refused for %s "
+               "(Static bodies cannot be reset)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    if (m_PhysicsWorld->FindBody(target) == nullptr)
+    {
+        printf("[Physics] %s refused for %s (no live Bullet body)\n",
+               kOp, target.ToString().c_str());
+        return false;
+    }
+    QueuedPhysicsCommand cmd;
+    cmd.kind = QueuedPhysicsCommandKind::ResetBodyPose;
+    cmd.target = target;
+    cmd.position = position;
+    cmd.rotation = rotation;
+    cmd.hasResetLinear = hasLinearVelocity;
+    cmd.resetLinear = linearVelocity;
+    cmd.hasResetAngular = hasAngularVelocity;
+    cmd.resetAngular = angularVelocity;
+    m_PhysicsCommands.push_back(cmd);
+    return true;
+}
+
+void RuntimeSceneController::DrainPhysicsCommands()
+{
+    if (m_PhysicsCommands.empty())
+        return;
+    // Move to a local batch: commands queued re-entrantly while draining
+    // (only possible from future entry points — no script callback runs
+    // inside this drain today) land in the next boundary, never in the
+    // running batch. The queue clears even when the world is gone, so Stop
+    // and failed sessions cannot strand commands.
+    std::vector<QueuedPhysicsCommand> batch;
+    batch.swap(m_PhysicsCommands);
+    if (!m_Runtime || !m_PhysicsWorld)
+        return;
+    for (const auto& cmd : batch)
+    {
+        // Raced teardown since queue time (the structural drain runs after
+        // the fixed ticks and may have removed the body): skip silently.
+        // The queue-time validation already proved the command well-formed.
+        if (IsUuidInDestroyDrain(cmd.target))
+            continue;
+        if (m_Runtime->FindByUuid(cmd.target) == entt::null)
+            continue;
+        switch (cmd.kind)
+        {
+        case QueuedPhysicsCommandKind::SetLinearVelocity:
+            m_PhysicsWorld->SetBodyLinearVelocity(cmd.target, cmd.vector);
+            break;
+        case QueuedPhysicsCommandKind::ApplyImpulse:
+            m_PhysicsWorld->ApplyBodyImpulse(cmd.target, cmd.vector);
+            break;
+        case QueuedPhysicsCommandKind::SetHingeDrive:
+            m_PhysicsWorld->SetHingeDrive(cmd.target, cmd.paramA, cmd.paramB);
+            break;
+        case QueuedPhysicsCommandKind::ReleaseHingeDrive:
+            m_PhysicsWorld->ReleaseHingeDrive(cmd.target);
+            break;
+        case QueuedPhysicsCommandKind::SetSliderTarget:
+            m_PhysicsWorld->SetSliderTarget(cmd.target, cmd.paramA);
+            break;
+        case QueuedPhysicsCommandKind::ReleaseSlider:
+            m_PhysicsWorld->ReleaseSlider(cmd.target, cmd.paramA);
+            break;
+        case QueuedPhysicsCommandKind::ResetBodyPose:
+            m_PhysicsWorld->ResetBodyPose(
+                *m_Runtime, cmd.target, cmd.position, cmd.rotation,
+                cmd.hasResetLinear, cmd.resetLinear, cmd.hasResetAngular,
+                cmd.resetAngular);
+            break;
+        }
+    }
+}
+
+// ============================================================================
 // Internal helpers
 // ============================================================================
 
@@ -971,6 +1381,14 @@ void RuntimeSceneController::RunFixedTick(float dt)
     // ECS, marked dirty for the single batched SceneGraph + TransformSync
     // pass per presentation frame) after it. Static bodies are baked once at
     // Play and never touched here.
+    //
+    // T7: the queued physics-command drain runs here — after OnFixedUpdate
+    // scripts and Motion have written, before PreStepSync pushes kinematics
+    // and the solver steps. A command queued from OnFixedUpdate therefore
+    // affects the immediately following step of this same tick; a command
+    // queued from OnUpdate (or a timer) waits for the next frame's first
+    // tick. Either way the latency is at most one fixed tick.
+    DrainPhysicsCommands();
     if (m_PhysicsWorld)
     {
         m_PhysicsWorld->PreStepSync(*m_Runtime);

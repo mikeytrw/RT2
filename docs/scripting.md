@@ -96,9 +96,12 @@ inspector. The shipped `assets/script-scenario.lua` had this bug.
 
 **3. Every setter returns a bool, and ignoring it is the general case of
 both traps above.** `set_position`, `set_name`, `set_visible`,
-`set_light`, `set_camera` and `set_material_index` return `false` rather
-than raising when the write is refused — a missing component, an
-out-of-range material index, a malformed vec3 table, or a runtime that is
+`set_light`, `set_camera`, `set_material_index`, `set_velocity`,
+`apply_impulse`, `set_hinge_drive`, `release_hinge`, `set_slider_target`,
+`release_slider` and `reset_body_pose` return `false` rather than raising
+when the write is refused — a missing component, an out-of-range material
+index, a malformed vec3 table, a physics body of the wrong kind (or none
+at all), a target inside the safe-point destroy set, or a runtime that is
 not currently mutable. Ignoring the return is ordinary Lua style, so a
 refused write looks exactly like a successful one and the script carries
 on with stale state. When a binding "doesn't work", check the return
@@ -114,8 +117,8 @@ end
 
 | Global | Contents |
 |---|---|
-| `entity` | `get_uuid`, `get_name`, `set_name`, `get_position`, `set_position`, `get_visible`, `set_visible`, `get_light`, `set_light`, `get_camera`, `set_camera`, `set_material_index` |
-| `world` | `spawn`, `destroy`, `find_by_name`, `find_by_uuid` |
+| `entity` | `get_uuid`, `get_name`, `set_name`, `get_position`, `set_position`, `get_visible`, `set_visible`, `get_light`, `set_light`, `get_camera`, `set_camera`, `set_material_index`, `get_velocity`, `set_velocity`, `get_angular_velocity`, `apply_impulse`, `reset_body_pose`, `set_hinge_drive`, `release_hinge`, `set_slider_target`, `release_slider` |
+| `world` | `spawn`, `destroy`, `find_by_name`, `find_by_uuid`, `physics_events` |
 | `self` | This entity's field values, from `ScriptComponent::fieldValues` |
 | `log` | `info`, `warn`, `error` |
 | `input` | `is_down`, `is_pressed`, `is_released`, `get_axis`, `get_mouse_delta`, `get_scroll_delta` |
@@ -124,6 +127,49 @@ end
 
 `set_material_index` has no getter — read the index through the editor, not
 the script API.
+
+### Bounded physics controls (Bullet T7)
+
+Scripts steer simulated bodies without ever touching Bullet. Reads
+(`get_velocity`, `get_angular_velocity`) observe live solver state and
+return `nil` when the entity has no simulated body. Writes
+(`set_velocity`, `apply_impulse`, `set_hinge_drive`/`release_hinge`,
+`set_slider_target`/`release_slider`, `reset_body_pose`) enqueue a
+validated command that applies at the next pre-step boundary: a write from
+`on_fixed_update` affects the immediately following step, a write from
+`on_update` affects the next frame's first tick — never later than one
+fixed tick, never inline during script iteration.
+
+```lua
+function on_update(entity, world)
+    -- Non-consuming poll: every script in the frame sees these same events.
+    for i, e in ipairs(world:physics_events()) do
+        -- e.kind is "contact", "trigger_enter", "trigger_stay" or
+        -- "trigger_exit"; e.bodyA/e.bodyB are UUID strings.
+    end
+    entity:set_velocity({3.0, 0.0, 0.0})          -- Dynamic/Kinematic only
+    entity:apply_impulse({0.0, 2.0, 0.0})         -- Dynamic only
+    entity:reset_body_pose({0.0, 5.0, 0.0},       -- Dynamic/Kinematic only;
+        {0.0, 0.0, 0.0, 1.0})                     -- rotation is a quaternion {x,y,z,w}
+end
+```
+
+Authority notes that have bitten before:
+
+- `set_position` on a Dynamic body refuses (`false`); that is the solver's
+  pose to own. `reset_body_pose` is the only pose-write path for simulated
+  bodies, and it also clears forces, re-snaps velocities, wakes the body,
+  and purges stale contact/overlap state.
+- `apply_impulse` on Static/Kinematic refuses; `reset_body_pose` on Static
+  refuses. Malformed vectors/quaternions (non-finite, out-of-range, or
+  degenerate rotation) refuse with no partial state change.
+- `world:physics_events()` is valid exactly inside `on_update` (it is an
+  empty table in `on_fixed_update` and `on_destroy` by construction).
+- A script reload, quarantine, or Stop drops queued-but-unapplied physics
+  commands; a re-Play inherits nothing.
+- Runtime spawn cannot mint physics bodies, and Lua has no raycasts,
+  queries, or arbitrary-constraint construction — those are out of scope
+  by design, not missing bindings.
 
 Plus the safe standard library: `base` (minus the denied names below),
 `math`, `string`, `table`, `utf8`.

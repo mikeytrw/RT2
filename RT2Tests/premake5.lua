@@ -61,6 +61,9 @@
     -- Bullet T6: deterministic physics events + safe-point tests (same rationale).
     files { "src/PhysicsEventsTests.cpp" }
 
+    -- Bullet T7: bounded Lua physics-control tests (same rationale).
+    files { "src/PhysicsLuaControlsTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

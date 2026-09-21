@@ -6,6 +6,7 @@
 #include "RuntimeSceneMutator.h"   // RuntimeEntityCreateDesc
 #include "SceneRunState.h"         // SceneRunState
 #include "TransformEditing.h"      // EditableTRS
+#include "PhysicsEvents.h"         // PhysicsEvent (CPU-only, no Bullet)
 #include "core/Error.h"
 #include "core/UUID.h"
 #include "ECSComponents.h"         // ScriptComponent
@@ -15,6 +16,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 // ============================================================================
 // IRuntimeCommandSink — the controlled mutation channel handed to Lua
@@ -50,6 +52,21 @@
 namespace rt2::core {
 
 class RuntimeSceneController;
+
+// T7 bounded pose-reset parameters (entity:reset_body_pose). Rotation is a
+// unit-intent quaternion (x, y, z, w); the controller normalizes before
+// enqueueing and refuses degenerate input. Velocities are optional: absent
+// means "rest" (zero), matching the trigger/event -> reset -> impulse reuse
+// flow where the reset body starts still.
+struct PhysicsPoseReset
+{
+    glm::vec3 position = {0.0f, 0.0f, 0.0f};
+    glm::quat rotation = glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+    bool hasLinearVelocity = false;
+    glm::vec3 linearVelocity = {0.0f, 0.0f, 0.0f};
+    bool hasAngularVelocity = false;
+    glm::vec3 angularVelocity = {0.0f, 0.0f, 0.0f};
+};
 
 class IRuntimeCommandSink
 {
@@ -114,6 +131,66 @@ public:
     // entity has no MeshRef. Rejects index < -1 or index >= materialCount
     // (-1 is the "use per-triangle indices" sentinel).
     virtual bool SetMaterialIndex(const UUID& uuid, int index) = 0;
+
+    // ---- entity.* bounded physics controls (Bullet T7) --------------------
+    //
+    // Reads observe live Bullet state directly (no queueing): linear and
+    // angular velocity for simulated rigid bodies. Each returns false
+    // (writing nothing) for unknown UUIDs and ghost-only entities.
+    //
+    // Writes never touch Bullet inline: they enqueue a validated command on
+    // the controller, applied at the next pre-step boundary (at most one
+    // fixed tick of latency: same-tick when queued from OnFixedUpdate, next
+    // frame's first tick when queued from OnUpdate). Every write returns
+    // false (enqueueing nothing) when the session is not mutable (silent),
+    // when the target lies in the frozen destroy set (loud warn, the T6
+    // refusal), or when the UUID/body/kind/arguments are invalid (loud
+    // warn). No Bullet pointer ever enters Lua; no registry mutates during
+    // script iteration.
+    virtual bool GetLinearVelocity(const UUID& uuid, glm::vec3& out) const = 0;
+    virtual bool GetAngularVelocity(const UUID& uuid, glm::vec3& out) const = 0;
+    // Linear-velocity write for Dynamic/Kinematic bodies (Static refuses).
+    virtual bool SetLinearVelocity(const UUID& uuid,
+                                   const glm::vec3& velocity) = 0;
+    // Central impulse (J = m*dv) for Dynamic bodies only
+    // (Static/Kinematic refuse).
+    virtual bool ApplyImpulse(const UUID& uuid, const glm::vec3& impulse) = 0;
+    // Hinge drive (angular-velocity motor) / release (free swing) for the
+    // entity owning the hinge constraint. Unknown/non-hinge owners and
+    // bad parameters refuse.
+    virtual bool SetHingeDrive(const UUID& owner, float velocity,
+                               float maxImpulse) = 0;
+    virtual bool ReleaseHingeDrive(const UUID& owner) = 0;
+    // Slider target (refused outside [lower,upper], never clamped) /
+    // release (motor off + impulse along the axis) for the entity owning
+    // the slider constraint.
+    virtual bool SetSliderTarget(const UUID& owner, float target) = 0;
+    virtual bool ReleaseSlider(const UUID& owner, float impulse) = 0;
+    // Bounded pose reset for Dynamic/Kinematic bodies only (Static,
+    // missing bodies, and destroying UUIDs refuse with no partial state
+    // change). Applied atomically at the next pre-step boundary: pose,
+    // velocities (or zero when absent), force/torque clear, wake,
+    // broadphase/contact/ghost refresh, and ECS previous-transform update.
+    virtual bool ResetBodyPose(const UUID& uuid,
+                               const PhysicsPoseReset& reset) = 0;
+
+    // ---- world.* physics events (Bullet T7) --------------------------------
+    //
+    // A copy of the controller's immutable per-frame snapshot (the T6
+    // publication: canonical pairs, coalesced contacts, grouped trigger
+    // transitions, destroy-filtered, exact-dup collapsed). Non-consuming:
+    // every call in the frame returns the same contents regardless of
+    // UUID-sorted callback order. Empty outside OnUpdate (pre-publication
+    // callbacks always observe empty), when zero ticks ran, and after Stop.
+    virtual std::vector<PhysicsEvent> GetPhysicsEvents() const = 0;
+
+    // Drop all queued-but-unapplied physics commands. Called by
+    // ScriptSystem on quarantine and reload (no stale command outlives its
+    // issuing environment); the controller's Stop clears its own queue
+    // directly. Silent.
+    virtual void ClearQueuedPhysicsCommands() = 0;
+    // Test seam: commands waiting for the next pre-step boundary.
+    virtual size_t QueuedPhysicsCommandCount() const = 0;
 
     // ---- lookup ----------------------------------------------------------
 

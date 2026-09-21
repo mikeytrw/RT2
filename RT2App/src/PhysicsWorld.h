@@ -241,10 +241,55 @@ public:
     // Returns false (mutating nothing) for Static bodies, ghosts, and unknown
     // UUIDs. Velocity (like impulse) is a legal Dynamic control — only pose
     // writes are authority-gated — so Dynamic accepts and Static refuses.
-    // (The future T7 reset_body_pose arrives as a distinct explicit API; no
-    // generic C++ pose-write path exists, so Lua can only move bodies through
+    // (The T7 reset_body_pose is the distinct explicit pose-write API below;
+    // no generic C++ pose-write path exists, so Lua moves bodies only through
     // the kind-gated RuntimeCommandSink.)
     bool SetBodyLinearVelocity(const UUID& id, const glm::vec3& velocity);
+
+    // ---- T7 bounded Lua physics controls ---------------------------------
+    //
+    // Reads are live Bullet state (no queueing): linear/angular velocity for
+    // simulated rigid bodies. Both return false (writing nothing) for unknown
+    // UUIDs and ghost-only entities (triggers carry no velocity). Static
+    // bodies report their live (always ~zero) velocity as true — they are
+    // valid bodies, just never moved by the solver.
+    bool GetBodyLinearVelocity(const UUID& id, glm::vec3& out) const;
+    bool GetBodyAngularVelocity(const UUID& id, glm::vec3& out) const;
+
+    // Central impulse for Dynamic rigid bodies only (J = m*dv, applied at
+    // the center of mass, so it changes linear velocity without torque).
+    // Returns false (mutating nothing) for unknown UUIDs, ghost-only
+    // entities, and Static/Kinematic bodies — Kinematic bodies have
+    // effectively infinite mass, so an impulse is physically meaningless and
+    // refuses loudly instead of vanishing. Non-finite input refuses.
+    // Wakes the body. Immediate (C++-only) entry point: the Lua surface
+    // queues through the controller so the impulse lands at the next
+    // pre-step boundary (at most one fixed tick of latency).
+    bool ApplyBodyImpulse(const UUID& id, const glm::vec3& impulse);
+
+    // Bounded body reset for Dynamic/Kinematic bodies only (T7
+    // `entity:reset_body_pose`). Applied atomically at the pre-step boundary
+    // by the controller drain (never inline from a script callback):
+    //   1. Bullet + motion-state + interpolation pose := (position,
+    //      rotation); forces/torques cleared; linear/angular velocity :=
+    //      the supplied values (or zero when absent); body woken.
+    //   2. Broadphase/contact/ghost refresh: the proxy's stale pairs are
+    //      dropped, manifolds touching the body are cleared, and overlap
+    //      pairs mentioning the UUID are purged — so no stale Contact or
+    //      TriggerExit is fabricated after the teleport.
+    //   3. ECS Transform TRS := the same pose (roots-only: local == world),
+    //      marked dirty, with world matrices refreshed and prevWorldMatrix
+    //      re-snapped so the reset produces no one-frame motion spike.
+    // Returns false (mutating NOTHING — validated fully before any write)
+    // for unknown UUIDs, entities without a live Bullet body/ghost, Static
+    // bodies, non-finite/out-of-range positions, and degenerate
+    // (non-normalizable) rotations. Kinematic scale is untouched (baked at
+    // Play); the pose write carries translation+rotation only.
+    bool ResetBodyPose(SceneDocument& runtime, const UUID& id,
+                       const glm::vec3& position, const glm::quat& rotation,
+                       bool hasLinearVelocity,
+                       const glm::vec3& linearVelocity, bool hasAngularVelocity,
+                       const glm::vec3& angularVelocity);
 
     // Bullet-side world position for tests (kinematic-push and CCD proofs).
     // Returns false for unknown UUIDs.

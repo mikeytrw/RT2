@@ -339,6 +339,7 @@ void ScriptSystem::ReloadScript(const std::filesystem::path& path)
     }
 
     // 2. Find all instances whose scriptPath matches (both are canonical).
+    bool anyReloaded = false;
     for (auto& [uuid, inst] : m_Instances)
     {
         // Normalize the instance's stored path for comparison.
@@ -460,7 +461,15 @@ void ScriptSystem::ReloadScript(const std::filesystem::path& path)
 
         printf("[Script] reloaded script %s for entity %s\n",
                pathStr.c_str(), uuid.ToString().c_str());
+        anyReloaded = true;
     }
+    // T7: a reloaded environment must not inherit queued physics commands.
+    // The swap replaces the code that issued them; applying stale velocity /
+    // impulse / reset work under new logic would be action at a distance.
+    // (Quarantine clears the same way; Stop clears the controller queue
+    // directly.)
+    if (anyReloaded && m_Sink)
+        m_Sink->ClearQueuedPhysicsCommands();
     SortAssetDiagnosticsFrom(diagnosticBase);
 }
 
@@ -1039,6 +1048,45 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             return r.IsOk();
         };
 
+        // T7: non-consuming physics-event poll. Returns a fresh array table
+        // per call (one entry per event: kind/bodyA/bodyB/position/normal/
+        // impulse/tick), so every OnUpdate script in the frame observes
+        // identical ordered data regardless of UUID-sorted callback order.
+        // Empty table (never nil) when no events are published — including
+        // every pre-publication callback (OnFixedUpdate, on_destroy), where
+        // the T6 snapshot is always empty by construction.
+        world["physics_events"] = [self, L](sol::object) -> sol::object {
+            IRuntimeCommandSink* s = self->m_Sink;
+            sol::state_view sv(L);
+            sol::table out = sv.create_table();
+            if (!s) return out;
+            const std::vector<PhysicsEvent> events = s->GetPhysicsEvents();
+            int index = 1;
+            for (const auto& e : events)
+            {
+                sol::table entry = sv.create_table();
+                switch (e.kind)
+                {
+                case PhysicsEventKind::Contact: entry["kind"] = "contact"; break;
+                case PhysicsEventKind::TriggerEnter: entry["kind"] = "trigger_enter"; break;
+                case PhysicsEventKind::TriggerStay: entry["kind"] = "trigger_stay"; break;
+                case PhysicsEventKind::TriggerExit: entry["kind"] = "trigger_exit"; break;
+                }
+                entry["bodyA"] = e.bodyA.ToString();
+                entry["bodyB"] = e.bodyB.ToString();
+                sol::table pos = sv.create_table();
+                pos[1] = e.position.x; pos[2] = e.position.y; pos[3] = e.position.z;
+                entry["position"] = pos;
+                sol::table normal = sv.create_table();
+                normal[1] = e.normal.x; normal[2] = e.normal.y; normal[3] = e.normal.z;
+                entry["normal"] = normal;
+                entry["impulse"] = e.impulse;
+                entry["tick"] = static_cast<int>(e.tickIndex);
+                out[index++] = entry;
+            }
+            return out;
+        };
+
         inst.env["world"] = world;
 
         // Bind entity methods. Q5: capture `this`, read m_Sink at call
@@ -1207,6 +1255,146 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
         entity["set_material_index"] = [self, instUuid](sol::object, int index) -> bool {
             IRuntimeCommandSink* s = self->m_Sink;
             return s ? s->SetMaterialIndex(instUuid, index) : false;
+        };
+
+        // ---- entity.* bounded physics controls (Bullet T7) ----------------
+        //
+        // Reads (get_velocity, get_angular_velocity) observe live Bullet
+        // state and return nil when the entity has no simulated body.
+        // Writes (set_velocity, apply_impulse, hinge/slider drive, reset)
+        // queue a validated command for the next pre-step boundary and
+        // return false without enqueueing when validation refuses (the same
+        // loud-bool convention as every other setter). Rotation arguments
+        // are quaternions {x, y, z, w}; malformed tables refuse before any
+        // sink call, exactly like the set_position vec3 gate above.
+        auto readVec3 = [L](const glm::vec3& v) -> sol::object {
+            sol::state_view sv(L);
+            sol::table t = sv.create_table();
+            t[1] = v.x; t[2] = v.y; t[3] = v.z;
+            return t;
+        };
+        auto parseVec3 = [](sol::object arg, glm::vec3& out) -> bool {
+            if (!arg.valid() || !arg.is<sol::table>()) return false;
+            sol::table t = arg.as<sol::table>();
+            sol::object x = t[1], y = t[2], z = t[3];
+            if (!x.is<double>() || !y.is<double>() || !z.is<double>())
+                return false;
+            const double dx = x.as<double>();
+            const double dy = y.as<double>();
+            const double dz = z.as<double>();
+            if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz))
+                return false;
+            if (std::fabs(dx) > (double)FLT_MAX ||
+                std::fabs(dy) > (double)FLT_MAX ||
+                std::fabs(dz) > (double)FLT_MAX)
+                return false;
+            out = glm::vec3{static_cast<float>(dx), static_cast<float>(dy),
+                            static_cast<float>(dz)};
+            return true;
+        };
+        auto parseQuat = [](sol::object arg, glm::quat& out) -> bool {
+            if (!arg.valid() || !arg.is<sol::table>()) return false;
+            sol::table t = arg.as<sol::table>();
+            sol::object x = t[1], y = t[2], z = t[3], w = t[4];
+            if (!x.is<double>() || !y.is<double>() || !z.is<double>() ||
+                !w.is<double>())
+                return false;
+            const double dx = x.as<double>();
+            const double dy = y.as<double>();
+            const double dz = z.as<double>();
+            const double dw = w.as<double>();
+            if (!std::isfinite(dx) || !std::isfinite(dy) ||
+                !std::isfinite(dz) || !std::isfinite(dw))
+                return false;
+            // glm::quat stores (w, x, y, z). Normalization happens in the
+            // controller queue gate (degenerate input refuses there); keep
+            // the raw values here so the refusal names the physics op.
+            out = glm::quat{static_cast<float>(dw), static_cast<float>(dx),
+                            static_cast<float>(dy), static_cast<float>(dz)};
+            return true;
+        };
+
+        entity["get_velocity"] = [self, instUuid, readVec3](sol::object) -> sol::object {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return sol::nil;
+            glm::vec3 v;
+            if (!s->GetLinearVelocity(instUuid, v)) return sol::nil;
+            return readVec3(v);
+        };
+        entity["set_velocity"] = [self, instUuid, parseVec3](sol::object, sol::object velArg) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            glm::vec3 v;
+            if (!parseVec3(velArg, v)) return false;
+            return s->SetLinearVelocity(instUuid, v);
+        };
+        entity["get_angular_velocity"] = [self, instUuid, readVec3](sol::object) -> sol::object {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return sol::nil;
+            glm::vec3 w;
+            if (!s->GetAngularVelocity(instUuid, w)) return sol::nil;
+            return readVec3(w);
+        };
+        entity["apply_impulse"] = [self, instUuid, parseVec3](sol::object, sol::object impArg) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            glm::vec3 j;
+            if (!parseVec3(impArg, j)) return false;
+            return s->ApplyImpulse(instUuid, j);
+        };
+        entity["reset_body_pose"] = [self, instUuid, parseVec3, parseQuat](
+                sol::object, sol::object posArg, sol::object rotArg,
+                sol::object linArg, sol::object angArg) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            PhysicsPoseReset reset;
+            if (!parseVec3(posArg, reset.position)) return false;
+            if (!parseQuat(rotArg, reset.rotation)) return false;
+            // Optional velocities: absent/nil means rest (zero). A present
+            // but malformed table refuses (never a silent zero-fill).
+            if (!linArg.is<sol::lua_nil_t>())
+            {
+                glm::vec3 v;
+                if (!parseVec3(linArg, v)) return false;
+                reset.hasLinearVelocity = true;
+                reset.linearVelocity = v;
+            }
+            if (!angArg.is<sol::lua_nil_t>())
+            {
+                glm::vec3 w;
+                if (!parseVec3(angArg, w)) return false;
+                reset.hasAngularVelocity = true;
+                reset.angularVelocity = w;
+            }
+            return s->ResetBodyPose(instUuid, reset);
+        };
+        entity["set_hinge_drive"] = [self, instUuid](sol::object, sol::table drive) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            if (!drive.valid() || !drive.is<sol::table>()) return false;
+            sol::optional<double> velocity = drive["velocity"];
+            sol::optional<double> impulse = drive["impulse"];
+            if (!velocity || !impulse) return false;
+            if (!std::isfinite(*velocity) || !std::isfinite(*impulse))
+                return false;
+            return s->SetHingeDrive(instUuid, static_cast<float>(*velocity),
+                                    static_cast<float>(*impulse));
+        };
+        entity["release_hinge"] = [self, instUuid](sol::object) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            return s ? s->ReleaseHingeDrive(instUuid) : false;
+        };
+        entity["set_slider_target"] = [self, instUuid](sol::object, double target) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            if (!std::isfinite(target)) return false;
+            return s->SetSliderTarget(instUuid, static_cast<float>(target));
+        };
+        entity["release_slider"] = [self, instUuid](sol::object, double impulse) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            if (!std::isfinite(impulse)) return false;
+            return s->ReleaseSlider(instUuid, static_cast<float>(impulse));
         };
     }
     else
@@ -1411,6 +1599,14 @@ void ScriptSystem::Quarantine(ScriptInstance& inst,
            callbackName.c_str(),
            message.c_str());
     inst.state = ScriptInstanceState::Quarantined;
+    // T7: a quarantined environment must not leave queued physics commands
+    // behind. Commands drain every pre-step, so the queue holds only work
+    // issued since the last tick — but that work was issued by (or alongside)
+    // a now-dead environment, and applying it would let a failed script keep
+    // moving bodies. Fail-safe: drop the whole pending queue. This is loud
+    // (the quarantine printf above) and deterministic.
+    if (m_Sink)
+        m_Sink->ClearQueuedPhysicsCommands();
 }
 
 std::vector<std::pair<UUID, entt::entity>>
@@ -1777,6 +1973,158 @@ bool RuntimeCommandSink::SetMaterialIndex(const UUID& uuid, int index)
     }
     mr->materialIndex = index;
     return true;
+}
+
+// ============================================================================
+// RuntimeCommandSink — T7 bounded physics controls
+// ============================================================================
+// Reads observe live Bullet state (ungated: read-only physics queries stay
+// allowed even for destroying UUIDs, per the T6 OnDestroy contract — the
+// world methods return false for dead handles, so no stale data escapes).
+// Writes enqueue a validated controller command (IsRuntimeMutable silent
+// gate + frozen-destroy-set loud refusal first, mirroring the transform
+// setters; deeper validation lives in the controller Queue* methods so the
+// refusal text names the physics op).
+
+bool RuntimeCommandSink::GetLinearVelocity(const UUID& uuid,
+                                           glm::vec3& out) const
+{
+    const PhysicsWorld* world = m_Controller.TryGetPhysicsWorld();
+    if (!world)
+        return false;
+    return world->GetBodyLinearVelocity(uuid, out);
+}
+
+bool RuntimeCommandSink::GetAngularVelocity(const UUID& uuid,
+                                            glm::vec3& out) const
+{
+    const PhysicsWorld* world = m_Controller.TryGetPhysicsWorld();
+    if (!world)
+        return false;
+    return world->GetBodyAngularVelocity(uuid, out);
+}
+
+bool RuntimeCommandSink::SetLinearVelocity(const UUID& uuid,
+                                           const glm::vec3& velocity)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] set_velocity refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueSetLinearVelocity(uuid, velocity);
+}
+
+bool RuntimeCommandSink::ApplyImpulse(const UUID& uuid,
+                                      const glm::vec3& impulse)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] apply_impulse refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueApplyImpulse(uuid, impulse);
+}
+
+bool RuntimeCommandSink::SetHingeDrive(const UUID& owner, float velocity,
+                                       float maxImpulse)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(owner))
+    {
+        printf("[Script] set_hinge_drive refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               owner.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueSetHingeDrive(owner, velocity, maxImpulse);
+}
+
+bool RuntimeCommandSink::ReleaseHingeDrive(const UUID& owner)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(owner))
+    {
+        printf("[Script] release_hinge refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               owner.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueReleaseHingeDrive(owner);
+}
+
+bool RuntimeCommandSink::SetSliderTarget(const UUID& owner, float target)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(owner))
+    {
+        printf("[Script] set_slider_target refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               owner.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueSetSliderTarget(owner, target);
+}
+
+bool RuntimeCommandSink::ReleaseSlider(const UUID& owner, float impulse)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(owner))
+    {
+        printf("[Script] release_slider refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               owner.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueReleaseSlider(owner, impulse);
+}
+
+bool RuntimeCommandSink::ResetBodyPose(const UUID& uuid,
+                                       const PhysicsPoseReset& reset)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Script] reset_body_pose refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueResetBodyPose(
+        uuid, reset.position, reset.rotation, reset.hasLinearVelocity,
+        reset.linearVelocity, reset.hasAngularVelocity,
+        reset.angularVelocity);
+}
+
+std::vector<PhysicsEvent> RuntimeCommandSink::GetPhysicsEvents() const
+{
+    // A copy of the immutable published snapshot: non-consuming by
+    // construction (every consumer in the frame receives identical
+    // contents), empty pre-publication by the T6 BeginPhysicsFrame clear.
+    return m_Controller.PhysicsEvents();
+}
+
+void RuntimeCommandSink::ClearQueuedPhysicsCommands()
+{
+    m_Controller.ClearQueuedPhysicsCommands();
+}
+
+size_t RuntimeCommandSink::QueuedPhysicsCommandCount() const
+{
+    return m_Controller.QueuedPhysicsCommandCount();
 }
 
 bool RuntimeCommandSink::IsAlive(const UUID& uuid) const
