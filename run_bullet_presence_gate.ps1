@@ -148,7 +148,12 @@ $requiredCases = @(
     "T6 RED_CommandTargetingDestroyingUuidRejected: kinematic write refuses inside the drain without mutation",
     "T6 GREEN_ValidationFailurePreservesBatchAndEvents: failed validation mutates nothing while events flow",
     "T6 GREEN_ZeroTickPublishesFreshEmptySnapshot: a tickless frame never serves stale data",
-    "T6 GREEN_StopClearsSnapshotAndOverlapHistory: re-Play starts with Enter, never a phantom Exit"
+    "T6 GREEN_StopClearsSnapshotAndOverlapHistory: re-Play starts with Enter, never a phantom Exit",
+    "T6 RED_StaleSnapshotHiddenPrePublication: OnFixedUpdate and OnDestroy never see the previous frame",
+    "T6 GREEN_RotatedGhostNarrowphaseConfirmed: AABB-only pairs stay silent while true overlap reports",
+    "T6 GREEN_TriggerTriggerOverlapAndDisappearance: ghost pairs report Enter and vanish without Exit",
+    "T6 GREEN_ZeroImpulseContactPreserved: a real touching manifold reports even with zero solver impulse",
+    "T6 GREEN_MixedTriggerGroupOrder: one tick emits contacts, enters, stays, exits in canonical order"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }

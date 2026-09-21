@@ -53,6 +53,7 @@
 #error "T6 boundary: Walnut headers must not be reachable from physics event units"
 #endif
 
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -114,6 +115,13 @@ public:
     int destroyCallCount = 0;
     std::vector<std::vector<UUID>> destroyCalls;
 
+    // Re-review P1(1) stale-read discriminator: every pre-publication read
+    // must observe an empty snapshot. Counts all OnFixedUpdate calls and
+    // records whether any of them (or the destroy callback) saw events.
+    int fixedCalls = 0;
+    bool fixedSawNonEmpty = false;
+    bool destroyingSawNonEmpty = false;
+
     // Reentrancy arms (one-shot, consumed by the first OnEntitiesDestroying).
     bool queueDestroyArmed = false;
     UUID queuedDestroyTarget;
@@ -124,7 +132,12 @@ public:
     glm::vec3 postWritePos{0.0f, 0.0f, 0.0f};
     bool postWriteOk = false;
 
-    void OnFixedUpdate(float) override {}
+    void OnFixedUpdate(float) override
+    {
+        ++fixedCalls;
+        if (ctrl != nullptr && !ctrl->PhysicsEvents().empty())
+            fixedSawNonEmpty = true;
+    }
     void OnUpdate(float) override
     {
         ++updateCalls;
@@ -139,6 +152,8 @@ public:
     {
         ++destroyCallCount;
         destroyCalls.push_back(uuids);
+        if (ctrl != nullptr && !ctrl->PhysicsEvents().empty())
+            destroyingSawNonEmpty = true;
         if (queueDestroyArmed && ctrl != nullptr)
         {
             queueDestroyArmed = false;
@@ -380,7 +395,40 @@ TEST_CASE("T6 GREEN_MultiTickAccumulationAndDedup: one coalesced contact per pai
         T6CheckCanonical(three[i]);
     }
     CHECK(ctrl2.TryGetPhysicsWorldMut()->StepCount() == 3);
+
+    // Re-review payload semantics: the canonical normal points from bodyB
+    // toward bodyA (never the reverse), and the coalesced position sits at
+    // the ground-top/box-bottom interface (y ~= 0), not at an arbitrary
+    // manifold point. A mutation replacing the mean with one raw point or
+    // dropping the swap-negation fails here.
+    glm::vec3 posA{0.0f, 0.0f, 0.0f};
+    glm::vec3 posB{0.0f, 0.0f, 0.0f};
+    REQUIRE(ctrl2.TryGetPhysicsWorldMut()->BodyWorldPosition(lo2, posA));
+    REQUIRE(ctrl2.TryGetPhysicsWorldMut()->BodyWorldPosition(hi2, posB));
+    for (const auto& e : three)
+    {
+        CHECK(glm::dot(e.normal, posA - posB) > 0.0f);
+        CHECK(std::abs(e.position.y) < 0.15f);
+    }
     ctrl2.Stop(f2.Authoring(), bridge2);
+
+    // Five-tick frame: the kMaxSubsteps cap accumulates all five ticks.
+    T6Fixture f3;
+    const T6RestScene scene3 = T6BuildRestScene(f3);
+    T6NullBridge bridge3;
+    RuntimeSceneController ctrl3;
+    REQUIRE(ctrl3.Play(f3.Authoring(), bridge3, err));
+    ctrl3.Update(5.0f * kFixedDt, bridge3);
+    const std::vector<PhysicsEvent> five = ctrl3.PhysicsEvents();
+    REQUIRE(five.size() == 5);
+    for (size_t i = 0; i < five.size(); ++i)
+    {
+        CHECK(five[i].kind == PhysicsEventKind::Contact);
+        CHECK(five[i].tickIndex == (uint32_t)i);
+        CHECK(five[i].impulse > 0.0f);
+    }
+    CHECK(ctrl3.TryGetPhysicsWorldMut()->StepCount() == 5);
+    ctrl3.Stop(f3.Authoring(), bridge3);
 }
 
 TEST_CASE("T6 GREEN_GhostPassThrough: ball falls through the trigger with Enter/Stay/Exit and no contact response")
@@ -817,4 +865,334 @@ TEST_CASE("T6 GREEN_StopClearsSnapshotAndOverlapHistory: re-Play starts with Ent
     REQUIRE(sawTrigger);
     CHECK(firstKind == PhysicsEventKind::TriggerEnter);
     ctrl.Stop(f.Authoring(), bridge2);
+}
+
+TEST_CASE("T6 RED_StaleSnapshotHiddenPrePublication: OnFixedUpdate and OnDestroy never see the previous frame")
+{
+    // Re-review P1(1): frame N publishes a contact; frame N+1's fixed
+    // callbacks run before the new scrape and its destroy callback runs
+    // before the new publish. Both must observe an empty snapshot — the old
+    // code retained frame N's vector across BeginPhysicsFrame, so a destroy
+    // callback could read exactly the stale event the later filter exists
+    // to suppress. The current frame's OnUpdate then carries the correctly
+    // filtered snapshot.
+    T6Fixture f;
+    const T6RestScene scene = T6BuildRestScene(f);
+    const UUID plain = f.Create("Plain");
+
+    T6NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    T6EventProbeDispatch probe;
+    probe.ctrl = &ctrl;
+    ctrl.SetScriptDispatch(&probe);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    // Frame 1 publishes a real contact snapshot.
+    ctrl.Update(kFixedDt, bridge);
+    REQUIRE_FALSE(ctrl.PhysicsEvents().empty());
+    REQUIRE(probe.fixedCalls == 1);
+
+    // Frame 2 destroys an unrelated entity: fixed + destroy callbacks run
+    // pre-publication and must see nothing; OnUpdate sees frame 2's events.
+    probe.fixedCalls = 0;
+    probe.fixedSawNonEmpty = false;
+    probe.destroyingSawNonEmpty = false;
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(plain).IsOk());
+    ctrl.Update(kFixedDt, bridge);
+
+    REQUIRE(probe.fixedCalls == 1);
+    CHECK_FALSE(probe.fixedSawNonEmpty);
+    REQUIRE(probe.destroyCallCount == 1);
+    CHECK_FALSE(probe.destroyingSawNonEmpty);
+    const std::vector<PhysicsEvent> snap = ctrl.PhysicsEvents();
+    REQUIRE_FALSE(snap.empty());
+    for (const auto& e : snap)
+    {
+        CHECK(e.kind == PhysicsEventKind::Contact);
+        CHECK_FALSE(T6EventMentions(e, plain));
+        T6CheckCanonical(e);
+    }
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    REQUIRE(runtime != nullptr);
+    CHECK_FALSE(runtime->uuidIndex.Contains(plain));
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(ctrl.PhysicsEvents().empty());
+}
+
+TEST_CASE("T6 GREEN_RotatedGhostNarrowphaseConfirmed: AABB-only pairs stay silent while true overlap reports")
+{
+    // Re-review P1(2): the ghost pair cache is broadphase-AABB-based. A thin
+    // slab rotated 45 degrees about Z has a world AABB far larger than its
+    // shape; a ball inside that AABB but clear of the oriented box must not
+    // produce Enter/Stay, while a genuinely overlapping pair still does.
+    T6Fixture f;
+
+    // False control: rotated thin slab at the origin + a held kinematic
+    // ball at (1.2, 0, 0) — inside the slab's AABB (+/-1.49) but 0.85 off
+    // the slab plane (shape half-thickness 0.1 + radius 0.2 = 0.3).
+    const UUID slab = f.Create("RotatedSlab");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(slab), T6GhostBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(slab),
+                                                T6GhostSlab(2.0f, 0.1f, 2.0f));
+    f.Registry().get<Transform>(f.Handle(slab)).rotation =
+        glm::angleAxis(3.14159265358979323846f / 4.0f,
+                       glm::vec3{0.0f, 0.0f, 1.0f});
+    const UUID near = f.Create("NearBall");
+    PhysicsBodyComponent nearBody = T6KinematicBody();
+    nearBody.mask = nearBody.mask | PhysicsLayer::Trigger;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(near), nearBody);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(near),
+                                                T6SphereShape(0.2f));
+    f.Registry().get<Transform>(f.Handle(near)).translation =
+        {1.2f, 0.0f, 0.0f};
+
+    // True control: axis-aligned ghost slab with a ball falling through it.
+    const UUID ghost = f.Create("Ghost");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ghost), T6GhostBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ghost),
+                                                T6GhostSlab(2.0f, 0.25f, 2.0f));
+    f.Registry().get<Transform>(f.Handle(ghost)).translation =
+        {0.0f, -3.0f, 0.0f};
+    const UUID ball = f.Create("Ball");
+    PhysicsBodyComponent ballBody = T6DynamicBody(1.0f);
+    ballBody.mask = ballBody.mask | PhysicsLayer::Trigger;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ball), ballBody);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ball),
+                                                T6SphereShape(0.2f));
+    f.Registry().get<Transform>(f.Handle(ball)).translation =
+        {0.0f, -1.5f, 0.0f};
+
+    T6NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    bool trueEnterSeen = false;
+    for (int i = 0; i < 120; ++i)
+    {
+        ctrl.Update(kFixedDt, bridge);
+        for (const auto& e : ctrl.PhysicsEvents())
+        {
+            // The AABB-only pair must never appear in any event.
+            const bool falsePairMentioned =
+                T6EventMentions(e, slab) && T6EventMentions(e, near);
+            CHECK_FALSE(falsePairMentioned);
+            if (e.kind == PhysicsEventKind::TriggerEnter &&
+                T6EventMentions(e, ghost) && T6EventMentions(e, ball))
+                trueEnterSeen = true;
+        }
+    }
+    // The genuinely overlapping pair reported; the false pair never did.
+    CHECK(trueEnterSeen);
+    CHECK(T6RuntimeY(ctrl.TryGetRuntimeScene(), ball) < -3.5f);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T6 GREEN_TriggerTriggerOverlapAndDisappearance: ghost pairs report Enter and vanish without Exit")
+{
+    // Re-review P1(2) second half: two overlapping static ghosts form a real
+    // shape-overlap pair (both directions confirm), and destroying one
+    // participant purges the history so no Exit is fabricated for a UUID
+    // that no longer resolves.
+    T6Fixture f;
+    const UUID ghostA = f.Create("GhostA");
+    PhysicsBodyComponent ghostABody = T6GhostBody();
+    ghostABody.mask = ghostABody.mask | PhysicsLayer::Trigger;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ghostA), ghostABody);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ghostA),
+                                                T6GhostSlab(1.0f, 1.0f, 1.0f));
+    const UUID ghostB = f.Create("GhostB");
+    PhysicsBodyComponent ghostBBody = T6GhostBody();
+    ghostBBody.mask = ghostBBody.mask | PhysicsLayer::Trigger;
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ghostB), ghostBBody);
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ghostB),
+                                                T6GhostSlab(1.0f, 1.0f, 1.0f));
+    f.Registry().get<Transform>(f.Handle(ghostB)).translation =
+        {0.5f, 0.0f, 0.0f};
+
+    T6NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    // Overlapping volumes: the ghost-ghost pair reports Enter.
+    ctrl.Update(kFixedDt, bridge);
+    bool pairEnterSeen = false;
+    for (const auto& e : ctrl.PhysicsEvents())
+    {
+        if (e.kind == PhysicsEventKind::TriggerEnter &&
+            T6EventMentions(e, ghostA) && T6EventMentions(e, ghostB))
+            pairEnterSeen = true;
+    }
+    REQUIRE(pairEnterSeen);
+
+    // Destroy one participant mid-overlap: no Exit follows for the dead pair.
+    REQUIRE(ctrl.QueueDestroyRuntimeEntity(ghostB).IsOk());
+    ctrl.Update(kFixedDt, bridge);
+    for (const auto& e : ctrl.PhysicsEvents())
+    {
+        CHECK_FALSE(T6EventMentions(e, ghostB));
+        CHECK(e.kind != PhysicsEventKind::TriggerExit);
+    }
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    REQUIRE(runtime != nullptr);
+    CHECK_FALSE(runtime->uuidIndex.Contains(ghostB));
+    CHECK(runtime->uuidIndex.Contains(ghostA));
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T6 GREEN_ZeroImpulseContactPreserved: a real touching manifold reports even with zero solver impulse")
+{
+    // Re-review P1(3): Contact is narrowphase-confirmed touch, not impact. A
+    // kinematic box resting (penetrating 0.01) on a static slab forms a real
+    // manifold the solver leaves at zero impulse — the old gate discarded
+    // it. The dynamic pair beside it keeps a meaningful positive impulse.
+    T6Fixture f;
+    const UUID slab = f.Create("Slab");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(slab), T6StaticBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(slab),
+                                                T6BoxShape(5.0f, 0.5f, 5.0f));
+    f.Registry().get<Transform>(f.Handle(slab)).translation =
+        {0.0f, -0.5f, 0.0f};
+
+    const UUID kin = f.Create("Kin");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(kin), T6KinematicBody());
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(kin),
+                                                T6BoxShape(0.25f, 0.25f, 0.25f));
+    f.Registry().get<Transform>(f.Handle(kin)).translation =
+        {-2.0f, 0.24f, 0.0f};
+
+    const UUID box = f.Create("Box");
+    f.Registry().emplace<PhysicsBodyComponent>(f.Handle(box), T6DynamicBody(1.0f));
+    f.Registry().emplace<PhysicsShapeComponent>(f.Handle(box),
+                                                T6BoxShape(0.25f, 0.25f, 0.25f));
+    f.Registry().get<Transform>(f.Handle(box)).translation =
+        {2.0f, 0.24f, 0.0f};
+
+    T6NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    ctrl.Update(kFixedDt, bridge);
+    const std::vector<PhysicsEvent> snap = ctrl.PhysicsEvents();
+    bool zeroContactSeen = false;
+    bool positiveContactSeen = false;
+    for (const auto& e : snap)
+    {
+        REQUIRE(e.kind == PhysicsEventKind::Contact);
+        T6CheckCanonical(e);
+        if (T6EventMentions(e, kin) && T6EventMentions(e, slab))
+        {
+            zeroContactSeen = true;
+            CHECK(e.impulse == 0.0f);
+        }
+        if (T6EventMentions(e, box) && T6EventMentions(e, slab))
+        {
+            positiveContactSeen = true;
+            CHECK(e.impulse > 0.0f);
+        }
+    }
+    CHECK(zeroContactSeen);
+    CHECK(positiveContactSeen);
+    ctrl.Stop(f.Authoring(), bridge);
+}
+
+TEST_CASE("T6 GREEN_MixedTriggerGroupOrder: one tick emits contacts, enters, stays, exits in canonical order")
+{
+    // Re-review P2(4): with one pair staying, one entering, and one exiting
+    // in the same tick, the snapshot must group by kind (contacts, then all
+    // enters, then all stays, then all exits; pair order within each group).
+    // The staying pair sorts lower than the entering pair, so the old
+    // pair-major interleave (Stay before Enter) fails this test.
+    T6Fixture f;
+
+    // Dynamic resting contact: the contacts group anchor.
+    const T6RestScene rest = T6BuildRestScene(f);
+
+    auto makeGhostBall = [&](const char* gname, const char* bname,
+                             const glm::vec3& ballPos) {
+        const UUID ghost = f.Create(gname);
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ghost),
+                                                   T6GhostBody());
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ghost),
+                                                    T6GhostSlab(0.5f, 0.5f, 0.5f));
+        const UUID ball = f.Create(bname);
+        PhysicsBodyComponent ballBody = T6KinematicBody();
+        ballBody.mask = ballBody.mask | PhysicsLayer::Trigger;
+        f.Registry().emplace<PhysicsBodyComponent>(f.Handle(ball), ballBody);
+        f.Registry().emplace<PhysicsShapeComponent>(f.Handle(ball),
+                                                    T6SphereShape(0.2f));
+        f.Registry().get<Transform>(f.Handle(ball)).translation = ballPos;
+        return std::pair<UUID, UUID>(ghost, ball);
+    };
+
+    // Creation order keeps the staying pairs' UUIDs below the entering one.
+    const auto stay1 = makeGhostBall("G1", "B1", {10.0f, 0.0f, 0.0f});
+    f.Registry().get<Transform>(f.Handle(stay1.first)).translation =
+        {10.0f, 0.0f, 0.0f};
+    const auto stay2 = makeGhostBall("G2", "B2", {20.0f, 0.0f, 0.0f});
+    f.Registry().get<Transform>(f.Handle(stay2.first)).translation =
+        {20.0f, 0.0f, 0.0f};
+    const auto exiting = makeGhostBall("G3", "B3", {30.0f, 0.0f, 0.0f});
+    f.Registry().get<Transform>(f.Handle(exiting.first)).translation =
+        {30.0f, 0.0f, 0.0f};
+    const auto entering = makeGhostBall("G4", "B4", {40.0f, 5.0f, 0.0f});
+    f.Registry().get<Transform>(f.Handle(entering.first)).translation =
+        {40.0f, 0.0f, 0.0f};
+
+    T6NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    DeterministicUuidProvider runtimeIds;
+    ctrl.SetRuntimeUuidProvider(&runtimeIds);
+    RuntimeCommandSink sink(ctrl);
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+
+    // Frame 1: three overlaps report Enter.
+    ctrl.Update(kFixedDt, bridge);
+    int frame1Enters = 0;
+    for (const auto& e : ctrl.PhysicsEvents())
+    {
+        if (e.kind == PhysicsEventKind::TriggerEnter)
+            ++frame1Enters;
+    }
+    REQUIRE(frame1Enters == 3);
+
+    // Frame 2: B3 leaves its ghost (Exit), B4 drops into its ghost (Enter),
+    // B1/B2 hold still (Stay). Kinematic pose writes apply next pre-step.
+    REQUIRE(sink.SetPosition(exiting.second, {30.0f, 5.0f, 0.0f}));
+    REQUIRE(sink.SetPosition(entering.second, {40.0f, 0.0f, 0.0f}));
+    ctrl.Update(kFixedDt, bridge);
+
+    const std::vector<PhysicsEvent> snap = ctrl.PhysicsEvents();
+    // The trap is armed only if a staying pair sorts below the entering one.
+    const UUID stayPairA =
+        (stay1.first < stay1.second) ? stay1.first : stay1.second;
+    const UUID enterPairA = (entering.first < entering.second)
+                                ? entering.first
+                                : entering.second;
+    REQUIRE(stayPairA < enterPairA);
+
+    // Exact group contract: contacts, then enters, then stays, then exits;
+    // canonical pair order inside each group.
+    REQUIRE(snap.size() == 5);
+    CHECK(snap[0].kind == PhysicsEventKind::Contact);
+    CHECK(snap[1].kind == PhysicsEventKind::TriggerEnter);
+    CHECK(snap[2].kind == PhysicsEventKind::TriggerStay);
+    CHECK(snap[3].kind == PhysicsEventKind::TriggerStay);
+    CHECK(snap[4].kind == PhysicsEventKind::TriggerExit);
+    CHECK(T6EventMentions(snap[0], rest.ground));
+    CHECK(T6EventMentions(snap[0], rest.box));
+    CHECK(T6EventMentions(snap[1], entering.first));
+    CHECK(T6EventMentions(snap[1], entering.second));
+    CHECK(T6EventMentions(snap[4], exiting.first));
+    CHECK(T6EventMentions(snap[4], exiting.second));
+    const UUID stayA1 = snap[2].bodyA;
+    const UUID stayA2 = snap[3].bodyA;
+    CHECK(stayA1 < stayA2);
+    for (const auto& e : snap)
+        T6CheckCanonical(e);
+    ctrl.Stop(f.Authoring(), bridge);
 }
