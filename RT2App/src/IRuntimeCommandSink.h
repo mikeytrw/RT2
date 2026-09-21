@@ -195,6 +195,15 @@ public:
     // Test seam: commands waiting for the next pre-step boundary.
     virtual size_t QueuedPhysicsCommandCount() const = 0;
 
+    // T7 re-review P1(1): Lua event-poll window control. ScriptSystem closes
+    // the window while draining pending reloads (reloaded top-level code
+    // and repaired on_create must observe empty) and opens it around the
+    // on_update loop plus the FireTimers tail. The controller opens it
+    // around the whole OnUpdate dispatch as a backstop, so an escaping
+    // failure still closes it. Implemented by RuntimeCommandSink, which
+    // forwards to the controller flag read by GetPhysicsEvents.
+    virtual void SetPhysicsEventsVisible(bool visible) = 0;
+
     // ---- lookup ----------------------------------------------------------
 
     // Find by UUID. Returns true if the UUID resolves in the runtime

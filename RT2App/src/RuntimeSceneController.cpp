@@ -58,8 +58,11 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     m_PendingOperations.clear();
     // T7: a fresh Play session starts with no queued physics commands (a
     // previous session's Stop already cleared them; this is defense in
-    // depth for the same invariant).
+    // depth for the same invariant) and a closed Lua event-poll window.
     m_PhysicsCommands.clear();
+    m_PhysicsEventsLuaVisible = false;
+    m_DrainDropCount = 0;
+    m_LastDrainDrop.clear();
 
     // T3 candidate-commit step 1: validate the physics early invariants on
     // the authoring document BEFORE anything is staged. Loud typed Error
@@ -338,9 +341,14 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
 
     // 4. Clear any pending operations (they are runtime-only). T7: queued
     // physics commands are runtime-only too — a re-Play must never inherit
-    // a stale velocity/impulse/reset from the previous session.
+    // a stale velocity/impulse/reset from the previous session. The Lua
+    // event-poll window closes with the session (post-Stop observers poll
+    // empty by both this flag and the cleared snapshot).
     m_PendingOperations.clear();
     m_PhysicsCommands.clear();
+    m_PhysicsEventsLuaVisible = false;
+    m_DrainDropCount = 0;
+    m_LastDrainDrop.clear();
 
     // 5. Destroy the runtime document and all runtime-only state.
     m_Runtime.reset();
@@ -1370,6 +1378,13 @@ void RuntimeSceneController::DrainPhysicsCommands()
         }
         if (!applied)
         {
+            // T7 re-review P2: loud drop-and-continue. The message names op
+            // + UUID (observable via LastDrainDrop for the discriminator);
+            // the drain proceeds to the next command.
+            ++m_DrainDropCount;
+            m_LastDrainDrop = std::string(opName) + " for " +
+                              cmd.target.ToString() +
+                              " failed at the pre-step drain";
             printf("[Physics] %s for %s failed at the pre-step drain "
                    "(unexpected: queue validation passed; command dropped)\n",
                    opName, cmd.target.ToString().c_str());

@@ -1800,11 +1800,15 @@ TEST_CASE("T7 RED_MalformedDriveCallsReturnFalse: hinge/slider Lua validation ne
         "    no(entity:release_slider(nil))\n"
         "    no(entity:release_slider(\"1\"))\n"
         "    no(entity:release_slider({}))\n"
+        "    no(entity:release_slider(0/0))\n"
+        "    no(entity:release_slider(math.huge))\n"
+        "    no(entity:release_slider(1e300))\n"
+        "    no(entity:release_slider())\n"
         "    entity:set_name(\"drive:\" .. f)\n"
         "  elseif phase == 1 then\n"
         "    phase = 2\n"
         "    local ok = entity:set_hinge_drive({velocity = 6, impulse = 8})\n"
-        "    entity:set_name(\"drive:20:valid:\" .. (ok and \"T\" or \"F\"))\n"
+        "    entity:set_name(\"drive:24:valid:\" .. (ok and \"T\" or \"F\"))\n"
         "  end\n"
         "end\n");
     T7Harness h;
@@ -1829,18 +1833,18 @@ TEST_CASE("T7 RED_MalformedDriveCallsReturnFalse: hinge/slider Lua validation ne
     const UUID flipperId = b.UuidOf(flipper);
     REQUIRE(h.Play(b.doc));
 
-    // Twenty malformed calls returned false without raising: the script is
-    // still live and nothing enqueued. (The count is exact: 11 hinge + 6
-    // slider-target + 3 release-slider refusals above.)
+    // Twenty-four malformed calls returned false without raising: the
+    // script is still live and nothing enqueued. (The count is exact: 11
+    // hinge + 6 slider-target + 7 release-slider refusals above.)
     h.Update(kFixedDt);
-    CHECK(T7RuntimeName(h, flipperId) == "drive:20");
+    CHECK(T7RuntimeName(h, flipperId) == "drive:24");
     CHECK(h.scriptSys.GetInstanceState(flipperId) == ScriptInstanceState::Live);
     CHECK(h.ctrl.QueuedPhysicsCommandCount() == 0);
 
     // The script stayed functional: an integer-valued drive table (Lua
     // integers, not floats) queues green and parks the motor params.
     h.Update(kFixedDt);
-    CHECK(T7RuntimeName(h, flipperId) == "drive:20:valid:T");
+    CHECK(T7RuntimeName(h, flipperId) == "drive:24:valid:T");
     h.Update(kFixedDt);
     bool motorOk = false;
     CHECK(h.ctrl.TryGetPhysicsWorldMut()->HingeMotorEnabled(flipperId, motorOk));
@@ -1850,5 +1854,220 @@ TEST_CASE("T7 RED_MalformedDriveCallsReturnFalse: hinge/slider Lua validation ne
         flipperId, velOut, impOut));
     CHECK(velOut == doctest::Approx(6.0f));
     CHECK(impOut == doctest::Approx(8.0f));
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 GREEN_PausedReloadSeesEmptyEvents: repaired top-level and on_create poll empty on a contact frame")
+{
+    // EntityA starts valid (Live): its V2 top-level chunk runs inside the
+    // reload drain and must observe empty. EntityB starts broken
+    // (Quarantined, on_create never fired): its repaired V2 on_create fires
+    // in the same drain and must observe empty too.
+    T7WriteScript("t7_reload_top.lua",
+        "function on_update(entity, dt, input, world) end\n");
+    T7WriteScript("t7_reload_create.lua",
+        "function on_update(entity, dt, input, world)\n");
+    T7Harness h;
+    T7DocBuilder b(h);
+    entt::entity ground = b.Create("Ground");
+    T7EmplaceBody(b, ground, T7StaticBody(), T7BoxShape(5.0f, 0.5f, 5.0f));
+    b.doc.ecs.registry.get<Transform>(ground).translation = {0.0f, -0.5f, 0.0f};
+    entt::entity box = b.Create("Box");
+    T7EmplaceBody(b, box, T7DynamicBody(1.0f), T7BoxShape(0.25f, 0.25f, 0.25f));
+    b.doc.ecs.registry.get<Transform>(box).translation = {0.0f, 0.24f, 0.0f};
+    entt::entity entA = b.Create("EntA");
+    b.AttachScript(entA, "t7_reload_top.lua");
+    entt::entity entB = b.Create("EntB");
+    b.AttachScript(entB, "t7_reload_create.lua");
+    b.Finish();
+    const UUID aId = b.UuidOf(entA);
+    const UUID bId = b.UuidOf(entB);
+    REQUIRE(h.Play(b.doc));
+    CHECK(h.scriptSys.GetInstanceState(aId) == ScriptInstanceState::Live);
+    CHECK(h.scriptSys.GetInstanceState(bId) == ScriptInstanceState::Quarantined);
+
+    // Repair both files while Paused, queue both reloads, then Resume into
+    // contact frames: the drain runs both V2 chunks at the top of OnUpdate.
+    // NOTE on the `if world ~= nil` guard in V2: the field-declaration
+    // parser evaluates top-level code in a bare registry-owned Lua state
+    // with no `world` global, so unguarded top-level polling fails
+    // declaration parsing and the reload never swaps (observed: "attempt to
+    // index a nil value (global 'world')"). The guard skips only that
+    // parser state; in the Play scratch environment `world` is the real
+    // table, so a genuinely leaking drain would still poll non-empty here
+    // and the "top:0" expectation would catch it.
+    h.ctrl.Pause();
+    T7WriteScript("t7_reload_top.lua",
+        "local topCount = -1\n"
+        "if world ~= nil then\n"
+        "  topCount = #world:physics_events()\n"
+        "  entity:set_name(\"top:\" .. topCount)\n"
+        "end\n"
+        "function on_update(entity, dt, input, world)\n"
+        "  local up = #world:physics_events()\n"
+        "  entity:set_name(\"top:\" .. topCount .. \":up:\" .. up)\n"
+        "end\n");
+    T7WriteScript("t7_reload_create.lua",
+        "function on_create(entity, world)\n"
+        "  local ev = world:physics_events()\n"
+        "  world:spawn({name = \"ReloadCreateSaw:\" .. #ev})\n"
+        "end\n"
+        "function on_update(entity, dt, input, world) end\n");
+    h.scriptSys.ReloadScript(T7TempDir() / "t7_reload_top.lua");
+    h.scriptSys.ReloadScript(T7TempDir() / "t7_reload_create.lua");
+    REQUIRE(h.ctrl.Resume());
+    for (int i = 0; i < 4; ++i)
+        h.Update(kFixedDt);
+
+    // The repaired top-level observed empty (not the frame's Contact), the
+    // same script's on_update observes the live snapshot, both instances
+    // are Live, and the repaired on_create observed empty too.
+    const std::string aName = T7RuntimeName(h, aId);
+    CHECK(aName.rfind("top:0:up:", 0) == 0);
+    const int upCount =
+        std::stoi(aName.substr(std::string("top:0:up:").size()));
+    CHECK(upCount >= 1);
+    CHECK(h.scriptSys.GetInstanceState(aId) == ScriptInstanceState::Live);
+    CHECK(h.scriptSys.GetInstanceState(bId) == ScriptInstanceState::Live);
+    CHECK_FALSE(h.sink.FindByName("ReloadCreateSaw:0").IsNull());
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 RED_ResetAllocFailureMutationFree: repair-set exhaustion refuses without moving the body")
+{
+    // Flag guard: an aborted case must not leak the injection into later
+    // cases (the T5/T6 AllocGuard pattern).
+    struct ResetThrowGuard
+    {
+        ~ResetThrowGuard() { PhysicsWorld::SetResetCollectTestThrow(false); }
+    };
+    ResetThrowGuard guard;
+    T7Harness h;
+    T7DocBuilder b(h);
+    entt::entity ground = b.Create("Ground");
+    T7EmplaceBody(b, ground, T7StaticBody(), T7BoxShape(5.0f, 0.5f, 5.0f));
+    b.doc.ecs.registry.get<Transform>(ground).translation = {0.0f, -0.5f, 0.0f};
+    entt::entity box = b.Create("Box");
+    T7EmplaceBody(b, box, T7DynamicBody(1.0f), T7BoxShape(0.25f, 0.25f, 0.25f));
+    b.doc.ecs.registry.get<Transform>(box).translation = {0.0f, 0.24f, 0.0f};
+    b.Finish();
+    const UUID boxId = b.UuidOf(box);
+    REQUIRE(h.Play(b.doc));
+
+    // Baseline: the penetrating pair reports Contact; overlap history is
+    // empty (no ghosts); handles are stable.
+    h.Update(kFixedDt);
+    bool contactBefore = false;
+    for (const auto& e : h.ctrl.PhysicsEvents())
+    {
+        if ((e.bodyA == boxId || e.bodyB == boxId) &&
+            e.kind == PhysicsEventKind::Contact)
+            contactBefore = true;
+    }
+    REQUIRE(contactBefore);
+    PhysicsWorld* world = h.ctrl.TryGetPhysicsWorldMut();
+    REQUIRE(world != nullptr);
+    CHECK(world->PrevOverlapCount() == 0);
+    const glm::vec3 posBefore = T7RuntimePos(h, boxId);
+    const size_t handlesBefore = h.ctrl.PhysicsTotalHandles();
+
+    // Exhaust the repair-set collection, then queue a reset (passes
+    // validation, fails at apply) followed by a velocity write. The drain
+    // must drop the reset loudly, apply the velocity, and continue.
+    PhysicsWorld::SetResetCollectTestThrow(true);
+    PhysicsPoseReset reset;
+    reset.position = glm::vec3{0.0f, 5.0f, 0.0f};
+    REQUIRE(h.sink.ResetBodyPose(boxId, reset));
+    REQUIRE(h.sink.SetLinearVelocity(boxId, glm::vec3{4.0f, 0.0f, 0.0f}));
+    h.Update(kFixedDt);
+    PhysicsWorld::SetResetCollectTestThrow(false);
+
+    // Nothing moved by the reset: no teleport (y far from the reset target
+    // 5.0, still inside the penetrating rest band — the contact solver may
+    // depenetrate upward a millimetre while the box slides, so y is bounded
+    // rather than required to fall), no partial manifold/overlap purge —
+    // the Contact still reports. The x displacement below is the FOLLOWING
+    // velocity command applying normally (drain continuation, minus contact
+    // friction), not the reset: it matches one tick at 4 u/s, not a teleport.
+    const glm::vec3 posAfter = T7RuntimePos(h, boxId);
+    CHECK(posAfter.x ==
+          doctest::Approx(posBefore.x + 4.0f * kFixedDt).epsilon(0.15));
+    CHECK(posAfter.y > 0.2f);
+    CHECK(posAfter.y < 1.0f);
+    CHECK(posAfter.z == doctest::Approx(posBefore.z));
+    bool contactAfter = false;
+    for (const auto& e : h.ctrl.PhysicsEvents())
+    {
+        if ((e.bodyA == boxId || e.bodyB == boxId) &&
+            e.kind == PhysicsEventKind::Contact)
+            contactAfter = true;
+    }
+    CHECK(contactAfter);
+    CHECK(world->PrevOverlapCount() == 0);
+    CHECK(h.ctrl.PhysicsTotalHandles() == handlesBefore);
+    CHECK(h.ctrl.UnexpectedDrainDropCount() == 1);
+    CHECK(h.ctrl.LastDrainDrop().find("reset_body_pose") != std::string::npos);
+    CHECK(h.ctrl.LastDrainDrop().find(boxId.ToString()) != std::string::npos);
+    glm::vec3 v{0.0f, 0.0f, 0.0f};
+    REQUIRE(h.sink.GetLinearVelocity(boxId, v));
+    // Minus contact friction over the sliding tick (observed 3.94).
+    CHECK(v.x == doctest::Approx(4.0f).epsilon(0.05));
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 RED_DrainDropLoudAndContinues: unexpected apply failure names op and UUID, FIFO continues")
+{
+    // Flag guard: an aborted case must not leak the injection into later
+    // cases (the T5/T6 AllocGuard pattern).
+    struct ResetThrowGuard2
+    {
+        ~ResetThrowGuard2() { PhysicsWorld::SetResetCollectTestThrow(false); }
+    };
+    ResetThrowGuard2 guard;
+    T7Harness h;
+    T7DocBuilder b(h);
+    entt::entity ballA = b.Create("BallA");
+    T7EmplaceBody(b, ballA, T7DynamicBody(1.0f), T7SphereShape(0.2f));
+    b.doc.ecs.registry.get<Transform>(ballA).translation = {0.0f, 5.0f, 0.0f};
+    entt::entity ballB = b.Create("BallB");
+    T7EmplaceBody(b, ballB, T7DynamicBody(1.0f), T7SphereShape(0.2f));
+    b.doc.ecs.registry.get<Transform>(ballB).translation = {2.0f, 5.0f, 0.0f};
+    b.Finish();
+    const UUID aId = b.UuidOf(ballA);
+    const UUID bId = b.UuidOf(ballB);
+    REQUIRE(h.Play(b.doc));
+    CHECK(h.ctrl.UnexpectedDrainDropCount() == 0);
+
+    // Both commands pass queue-time validation. The injection makes the
+    // FIRST fail at apply time through the real production path (a
+    // queue-valid reset whose repair-set collection exhausts mid-drain):
+    // no test hook fakes the failure and no white-box component hacking is
+    // involved (apply consults the world record, which the queue gate also
+    // consulted — they cannot be wedged apart from outside).
+    PhysicsWorld::SetResetCollectTestThrow(true);
+    PhysicsPoseReset reset;
+    reset.position = glm::vec3{9.0f, 9.0f, 9.0f};
+    REQUIRE(h.sink.ResetBodyPose(aId, reset));
+    REQUIRE(h.sink.SetLinearVelocity(bId, glm::vec3{7.0f, 0.0f, 0.0f}));
+    h.Update(kFixedDt);
+    PhysicsWorld::SetResetCollectTestThrow(false);
+
+    // The stale command dropped loudly (op + UUID named, counted once) with
+    // no partial mutation — ballA never teleported, its velocity is still
+    // rest — while the following command still applied.
+    CHECK(h.ctrl.UnexpectedDrainDropCount() == 1);
+    CHECK(h.ctrl.LastDrainDrop().find("reset_body_pose") != std::string::npos);
+    CHECK(h.ctrl.LastDrainDrop().find(aId.ToString()) != std::string::npos);
+    const glm::vec3 pa = T7RuntimePos(h, aId);
+    CHECK(pa.x == doctest::Approx(0.0f));
+    CHECK(pa.y < 5.0f);
+    CHECK(pa.y > 4.0f);
+    glm::vec3 va{0.0f, 0.0f, 0.0f};
+    REQUIRE(h.sink.GetLinearVelocity(aId, va));
+    CHECK(std::fabs(va.x) < 0.05f);
+    glm::vec3 vb{0.0f, 0.0f, 0.0f};
+    REQUIRE(h.sink.GetLinearVelocity(bId, vb));
+    CHECK(vb.x == doctest::Approx(7.0f));
+    CHECK(h.ctrl.QueuedPhysicsCommandCount() == 0);
     h.Stop(b.doc);
 }

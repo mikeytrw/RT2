@@ -167,8 +167,10 @@ Authority notes that have bitten before:
   `timer` callbacks, which fire at the tail of `on_update` dispatch and see
   the same snapshot. It is an empty table in `on_create`, `on_fixed_update`,
   and `on_destroy` by construction (the poll window opens only around the
-  `on_update` dispatch, so a spawned script's `on_create` and a destroyed
-  script's `on_destroy` never observe the frame's contacts).
+  `on_update` callbacks, so a spawned script's `on_create` and a destroyed
+  script's `on_destroy` never observe the frame's contacts — and neither
+  does reloaded top-level code or a repaired `on_create` draining from a
+  paused reload inside the same `on_update`).
 - A script reload, quarantine, or Stop drops queued-but-unapplied physics
   commands; a re-Play inherits nothing.
 - Runtime spawn cannot mint physics bodies, and Lua has no raycasts,

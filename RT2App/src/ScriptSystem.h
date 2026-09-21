@@ -333,6 +333,7 @@ public:
     std::vector<PhysicsEvent> GetPhysicsEvents() const override;
     void ClearQueuedPhysicsCommands() override;
     size_t QueuedPhysicsCommandCount() const override;
+    void SetPhysicsEventsVisible(bool visible) override;
     bool IsAlive(const UUID& uuid) const override;
     UUID FindByName(const std::string& name) const override;
     SceneRunState GetRunState() const override;

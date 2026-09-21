@@ -49,6 +49,7 @@ PhysicsWorld::RebuildAllocThrowPhase PhysicsWorld::s_RebuildAllocThrowPhase =
     PhysicsWorld::RebuildAllocThrowPhase::None;
 bool PhysicsWorld::s_TeardownOrderLog = false;
 std::vector<std::string> PhysicsWorld::s_TeardownOrder;
+bool PhysicsWorld::s_ResetCollectTestThrow = false;
 PhysicsWorld::CandidateThrowPoint PhysicsWorld::s_CandidateThrowPoint = PhysicsWorld::CandidateThrowPoint::None;
 bool PhysicsWorld::s_EscapeTestThrow = false;
 size_t PhysicsWorld::s_LiveWorlds = 0;
@@ -421,6 +422,27 @@ bool PhysicsWorld::ResetBodyPose(SceneDocument& runtime, const UUID& id,
     if (rec == nullptr || rec->body == nullptr)
         return false;
 
+    // T7 re-review P2(alloc): stage the previous-transform repair set BEFORE
+    // the first Bullet or ECS mutation. The subtree walk allocates; under
+    // exhaustion the reset must refuse loudly with nothing moved (the same
+    // translation discipline as the staging/rebuild boundaries), never move
+    // the body and then fail the descendant repair. The test throw below
+    // proves the seam without needing real memory pressure.
+    std::vector<entt::entity> repairSubtree;
+    try
+    {
+        if (s_ResetCollectTestThrow)
+            throw std::bad_alloc();
+        SceneHierarchy::CollectSubtreePreOrder(reg, entity, repairSubtree);
+    }
+    catch (const std::bad_alloc&)
+    {
+        printf("[Physics] reset_body_pose refused for %s "
+               "(subtree collection exhausted resources; body unmoved)\n",
+               id.ToString().c_str());
+        return false;
+    }
+
     const glm::vec3 newLinear =
         hasLinearVelocity ? linearVelocity : glm::vec3{0.0f, 0.0f, 0.0f};
     const glm::vec3 newAngular =
@@ -496,9 +518,9 @@ bool PhysicsWorld::ResetBodyPose(SceneDocument& runtime, const UUID& id,
     tf->rotation = unitRotation;
     SceneGraph::SetLocalDirty(reg, entity);
     SceneGraph::UpdateWorldTransforms(reg);
-    std::vector<entt::entity> subtree;
-    SceneHierarchy::CollectSubtreePreOrder(reg, entity, subtree);
-    for (const auto child : subtree)
+    // Staged in Phase 1 (before any mutation), so this walk cannot fail
+    // partway: every entry was collected while the world was still intact.
+    for (const auto child : repairSubtree)
     {
         if (auto* childTf = reg.try_get<Transform>(child))
             childTf->prevWorldMatrix = childTf->worldMatrix;
@@ -2681,6 +2703,16 @@ std::vector<std::string> PhysicsWorld::TakeTeardownOrderLog()
 }
 
 void PhysicsWorld::ClearTeardownOrderLog() { s_TeardownOrder.clear(); }
+
+void PhysicsWorld::SetResetCollectTestThrow(bool fail)
+{
+    s_ResetCollectTestThrow = fail;
+}
+
+bool PhysicsWorld::ResetCollectTestThrow()
+{
+    return s_ResetCollectTestThrow;
+}
 
 // ============================================================================
 // ValidatePhysicsForPlay — T3 early invariants

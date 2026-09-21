@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -325,6 +326,13 @@ public:
     {
         return m_PhysicsCommands.size();
     }
+    // T7 re-review P2: unexpected pre-step drain drops (a command that
+    // passed queue-time validation but failed at apply time). The drain
+    // prints UUID + op and continues; the count and the last message are
+    // readable here so tests prove the loud-drop-and-continue contract.
+    // Both reset on Play and Stop.
+    size_t UnexpectedDrainDropCount() const { return m_DrainDropCount; }
+    std::string LastDrainDrop() const { return m_LastDrainDrop; }
 
     // ---- T3 physics world lifecycle -------------------------------------
 
@@ -499,6 +507,10 @@ private:
     // T7 queued physics commands (validated at queue time, drained at the
     // next pre-step boundary; cleared on reload, quarantine, and Stop).
     std::vector<QueuedPhysicsCommand> m_PhysicsCommands;
+    // T7 re-review P2: unexpected drain-drop observation (count + last
+    // message). Reset on Play and Stop so sessions start at zero.
+    size_t m_DrainDropCount = 0;
+    std::string m_LastDrainDrop;
     // T7 re-review P1(1): Lua event-poll visibility window. Set around the
     // OnUpdate dispatch only (Update and Step); false everywhere else, so
     // on_create/on_destroy (SyncScriptEnvironments) and OnFixedUpdate can

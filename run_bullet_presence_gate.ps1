@@ -182,7 +182,10 @@ $requiredCases = @(
     "T7 GREEN_ResetClearsContactManifold: teleporting out of a contact ends its Contact reports",
     "T7 GREEN_ResetSnapsDescendantPrevTransforms: visual children re-snap with the reset root",
     "T7 GREEN_PhysicsCommandFifoOrder: insertion order decides the final state",
-    "T7 RED_MalformedDriveCallsReturnFalse: hinge/slider Lua validation never raises or enqueues"
+    "T7 RED_MalformedDriveCallsReturnFalse: hinge/slider Lua validation never raises or enqueues",
+    "T7 GREEN_PausedReloadSeesEmptyEvents: repaired top-level and on_create poll empty on a contact frame",
+    "T7 RED_ResetAllocFailureMutationFree: repair-set exhaustion refuses without moving the body",
+    "T7 RED_DrainDropLoudAndContinues: unexpected apply failure names op and UUID, FIFO continues"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }

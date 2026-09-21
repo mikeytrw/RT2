@@ -474,6 +474,15 @@ public:
     static void SetEscapeTestThrow(bool fail);
     static bool EscapeTestThrow();
 
+    // Test-only allocation-failure injection for the T7 reset repair-set
+    // collection (re-review P2). When set, the next ResetBodyPose throws
+    // std::bad_alloc while staging its subtree — before any Bullet or ECS
+    // mutation — so tests prove the exhaustion path refuses loudly with the
+    // body unmoved. Default off; tests must clear after use. Never set
+    // outside tests.
+    static void SetResetCollectTestThrow(bool fail);
+    static bool ResetCollectTestThrow();
+
     // Test-only destruction probe, invoked by the REAL ~PhysicsWorld()
     // when set (after Bullet teardown, before the live count decrements).
     // Lets the Stop-order test observe the actual destruction boundary:
@@ -568,6 +577,7 @@ private:
     static RebuildAllocThrowPhase s_RebuildAllocThrowPhase;
     static bool s_TeardownOrderLog;
     static std::vector<std::string> s_TeardownOrder;
+    static bool s_ResetCollectTestThrow;
     static CandidateThrowPoint s_CandidateThrowPoint;
     static bool s_EscapeTestThrow;
     static size_t s_LiveWorlds;

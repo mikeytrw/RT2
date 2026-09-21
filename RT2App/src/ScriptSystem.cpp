@@ -516,6 +516,18 @@ void ScriptSystem::OnUpdate(float dt)
 {
     if (!m_RuntimeDoc) return;
 
+    // T7 re-review P1(1): the Lua event-poll window stays CLOSED while
+    // pending reloads drain. ReloadScript runs BuildEnvironment (which
+    // executes the reloaded top-level chunk) and can fire a repaired
+    // on_create — both must observe an empty poll even on contact frames,
+    // exactly like sync-phase on_create/on_destroy. The controller's RAII
+    // bracket opened the window around this dispatch; close it here and
+    // reopen it below for the actual on_update callbacks plus the timer
+    // tail. The controller bracket remains the backstop: if an escaping
+    // failure skips the re-close below, dispatch exit still closes it.
+    if (m_Sink)
+        m_Sink->SetPhysicsEventsVisible(false);
+
     // Drain pending reloads (paused → resumed). OnUpdate fires during Play
     // and Step (which is Paused). Only drain when actually Playing — Step
     // should advance the world as authored, not mutate its code mid-freeze.
@@ -527,6 +539,9 @@ void ScriptSystem::OnUpdate(float dt)
         for (const auto& p : pending)
             ReloadScript(p);
     }
+
+    if (m_Sink)
+        m_Sink->SetPhysicsEventsVisible(true);
 
     auto entities = CollectScriptEntitiesSorted();
     for (const auto& [uuid, entity] : entities)
@@ -556,8 +571,13 @@ void ScriptSystem::OnUpdate(float dt)
     // Fire due timers after all on_update callbacks. Timers accumulate
     // against this frame's dt and advance under both Play and Step (Step
     // calls OnUpdate while Paused, which is correct — single-step should
-    // be representative of Play).
+    // be representative of Play). The timer tail runs inside the open
+    // event-poll window (same snapshot the frame's on_update saw); the
+    // window re-closes here so post-dispatch lifecycle callbacks observe
+    // empty.
     FireTimers(dt);
+    if (m_Sink)
+        m_Sink->SetPhysicsEventsVisible(false);
 }
 
 void ScriptSystem::OnEntitiesDestroying(const std::vector<UUID>& uuids)
@@ -2151,6 +2171,11 @@ std::vector<PhysicsEvent> RuntimeCommandSink::GetPhysicsEvents() const
 void RuntimeCommandSink::ClearQueuedPhysicsCommands()
 {
     m_Controller.ClearQueuedPhysicsCommands();
+}
+
+void RuntimeCommandSink::SetPhysicsEventsVisible(bool visible)
+{
+    m_Controller.SetPhysicsEventsLuaVisible(visible);
 }
 
 size_t RuntimeCommandSink::QueuedPhysicsCommandCount() const
