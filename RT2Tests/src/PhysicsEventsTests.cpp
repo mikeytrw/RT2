@@ -1196,3 +1196,57 @@ TEST_CASE("T6 GREEN_MixedTriggerGroupOrder: one tick emits contacts, enters, sta
         T6CheckCanonical(e);
     ctrl.Stop(f.Authoring(), bridge);
 }
+
+TEST_CASE("T6 GREEN_ContactAggregationExactMeanAndSum: coalesced Contact carries the exact mean position and summed impulse")
+{
+    // Production-path half: a resting face-to-face box pair reports several
+    // Bullet manifold points per tick and must coalesce to exactly one
+    // Contact for the pair on the real scrape path.
+    T6Fixture f;
+    const T6RestScene scene = T6BuildRestScene(f);
+    (void)scene;
+    T6NullBridge bridge;
+    Error err;
+    RuntimeSceneController ctrl;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    ctrl.Update(kFixedDt, bridge);
+    const std::vector<PhysicsEvent> snap = ctrl.PhysicsEvents();
+    REQUIRE(snap.size() == 1);
+    REQUIRE(snap.front().kind == PhysicsEventKind::Contact);
+    ctrl.Stop(f.Authoring(), bridge);
+
+    // Seam half: synthetic qualifying points with asymmetric x/z positions
+    // and distinct positive impulses through PRODUCTION's aggregation
+    // (PhysicsWorld::CoalesceContactPoints — the same function the scrape
+    // calls, not a reimplemented formula). Every value is exactly
+    // representable in binary32, so these are bitwise assertions, not
+    // approximations. The mean (1,0,1) equals no single point and the sum
+    // 7.0 equals no single impulse: selecting one raw point or one point
+    // impulse turns this red.
+    const UUID a = UUID::Parse("00000000-0000-4000-8000-000000000001");
+    const UUID b = UUID::Parse("00000000-0000-4000-8000-000000000002");
+    REQUIRE(a < b);
+    std::vector<PhysicsWorld::ContactCoalescePoint> points(3);
+    points[0].position = {1.5f, 0.25f, 0.5f};
+    points[0].normal = {0.0f, 1.0f, 0.0f};
+    points[0].impulse = 1.0f;
+    points[1].position = {0.5f, -0.5f, 2.5f};
+    points[1].normal = {0.0f, 1.0f, 0.0f};
+    points[1].impulse = 2.0f;
+    points[2].position = {1.0f, 0.25f, 0.0f};
+    points[2].normal = {0.0f, 1.0f, 0.0f};
+    points[2].impulse = 4.0f;
+    const PhysicsEvent e =
+        PhysicsWorld::CoalesceContactPoints(a, b, points, 3);
+    CHECK(e.kind == PhysicsEventKind::Contact);
+    CHECK(e.bodyA == a);
+    CHECK(e.bodyB == b);
+    CHECK(e.tickIndex == 3);
+    CHECK(e.position.x == 1.0f);
+    CHECK(e.position.y == 0.0f);
+    CHECK(e.position.z == 1.0f);
+    CHECK(e.normal.x == 0.0f);
+    CHECK(e.normal.y == 1.0f);
+    CHECK(e.normal.z == 0.0f);
+    CHECK(e.impulse == 7.0f);
+}

@@ -519,15 +519,49 @@ void PhysicsWorld::ClearEventHistory()
     m_PrevOverlaps.clear();
 }
 
+PhysicsEvent PhysicsWorld::CoalesceContactPoints(
+    const UUID& bodyA, const UUID& bodyB,
+    const std::vector<ContactCoalescePoint>& points, uint32_t tickIndex)
+{
+    PhysicsEvent e;
+    e.kind = PhysicsEventKind::Contact;
+    e.bodyA = bodyA;
+    e.bodyB = bodyB;
+    e.tickIndex = tickIndex;
+    if (points.empty())
+        return e;
+    glm::vec3 posSum = points.front().position;
+    glm::vec3 nrmSum = points.front().normal;
+    float impSum = points.front().impulse;
+    for (size_t k = 1; k < points.size(); ++k)
+    {
+        posSum += points[k].position;
+        nrmSum += points[k].normal;
+        impSum += points[k].impulse;
+    }
+    const float count = (float)points.size();
+    glm::vec3 nrm = nrmSum;
+    const float len = glm::length(nrm);
+    // Antiparallel manifold normals summing near zero are degenerate;
+    // fall back to the run's first normal rather than emitting NaN.
+    e.normal = (len > 1e-9f) ? (nrm / len) : points.front().normal;
+    e.position = posSum / count;
+    e.impulse = impSum;
+    return e;
+}
+
 void PhysicsWorld::AppendTickEvents(std::vector<PhysicsEvent>& out,
                                     uint32_t tickIndex)
 {
     // ---- Contacts: one coalesced event per unordered pair per tick ------
     // Manifolds iterate in Bullet solver order (not UUID order), so raw
-    // points are collected, sorted by canonical pair, then coalesced: the
-    // stored impulse is the tick's summed applied impulse, the position the
-    // mean, the normal the normalized mean. Points with zero applied impulse
-    // (speculative contacts the solver did not act on) carry no event.
+    // points are collected, sorted by canonical pair, then coalesced through
+    // CoalesceContactPoints: the stored impulse is the tick's summed applied
+    // impulse, the position the mean, the normal the normalized mean.
+    // Qualification is touch, not impact (re-review P1(3)): the solver acting
+    // qualifies by impulse, and touching/penetrating points qualify by
+    // distance even at zero impulse. Only speculative separating points the
+    // solver ignored carry no event.
     struct RawPoint
     {
         UUID a;
@@ -594,31 +628,22 @@ void PhysicsWorld::AppendTickEvents(std::vector<PhysicsEvent>& out,
     for (size_t i = 0; i < raw.size();)
     {
         size_t j = i + 1;
-        glm::vec3 posSum = raw[i].pos;
-        glm::vec3 nrmSum = raw[i].nrm;
-        float impSum = raw[i].imp;
         while (j < raw.size() && raw[j].a == raw[i].a && raw[j].b == raw[i].b)
-        {
-            posSum += raw[j].pos;
-            nrmSum += raw[j].nrm;
-            impSum += raw[j].imp;
             ++j;
+        // One canonical pair's run routes through the shared aggregation
+        // (the discriminator's seam), never an inline copy of it.
+        std::vector<ContactCoalescePoint> run;
+        run.reserve(j - i);
+        for (size_t k = i; k < j; ++k)
+        {
+            ContactCoalescePoint p;
+            p.position = raw[k].pos;
+            p.normal = raw[k].nrm;
+            p.impulse = raw[k].imp;
+            run.push_back(p);
         }
-        const float count = (float)(j - i);
-        glm::vec3 nrm = nrmSum;
-        const float len = glm::length(nrm);
-        // Antiparallel manifold normals summing near zero are degenerate;
-        // fall back to the run's first normal rather than emitting NaN.
-        nrm = (len > 1e-9f) ? (nrm / len) : raw[i].nrm;
-        PhysicsEvent e;
-        e.kind = PhysicsEventKind::Contact;
-        e.bodyA = raw[i].a;
-        e.bodyB = raw[i].b;
-        e.position = posSum / count;
-        e.normal = nrm;
-        e.impulse = impSum;
-        e.tickIndex = tickIndex;
-        out.push_back(e);
+        out.push_back(
+            CoalesceContactPoints(raw[i].a, raw[i].b, run, tickIndex));
         i = j;
     }
 

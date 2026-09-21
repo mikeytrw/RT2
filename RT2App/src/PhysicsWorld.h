@@ -191,6 +191,28 @@ public:
     // history — it only appends one tick's canonical events.
     void AppendTickEvents(std::vector<PhysicsEvent>& out, uint32_t tickIndex);
 
+    // One canonical pair's qualifying contact points (already canonicalized:
+    // bodyA < bodyB, normals pointing bodyB -> bodyA).
+    struct ContactCoalescePoint
+    {
+        glm::vec3 position = {0.0f, 0.0f, 0.0f};
+        glm::vec3 normal = {0.0f, 1.0f, 0.0f};
+        float impulse = 0.0f;
+    };
+
+    // Test seam (T6 re-review proof gap): coalesce one canonical pair's
+    // qualifying points into its Contact event — the exact aggregation
+    // AppendTickEvents applies per pair per tick (summed impulse, mean
+    // position, normalized-mean normal). Production calls this for every
+    // coalesced run; the discriminator feeds it synthetic points with known
+    // values, so it turns red if production ever selects one raw point or
+    // one point impulse. Points must be non-empty (production runs always
+    // hold at least one point); an empty input yields a zero-payload event
+    // rather than a divide-by-zero.
+    static PhysicsEvent CoalesceContactPoints(
+        const UUID& bodyA, const UUID& bodyB,
+        const std::vector<ContactCoalescePoint>& points, uint32_t tickIndex);
+
     // Clear the ghost-overlap history without emitting anything (Stop/reset
     // seam, rule 3). The next observed overlap reports TriggerEnter, never a
     // stale Exit. Also invoked implicitly by body removal (purged pairs) and

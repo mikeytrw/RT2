@@ -153,7 +153,8 @@ $requiredCases = @(
     "T6 GREEN_RotatedGhostNarrowphaseConfirmed: AABB-only pairs stay silent while true overlap reports",
     "T6 GREEN_TriggerTriggerOverlapAndDisappearance: ghost pairs report Enter and vanish without Exit",
     "T6 GREEN_ZeroImpulseContactPreserved: a real touching manifold reports even with zero solver impulse",
-    "T6 GREEN_MixedTriggerGroupOrder: one tick emits contacts, enters, stays, exits in canonical order"
+    "T6 GREEN_MixedTriggerGroupOrder: one tick emits contacts, enters, stays, exits in canonical order",
+    "T6 GREEN_ContactAggregationExactMeanAndSum: coalesced Contact carries the exact mean position and summed impulse"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
