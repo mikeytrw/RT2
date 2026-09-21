@@ -26,6 +26,7 @@
 #include "IRuntimeScriptDispatch.h"
 #include "ScriptSystem.h"
 #include "SceneGraph.h"
+#include "SceneHierarchy.h"
 #include "SceneManager.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
@@ -610,6 +611,25 @@ TEST_CASE("T7 GREEN_SliderTargetReleaseAtTickBoundary: Lua target walks the plun
     const UUID plungerId = b.UuidOf(plunger);
     REQUIRE(h.Play(b.doc));
 
+    // First-eligible-tick latency (P2 gap closure): the frame-0 OnUpdate
+    // target queues after frame 0's steps and drains at frame 1's pre-step.
+    // The motor is already armed after frame 1's single tick — the command
+    // took effect at the first eligible boundary, not "within 120 ticks".
+    // (Bulk motion still needs the settle loop below: one tick of motor
+    // force against static friction need not move the position readout.)
+    h.Update(kFixedDt);
+    h.Update(kFixedDt);
+    bool motorOk = false;
+    CHECK(h.ctrl.TryGetPhysicsWorldMut()->SliderMotorEnabled(plungerId,
+                                                             motorOk));
+    CHECK(motorOk);
+    bool firstOk = false;
+    const float firstPos =
+        h.ctrl.TryGetPhysicsWorldMut()->SliderPosition(plungerId, firstOk);
+    REQUIRE(firstOk);
+    CHECK(firstPos >= 0.0f);
+    CHECK(firstPos <= 0.3f);
+
     // The Lua target (0.25, inside [0, 0.3]) walks the plunger off zero and
     // toward the setpoint within the tick budget.
     for (int i = 0; i < 120; ++i)
@@ -1177,7 +1197,8 @@ TEST_CASE("T7 RED_InvalidOpsLoudMutationFree: wrong UUID, kind, and arguments re
     CHECK_FALSE(h.sink.SetHingeDrive(plainId, 1.0f, 1.0f));
     CHECK_FALSE(h.sink.SetSliderTarget(plainId, 0.1f));
     // Wrong kind: Static refuses velocity/impulse/reset; Kinematic refuses
-    // impulse (infinite mass); ghost-only refuses velocity reads/writes.
+    // impulse (infinite mass); ghost-only refuses velocity reads/writes AND
+    // reset (no rigid body to move — T7 re-review P1(2)).
     CHECK_FALSE(h.sink.SetLinearVelocity(staticId, v));
     CHECK_FALSE(h.sink.ApplyImpulse(staticId, v));
     CHECK_FALSE(h.sink.ResetBodyPose(staticId, reset));
@@ -1185,6 +1206,7 @@ TEST_CASE("T7 RED_InvalidOpsLoudMutationFree: wrong UUID, kind, and arguments re
     CHECK_FALSE(h.sink.GetLinearVelocity(ghostId, out));
     CHECK_FALSE(h.sink.GetAngularVelocity(ghostId, out));
     CHECK_FALSE(h.sink.SetLinearVelocity(ghostId, v));
+    CHECK_FALSE(h.sink.ResetBodyPose(ghostId, reset));
     // Wrong constraint kind: hinge ops on a body without one, slider ops
     // on a body without one (and vice versa once constraints exist —
     // covered by the hinge/slider GREEN cases above).
@@ -1416,4 +1438,417 @@ TEST_CASE("T7 GREEN_PrefabPhysicsComplete: sources carry physics, members refuse
     CHECK(*manager.GetPhysicsBody(bodyA) == otherBody);
 
     std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Re-review discriminators: lifecycle phase gate, timers, rigid-body rule,
+// manifold cleanup, descendant repair, FIFO, malformed drive calls
+// ============================================================================
+
+TEST_CASE("T7 GREEN_PhysicsEventsLifecycleGated: on_create and on_destroy see empty while on_update polls agree")
+{
+    T7WriteScript("t7_phase_spawner.lua",
+        "local phase = 0\n"
+        "function on_update(entity, dt, input, world)\n"
+        "  if phase == 0 then\n"
+        "    phase = 1\n"
+        "    world:spawn({name = \"T7PhaseChild\", script = \"t7_phase_child.lua\"})\n"
+        "  elseif phase == 1 then\n"
+        "    phase = 2\n"
+        "    local v = world:find_by_name(\"Victim\")\n"
+        "    if v ~= nil then world:destroy(v) end\n"
+        "  end\n"
+        "  local ev = world:physics_events()\n"
+        "  local parts = {}\n"
+        "  for i, e in ipairs(ev) do\n"
+        "    parts[#parts + 1] = e.kind .. \":\" .. e.bodyA .. \":\" .. e.bodyB .. \":\" .. e.tick\n"
+        "  end\n"
+        "  entity:set_name(\"spawner|ev:\" .. #ev .. \":\" .. table.concat(parts, \"|\"))\n"
+        "end\n");
+    // on_create fires in the post-publication sync: the gate must hold it
+    // empty. The observation exfiltrates through a spawned marker because
+    // the later on_update overwrites this entity's own name.
+    T7WriteScript("t7_phase_child.lua",
+        "function on_create(entity, world)\n"
+        "  local ev = world:physics_events()\n"
+        "  world:spawn({name = \"CreateSaw:\" .. #ev})\n"
+        "end\n"
+        "function on_update(entity, dt, input, world)\n"
+        "  local ev = world:physics_events()\n"
+        "  local parts = {}\n"
+        "  for i, e in ipairs(ev) do\n"
+        "    parts[#parts + 1] = e.kind .. \":\" .. e.bodyA .. \":\" .. e.bodyB .. \":\" .. e.tick\n"
+        "  end\n"
+        "  entity:set_name(\"child|ev:\" .. #ev .. \":\" .. table.concat(parts, \"|\"))\n"
+        "end\n");
+    // on_destroy fires mid-drain (pre-publication): bare `world` resolves
+    // through the environment even though the callback takes one arg.
+    T7WriteScript("t7_phase_victim.lua",
+        "function on_destroy(entity)\n"
+        "  local ev = world:physics_events()\n"
+        "  world:spawn({name = \"DestroySaw:\" .. #ev})\n"
+        "end\n");
+    T7Harness h;
+    T7DocBuilder b(h);
+    entt::entity ground = b.Create("Ground");
+    T7EmplaceBody(b, ground, T7StaticBody(), T7BoxShape(5.0f, 0.5f, 5.0f));
+    b.doc.ecs.registry.get<Transform>(ground).translation = {0.0f, -0.5f, 0.0f};
+    entt::entity box = b.Create("Box");
+    T7EmplaceBody(b, box, T7DynamicBody(1.0f), T7BoxShape(0.25f, 0.25f, 0.25f));
+    b.doc.ecs.registry.get<Transform>(box).translation = {0.0f, 0.24f, 0.0f};
+    entt::entity spawner = b.Create("Spawner");
+    b.AttachScript(spawner, "t7_phase_spawner.lua");
+    entt::entity victim = b.Create("Victim");
+    b.AttachScript(victim, "t7_phase_victim.lua");
+    b.Finish();
+    const UUID spawnerId = b.UuidOf(spawner);
+    REQUIRE(h.Play(b.doc));
+
+    // Frame 0: spawn queued. Frame 1: child on_create runs post-publication
+    // (must see empty), spawner destroys victim. Frame 2: victim on_destroy
+    // runs pre-publication (must see empty). Frames 3-4 flush both markers.
+    for (int i = 0; i < 5; ++i)
+        h.Update(kFixedDt);
+
+    // Lifecycle callbacks observed empty tables despite contacts every tick.
+    const UUID createMark = h.sink.FindByName("CreateSaw:0");
+    CHECK_FALSE(createMark.IsNull());
+    const UUID destroyMark = h.sink.FindByName("DestroySaw:0");
+    CHECK_FALSE(destroyMark.IsNull());
+    // No leaking marker with a nonzero count exists.
+    CHECK(h.sink.FindByName("CreateSaw:1").IsNull());
+    CHECK(h.sink.FindByName("DestroySaw:1").IsNull());
+
+    // Every on_update poll in the final frame agrees exactly, with Contact.
+    // The child renamed itself out of its spawn name, so it is located by
+    // its stable "child|" poll prefix (exactly one entity carries it).
+    auto findByPrefix = [&](const std::string& prefix) {
+        const SceneDocument* rt = T7Runtime(h);
+        if (!rt)
+            return std::string{};
+        auto view = rt->ecs.registry.view<NameComponent>();
+        for (auto e : view)
+        {
+            const std::string& name = view.get<NameComponent>(e).name;
+            if (name.rfind(prefix, 0) == 0)
+                return name;
+        }
+        return std::string{};
+    };
+    const std::string sName = T7RuntimeName(h, spawnerId);
+    const std::string cName = findByPrefix("child|");
+    REQUIRE_FALSE(cName.empty());
+    REQUIRE(sName.rfind("spawner|", 0) == 0);
+    // Strip the reporter prefixes: the polled payloads must be identical.
+    CHECK(sName.substr(std::string("spawner|").size()) ==
+          cName.substr(std::string("child|").size()));
+    CHECK(sName.find("contact:") != std::string::npos);
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 GREEN_PhysicsEventsTimerSeesOnUpdateSnapshot: timer callbacks poll inside the visible window")
+{
+    T7WriteScript("t7_timer_poll.lua",
+        "local up = -1\n"
+        "local tm = -2\n"
+        "local armed = true\n"
+        "function on_update(entity, dt, input, world)\n"
+        "  up = #world:physics_events()\n"
+        "  if armed then\n"
+        "    armed = false\n"
+        "    timer:after(0.0, function()\n"
+        "      tm = #world:physics_events()\n"
+        "    end)\n"
+        "  end\n"
+        "  entity:set_name(\"up:\" .. up .. \":tm:\" .. tm)\n"
+        "end\n");
+    T7Harness h;
+    T7DocBuilder b(h);
+    entt::entity ground = b.Create("Ground");
+    T7EmplaceBody(b, ground, T7StaticBody(), T7BoxShape(5.0f, 0.5f, 5.0f));
+    b.doc.ecs.registry.get<Transform>(ground).translation = {0.0f, -0.5f, 0.0f};
+    entt::entity box = b.Create("Box");
+    T7EmplaceBody(b, box, T7DynamicBody(1.0f), T7BoxShape(0.25f, 0.25f, 0.25f));
+    b.doc.ecs.registry.get<Transform>(box).translation = {0.0f, 0.24f, 0.0f};
+    b.AttachScript(box, "t7_timer_poll.lua");
+    b.Finish();
+    const UUID boxId = b.UuidOf(box);
+    REQUIRE(h.Play(b.doc));
+
+    // The zero-delay timer fires at the same frame's OnUpdate tail, inside
+    // the visible window: it observes the same non-empty snapshot.
+    h.Update(kFixedDt);
+    h.Update(kFixedDt);
+    const std::string name = T7RuntimeName(h, boxId);
+    CHECK(name.rfind("up:", 0) == 0);
+    const std::string::size_type split = name.find(":tm:");
+    REQUIRE(split != std::string::npos);
+    const int up = std::stoi(name.substr(3, split - 3));
+    const int tm = std::stoi(name.substr(split + 4));
+    CHECK(up >= 1);
+    CHECK(tm == up);
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 RED_KinematicTriggerRefusesRigidCommands: ghost-only kinematic bodies take no rigid writes")
+{
+    T7Harness h;
+    T7DocBuilder b(h);
+    // A valid authored Kinematic trigger: trigger shape on the Trigger
+    // layer. Play must accept it (it is a legal sensor); rigid-body writes
+    // must refuse it (it has no solver body).
+    entt::entity trig = b.Create("KineTrigger");
+    PhysicsBodyComponent trigBody;
+    trigBody.kind = PhysicsBodyKind::Kinematic;
+    trigBody.mass = 0.0f;
+    trigBody.layer = PhysicsLayer::Trigger;
+    trigBody.mask = PhysicsLayer::Dynamic;
+    T7EmplaceBody(b, trig, trigBody, T7GhostSlab(1.0f, 1.0f, 1.0f));
+    b.doc.ecs.registry.get<Transform>(trig).translation = {0.0f, 1.0f, 0.0f};
+    b.Finish();
+    const UUID trigId = b.UuidOf(trig);
+    REQUIRE(h.Play(b.doc));
+    // The record exists (Play built the trigger) but carries a ghost, not
+    // a rigid body — the exact shape the old gate mistook for a body.
+    const PhysicsBodyRecord* record =
+        h.ctrl.TryGetPhysicsWorldMut()->FindBody(trigId);
+    REQUIRE(record != nullptr);
+    CHECK(record->body == nullptr);
+    CHECK(record->ghost != nullptr);
+
+    const glm::vec3 spawnPos = T7RuntimePos(h, trigId);
+    glm::vec3 out{0.0f, 0.0f, 0.0f};
+    CHECK_FALSE(h.sink.GetLinearVelocity(trigId, out));
+    CHECK_FALSE(h.sink.GetAngularVelocity(trigId, out));
+    CHECK_FALSE(
+        h.sink.SetLinearVelocity(trigId, glm::vec3{1.0f, 0.0f, 0.0f}));
+    CHECK_FALSE(h.sink.ApplyImpulse(trigId, glm::vec3{1.0f, 0.0f, 0.0f}));
+    PhysicsPoseReset reset;
+    reset.position = glm::vec3{9.0f, 9.0f, 9.0f};
+    CHECK_FALSE(h.sink.ResetBodyPose(trigId, reset));
+    // Nothing enqueued, nothing mutated: ECS pose identical after ticks,
+    // and the ghost still overlaps nothing new.
+    CHECK(h.ctrl.QueuedPhysicsCommandCount() == 0);
+    h.Update(kFixedDt);
+    h.Update(kFixedDt);
+    const glm::vec3 stillPos = T7RuntimePos(h, trigId);
+    CHECK(stillPos.x == doctest::Approx(spawnPos.x));
+    CHECK(stillPos.y == doctest::Approx(spawnPos.y));
+    CHECK(stillPos.z == doctest::Approx(spawnPos.z));
+    CHECK(h.ctrl.QueuedPhysicsCommandCount() == 0);
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 GREEN_ResetClearsContactManifold: teleporting out of a contact ends its Contact reports")
+{
+    T7Harness h;
+    T7DocBuilder b(h);
+    entt::entity ground = b.Create("Ground");
+    T7EmplaceBody(b, ground, T7StaticBody(), T7BoxShape(5.0f, 0.5f, 5.0f));
+    b.doc.ecs.registry.get<Transform>(ground).translation = {0.0f, -0.5f, 0.0f};
+    entt::entity box = b.Create("Box");
+    T7EmplaceBody(b, box, T7DynamicBody(1.0f), T7BoxShape(0.25f, 0.25f, 0.25f));
+    b.doc.ecs.registry.get<Transform>(box).translation = {0.0f, 0.24f, 0.0f};
+    b.Finish();
+    const UUID boxId = b.UuidOf(box);
+    REQUIRE(h.Play(b.doc));
+
+    auto mentionsBox = [&](const UUID& uuid) {
+        for (const auto& e : h.ctrl.PhysicsEvents())
+        {
+            if (e.bodyA == uuid || e.bodyB == uuid)
+                return true;
+        }
+        return false;
+    };
+
+    // The penetrating pair reports Contact before the reset: the manifold
+    // exists and the scrape sees it.
+    h.Update(kFixedDt);
+    CHECK(mentionsBox(boxId));
+
+    // Teleport far above the ground (no touch possible), then read the next
+    // two published snapshots: neither may mention the box. Without the
+    // manifold/proxy purge the stale manifold would re-report.
+    PhysicsPoseReset reset;
+    reset.position = glm::vec3{0.0f, 5.0f, 0.0f};
+    REQUIRE(h.sink.ResetBodyPose(boxId, reset));
+    h.Update(kFixedDt);
+    CHECK_FALSE(mentionsBox(boxId));
+    h.Update(kFixedDt);
+    CHECK_FALSE(mentionsBox(boxId));
+    // The body is intact and simulating (it fell from the reset pose).
+    const glm::vec3 p = T7RuntimePos(h, boxId);
+    CHECK(p.y < 5.0f);
+    CHECK(p.y > 3.0f);
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 GREEN_ResetSnapsDescendantPrevTransforms: visual children re-snap with the reset root")
+{
+    T7Harness h;
+    T7DocBuilder b(h);
+    // A Kinematic root isolates previous-transform repair from solver
+    // motion: no PostStepSync write-back and no gravity integration can
+    // move the root after the reset, so any prev/world mismatch is purely
+    // the reset's repair (or lack of it).
+    entt::entity root = b.Create("Root");
+    T7EmplaceBody(b, root, T7KinematicBody(), T7BoxShape(0.5f, 0.1f, 0.5f));
+    b.doc.ecs.registry.get<Transform>(root).translation = {0.0f, 0.0f, 0.0f};
+    entt::entity child = b.Create("VisualChild");
+    b.doc.ecs.registry.get<Transform>(child).translation = {0.0f, 1.0f, 0.0f};
+    b.doc.ecs.registry.emplace<Hierarchy>(child, Hierarchy{});
+    b.doc.ecs.registry.get<Hierarchy>(child).parent = root;
+    Error rebuildErr;
+    REQUIRE(SceneHierarchy::RebuildChildren(b.doc.ecs.registry, rebuildErr));
+    b.Finish();
+    const UUID rootId = b.UuidOf(root);
+    const UUID childId = b.UuidOf(child);
+    REQUIRE(h.Play(b.doc));
+    h.Update(kFixedDt);
+
+    PhysicsPoseReset reset;
+    reset.position = glm::vec3{3.0f, 0.0f, 0.0f};
+    REQUIRE(h.sink.ResetBodyPose(rootId, reset));
+    h.Update(kFixedDt);
+
+    const SceneDocument* rt = T7Runtime(h);
+    REQUIRE(rt != nullptr);
+    const auto rootEnt = rt->FindByUuid(rootId);
+    const auto childEnt = rt->FindByUuid(childId);
+    REQUIRE(rt->ecs.registry.valid(rootEnt));
+    REQUIRE(rt->ecs.registry.valid(childEnt));
+    const auto* rootTf = rt->ecs.registry.try_get<Transform>(rootEnt);
+    const auto* childTf = rt->ecs.registry.try_get<Transform>(childEnt);
+    REQUIRE(rootTf != nullptr);
+    REQUIRE(childTf != nullptr);
+    // Both root and child re-snapped: no one-frame motion-vector spike for
+    // either. The updates are assignment copies, so equality is exact.
+    CHECK(rootTf->prevWorldMatrix == rootTf->worldMatrix);
+    CHECK(childTf->prevWorldMatrix == childTf->worldMatrix);
+    // The child rode along: world pose follows the reset root plus its
+    // local offset, proving the subtree walk covered a transformed child.
+    CHECK(glm::vec3(childTf->worldMatrix[3]).x == doctest::Approx(3.0f));
+    CHECK(glm::vec3(childTf->worldMatrix[3]).y == doctest::Approx(1.0f));
+    CHECK(glm::vec3(childTf->worldMatrix[3]).z == doctest::Approx(0.0f));
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 GREEN_PhysicsCommandFifoOrder: insertion order decides the final state")
+{
+    T7Harness h;
+    T7DocBuilder b(h);
+    entt::entity ball = b.Create("Ball");
+    T7EmplaceBody(b, ball, T7DynamicBody(1.0f), T7SphereShape(0.2f));
+    b.doc.ecs.registry.get<Transform>(ball).translation = {0.0f, 5.0f, 0.0f};
+    b.Finish();
+    const UUID ballId = b.UuidOf(ball);
+    REQUIRE(h.Play(b.doc));
+
+    // Order-sensitive pair: a bare reset (zeroes velocity) followed by a
+    // velocity write. Applied in insertion order the velocity survives; a
+    // reversed drain would leave zero velocity at the reset pose.
+    PhysicsPoseReset reset;
+    reset.position = glm::vec3{1.0f, 2.0f, 3.0f};
+    REQUIRE(h.sink.ResetBodyPose(ballId, reset));
+    REQUIRE(h.sink.SetLinearVelocity(ballId, glm::vec3{4.0f, 0.0f, 0.0f}));
+    CHECK(h.ctrl.QueuedPhysicsCommandCount() == 2);
+    h.Update(kFixedDt);
+    CHECK(h.ctrl.QueuedPhysicsCommandCount() == 0);
+    const glm::vec3 p = T7RuntimePos(h, ballId);
+    CHECK(p.x == doctest::Approx(1.0f + 4.0f * kFixedDt).epsilon(0.1));
+    glm::vec3 v{0.0f, 0.0f, 0.0f};
+    REQUIRE(h.sink.GetLinearVelocity(ballId, v));
+    CHECK(v.x == doctest::Approx(4.0f));
+
+    // Same-kind last-wins: two velocities, the second sticks.
+    REQUIRE(h.sink.SetLinearVelocity(ballId, glm::vec3{1.0f, 0.0f, 0.0f}));
+    REQUIRE(h.sink.SetLinearVelocity(ballId, glm::vec3{7.0f, 0.0f, 0.0f}));
+    h.Update(kFixedDt);
+    glm::vec3 v2{0.0f, 0.0f, 0.0f};
+    REQUIRE(h.sink.GetLinearVelocity(ballId, v2));
+    CHECK(v2.x == doctest::Approx(7.0f));
+    h.Stop(b.doc);
+}
+
+TEST_CASE("T7 RED_MalformedDriveCallsReturnFalse: hinge/slider Lua validation never raises or enqueues")
+{
+    T7WriteScript("t7_drive_malformed.lua",
+        "local phase = 0\n"
+        "function on_update(entity, dt, input, world)\n"
+        "  if phase == 0 then\n"
+        "    phase = 1\n"
+        "    local f = 0\n"
+        "    local function no(call) if not call then f = f + 1 end end\n"
+        "    no(entity:set_hinge_drive(nil))\n"
+        "    no(entity:set_hinge_drive(\"bad\"))\n"
+        "    no(entity:set_hinge_drive(42))\n"
+        "    no(entity:set_hinge_drive({}))\n"
+        "    no(entity:set_hinge_drive({velocity = 1.0}))\n"
+        "    no(entity:set_hinge_drive({velocity = \"x\", impulse = 1.0}))\n"
+        "    no(entity:set_hinge_drive({velocity = 1.0, impulse = \"x\"}))\n"
+        "    no(entity:set_hinge_drive({velocity = 0/0, impulse = 1.0}))\n"
+        "    no(entity:set_hinge_drive({velocity = 1e300, impulse = 1.0}))\n"
+        "    no(entity:set_hinge_drive({velocity = 1.0, impulse = -1.0}))\n"
+        "    no(entity:set_hinge_drive())\n"
+        "    no(entity:set_slider_target(nil))\n"
+        "    no(entity:set_slider_target(\"0.1\"))\n"
+        "    no(entity:set_slider_target({}))\n"
+        "    no(entity:set_slider_target(0/0))\n"
+        "    no(entity:set_slider_target(1e300))\n"
+        "    no(entity:set_slider_target())\n"
+        "    no(entity:release_slider(nil))\n"
+        "    no(entity:release_slider(\"1\"))\n"
+        "    no(entity:release_slider({}))\n"
+        "    entity:set_name(\"drive:\" .. f)\n"
+        "  elseif phase == 1 then\n"
+        "    phase = 2\n"
+        "    local ok = entity:set_hinge_drive({velocity = 6, impulse = 8})\n"
+        "    entity:set_name(\"drive:20:valid:\" .. (ok and \"T\" or \"F\"))\n"
+        "  end\n"
+        "end\n");
+    T7Harness h;
+    T7DocBuilder b(h);
+    entt::entity anchor = b.Create("Anchor");
+    T7EmplaceBody(b, anchor, T7StaticBody(), T7BoxShape(0.05f, 0.05f, 0.05f));
+    entt::entity flipper = b.Create("Flipper");
+    T7EmplaceBody(b, flipper, T7DynamicBody(1.0f), T7BoxShape(0.5f, 0.06f, 0.1f));
+    b.doc.ecs.registry.get<Transform>(flipper).translation = {0.5f, 0.0f, 0.0f};
+    PhysicsHingeComponent hinge;
+    hinge.otherBody = b.UuidOf(anchor);
+    hinge.ownerPivot = {-0.5f, 0.0f, 0.0f};
+    hinge.ownerAxis = {0.0f, 1.0f, 0.0f};
+    hinge.otherPivot = {0.0f, 0.0f, 0.0f};
+    hinge.otherAxis = {0.0f, 1.0f, 0.0f};
+    hinge.minAngleLimit = 0.0f;
+    hinge.maxAngleLimit = 0.96f;
+    hinge.motorEnabled = false;
+    b.doc.ecs.registry.emplace<PhysicsHingeComponent>(flipper, hinge);
+    b.AttachScript(flipper, "t7_drive_malformed.lua");
+    b.Finish();
+    const UUID flipperId = b.UuidOf(flipper);
+    REQUIRE(h.Play(b.doc));
+
+    // Twenty malformed calls returned false without raising: the script is
+    // still live and nothing enqueued. (The count is exact: 11 hinge + 6
+    // slider-target + 3 release-slider refusals above.)
+    h.Update(kFixedDt);
+    CHECK(T7RuntimeName(h, flipperId) == "drive:20");
+    CHECK(h.scriptSys.GetInstanceState(flipperId) == ScriptInstanceState::Live);
+    CHECK(h.ctrl.QueuedPhysicsCommandCount() == 0);
+
+    // The script stayed functional: an integer-valued drive table (Lua
+    // integers, not floats) queues green and parks the motor params.
+    h.Update(kFixedDt);
+    CHECK(T7RuntimeName(h, flipperId) == "drive:20:valid:T");
+    h.Update(kFixedDt);
+    bool motorOk = false;
+    CHECK(h.ctrl.TryGetPhysicsWorldMut()->HingeMotorEnabled(flipperId, motorOk));
+    CHECK(motorOk);
+    float velOut = 0.0f, impOut = 0.0f;
+    REQUIRE(h.ctrl.TryGetPhysicsWorldMut()->HingeMotorParams(
+        flipperId, velOut, impOut));
+    CHECK(velOut == doctest::Approx(6.0f));
+    CHECK(impOut == doctest::Approx(8.0f));
+    h.Stop(b.doc);
 }

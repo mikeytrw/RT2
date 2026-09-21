@@ -175,7 +175,14 @@ $requiredCases = @(
     "T7 RED_InvalidOpsLoudMutationFree: wrong UUID, kind, and arguments refuse without enqueueing",
     "T7 RED_DestroyingUuidPhysicsRefused: drain-time physics writes refuse like the T6 transform gate",
     "T7 RED_NoWidenedLuaSurface: queries, arbitrary constraints, and teleport stay out of Lua",
-    "T7 GREEN_PrefabPhysicsComplete: sources carry physics, members refuse attach, edit, and remove"
+    "T7 GREEN_PrefabPhysicsComplete: sources carry physics, members refuse attach, edit, and remove",
+    "T7 GREEN_PhysicsEventsLifecycleGated: on_create and on_destroy see empty while on_update polls agree",
+    "T7 GREEN_PhysicsEventsTimerSeesOnUpdateSnapshot: timer callbacks poll inside the visible window",
+    "T7 RED_KinematicTriggerRefusesRigidCommands: ghost-only kinematic bodies take no rigid writes",
+    "T7 GREEN_ResetClearsContactManifold: teleporting out of a contact ends its Contact reports",
+    "T7 GREEN_ResetSnapsDescendantPrevTransforms: visual children re-snap with the reset root",
+    "T7 GREEN_PhysicsCommandFifoOrder: insertion order decides the final state",
+    "T7 RED_MalformedDriveCallsReturnFalse: hinge/slider Lua validation never raises or enqueues"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }

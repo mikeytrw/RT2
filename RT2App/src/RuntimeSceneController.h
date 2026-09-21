@@ -385,16 +385,30 @@ public:
     // after every fixed tick, accumulated across the frame's 0-5 ticks,
     // filtered for drain-destroyed UUIDs, and published before OnUpdate.
     // Non-consuming: every script consumer in the frame reads these same
-    // contents regardless of UUID-sorted callback order. Visible exactly
-    // inside OnUpdate: BeginPhysicsFrame clears the previously published
-    // snapshot, so OnFixedUpdate and OnEntitiesDestroying always observe an
-    // empty snapshot (re-review P1(1)) and on_destroy receives no physics
-    // events. Empty when no physics world is committed, when zero ticks ran
-    // (fresh empty, never stale), and after Stop. No new engine lifecycle
-    // callbacks are added: scripts poll this inside the existing OnUpdate.
+    // contents regardless of UUID-sorted callback order.
+    //
+    // T7 re-review P1(1): Lua visibility is phase-gated, not publication-
+    // ordered. The C++ accessor below always returns the published snapshot,
+    // but the Lua `world:physics_events()` binding (via the sink) observes
+    // it ONLY while the controller is dispatching OnUpdate
+    // (PhysicsEventsLuaVisible). SyncScriptEnvironments runs before OnUpdate
+    // — so a runtime-spawned script's on_create and a destroyed script's
+    // on_destroy observe an empty table even on frames with contacts — and
+    // OnFixedUpdate observes empty via the T6 BeginPhysicsFrame clear.
+    // Timer callbacks fire at the tail of OnUpdate dispatch, inside the
+    // same visible window, so they observe the same snapshot the frame's
+    // on_update callbacks saw.
     const std::vector<PhysicsEvent>& PhysicsEvents() const
     {
         return m_PhysicsSnapshot;
+    }
+
+    // T7 re-review P1(1): true only while dispatching OnUpdate (including
+    // its timer tail). The sink's Lua event poll returns empty when false.
+    bool PhysicsEventsLuaVisible() const { return m_PhysicsEventsLuaVisible; }
+    void SetPhysicsEventsLuaVisible(bool visible)
+    {
+        m_PhysicsEventsLuaVisible = visible;
     }
 
     // Test-only accumulator read-out. Failed Play must leave it zero; Step
@@ -485,6 +499,11 @@ private:
     // T7 queued physics commands (validated at queue time, drained at the
     // next pre-step boundary; cleared on reload, quarantine, and Stop).
     std::vector<QueuedPhysicsCommand> m_PhysicsCommands;
+    // T7 re-review P1(1): Lua event-poll visibility window. Set around the
+    // OnUpdate dispatch only (Update and Step); false everywhere else, so
+    // on_create/on_destroy (SyncScriptEnvironments) and OnFixedUpdate can
+    // never observe the published snapshot through the Lua binding.
+    bool m_PhysicsEventsLuaVisible = false;
     // T6 frame-local fixed-tick sequence stamped on scraped events (0..4).
     uint32_t m_PhysicsTickIndex = 0;
     // T6: clear the per-tick staging AND the previously published snapshot,

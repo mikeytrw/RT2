@@ -267,9 +267,11 @@ public:
     // pre-step boundary (at most one fixed tick of latency).
     bool ApplyBodyImpulse(const UUID& id, const glm::vec3& impulse);
 
-    // Bounded body reset for Dynamic/Kinematic bodies only (T7
-    // `entity:reset_body_pose`). Applied atomically at the pre-step boundary
-    // by the controller drain (never inline from a script callback):
+    // Bounded body reset for Dynamic/Kinematic RIGID bodies only (T7
+    // `entity:reset_body_pose`). Ghost-only entities (triggers, including
+    // valid Kinematic triggers) refuse: they have no solver body to move.
+    // Applied atomically at the pre-step boundary by the controller drain
+    // (never inline from a script callback):
     //   1. Bullet + motion-state + interpolation pose := (position,
     //      rotation); forces/torques cleared; linear/angular velocity :=
     //      the supplied values (or zero when absent); body woken.
@@ -279,12 +281,15 @@ public:
     //      TriggerExit is fabricated after the teleport.
     //   3. ECS Transform TRS := the same pose (roots-only: local == world),
     //      marked dirty, with world matrices refreshed and prevWorldMatrix
-    //      re-snapped so the reset produces no one-frame motion spike.
+    //      re-snapped across the whole transformed subtree (re-review
+    //      P1(3)) so neither the body nor its visual children produce a
+    //      one-frame motion spike.
     // Returns false (mutating NOTHING — validated fully before any write)
-    // for unknown UUIDs, entities without a live Bullet body/ghost, Static
-    // bodies, non-finite/out-of-range positions, and degenerate
-    // (non-normalizable) rotations. Kinematic scale is untouched (baked at
-    // Play); the pose write carries translation+rotation only.
+    // for unknown UUIDs, entities without a live rigid body (including
+    // ghost-only triggers), Static bodies, non-finite/out-of-range
+    // positions, and degenerate (non-normalizable) rotations. Kinematic
+    // scale is untouched (baked at Play); the pose write carries
+    // translation+rotation only.
     bool ResetBodyPose(SceneDocument& runtime, const UUID& id,
                        const glm::vec3& position, const glm::quat& rotation,
                        bool hasLinearVelocity,
@@ -361,6 +366,10 @@ public:
     // Live slider linear position (getLinearPos). ok=false when unknown or
     // not a slider.
     float SliderPosition(const UUID& owner, bool& ok) const;
+    // Live slider motor state (powered flag). ok=false when unknown or not
+    // a slider. T7 re-review P2 latency proof: the first eligible pre-step
+    // drain arms the motor, observable here before motion accumulates.
+    bool SliderMotorEnabled(const UUID& owner, bool& ok) const;
 
     // Safe-point teardown participation (called by the controller drain at
     // each destroy position, after OnEntitiesDestroying while ECS and Bullet

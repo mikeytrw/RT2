@@ -141,7 +141,7 @@ validated command that applies at the next pre-step boundary: a write from
 fixed tick, never inline during script iteration.
 
 ```lua
-function on_update(entity, world)
+function on_update(entity, dt, input, world)
     -- Non-consuming poll: every script in the frame sees these same events.
     for i, e in ipairs(world:physics_events()) do
         -- e.kind is "contact", "trigger_enter", "trigger_stay" or
@@ -163,8 +163,12 @@ Authority notes that have bitten before:
 - `apply_impulse` on Static/Kinematic refuses; `reset_body_pose` on Static
   refuses. Malformed vectors/quaternions (non-finite, out-of-range, or
   degenerate rotation) refuse with no partial state change.
-- `world:physics_events()` is valid exactly inside `on_update` (it is an
-  empty table in `on_fixed_update` and `on_destroy` by construction).
+- `world:physics_events()` is valid exactly inside `on_update` — and in
+  `timer` callbacks, which fire at the tail of `on_update` dispatch and see
+  the same snapshot. It is an empty table in `on_create`, `on_fixed_update`,
+  and `on_destroy` by construction (the poll window opens only around the
+  `on_update` dispatch, so a spawned script's `on_create` and a destroyed
+  script's `on_destroy` never observe the frame's contacts).
 - A script reload, quarantine, or Stop drops queued-but-unapplied physics
   commands; a re-Play inherits nothing.
 - Runtime spawn cannot mint physics bodies, and Lua has no raycasts,

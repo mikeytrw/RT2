@@ -18,6 +18,31 @@
 
 namespace rt2::core {
 
+namespace {
+
+// T7 re-review P1(1): RAII for the Lua event-poll window. Opens on
+// construction (OnUpdate dispatch entry), closes on destruction — including
+// destruction during stack unwinding, so an escaping failure inside script
+// dispatch cannot leave the window open for a later lifecycle callback.
+class T7EventPollWindow
+{
+public:
+    explicit T7EventPollWindow(RuntimeSceneController& controller)
+        : m_Controller(controller)
+    {
+        m_Controller.SetPhysicsEventsLuaVisible(true);
+    }
+    ~T7EventPollWindow() { m_Controller.SetPhysicsEventsLuaVisible(false); }
+
+    T7EventPollWindow(const T7EventPollWindow&) = delete;
+    T7EventPollWindow& operator=(const T7EventPollWindow&) = delete;
+
+private:
+    RuntimeSceneController& m_Controller;
+};
+
+} // namespace
+
 // ============================================================================
 // Play
 // ============================================================================
@@ -223,8 +248,15 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     // Phase 6: variable script callbacks after the safe point + env sync,
     // before SceneGraph::UpdateWorldTransforms (game-loop.md:137). Step
     // runs exactly one OnUpdate at kFixedDt for determinism.
+    // T7 re-review P1(1): the Lua event-poll window opens ONLY around this
+    // dispatch (RAII: an escaping allocation failure still closes it). The
+    // sync above (on_create/on_destroy) and any timer tail inside OnUpdate
+    // are covered by construction: sync runs closed, timers run open.
     if (m_ScriptDispatch)
+    {
+        const T7EventPollWindow window(*this);
         m_ScriptDispatch->OnUpdate(dt);
+    }
 
     // Batched: update world transforms once after the tick + drain.
     SceneGraph::UpdateWorldTransforms(m_Runtime->ecs.registry);
@@ -396,8 +428,12 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
 
     // Phase 6: variable script callbacks after the safe point + env sync,
     // before SceneGraph::UpdateWorldTransforms (game-loop.md:137).
+    // T7 re-review P1(1): same OnUpdate-only event-poll window as Step.
     if (m_ScriptDispatch)
+    {
+        const T7EventPollWindow window(*this);
         m_ScriptDispatch->OnUpdate(dt);
+    }
 
     // Batched: update world transforms once after all substeps + drain.
     SceneGraph::UpdateWorldTransforms(m_Runtime->ecs.registry);
@@ -992,9 +1028,15 @@ bool RuntimeSceneController::QueueSetLinearVelocity(
                kOp, target.ToString().c_str());
         return false;
     }
-    if (m_PhysicsWorld->FindBody(target) == nullptr)
+    // T7 re-review P1(2): a rigid-body command needs a live rigid body, not
+    // merely a body record. Ghost-only entities (triggers, including valid
+    // Kinematic triggers) carry no solver velocity: accepting here would
+    // report true for a write the drain must refuse, so refuse loudly now
+    // and enqueue nothing.
+    const PhysicsBodyRecord* record = m_PhysicsWorld->FindBody(target);
+    if (record == nullptr || record->body == nullptr)
     {
-        printf("[Physics] %s refused for %s (no live Bullet body)\n",
+        printf("[Physics] %s refused for %s (no live rigid body)\n",
                kOp, target.ToString().c_str());
         return false;
     }
@@ -1030,9 +1072,13 @@ bool RuntimeSceneController::QueueApplyImpulse(const UUID& target,
                kOp, target.ToString().c_str());
         return false;
     }
-    if (m_PhysicsWorld->FindBody(target) == nullptr)
+    // T7 re-review P1(2): same live-rigid-body rule as set_velocity (a
+    // Dynamic component whose record is ghost-only has no solver body to
+    // take the impulse).
+    const PhysicsBodyRecord* record = m_PhysicsWorld->FindBody(target);
+    if (record == nullptr || record->body == nullptr)
     {
-        printf("[Physics] %s refused for %s (no live Bullet body)\n",
+        printf("[Physics] %s refused for %s (no live rigid body)\n",
                kOp, target.ToString().c_str());
         return false;
     }
@@ -1231,9 +1277,13 @@ bool RuntimeSceneController::QueueResetBodyPose(
                kOp, target.ToString().c_str());
         return false;
     }
-    if (m_PhysicsWorld->FindBody(target) == nullptr)
+    // T7 re-review P1(2): reset needs the live rigid body, not merely the
+    // record. Ghost-only entities (including valid Kinematic triggers)
+    // refuse here instead of teleporting a trigger in the apply path.
+    const PhysicsBodyRecord* record = m_PhysicsWorld->FindBody(target);
+    if (record == nullptr || record->body == nullptr)
     {
-        printf("[Physics] %s refused for %s (no live Bullet body)\n",
+        printf("[Physics] %s refused for %s (no live rigid body)\n",
                kOp, target.ToString().c_str());
         return false;
     }
@@ -1272,32 +1322,57 @@ void RuntimeSceneController::DrainPhysicsCommands()
             continue;
         if (m_Runtime->FindByUuid(cmd.target) == entt::null)
             continue;
+        // T7 re-review P1(2): any other apply-time failure is unexpected —
+        // the queue gate proved a live rigid body — so it reports loudly
+        // (UUID + op named) instead of vanishing. The drain continues with
+        // the next command; the failed command already left no partial
+        // state (every apply path validates before mutating).
+        bool applied = false;
+        const char* opName = "unknown";
         switch (cmd.kind)
         {
         case QueuedPhysicsCommandKind::SetLinearVelocity:
-            m_PhysicsWorld->SetBodyLinearVelocity(cmd.target, cmd.vector);
+            opName = "set_velocity";
+            applied =
+                m_PhysicsWorld->SetBodyLinearVelocity(cmd.target, cmd.vector);
             break;
         case QueuedPhysicsCommandKind::ApplyImpulse:
-            m_PhysicsWorld->ApplyBodyImpulse(cmd.target, cmd.vector);
+            opName = "apply_impulse";
+            applied =
+                m_PhysicsWorld->ApplyBodyImpulse(cmd.target, cmd.vector);
             break;
         case QueuedPhysicsCommandKind::SetHingeDrive:
-            m_PhysicsWorld->SetHingeDrive(cmd.target, cmd.paramA, cmd.paramB);
+            opName = "set_hinge_drive";
+            applied = m_PhysicsWorld->SetHingeDrive(cmd.target, cmd.paramA,
+                                                   cmd.paramB);
             break;
         case QueuedPhysicsCommandKind::ReleaseHingeDrive:
-            m_PhysicsWorld->ReleaseHingeDrive(cmd.target);
+            opName = "release_hinge";
+            applied = m_PhysicsWorld->ReleaseHingeDrive(cmd.target);
             break;
         case QueuedPhysicsCommandKind::SetSliderTarget:
-            m_PhysicsWorld->SetSliderTarget(cmd.target, cmd.paramA);
+            opName = "set_slider_target";
+            applied =
+                m_PhysicsWorld->SetSliderTarget(cmd.target, cmd.paramA);
             break;
         case QueuedPhysicsCommandKind::ReleaseSlider:
-            m_PhysicsWorld->ReleaseSlider(cmd.target, cmd.paramA);
+            opName = "release_slider";
+            applied =
+                m_PhysicsWorld->ReleaseSlider(cmd.target, cmd.paramA);
             break;
         case QueuedPhysicsCommandKind::ResetBodyPose:
-            m_PhysicsWorld->ResetBodyPose(
+            opName = "reset_body_pose";
+            applied = m_PhysicsWorld->ResetBodyPose(
                 *m_Runtime, cmd.target, cmd.position, cmd.rotation,
                 cmd.hasResetLinear, cmd.resetLinear, cmd.hasResetAngular,
                 cmd.resetAngular);
             break;
+        }
+        if (!applied)
+        {
+            printf("[Physics] %s for %s failed at the pre-step drain "
+                   "(unexpected: queue validation passed; command dropped)\n",
+                   opName, cmd.target.ToString().c_str());
         }
     }
 }

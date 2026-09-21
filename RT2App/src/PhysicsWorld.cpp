@@ -15,6 +15,7 @@
 #include "IPhysicsCollisionAssetProvider.h"
 #include "SceneDocument.h"
 #include "SceneGraph.h"
+#include "SceneHierarchy.h"
 
 #include <algorithm>
 #include <cassert>
@@ -411,8 +412,13 @@ bool PhysicsWorld::ResetBodyPose(SceneDocument& runtime, const UUID& id,
     if (bodyComp == nullptr ||
         bodyComp->kind == PhysicsBodyKind::Static)
         return false;
+    // T7 re-review P1(2): reset is a rigid-body operation. Ghost-only
+    // entities (triggers, including valid Kinematic triggers) have no solver
+    // body to move: they refuse here instead of teleporting a trigger. The
+    // controller queue gate enforces the same rule before enqueueing, so
+    // reaching this refusal from the drain is unexpected (and loud there).
     PhysicsBodyRecord* rec = FindBodyMut(m_BodyIndex, id);
-    if (rec == nullptr || (rec->body == nullptr && rec->ghost == nullptr))
+    if (rec == nullptr || rec->body == nullptr)
         return false;
 
     const glm::vec3 newLinear =
@@ -424,8 +430,7 @@ bool PhysicsWorld::ResetBodyPose(SceneDocument& runtime, const UUID& id,
                      unitRotation.w),
         btVector3(position.x, position.y, position.z));
 
-    // ---- Phase 2: atomic apply -------------------------------------------
-    if (rec->body != nullptr)
+    // ---- Phase 2: atomic apply (rigid body only) --------------------------
     {
         btRigidBody* body = rec->body;
         if (rec->motion != nullptr)
@@ -467,20 +472,6 @@ bool PhysicsWorld::ResetBodyPose(SceneDocument& runtime, const UUID& id,
         }
         m_World.updateSingleAabb(body);
     }
-    else
-    {
-        // Ghost-only entity (trigger): same pose + refresh treatment on the
-        // ghost object. Ghosts carry no velocity/forces; the ECS pose and
-        // overlap purge below still apply.
-        rec->ghost->setWorldTransform(newPose);
-        btBroadphaseProxy* proxy = rec->ghost->getBroadphaseHandle();
-        if (proxy != nullptr)
-        {
-            m_World.getBroadphase()->getOverlappingPairCache()
-                ->cleanProxyFromPairs(proxy, &m_Dispatcher);
-        }
-        m_World.updateSingleAabb(rec->ghost);
-    }
     // Overlap-history purge: pairs mentioning this UUID describe the
     // pre-reset location. Without this the next tick would fabricate a
     // TriggerExit for an overlap that ended by teleport, not by motion.
@@ -493,15 +484,25 @@ bool PhysicsWorld::ResetBodyPose(SceneDocument& runtime, const UUID& id,
     }
 
     // ECS authority write-back (roots-only: local == world): the same pose,
-    // marked dirty, with world matrices refreshed and prevWorldMatrix
-    // re-snapped so the reset produces no one-frame motion-vector spike.
-    // Kinematic scale is untouched (collision scale stays baked at Play).
+    // marked dirty, with world matrices refreshed. Kinematic scale is
+    // untouched (collision scale stays baked at Play).
+    // T7 re-review P1(3): previous-transform repair covers the whole
+    // transformed subtree, not just the body root. UpdateWorldTransforms
+    // propagates the dirty parent into descendants and rewrites their
+    // worldMatrix; without re-snapping theirs too, a legal visual child of
+    // a reset body keeps a pre-teleport prevWorldMatrix and produces a
+    // one-frame motion-vector spike.
     tf->translation = position;
     tf->rotation = unitRotation;
     SceneGraph::SetLocalDirty(reg, entity);
     SceneGraph::UpdateWorldTransforms(reg);
-    if (auto* refreshed = reg.try_get<Transform>(entity))
-        refreshed->prevWorldMatrix = refreshed->worldMatrix;
+    std::vector<entt::entity> subtree;
+    SceneHierarchy::CollectSubtreePreOrder(reg, entity, subtree);
+    for (const auto child : subtree)
+    {
+        if (auto* childTf = reg.try_get<Transform>(child))
+            childTf->prevWorldMatrix = childTf->worldMatrix;
+    }
     return true;
 }
 
@@ -2328,6 +2329,18 @@ float PhysicsWorld::SliderPosition(const UUID& owner, bool& ok) const
     }
     ok = true;
     return rec->slider->getLinearPos();
+}
+
+bool PhysicsWorld::SliderMotorEnabled(const UUID& owner, bool& ok) const
+{
+    const PhysicsConstraintRecord* rec = FindConstraint(owner);
+    if (rec == nullptr || rec->isHinge || rec->slider == nullptr)
+    {
+        ok = false;
+        return false;
+    }
+    ok = true;
+    return rec->slider->getPoweredLinMotor();
 }
 
 // ---- T5 safe-point teardown participation ----

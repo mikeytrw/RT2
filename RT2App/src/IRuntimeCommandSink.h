@@ -180,8 +180,11 @@ public:
     // publication: canonical pairs, coalesced contacts, grouped trigger
     // transitions, destroy-filtered, exact-dup collapsed). Non-consuming:
     // every call in the frame returns the same contents regardless of
-    // UUID-sorted callback order. Empty outside OnUpdate (pre-publication
-    // callbacks always observe empty), when zero ticks ran, and after Stop.
+    // UUID-sorted callback order. Phase-gated (T7 re-review P1(1)): the copy
+    // is non-empty only while the controller dispatches OnUpdate — including
+    // its timer tail. on_create, on_fixed_update, and on_destroy observe an
+    // empty vector even on frames with contacts; so does every callback
+    // after Stop.
     virtual std::vector<PhysicsEvent> GetPhysicsEvents() const = 0;
 
     // Drop all queued-but-unapplied physics commands. Called by

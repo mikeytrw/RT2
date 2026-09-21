@@ -1277,7 +1277,12 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             if (!arg.valid() || !arg.is<sol::table>()) return false;
             sol::table t = arg.as<sol::table>();
             sol::object x = t[1], y = t[2], z = t[3];
-            if (!x.is<double>() || !y.is<double>() || !z.is<double>())
+            // Lua 5.4 integers and floats share LUA_TNUMBER: accept both
+            // (an author writing {0, 5, 0} must not refuse), reject
+            // strings/tables/nil the same way.
+            if (x.get_type() != sol::type::number ||
+                y.get_type() != sol::type::number ||
+                z.get_type() != sol::type::number)
                 return false;
             const double dx = x.as<double>();
             const double dy = y.as<double>();
@@ -1296,8 +1301,10 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             if (!arg.valid() || !arg.is<sol::table>()) return false;
             sol::table t = arg.as<sol::table>();
             sol::object x = t[1], y = t[2], z = t[3], w = t[4];
-            if (!x.is<double>() || !y.is<double>() || !z.is<double>() ||
-                !w.is<double>())
+            if (x.get_type() != sol::type::number ||
+                y.get_type() != sol::type::number ||
+                z.get_type() != sol::type::number ||
+                w.get_type() != sol::type::number)
                 return false;
             const double dx = x.as<double>();
             const double dy = y.as<double>();
@@ -1368,33 +1375,52 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             }
             return s->ResetBodyPose(instUuid, reset);
         };
-        entity["set_hinge_drive"] = [self, instUuid](sol::object, sol::table drive) -> bool {
+        // T7 re-review P1(4): the drive bindings take sol::object and
+        // validate type/shape/numerics explicitly. Typed sol parameters
+        // (sol::table, double) convert BEFORE the lambda runs, so a string,
+        // nil, or table argument would raise and quarantine the script
+        // instead of returning false per the setter contract. Every path
+        // below returns false without enqueueing, mutating, or quarantining.
+        auto parseDriveNumber = [](sol::object arg, float& out) -> bool {
+            if (!arg.valid() || arg.get_type() != sol::type::number)
+                return false;
+            const double v = arg.as<double>();
+            if (!std::isfinite(v) || std::fabs(v) > (double)FLT_MAX)
+                return false;
+            out = static_cast<float>(v);
+            return true;
+        };
+        entity["set_hinge_drive"] = [self, instUuid, parseDriveNumber](
+                sol::object, sol::object driveArg) -> bool {
             IRuntimeCommandSink* s = self->m_Sink;
             if (!s) return false;
-            if (!drive.valid() || !drive.is<sol::table>()) return false;
-            sol::optional<double> velocity = drive["velocity"];
-            sol::optional<double> impulse = drive["impulse"];
-            if (!velocity || !impulse) return false;
-            if (!std::isfinite(*velocity) || !std::isfinite(*impulse))
-                return false;
-            return s->SetHingeDrive(instUuid, static_cast<float>(*velocity),
-                                    static_cast<float>(*impulse));
+            if (!driveArg.valid() || !driveArg.is<sol::table>()) return false;
+            sol::table drive = driveArg.as<sol::table>();
+            float velocity = 0.0f, impulse = 0.0f;
+            if (!parseDriveNumber(drive["velocity"], velocity)) return false;
+            if (!parseDriveNumber(drive["impulse"], impulse)) return false;
+            if (impulse < 0.0f) return false;
+            return s->SetHingeDrive(instUuid, velocity, impulse);
         };
         entity["release_hinge"] = [self, instUuid](sol::object) -> bool {
             IRuntimeCommandSink* s = self->m_Sink;
             return s ? s->ReleaseHingeDrive(instUuid) : false;
         };
-        entity["set_slider_target"] = [self, instUuid](sol::object, double target) -> bool {
+        entity["set_slider_target"] = [self, instUuid, parseDriveNumber](
+                sol::object, sol::object targetArg) -> bool {
             IRuntimeCommandSink* s = self->m_Sink;
             if (!s) return false;
-            if (!std::isfinite(target)) return false;
-            return s->SetSliderTarget(instUuid, static_cast<float>(target));
+            float target = 0.0f;
+            if (!parseDriveNumber(targetArg, target)) return false;
+            return s->SetSliderTarget(instUuid, target);
         };
-        entity["release_slider"] = [self, instUuid](sol::object, double impulse) -> bool {
+        entity["release_slider"] = [self, instUuid, parseDriveNumber](
+                sol::object, sol::object impulseArg) -> bool {
             IRuntimeCommandSink* s = self->m_Sink;
             if (!s) return false;
-            if (!std::isfinite(impulse)) return false;
-            return s->ReleaseSlider(instUuid, static_cast<float>(impulse));
+            float impulse = 0.0f;
+            if (!parseDriveNumber(impulseArg, impulse)) return false;
+            return s->ReleaseSlider(instUuid, impulse);
         };
     }
     else
@@ -2113,7 +2139,12 @@ std::vector<PhysicsEvent> RuntimeCommandSink::GetPhysicsEvents() const
 {
     // A copy of the immutable published snapshot: non-consuming by
     // construction (every consumer in the frame receives identical
-    // contents), empty pre-publication by the T6 BeginPhysicsFrame clear.
+    // contents). T7 re-review P1(1): the copy is gated to the OnUpdate
+    // dispatch window — on_create/on_destroy (SyncScriptEnvironments) and
+    // OnFixedUpdate observe an empty table even on frames with contacts,
+    // while timer callbacks (the OnUpdate tail) observe the live snapshot.
+    if (!m_Controller.PhysicsEventsLuaVisible())
+        return {};
     return m_Controller.PhysicsEvents();
 }
 
