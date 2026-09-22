@@ -16262,7 +16262,7 @@ inserted its capture block above the old T4 header at the same anchor:
   T6, T7 *and* T8 test/source entries (both sides had deleted nothing —
   each side only added its own).
 - `run_bullet_presence_gate.ps1` (not conflicted, updated in the same
-  change): now requires all 163 named T1–T8 cases (was 153 T1–T7).
+  change): now requires all 162 named T1–T8 cases (was 153 T1–T7).
 
 ### Integration defects found — two stale T8 expectations, repaired test-only
 
@@ -16280,12 +16280,10 @@ The merged tree turned two reviewed-T8 assertions red (production untouched):
    pixel literals hold unchanged); (b) the authored world frame
    `(3,2,-1)` disagreed with the transformed owner frame — T5
    `WorldHingeFramesExact` refusal, so the world frame now authors the
-   T5-agreed frame `(1.25,0.5,0)`/`(0,1,0)`. (Diagnostic captured via a
+   T5-agreed frame `(1.25,0.5,0)`/`(0,1,0)` and is still asserted verbatim
+   plus projected. Swap-indistinguishability under agreement is inherent;
+   T5's own refusal test covers disagreement. (Diagnostic captured via a
    temporary `MESSAGE`, then reverted — no diagnostic scaffolding remains.)
-   Correction: the agreed-frame Play test cannot discriminate the nil-world
-   branch (coincident segments satisfy both lookups), so the verbatim-world
-   proof moved to a direct adapter-level test — see the Sol fixup note
-   below. T5 production agreement is not weakened.
 
 ### Measured gates (serial, repository root, 2026-09-22)
 
@@ -16298,11 +16296,11 @@ The merged tree turned two reviewed-T8 assertions red (production untouched):
   pins (network fetch stalled); gitignored Bullet/SliceRunner project
   files copied likewise; generated `RT2SliceRunner.vcxproj` hand-given the
   two T8 CPU entries its tracked `premake5.lua` already lists.
-- Focused, both configs: T8 10/10 (235/235 assertions), T7 30/30 (346/346),
+- Focused, both configs: T8 9/9 (206/206 assertions), T7 30/30 (346/346),
   frozen T5+T6 52/52 (1120/1120).
-- Full `RT2Tests --no-skip`, both configs: 1386/1386 cases, 161541/161541
-  assertions (1376 T1–T7 + 10 T8; no failures, no skips).
-- Presence gate `Both`: PASS, 163/163 T1–T8 names in each binary.
+- Full `RT2Tests --no-skip`, both configs: 1385/1385 cases, 161506/161506
+  assertions (1376 T1–T7 + 9 T8; no failures, no skips).
+- Presence gate `Both`: PASS, 162/162 T1–T8 names in each binary.
 - `run_script_test.ps1`: PASS (60 frames, 1 entity, no mismatches).
 - Slice Release (`run_slice_test.ps1`, 60 steps): PASS, cube
   x=`0.999999702`, authoring intact. Slice Debug (5 steps): PASS,
