@@ -343,31 +343,23 @@ ScriptFieldRegistry::GetDeclaredFields(const std::filesystem::path& path)
         }
     }
 
-    // Fast-path: if the cache has an entry and (mtime, size) are unchanged,
-    // return the cached descriptors without reading or hashing the file.
-    // The hash is a tiebreaker for the same-tick same-size edge case; that
-    // case is caught the moment the timestamp advances. This avoids 60
-    // file reads + hashes per second when the inspector queries every frame.
-    auto it = m_Cache.find(key);
-    if (it != m_Cache.end() && it->second.everParsed && stated &&
-        it->second.mtime == mtime && it->second.size == size)
-    {
-        it->second.lastUse = ++m_UseTick;
-        result.descriptors = it->second.descriptors;
-        result.parsed = true;
-        return result;
-    }
-
-    // Slow path: (mtime, size) differ or the entry is absent/never-parsed.
-    // Read the source and hash it. The hash makes same-tick same-size edits
-    // detectable and makes 6C's file watcher correct by construction.
+    // Content-qualified cache check (deliberately no stat-only early
+    // return): the cached entry is authoritative only when (mtime, size,
+    // FNV-1a source hash) all match. A same-tick same-size rewrite keeps
+    // (mtime, size) identical on coarse filesystems, so the hash must be
+    // consulted on every hit — otherwise the inspector silently keeps stale
+    // descriptors, the codebase's characteristic silent-failure shape. Cost
+    // is one small-file read + hash per query; that is what the (mtime,
+    // size, hash) header contract promises, and correctness of the
+    // inspector's field set outranks the saved stat-only round trip.
     bool readOk = false;
     const std::string source = ReadFileText(path, readOk);
     const uint64_t hash = readOk ? HashSource(source) : 0;
 
-    // Re-check the cache with the hash: a same-tick same-size edit that
-    // changed the content will have a different hash.
-    it = m_Cache.find(key);
+    // Cache hit only when the full content state matches: a same-tick
+    // same-size edit that changed the content carries a different hash and
+    // falls through to re-parse below.
+    auto it = m_Cache.find(key);
     const bool cacheHit = it != m_Cache.end()
                        && it->second.everParsed
                        && stated

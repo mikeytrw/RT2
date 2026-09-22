@@ -1889,7 +1889,7 @@ TEST_CASE("Phase6B W5: PropertyEditSession<ScriptComponent> lifecycle")
     CHECK_FALSE(session.IsOpen());
 }
 
-TEST_CASE("Phase6B W5: registry fast-path avoids re-reading unchanged files")
+TEST_CASE("Phase6B W5: registry fast-path avoids re-parsing unchanged files")
 {
     ScriptDir dir;
     const auto path = dir.Write("fast.lua", R"(
@@ -1902,8 +1902,8 @@ rt2.fields = { speed = rt2.field.float(5.0) }
     REQUIRE(r1.descriptors.size() == 1);
     CHECK(r1.descriptors[0].name == "speed");
 
-    // Second query: (mtime, size) unchanged → should return cached without
-    // re-reading or re-parsing. Verify it still returns the same descriptors.
+    // Second query: (mtime, size, hash) unchanged → must return the cached
+    // descriptors without re-parsing. Verify it still returns the same set.
     auto r2 = registry.GetDeclaredFields(path);
     REQUIRE(r2.parsed);
     REQUIRE(r2.descriptors.size() == 1);
@@ -1935,19 +1935,35 @@ rt2.fields = { speed = rt2.field.float(5.0) }
     dir.Write("same.lua", original);
 
     rt2::core::ScriptFieldRegistry registry;
-    auto r1 = registry.GetDeclaredFields(dir.root / "same.lua");
+    const auto luaPath = dir.root / "same.lua";
+    auto r1 = registry.GetDeclaredFields(luaPath);
     REQUIRE(r1.parsed);
     REQUIRE(r1.descriptors.size() == 1);
     CHECK(std::get<double>(r1.descriptors[0].defaultValue) == doctest::Approx(5.0));
 
-    // Rewrite with same size, different content. The fast-path (mtime, size)
-    // may or may not catch this depending on timestamp granularity. If it
-    // doesn't (same tick), the hash check will. Either way, the next query
-    // after the timestamp advances must see the new default.
+    // Capture the cached timestamp, then rewrite with same size and different
+    // content and restore that timestamp: (mtime, size) are now bit-identical
+    // to the cached entry, so only a content-hash check can observe the edit.
+    // The old stat-only fast path returned the stale 5.0 default here
+    // deterministically; sleeping after the write could never fix that, so
+    // there is no sleep — determinism comes from the preserved timestamp.
+    std::error_code ec;
+    const auto t0 = std::filesystem::last_write_time(luaPath, ec);
+    REQUIRE_FALSE(ec);
     dir.Write("same.lua", modified);
-    // Sleep briefly to ensure the timestamp advances.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    auto r2 = registry.GetDeclaredFields(dir.root / "same.lua");
+    std::filesystem::last_write_time(luaPath, t0, ec);
+    REQUIRE_FALSE(ec);
+
+    // Prove the stale path is genuinely exercised, not accidentally dodged
+    // by an advanced timestamp: the file still carries the cached (mtime,
+    // size) while holding different content.
+    const auto t1 = std::filesystem::last_write_time(luaPath, ec);
+    REQUIRE_FALSE(ec);
+    CHECK(t1 == t0);
+    CHECK(std::filesystem::file_size(luaPath, ec) == original.size());
+    REQUIRE_FALSE(ec);
+
+    auto r2 = registry.GetDeclaredFields(luaPath);
     REQUIRE(r2.parsed);
     REQUIRE(r2.descriptors.size() == 1);
     CHECK(std::get<double>(r2.descriptors[0].defaultValue) == doctest::Approx(9.0));

@@ -196,6 +196,7 @@ $requiredCases = @(
     "T8 RED_DebugCaptureUpdateFailureRetainsSnapshot: injected Update failure keeps Playing, the prior dump, and a detached drawer",
     "T8 RED_DebugCaptureStepFailureRetainsSnapshot: injected paused-Step failure returns false after one tick with state, dump, and drawer intact",
     "T8 RED_DebugCaptureRestoresPriorDrawer: RAII restores the exact pre-existing Bullet drawer on success and failure"
+    "T8 GREEN_NilWorldHingeAdapterDistinctFrames: adapter-level nil-world hinge emits transformed owner and verbatim world branches with exact projections"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }

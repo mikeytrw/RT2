@@ -938,3 +938,82 @@ TEST_CASE("T8 RED_DebugCaptureRestoresPriorDrawer: RAII restores the exact pre-e
 
     fx.ctrl.Stop(fx.manager.AuthoringDoc(), fx.bridge);
 }
+
+TEST_CASE("T8 GREEN_NilWorldHingeAdapterDistinctFrames: adapter-level nil-world hinge emits transformed owner and verbatim world branches with exact projections")
+{
+    // Direct adapter proof outside Play: T5's WorldHingeFramesExact agreement
+    // rule forbids distinct frames at Play, so the Play-based acceptance
+    // fixture can only show the agreed (coincident) case. This test drives
+    // AppendConstraintAdapterLines directly on an authoring document whose
+    // owner-local and authored world frames are deliberately distinct, and
+    // asserts each branch separately through unambiguous endpoint sets.
+    // Removing the nil branch (PhysicsDebugCapture.cpp:147-168) or reusing
+    // the owner frame there turns every world-frame check below red; the two
+    // branches cannot satisfy each other's lookups.
+    DeterministicUuidProvider ids;
+    SceneManager manager;
+    manager.SetUuidProvider(&ids);
+
+    const UUID owner = manager.CreateEmpty("AdapterOwner").affectedEntities.front();
+    {
+        auto e = manager.FindEntityByUuid(owner);
+        manager.GetECS().registry.emplace<PhysicsBodyComponent>(e, T8KinematicBody());
+        manager.GetECS().registry.emplace<PhysicsShapeComponent>(e, T8BoxShape(0.5f));
+        auto& tf = manager.GetECS().registry.get<Transform>(e);
+        tf.translation = { 2.0f, 0.5f, 0.0f };
+        tf.scale = glm::vec3(1.0f);
+        SceneGraph::MarkDirty(manager.GetECS().registry, e);
+
+        PhysicsHingeComponent hinge;
+        hinge.otherBody = UUID{};
+        hinge.ownerPivot = { 0.0f, 0.5f, 0.0f };
+        hinge.ownerAxis = { 1.0f, 0.0f, 0.0f };
+        hinge.otherPivot = { 3.0f, 2.0f, -1.0f };
+        hinge.otherAxis = { 0.0f, 1.0f, 0.0f };
+        hinge.minAngleLimit = -0.5f;
+        hinge.maxAngleLimit = 0.5f;
+        manager.GetECS().registry.emplace<PhysicsHingeComponent>(e, hinge);
+    }
+    SceneGraph::UpdateWorldTransforms(manager.GetECS().registry);
+
+    PhysicsDebugLines lines;
+    AppendConstraintAdapterLines(manager.AuthoringDoc(), lines);
+
+    // Owner branch: pivot through the owner world matrix, axis through its
+    // rotational basis (identity rotation here, so the mapping is explicit:
+    // (0,0.5,0) -> (2,1,0), axis (1,0,0) unchanged, len 0.5).
+    const glm::vec3 ownA(2.0f, 1.0f, 0.0f);
+    const glm::vec3 ownB(2.5f, 1.0f, 0.0f);
+    // World branch: authored frame verbatim, attributed to the owner.
+    const glm::vec3 wldA(3.0f, 2.0f, -1.0f);
+    const glm::vec3 wldB(3.0f, 2.5f, -1.0f);
+
+    // Exactly the two branches and nothing else: one pivot cross (3
+    // segments) plus one axis segment per branch, all Constraint-kind.
+    CHECK(lines.CountByKind(PhysicsDebugLineKind::Constraint) == 8);
+    CHECK(T8HasSegment(lines, owner, ownA, ownB));
+    CHECK(T8HasSegment(lines, owner, wldA, wldB));
+    // Each branch's pivot cross fires at its own pivot: a branch swap or a
+    // frame mix-up leaves one of these unmatched (the pivots are 1.73 apart,
+    // far beyond the 1e-4 match tolerance).
+    CHECK(T8HasSegment(lines, owner,
+        glm::vec3(2.0f - 0.08f, 1.0f, 0.0f), glm::vec3(2.0f + 0.08f, 1.0f, 0.0f)));
+    CHECK(T8HasSegment(lines, owner,
+        glm::vec3(3.0f - 0.06f, 2.0f, -1.0f), glm::vec3(3.0f + 0.06f, 2.0f, -1.0f)));
+
+    // Exact top/side projections of the captured endpoints. Literals are
+    // independently calculated (from-first-principles GLM lookAt /
+    // perspectiveFov / viewport replication that reproduces all 16 reviewed
+    // Play-fixture pairs to 0.01px), so a wrong frame or a wrong projection
+    // misses these — endpoint inequality alone would not discriminate.
+    const glm::mat4 top = T8TopViewProj();
+    const glm::mat4 side = T8SideViewProj();
+    T8CheckPixels(ownA, top, 660.95f, 350.00f);
+    T8CheckPixels(ownB, top, 701.18f, 350.00f);
+    T8CheckPixels(ownA, side, 500.00f, 350.00f);
+    T8CheckPixels(ownB, side, 500.00f, 350.00f);
+    T8CheckPixels(wldA, top, 771.60f, 259.47f);
+    T8CheckPixels(wldB, top, 789.71f, 253.43f);
+    T8CheckPixels(wldA, side, 603.47f, 246.53f);
+    T8CheckPixels(wldB, side, 603.47f, 194.80f);
+}

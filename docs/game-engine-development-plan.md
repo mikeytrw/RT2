@@ -16262,7 +16262,7 @@ inserted its capture block above the old T4 header at the same anchor:
   T6, T7 *and* T8 test/source entries (both sides had deleted nothing —
   each side only added its own).
 - `run_bullet_presence_gate.ps1` (not conflicted, updated in the same
-  change): now requires all 162 named T1–T8 cases (was 153 T1–T7).
+  change): now requires all 163 named T1–T8 cases (was 153 T1–T7).
 
 ### Integration defects found — two stale T8 expectations, repaired test-only
 
@@ -16280,10 +16280,12 @@ The merged tree turned two reviewed-T8 assertions red (production untouched):
    pixel literals hold unchanged); (b) the authored world frame
    `(3,2,-1)` disagreed with the transformed owner frame — T5
    `WorldHingeFramesExact` refusal, so the world frame now authors the
-   T5-agreed frame `(1.25,0.5,0)`/`(0,1,0)` and is still asserted verbatim
-   plus projected. Swap-indistinguishability under agreement is inherent;
-   T5's own refusal test covers disagreement. (Diagnostic captured via a
+   T5-agreed frame `(1.25,0.5,0)`/`(0,1,0)`. (Diagnostic captured via a
    temporary `MESSAGE`, then reverted — no diagnostic scaffolding remains.)
+   Correction: the agreed-frame Play test cannot discriminate the nil-world
+   branch (coincident segments satisfy both lookups), so the verbatim-world
+   proof moved to a direct adapter-level test — see the Sol fixup note
+   below. T5 production agreement is not weakened.
 
 ### Measured gates (serial, repository root, 2026-09-22)
 
@@ -16296,11 +16298,11 @@ The merged tree turned two reviewed-T8 assertions red (production untouched):
   pins (network fetch stalled); gitignored Bullet/SliceRunner project
   files copied likewise; generated `RT2SliceRunner.vcxproj` hand-given the
   two T8 CPU entries its tracked `premake5.lua` already lists.
-- Focused, both configs: T8 9/9 (206/206 assertions), T7 30/30 (346/346),
+- Focused, both configs: T8 10/10 (235/235 assertions), T7 30/30 (346/346),
   frozen T5+T6 52/52 (1120/1120).
-- Full `RT2Tests --no-skip`, both configs: 1385/1385 cases, 161506/161506
-  assertions (1376 T1–T7 + 9 T8; no failures, no skips).
-- Presence gate `Both`: PASS, 162/162 T1–T8 names in each binary.
+- Full `RT2Tests --no-skip`, both configs: 1386/1386 cases, 161541/161541
+  assertions (1376 T1–T7 + 10 T8; no failures, no skips).
+- Presence gate `Both`: PASS, 163/163 T1–T8 names in each binary.
 - `run_script_test.ps1`: PASS (60 frames, 1 entity, no mismatches).
 - Slice Release (`run_slice_test.ps1`, 60 steps): PASS, cube
   x=`0.999999702`, authoring intact. Slice Debug (5 steps): PASS,
@@ -16315,6 +16317,43 @@ The merged tree turned two reviewed-T8 assertions red (production untouched):
 - `git diff --check`: clean. `vertical-slice.rt2scene` fixture rewrite and
   regenerated `graphify-out/GRAPH_REPORT.md` restored; final worktree holds
   only the merge plus the bounded repairs above.
+
+### Sol final-review fixup (2026-09-22, both P1s closed, production physics untouched)
+
+Independent review of `b1b1064` returned NOT CLEAN with two bounded blockers;
+both are closed here (test + pre-existing registry fix only):
+
+- Nil-world false-green: new `T8
+  GREEN_NilWorldHingeAdapterDistinctFrames` drives
+  `AppendConstraintAdapterLines` directly on an authoring document with
+  deliberately distinct owner-local and world frames (no Play, no T5
+  agreement validation). It asserts the transformed owner segment, the
+  verbatim world segment, each branch's pivot cross, the exact 8-segment
+  census, and independently calculated top/side pixel literals (oracle: a
+  from-first-principles GLM replication reproducing all 16 reviewed
+  Play-fixture pairs to 0.01px). Red-proofed by temporarily making the nil
+  branch reuse the owner frame: exactly the two world-frame checks fail
+  while the census still passes, proving branch identity rather than mere
+  multiplicity. T5 production agreement unchanged.
+- Stale `ScriptFieldRegistry` fast path (pre-existing, not a merge
+  artifact): the stat-only early return served cached descriptors on
+  identical (mtime, size) without consulting the content hash, failing
+  `Phase6B W5: registry fast-path with same-size edit re-parses on hash
+  mismatch` in full Release runs. The early return is removed — every hit
+  is now qualified by (mtime, size, FNV-1a source hash), matching the
+  header's documented contract; loud D10 failure and CPU-only constraints
+  unchanged. The regression is deterministic: the test preserves the
+  original timestamp across the same-size rewrite (and asserts it), so only
+  the hash can observe the edit.
+
+Remeasured gates (serial, repository root): full solution builds Release +
+Debug 0 errors; focused T8 10/10 (235), T7 30/30 (346), T5+T6 52/52
+(1120), Phase6B W5 registry/session 3/3 (34) in both configs; full Release
+`--no-skip` twice serially 1386/1386 (161541 assertions); full Debug once
+1386/1386; presence 163/163 both; script, Release + Debug slices,
+CPU-isolation, Graphify refresh + query, `diff --check`, and fixture/graph
+restoration all pass. Counts above supersede the pre-fixup figures in the
+preceding paragraphs.
 
 ### Bullet-over-Jolt supersession note (settled 2026-09-22)
 
