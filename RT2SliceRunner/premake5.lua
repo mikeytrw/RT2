@@ -64,6 +64,9 @@ project "RT2SliceRunner"
         "../RT2App/src/ScriptFieldReconcile.cpp",
         "../RT2App/src/ScriptFieldRegistry.cpp",
         "../RT2App/src/ScriptFieldResolver.cpp",
+        -- T8: CPU-only debug DTO + btIDebugDraw capture (overlay is RT2App-only).
+        "../RT2App/src/PhysicsDebugLines.cpp",
+        "../RT2App/src/PhysicsDebugCapture.cpp",
     }
 
     -- Phase 6C/W7: Lua 5.4 C sources compiled directly into the target

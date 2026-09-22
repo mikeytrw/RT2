@@ -7,6 +7,7 @@
 #include "core/UUID.h"
 #include "PhysicsComponents.h"
 #include "PhysicsEvents.h"
+#include "PhysicsDebugLines.h"
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionDispatch/btGhostObject.h>
@@ -236,6 +237,37 @@ public:
     //     ghost poses are untouched.
     void PreStepSync(SceneDocument& runtime);
     void PostStepSync(SceneDocument& runtime);
+
+    // T8 debug capture: fills `out` with one world-space wireframe segment
+    // list for every staged body/ghost (UUID staging order, re-sorted stable
+    // by owner UUID at the end) plus persisted hinge/slider adapter segments
+    // when `runtime` is non-null. Minimal btIDebugDraw capture (wireframe
+    // only); never touches the renderer bridge. Invalid geometry never
+    // reaches here: Play refuses it with the T4 UUID-named diagnostic before
+    // the world commits, so capture observes only successfully staged
+    // shapes. Non-const: Bullet's debugDrawObject is non-const.
+    // T5 merge point: when real btTypedConstraints land, extend this to set
+    // the constraint owner and call debugDrawConstraint per constraint in
+    // UUID order (see PhysicsDebugCapture.h).
+    // Returns false with Error::Io on capture allocation failure. `out` is
+    // published only after a complete capture; on failure it is untouched.
+    bool CaptureDebugLines(const SceneDocument* runtime, PhysicsDebugLines& out,
+                           Error& err);
+
+    // Test-only proof that the temporary btIDebugDraw is detached after every
+    // success/failure path. Production capture always restores the previous
+    // Bullet drawer (normally null).
+    bool HasDebugDrawerForTests() { return m_World.getDebugDrawer() != nullptr; }
+
+    // Test-only sentinel seam for the T8 drawer-restoration proof: install
+    // and observe the live Bullet drawer so tests assert exact RAII pointer
+    // identity (not only nullness) across successful and failed captures.
+    // Production never calls these; capture's guard is the only writer.
+    void SetDebugDrawerForTests(btIDebugDraw* drawer)
+    {
+        m_World.setDebugDrawer(drawer);
+    }
+    btIDebugDraw* DebugDrawerForTests() { return m_World.getDebugDrawer(); }
 
     // Test/preset helper: linear velocity write for simulated rigid bodies.
     // Returns false (mutating nothing) for Static bodies, ghosts, and unknown

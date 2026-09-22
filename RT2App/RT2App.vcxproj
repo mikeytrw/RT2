@@ -282,6 +282,10 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <!-- T4: shared CPU collision decode + host-owned immutable cache. -->
     <ClInclude Include="src\PhysicsCollisionAssetProvider.h" />
     <ClInclude Include="src\PhysicsCollisionGeometry.h" />
+    <!-- T8: CPU-only debug DTO + capture + RT2App-only overlay. -->
+    <ClInclude Include="src\PhysicsDebugCapture.h" />
+    <ClInclude Include="src\PhysicsDebugLines.h" />
+    <ClInclude Include="src\PhysicsDebugOverlay.h" />
     <ClInclude Include="src\PhysicsInspectorState.h" />
     <!-- T3: physics world lifecycle (CPU-only). -->
     <ClInclude Include="src\PhysicsWorld.h" />
@@ -683,6 +687,24 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <!-- T3: physics world lifecycle (CPU-only; Bullet include/lib wiring is
          the T1 block at the top and bottom of this file). -->
     <ClCompile Include="src\PhysicsWorld.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- T8: CPU-only debug DTO + btIDebugDraw capture (also linked into the
+         CPU-only test/slice targets via RT2AppCpuSources.props). -->
+    <ClCompile Include="src\PhysicsDebugLines.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PhysicsDebugCapture.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- T8: RT2App-only viewport drawing (ImGui; never in CPU targets). -->
+    <ClCompile Include="src\PhysicsDebugOverlay.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

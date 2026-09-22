@@ -64,6 +64,11 @@
     -- Bullet T7: bounded Lua physics-control tests (same rationale).
     files { "src/PhysicsLuaControlsTests.cpp" }
 
+    -- Bullet T8: physics debug visualization tests (same rationale).
+    -- CPU-only DTO + capture; the RT2App-only overlay is never listed here.
+    files { "src/PhysicsDebugVisualizationTests.cpp" }
+    files { "../RT2App/src/PhysicsDebugLines.cpp", "../RT2App/src/PhysicsDebugCapture.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

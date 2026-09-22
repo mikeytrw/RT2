@@ -126,6 +126,7 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
                 "physics candidate handoff (clone reset; still Edit)";
             m_Runtime.reset();
             m_Accumulator = 0.0f;
+            m_DebugLines.Clear();
             return false;
         }
         if (!candidate.IsOk())
@@ -133,8 +134,22 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
             err = candidate.error;
             m_Runtime.reset();
             m_Accumulator = 0.0f;
+            m_DebugLines.Clear();
             return false;
         }
+        // Capture before ownership transfer. Allocation failure is a typed,
+        // atomic Play refusal: no committed world/runtime/bridge/callback.
+        Error debugErr;
+        if (!candidate.value->CaptureDebugLines(m_Runtime.get(), m_DebugLines, debugErr))
+        {
+            err = debugErr;
+            m_Runtime.reset();
+            m_Accumulator = 0.0f;
+            m_DebugLines.Clear();
+            m_LastPhysicsDebugError = err;
+            return false;
+        }
+        m_LastPhysicsDebugError = {};
         m_PhysicsWorld = std::move(candidate.value);
     }
 
@@ -280,6 +295,13 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
         }
     }
 
+    // T8: re-capture after transforms so constraint-adapter pivots track.
+    Error debugErr;
+    const bool debugOk = RefreshPhysicsDebugLines(debugErr);
+    if (!debugOk)
+        printf("[Runtime] Step physics debug capture failed: %s (previous snapshot retained)\n",
+               debugErr.Format().c_str());
+
     // One sync for the presentation pass: FullSync if the frame applied any
     // structural operation, otherwise TransformSync. Updated in place — see
     // the note in Update() on why copying GPUSceneData per frame is costly.
@@ -297,7 +319,7 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     // Request a render submission for the presentation pass.
     bridge.RequestRender();
 
-    return true;
+    return debugOk;
 }
 
 // ============================================================================
@@ -338,6 +360,8 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
     m_PhysicsTickIndex = 0;
     assert(PhysicsWorld::LiveWorldCount() == m_PhysicsLiveBaseline &&
            "PhysicsWorld destroyed on Stop must restore the live baseline");
+    // T8: Stop clears the debug snapshot (Pause retains; Stop does not).
+    m_DebugLines.Clear();
 
     // 4. Clear any pending operations (they are runtime-only). T7: queued
     // physics commands are runtime-only too — a re-Play must never inherit
@@ -459,6 +483,12 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
                     tf->prevWorldMatrix = tf->worldMatrix;
         }
     }
+
+    // T8: re-capture after transforms so constraint-adapter pivots track.
+    Error debugErr;
+    if (!RefreshPhysicsDebugLines(debugErr))
+        printf("[Runtime] Update physics debug capture failed: %s (previous snapshot retained)\n",
+               debugErr.Format().c_str());
 
     // One sync per rendered frame: FullSync if any structural operation was
     // applied this frame, otherwise TransformSync. A frame with a failed
@@ -1395,6 +1425,24 @@ void RuntimeSceneController::DrainPhysicsCommands()
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+bool RuntimeSceneController::RefreshPhysicsDebugLines(Error& err)
+{
+    if (!m_PhysicsWorld || !m_Runtime)
+    {
+        m_DebugLines.Clear();
+        err = {};
+        m_LastPhysicsDebugError = {};
+        return true;
+    }
+    if (!m_PhysicsWorld->CaptureDebugLines(m_Runtime.get(), m_DebugLines, err))
+    {
+        m_LastPhysicsDebugError = err;
+        return false;
+    }
+    m_LastPhysicsDebugError = {};
+    return true;
+}
 
 void RuntimeSceneController::InitPrevTransforms()
 {

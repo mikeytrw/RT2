@@ -16207,3 +16207,126 @@ not adopt file lens on open (position/forward/look only) by decision.
 > 158041/158041 assertions; Release+Debug camera-focused 41/41 and 505/505;
 > Release+Debug R2/R4-focused 10/10 and 131/131; Graphify refreshed; authored
 > diff check clean.
+
+## Bullet integration closure — implementation/verification report (2026-09-22)
+
+Off-roadmap integration work (named, not numbered, per the `Phase N`
+glossary rule). Merges the reviewed parallel T8 debug-visualization branch
+into the clean sequential T1–T7 lineage. Grounded against
+`bullet-integration-complete` at the merge of reviewed T7 HEAD
+`dd83e85539f34bc2b8069c25a34512084a876c26` and reviewed T8 HEAD
+`f20d2e1d5525c61be46c9853c43ec3edae40c335` (merge-base `df19022`,
+the reviewed T4 narrow-closure commit). Graphify queried before merging;
+`docs/glossary.md` read before touching any shared surface. No pinball
+gameplay, audio, renderer, or new-physics scope.
+
+### What was built (merge only — no new engine capability)
+
+- All reviewed T8 sources arrive intact: CPU-only `PhysicsDebugLines`
+  DTO (`RT2App/src/PhysicsDebugLines.h/.cpp`), `btIDebugDraw` capture with
+  RAII drawer restoration and swap publication
+  (`RT2App/src/PhysicsDebugCapture.h/.cpp`,
+  `PhysicsWorld::CaptureDebugLines`), RT2App-only overlay reusing the
+  existing `EditorViewportIcons::ProjectToViewport` seam
+  (`RT2App/src/PhysicsDebugOverlay.h/.cpp`, host toggle in
+  `RT2App/src/WalnutApp.cpp`), and the 9-case T8 suite
+  (`RT2Tests/src/PhysicsDebugVisualizationTests.cpp`).
+- All newer sequential T5–T7 behavior is preserved verbatim: T5 staged
+  hinge/slider construction with UUID-ordered build-last/teardown-first and
+  the destroy-batch policy, T6 canonical per-tick scrape with the immutable
+  per-frame snapshot and frozen FIFO drain, T7 queued Lua commands with the
+  pre-step drain and the OnUpdate-only event-poll window (RAII
+  `T7EventPollWindow` plus the `ScriptSystem`-side scoping). The auto-merged
+  `RuntimeSceneController.cpp` Play path captures debug lines *before*
+  candidate commit (T8-reviewed order) while keeping the T7 Play
+  initializations and the T6 snapshot reset; Update retains the prior
+  snapshot on capture failure; Step completes its tick then reports
+  capture failure (`return debugOk`, the reviewed T8 contract).
+- No T5 constraint construction is duplicated: constraint lines come only
+  from `AppendConstraintAdapterLines` over persisted components, exactly
+  the reviewed T5 merge point documented in `PhysicsDebugCapture.h`.
+
+### Merge conflicts — all five resolved deliberately (2026-09-22)
+
+Base `df19022` → HEAD renamed the pre-Step section header to T6 while T8
+inserted its capture block above the old T4 header at the same anchor:
+
+- `RT2App/src/PhysicsWorld.cpp`: kept the full T8 `CaptureDebugLines`
+  implementation, dropped the stale T4 section header, kept the newer T6
+  header (it labels the T5–T7 code that now precedes `Step`).
+- `RT2App/src/PhysicsWorld.h`: kept both includes (`PhysicsEvents.h` and
+  `PhysicsDebugLines.h`); member declarations had auto-merged cleanly.
+- `RT2App/src/RuntimeSceneController.h`: kept both the T6/T7 event
+  accessor block and the T8 debug-snapshot accessor block.
+- `RT2Tests/premake5.lua` and `RT2Tests/RT2Tests.vcxproj`: kept the T5,
+  T6, T7 *and* T8 test/source entries (both sides had deleted nothing —
+  each side only added its own).
+- `run_bullet_presence_gate.ps1` (not conflicted, updated in the same
+  change): now requires all 162 named T1–T8 cases (was 153 T1–T7).
+
+### Integration defects found — two stale T8 expectations, repaired test-only
+
+The merged tree turned two reviewed-T8 assertions red (production untouched):
+
+1. `PhysicsConstraintCount() == 0` (two tests): true on the T4-based T8
+   branch, false once T5 stages one live Bullet constraint per authored
+   component. Now asserts the exact integrated census (2 for the
+   hinge+slider playfield, 3 for the required fixture) with the
+   no-duplication rationale recorded in-test.
+2. Required-fixture Play refusal, two compounding causes: (a) platform
+   owned both a hinge and a slider — T5 hinge-XOR-slider coexistence
+   refusal, so the nil-world hinge moved to a dedicated kinematic mast
+   sharing the platform's exact world transform (all reviewed endpoint and
+   pixel literals hold unchanged); (b) the authored world frame
+   `(3,2,-1)` disagreed with the transformed owner frame — T5
+   `WorldHingeFramesExact` refusal, so the world frame now authors the
+   T5-agreed frame `(1.25,0.5,0)`/`(0,1,0)` and is still asserted verbatim
+   plus projected. Swap-indistinguishability under agreement is inherent;
+   T5's own refusal test covers disagreement. (Diagnostic captured via a
+   temporary `MESSAGE`, then reverted — no diagnostic scaffolding remains.)
+
+### Measured gates (serial, repository root, 2026-09-22)
+
+- Full solution builds Release + Debug (x64, MSBuild, reused gitignored
+  `RT2App.sln` from the T7 worktree — no premake regen, so no tracked
+  vcxproj churn): 0 errors both; only the pre-existing `C4996`
+  (`RTLog.h` fopen) / `C4018` (`tinyexr.h`) warnings. Environment repairs,
+  both precedented and git-clean: submodule contents (`Walnut`, `entt`,
+  `lua`, `sol2`, `efsw`, `DLSS`) copied from the T7 sibling at identical
+  pins (network fetch stalled); gitignored Bullet/SliceRunner project
+  files copied likewise; generated `RT2SliceRunner.vcxproj` hand-given the
+  two T8 CPU entries its tracked `premake5.lua` already lists.
+- Focused, both configs: T8 9/9 (206/206 assertions), T7 30/30 (346/346),
+  frozen T5+T6 52/52 (1120/1120).
+- Full `RT2Tests --no-skip`, both configs: 1385/1385 cases, 161506/161506
+  assertions (1376 T1–T7 + 9 T8; no failures, no skips).
+- Presence gate `Both`: PASS, 162/162 T1–T8 names in each binary.
+- `run_script_test.ps1`: PASS (60 frames, 1 entity, no mismatches).
+- Slice Release (`run_slice_test.ps1`, 60 steps): PASS, cube
+  x=`0.999999702`, authoring intact. Slice Debug (5 steps): PASS,
+  authoring intact.
+- CPU import isolation (`dumpbin /DEPENDENTS`): Release+Debug `RT2Tests`
+  and `RT2SliceRunner` import only Windows/C++ runtime DLLs — no
+  Vulkan/ImGui/Walnut/GLFW/shaderc/SPIR-V/NGX/NRD/NRI. Overlay stays
+  RT2App-only in all CPU closures.
+- `graphify update .`: PASS (47280 nodes, 99648 edges, 1666 communities);
+  post-update scoped query resolves the expected
+  PhysicsWorld/controller/capture/constraint/event subgraph.
+- `git diff --check`: clean. `vertical-slice.rt2scene` fixture rewrite and
+  regenerated `graphify-out/GRAPH_REPORT.md` restored; final worktree holds
+  only the merge plus the bounded repairs above.
+
+### Bullet-over-Jolt supersession note (settled 2026-09-22)
+
+The Phase 9 roadmap stub (`:620-669`, `:628`) names Jolt behind an
+RT2-owned abstraction. That stub is intent written before any physics work
+— a period record, not a decision — and is left intact above. This
+integration supersedes the library choice for the reusable rigid-body scope
+actually delivered (T1–T8): spike-proven core-only Bullet 3.25 at pinned
+commit `2c204c49` (`LinearMath`/`BulletCollision`/`BulletDynamics` only;
+Vehicle/Featherstone sources compile inside `BulletDynamics` but are never
+instantiated — exposed, used and tested surface is rigid bodies plus
+`btHingeConstraint`/`btSliderConstraint`). Jolt-specific Phase 9 items not
+built here (capsule shapes, raycast/overlap/shape-cast query APIs,
+character controllers, dynamic-instance/TLAS cost measurement) are
+unaffected by this note and remain future work under their own names.

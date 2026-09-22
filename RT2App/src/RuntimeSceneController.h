@@ -6,6 +6,7 @@
 #include "SceneDocument.h"
 #include "ISceneRenderBridge.h"
 #include "IPhysicsCollisionAssetProvider.h"
+#include "PhysicsDebugLines.h"
 #include "PhysicsWorld.h"
 #include "PhysicsEvents.h"
 #include "RuntimeLifecycleObserver.h"
@@ -418,6 +419,24 @@ public:
     {
         m_PhysicsEventsLuaVisible = visible;
     }
+    // ---- T8 physics debug visualization ---------------------------------
+    //
+    // Immutable read-only snapshot of world-space debug segments, refreshed
+    // from the committed PhysicsWorld at Play and after every Update/Step
+    // presentation pass. Pause retains the last valid snapshot (no refresh
+    // while paused); Stop clears it. Empty in Edit and after any refused
+    // Play (invalid geometry keeps the T4 UUID-named diagnostic; capture
+    // never synthesizes a shape for a body that failed to stage).
+    // Headless/tests/draw read this; nobody mutates through it.
+    const PhysicsDebugLines& GetPhysicsDebugLines() const
+    {
+        return m_DebugLines;
+    }
+    size_t PhysicsDebugLineCount() const { return m_DebugLines.Count(); }
+    std::string DumpPhysicsDebugLines() const { return m_DebugLines.Dump(); }
+    // T8 capture failures are typed rather than thrown. Update retains the
+    // prior complete snapshot; Step returns false after completing its tick.
+    const Error& LastPhysicsDebugError() const { return m_LastPhysicsDebugError; }
 
     // Test-only accumulator read-out. Failed Play must leave it zero; Step
     // must not advance it.
@@ -472,6 +491,11 @@ private:
     // undrained create.
     std::unordered_set<UUID> PendingCreateUuids() const;
 
+    // T8: re-capture the debug snapshot from the committed world + runtime
+    // document. Called at Play commit and after every Update/Step pass;
+    // never on Pause (retains) and never through the render bridge.
+    bool RefreshPhysicsDebugLines(Error& err);
+
     std::unique_ptr<SceneDocument> m_Runtime;
     // T3: at most one committed PhysicsWorld per Play session. Staged as a
     // local candidate in Play() and moved here only after complete
@@ -483,6 +507,9 @@ private:
     size_t m_PhysicsLiveBaseline = 0;
     // T3: borrowed collision provider (host-owned; see SetCollisionProvider).
     IPhysicsCollisionAssetProvider* m_CollisionProvider = nullptr;
+    // T8: cached immutable debug snapshot (Play/Paused retain, Stop clears).
+    PhysicsDebugLines m_DebugLines;
+    Error m_LastPhysicsDebugError;
     SceneRunState m_State = SceneRunState::Edit;
     float m_Accumulator = 0.0f;
 

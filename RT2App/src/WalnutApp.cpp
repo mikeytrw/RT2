@@ -42,6 +42,7 @@
 #include "EditorTransformGizmo.h"
 #include "TransformGizmoHostLifecycle.h"
 #include "EditorViewportIcons.h"
+#include "PhysicsDebugOverlay.h"
 #include "EditorCommandHistory.h"
 #include "EditorSyncRouter.h"
 #include "EditorCommands.h"
@@ -1505,6 +1506,16 @@ public:
 				m_EditorUI.Selection().Toggle(iconOverlay.clickedEntity);
 			else
 				m_EditorUI.SelectUuid(iconOverlay.clickedEntity);
+		}
+
+		// T8 physics debug overlay. Runtime-only: drawn while Playing/Paused
+		// from the controller's immutable CPU snapshot (never through
+		// ISceneRenderBridge). Opposite polarity to the editor icons above.
+		if (!editorMode && m_ShowPhysicsDebug)
+		{
+			rt2::core::DrawPhysicsDebugLines(m_Runtime.GetPhysicsDebugLines(),
+				m_Cam.GetProjection() * m_Cam.GetView(),
+				{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y });
 		}
 
 		const bool ordinaryPickClick = imageHovered && !gizmo.consumesMouse &&
@@ -5135,6 +5146,12 @@ public:
 	// uncluttered for a screenshot, not to change what the game shows.
 	bool m_ShowEditorIcons       = true;
 
+	// Runtime-only viewport overlay: T8 physics collision debug lines. Only
+	// drawn while Playing/Paused (never in Edit — there is no committed
+	// world to capture from), gated by this flag. Opposite polarity to the
+	// editor icons above by design.
+	bool m_ShowPhysicsDebug      = true;
+
 	// One question behind every editor-only visual: the transform gizmo, the
 	// light/camera icons, and the viewport background. Each of those is
 	// scaffolding for authoring, not part of the game, so Play must show none
@@ -6009,6 +6026,7 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::TextDisabled("Viewport");
 			ImGui::Separator();
 			ImGui::MenuItem("Light / Camera Icons", nullptr, &layerPtr->m_ShowEditorIcons);
+		ImGui::MenuItem("Physics Debug Lines", nullptr, &layerPtr->m_ShowPhysicsDebug);
 			ImGui::TextDisabled("(Viewport is always shown)");
 			ImGui::EndMenu();
 		}

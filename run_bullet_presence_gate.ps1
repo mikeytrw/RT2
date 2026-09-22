@@ -1,13 +1,13 @@
 #!/usr/bin/env pwsh
-# run_bullet_presence_gate.ps1 - assert the named T1/T2/T3/T4/T5/T6/T7 Bullet cases exist
+# run_bullet_presence_gate.ps1 - assert the named T1/T2/T3/T4/T5/T6/T7/T8 Bullet cases exist
 # in the built RT2Tests executables.
 #
 # Usage: pwsh run_bullet_presence_gate.ps1 [-Configuration Release|Debug|Both]
 #
-# A zero exit from RT2Tests proves nothing about T1-T7 when the tracked
+# A zero exit from RT2Tests proves nothing about T1-T8 when the tracked
 # Visual Studio projects silently omit their translation units (a 1218-case
 # false green passed while exercising none of the new tests). This gate
-# enumerates --list-test-cases and requires every named T1-T7 case, so a
+# enumerates --list-test-cases and requires every named T1-T8 case, so a
 # build that drops them fails loudly instead of passing silently.
 #
 # Exits 0 when every named case is present in every checked binary, 1
@@ -186,6 +186,16 @@ $requiredCases = @(
     "T7 GREEN_PausedReloadSeesEmptyEvents: repaired top-level and on_create poll empty on a contact frame",
     "T7 RED_ResetAllocFailureMutationFree: repair-set exhaustion refuses without moving the body",
     "T7 RED_DrainDropLoudAndContinues: unexpected apply failure names op and UUID, FIFO continues"
+    # T8: CPU-only physics debug visualization.
+    "T8 GREEN_PhysicsDebugLinesViaIconProjection: debug DTO projects through the existing icon projection split with no bridge change",
+    "T8 GREEN_PhysicsDebugPauseRetainsStopClears: Pause keeps the last snapshot, Stop empties it",
+    "T8 GREEN_PhysicsConstraintAdapterUsesPersistedComponents: hinge/slider fixtures yield owned constraint segments without T5 Bullet constraints",
+    "T8 RED_InvalidGeometryKeepsT4Diagnostic: missing colliders refuse Play with the UUID diagnostic and no debug shape",
+    "T8 GREEN_ConstraintFramesUseWorldTransforms: required ramp/dynamic/driven-hinge/driven-slider/trigger fixture captures exact endpoints and exact top/side pixels",
+    "T8 RED_DebugCaptureAllocationIsTypedAndAtomic: drawer detaches and snapshot never publishes partial output",
+    "T8 RED_DebugCaptureUpdateFailureRetainsSnapshot: injected Update failure keeps Playing, the prior dump, and a detached drawer",
+    "T8 RED_DebugCaptureStepFailureRetainsSnapshot: injected paused-Step failure returns false after one tick with state, dump, and drawer intact",
+    "T8 RED_DebugCaptureRestoresPriorDrawer: RAII restores the exact pre-existing Bullet drawer on success and failure"
 )
 
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
@@ -206,13 +216,13 @@ foreach ($config in $configs) {
         }
     }
     if ($missing.Count -gt 0) {
-        Write-Host "[$config] FAIL: $($missing.Count) named T1-T7 cases absent from $exe" -ForegroundColor Red
+        Write-Host "[$config] FAIL: $($missing.Count) named T1-T8 cases absent from $exe" -ForegroundColor Red
         foreach ($case in $missing) {
             Write-Host "  missing: $case" -ForegroundColor Red
         }
         $failed++
     } else {
-        Write-Host "[$config] PASS: all $($requiredCases.Count) named T1-T7 cases present" -ForegroundColor Green
+        Write-Host "[$config] PASS: all $($requiredCases.Count) named T1-T8 cases present" -ForegroundColor Green
     }
 }
 
