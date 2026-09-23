@@ -70,9 +70,9 @@ rather than returning empty/false.
 
 - `msbuild RT2App.sln -p:Configuration=Release -p:Platform=x64`. Targets:
   `RT2App`, `RT2Tests`, `RT2SliceRunner`.
-- **Release is green (554/554) and must stay green** — a Release failure is a
-  real regression, not baseline noise. Debug has 8 known failures in OBJ
-  fixture generation; see "Test baseline" in the plan.
+- **Release and Debug are green (1392/1392, 161,832 assertions post-A0) and must stay green** — any failure is a
+  real regression, not baseline noise. See "Test baseline" in the plan
+  (authoritative; it supersedes this line).
 - **Run `RT2Tests.exe` from the repository root.** It resolves some fixtures
   by relative path; run elsewhere it fails extra cases *and* writes stray
   fixture files into the tree.

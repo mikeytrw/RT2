@@ -69,6 +69,10 @@
     files { "src/PhysicsDebugVisualizationTests.cpp" }
     files { "../RT2App/src/PhysicsDebugLines.cpp", "../RT2App/src/PhysicsDebugCapture.cpp" }
 
+    -- Audio A0: contract/baseline checks (same rationale).
+    -- CPU-only pins + deferred 20-check ownership map; no miniaudio/device imports.
+    files { "src/AudioA0ContractBaselineTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

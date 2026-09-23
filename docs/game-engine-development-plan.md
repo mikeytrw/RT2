@@ -16367,3 +16367,66 @@ instantiated — exposed, used and tested surface is rigid bodies plus
 built here (capsule shapes, raycast/overlap/shape-cast query APIs,
 character controllers, dynamic-instance/TLAS cost measurement) are
 unaffected by this note and remain future work under their own names.
+
+### Audio A0 - contracts and baseline checkpoint (2026-09-23)
+
+A0 grounds the audio integration before any audio implementation exists.
+Grounded against `master` at `f14304413786b3c0b066d0f3724902a7202daa2a`;
+no audio production code was added (no `AudioSourceComponent`, no
+`AudioWorld`, no `IAudioBackend`, no miniaudio). Earlier Phase 11 text is
+left byte-for-byte above; where it disagrees with the settled READY audio
+plan, the following supersedes it (roadmap stub `:710-742` is intent, this
+note is the A0 record):
+
+- **Listener.** The actual `Camera` used for the rendered frame is the sole
+  listener authority (`RT2App/src/WalnutApp.cpp:2691-2694`, `:3982`,
+  `:5015-5032`). There is **no persisted listener component**: the old
+  Phase 11 "source/listener component serialization round-trip" sentence
+  (`:725-730`) does not apply - only the source side will exist (A2).
+- **First-delivery formats.** WAV, FLAC, and MP3 (miniaudio built-in
+  decoders). Ogg/Vorbis and Opus are excluded.
+- **Step.** Step updates source/listener state but leaves audio time
+  frozen: it does not briefly unpause voices and pumps zero no-device
+  frames. Pause freezes the runtime mix; Resume continues it.
+- **Baseline (measured 2026-09-23 from the repository root,
+  `RT2Tests --no-skip`).** Pre-A0 at `f143044`: Release **1386 run /
+  1386 passed / 0 failed / 0 skipped; 161,541 assertions**, Debug
+  **1386 / 1386 / 0 / 0; 161,541 assertions**. Post-A0 (6 new cases,
+  +291 assertions in `RT2Tests/src/AudioA0ContractBaselineTests.cpp`):
+  Release **1392 / 1392 / 0 / 0; 161,832 assertions**, Debug **1392 /
+  1392 / 0 / 0; 161,832 assertions**. Full solution builds Release +
+  Debug with 0 errors (only the pre-existing `C4996`/`C4018` warnings).
+  These figures supersede every earlier baseline row for current-state
+  use; older rows remain period records.
+- **A0 checks now running (green).** Persisted-component visitation is
+  exactly 17 (`A0 GREEN_PersistedCoverageExact17`); the asset-kind codec
+  has no audio kind (`A0 GREEN_AssetKindCodecHasNoAudioKindYet`); the
+  visitor surfaces both physics refs unconditionally with an exact
+  3-slot census (`A0 GREEN_VisitorSeesBothPhysicsRefsUnconditionally`);
+  second-Play is refused without disturbing the live session and Stop
+  returns to Edit (`A0 GREEN_PlayRefusedWhilePlayingLeavesSessionUndisturbed`);
+  the CPU target carries a hard no-miniaudio boundary
+  (`A0 GREEN_CpuTargetHasNoMiniaudioBoundary`). Each case names the later
+  ticket that must update it.
+- **RED proof (kept out of the green suite).** With one `ForEach` entry
+  (`PhysicsSliderComponent`) temporarily removed from
+  `RT2App/src/PersistedComponents.h`, the rebuilt Release suite reports
+  `A0 GREEN_PersistedCoverageExact17` red with exactly 3 failures
+  (16 vs 17 visits, 16 vs 17 distinct types, missing slider type) while
+  `PersistedComponents::Count == 17` still passes - proving the coverage
+  half that the count alone cannot provide. The mutation was reverted;
+  the tree is green.
+- **Deferred ownership map (all 20 required checks; none executable at
+  A0).** Pinned in code by `A0 DEFERRED_OwnershipMapCoversAll20RequiredChecks`
+  (`RT2Tests/src/AudioA0ContractBaselineTests.cpp`); owners: 1,2 -> A2;
+  3,5,19 -> A4; 4,6,10,11,12,14,18 -> A5; 7,8,9,20 -> A3; 13 -> A6;
+  15 -> A7; 16,17 -> A1. (Check 9's no-device PCM oracles also consume
+  A4 rendering; check 4's decode prerequisite is A4; check 20's status
+  surface is A6; single owners above are the implementing tickets.)
+- **CPU isolation preserved.** `RT2Tests`/`RT2SliceRunner` compile no
+  miniaudio, WASAPI, Vulkan, ImGui, or Walnut; the new test file lives
+  beside the existing CPU target only, wired through the tracked
+  `RT2Tests/premake5.lua` + `RT2Tests/RT2Tests.vcxproj` entries like
+  every prior test group. The `.sln`/`.filters` used to build were
+  regenerated locally from this tree's premake files (gitignored); the
+  beta-4 regen churn on the three tracked `.vcxproj` files was reverted.
