@@ -5,10 +5,12 @@
 #
 # Proves required checks 16/17 at the A1 scope (probe shell + build
 # isolation; full decoder/mixer/sample oracles belong to A4):
-#   1. Vendored byte identity: SHA256 of each manifest file matches the hash
-#      recorded for THAT file in RT2AudioBackend/VENDORING.md. The record is
-#      the single source of truth (parsed, not string-searched), so a
-#      swapped/misfiled hash fails loudly here.
+#   1. Vendored byte identity: an immutable pin table in this script names
+#      the exact three filenames and SHA-256 values. VENDORING.md's
+#      file->hash manifest must equal the pin table (so a coordinated
+#      record edit fails), and each file's bytes must equal the pin table
+#      (so a coordinated bytes+record edit fails). Neither source can
+#      self-certify; the pin changes only by explicit script edit.
 #   2. Pin identity: MA_VERSION_* macros read back as 0.11.25 and the
 #      license preserves the upstream public-domain/MIT-0 choice verbatim.
 #   3. Exactly-one-compilation: every project reachable from the generated
@@ -22,19 +24,22 @@
 #      predicate that must fire on RT2AudioProbe as positive control
 #      (miniaudio links statically, so binary symbol scans are inert and
 #      are not used). A deliberately removed link therefore fails loudly.
-#   5. Dynamic imports: RT2Tests and RT2SliceRunner binaries dynamically
-#      import no Vulkan, ImGui, Walnut, GLFW, shaderc, SPIR-V, or NGX
-#      module. This rules out dynamic audio/GPU dependencies only; static
-#      isolation is proven by check 4. Premake wiring: root/RT2App/RT2Tests
-#      premake files declare the boundary above.
+#   5. Dynamic imports: dumpbin must parse a valid PE import table (EXECUTABLE
+#      IMAGE + import section markers, clean exit, no LNK diagnostics) and
+#      that table must import no Vulkan, ImGui, Walnut, GLFW, shaderc,
+#      SPIR-V, or NGX module. The denylist alone would PASS a non-PE file,
+#      so the markers are required. This rules out dynamic audio/GPU
+#      dependencies only; static isolation is proven by check 4. Premake
+#      wiring: root/RT2App/RT2Tests premake files declare the boundary.
 #   6. Probe proof: RT2AudioProbe runs green in fixed float32 stereo 48 kHz
 #      no-device mode with exact frame-count output.
-#   7. Whitespace: `git diff --check` passes over every RT2-owned path
-#      (staged and unstaged) while excluding exactly the manifest-pinned
-#      vendor files, which carry upstream trailing whitespace that must
-#      never be normalized; their SHA-256 gate (check 1) is the
-#      complementary check. A stray trailing space in RT2-owned code fails
-#      loudly here.
+#   7. Whitespace: `git diff --check` passes over every RT2-owned path for
+#      unstaged, staged, AND the committed A1 range 355584d..HEAD (a clean
+#      tree would otherwise false-PASS without examining any commit), each
+#      excluding exactly the manifest-pinned vendor files, which carry
+#      upstream trailing whitespace that must never be normalized; their
+#      SHA-256 gate (check 1) is the complementary check. A stray trailing
+#      space in RT2-owned code fails loudly here.
 #
 # Exits 0 when every check passes in every checked configuration, 1
 # otherwise. Must run from the repository root (AGENTS.md).
@@ -55,12 +60,23 @@ function Pass([string]$message) {
     Write-Host "A1 GATE PASS: $message" -ForegroundColor Green
 }
 
-# ------------------------------------------------- vendoring manifest (P3)
-# Single source of truth: parse the file->hash mapping from VENDORING.md's
+# ------------------------------------------- immutable pin + manifest
+# Independent anchor to the exact pinned upstream bytes (miniaudio 0.11.25
+# at commit 9634bedb5b5a2ca38c1ee7108a9358a4e233f14d). A coordinated edit
+# of vendor bytes plus VENDORING.md cannot self-certify: changing either
+# without an explicit, reviewable edit of this table fails loudly below.
+# Keys are the exact repo-relative filenames, so a fourth vendor file never
+# matches and must extend this table, the manifest, .gitattributes, and the
+# whitespace exemption together.
+$pinnedFiles = @{
+    "RT2AudioBackend/vendor/miniaudio/miniaudio.h" = "01D3AC6049132BDCCC30BD467B7C1D030C090E8F30EB0CEB2DA14BEA0BA7143A";
+    "RT2AudioBackend/vendor/miniaudio/miniaudio.c" = "721EA23C26F13BFB0E5BACD96BB9F40684DE1B3B31456D0DC168A87EEF18978F";
+    "RT2AudioBackend/vendor/miniaudio/LICENSE"     = "457F1B500E0ADF6BC059EDDDFA78A2F62012E7C3BB43476C20E0BD23B25BA0EB";
+}
+
+# Per-file association: parse the file->hash mapping from VENDORING.md's
 # own "Byte hashes" section, so a swapped or misfiled hash fails loudly
-# instead of passing on global string presence. Exactly three entries are
-# allowed: a fourth vendor file must extend this manifest, .gitattributes,
-# and the whitespace exemption together, never silently.
+# instead of passing on global string presence.
 $vendoringRecord = Get-Content "RT2AudioBackend/VENDORING.md" -Raw
 $manifestPattern = '- `vendor/miniaudio/(?<file>[^`]+)`:[\r\n]+\s+`(?<hash>[0-9A-Fa-f]{64})`'
 $vendoredManifest = @{}
@@ -71,13 +87,30 @@ foreach ($m in [regex]::Matches($vendoringRecord, $manifestPattern)) {
 if ($vendoredManifest.Count -ne 3) {
     Fail "VENDORING.md manifest parses to $($vendoredManifest.Count) file->hash entries, want exactly 3"
 }
-foreach ($entry in $vendoredManifest.GetEnumerator()) {
+# The record must equal the immutable pin exactly: same filenames, same
+# hashes. A record-only edit fails here even when it stays self-consistent.
+foreach ($pinnedPath in $pinnedFiles.Keys) {
+    if (-not $vendoredManifest.ContainsKey($pinnedPath)) {
+        Fail "VENDORING.md manifest is missing pinned file: $pinnedPath"
+    } elseif ($vendoredManifest[$pinnedPath] -ne $pinnedFiles[$pinnedPath]) {
+        Fail "VENDORING.md hash for $pinnedPath differs from the immutable pin"
+    } else {
+        Pass "pin manifest matches immutable pin: $pinnedPath"
+    }
+}
+foreach ($extraPath in @($vendoredManifest.Keys | Where-Object { -not $pinnedFiles.ContainsKey($_) })) {
+    Fail "VENDORING.md manifest lists unpinned file: $extraPath (extend the pin table explicitly)"
+}
+# The bytes must equal the immutable pin. A coordinated bytes+record edit
+# fails above (record no longer matches the pin) even though bytes and
+# record agree with each other.
+foreach ($entry in $pinnedFiles.GetEnumerator()) {
     $path = $entry.Key
     $want = $entry.Value
     if (-not (Test-Path $path)) { Fail "vendored file missing: $path"; continue }
     $got = (Get-FileHash $path -Algorithm SHA256).Hash.ToUpperInvariant()
     if ($got -ne $want) {
-        Fail "byte identity mismatch: $path`n  manifest $want`n  got      $got"
+        Fail "byte identity mismatch: $path`n  pin  $want`n  got  $got"
     } else {
         Pass "byte identity: $path"
     }
@@ -90,22 +123,16 @@ foreach ($entry in $vendoredManifest.GetEnumerator()) {
 # the exemption list is derived from the manifest so it covers precisely the
 # pinned set and nothing else.
 $vendorExcludes = @($vendoredManifest.Keys | ForEach-Object { ":!$_" })
-foreach ($staged in @($false, $true)) {
-    $label = if ($staged) { "staged" } else { "unstaged" }
+function Invoke-WhitespaceCheck([string[]]$gitArgs, [string]$label) {
     # Default autocrlf stays in effect so CRLF worktrees check normally;
     # the vendor exemption is a pathspec. Keep only violation-shaped stdout
     # lines ("path:line: message") so git's own stderr chatter can never
-    # masquerade as a violation or mask one.
-    if ($staged) { $diffArgs = @("diff", "--cached", "--check", "--", ".") + $vendorExcludes }
-    else { $diffArgs = @("diff", "--check", "--", ".") + $vendorExcludes }
-    # Violations print on stdout as "path:line: message"; git's own stderr
-    # chatter (e.g. autocrlf notices starting with "warning:") is filtered
-    # so only real violations can fail this check. The preference is
-    # relaxed around the native call because Windows PowerShell 5.1 turns
-    # native stderr into a terminating error under Stop.
+    # masquerade as a violation or mask one. The preference is relaxed
+    # around the native call because Windows PowerShell 5.1 turns native
+    # stderr into a terminating error under Stop.
     $prevPref = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $wsRaw = (& git @diffArgs 2>&1 | Out-String)
+    $wsRaw = (& git @gitArgs 2>&1 | Out-String)
     $wsCode = $LASTEXITCODE
     $ErrorActionPreference = $prevPref
     $wsLines = @($wsRaw -split "`r?`n" |
@@ -118,6 +145,29 @@ foreach ($staged in @($false, $true)) {
     } else {
         Fail "git diff --check errored ($label, exit $wsCode): $wsOutput"
     }
+}
+foreach ($staged in @($false, $true)) {
+    $label = if ($staged) { "staged" } else { "unstaged" }
+    if ($staged) { $diffArgs = @("diff", "--cached", "--check", "--", ".") + $vendorExcludes }
+    else { $diffArgs = @("diff", "--check", "--", ".") + $vendorExcludes }
+    Invoke-WhitespaceCheck $diffArgs $label
+}
+# Committed A1 range: staged/unstaged checks pass on a clean tree without
+# examining any commit, so an RT2-owned whitespace error committed in A1
+# would vanish from them forever. Check the explicit A1 base through HEAD
+# with the same narrow exemption. The base itself is validated first: any
+# nonzero Git status, including tool errors, fails loudly.
+$a1BaseCommit = "355584db94364d8b0228c1c8625458bac1d7840b"  # A0 checkpoint (short: 355584d)
+$prevPref = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& git cat-file -e "$a1BaseCommit^{commit}" 2>&1 | Out-Null
+$baseCode = $LASTEXITCODE
+$ErrorActionPreference = $prevPref
+if ($baseCode -ne 0) {
+    Fail "A1 base commit $a1BaseCommit is not present; cannot check the committed range"
+} else {
+    $rangeArgs = @("diff", "--check", "$a1BaseCommit..HEAD", "--", ".") + $vendorExcludes
+    Invoke-WhitespaceCheck $rangeArgs "committed 355584d..HEAD"
 }
 
 # ------------------------------------------------------- pin macros/license
@@ -322,6 +372,28 @@ function Find-DumpBin {
 
 $importDenyList = @("vulkan", "glfw", "imgui", "walnut", "shaderc", "spirv", "nvngx", "ngx", "miniaudio")
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
+function Test-ExecutableImports([string]$exePath, [string]$dumpbinPath) {
+    # Validates that dumpbin actually parsed a PE import table instead of
+    # merely failing to match denylisted names. A non-PE file exits 0 with
+    # "warning LNK4048: Invalid format file" and no denylist hit, so the
+    # denylist alone would PASS it. Require the PE marker, an import-table
+    # marker, a clean native exit, and no warning/error diagnostics.
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $raw = (& $dumpbinPath /IMPORTS $exePath 2>&1 | Out-String)
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prevPref
+    if ($code -ne 0) { return "dumpbin exited $code" }
+    if ($raw -notmatch 'File Type:\s+EXECUTABLE IMAGE') { return "no EXECUTABLE IMAGE marker (not a valid PE import dump)" }
+    if ($raw -notmatch 'Section contains the following imports') { return "no import-table section (not a valid PE import dump)" }
+    if ($raw -match '(?im)^.*\b(warning|error)\s+LNK\d+') { return "dumpbin diagnostic present: $($Matches[0].Trim())" }
+    $badDlls = @()
+    foreach ($deny in $importDenyList) {
+        if ($raw -like "*$deny*") { $badDlls += $deny }
+    }
+    if ($badDlls.Count -gt 0) { return "denylisted dynamic imports: $($badDlls -join ', ')" }
+    return ""
+}
 $dumpbin = Find-DumpBin
 if (-not $dumpbin) {
     Fail "dumpbin.exe not found; cannot check dynamic-import evidence"
@@ -330,15 +402,11 @@ if (-not $dumpbin) {
         foreach ($target in @("RT2Tests", "RT2SliceRunner")) {
             $exe = "bin/$config-windows-x86_64/$target/$target.exe"
             if (-not (Test-Path $exe)) { Fail "binary missing for import scan: $exe (build first)"; continue }
-            $imports = & $dumpbin /IMPORTS $exe 2>&1 | Out-String
-            $badDlls = @()
-            foreach ($deny in $importDenyList) {
-                if ($imports -like "*$deny*") { $badDlls += $deny }
-            }
-            if ($badDlls.Count -eq 0) {
-                Pass "[$config] $target dynamically imports no denylisted module"
+            $verdict = Test-ExecutableImports $exe $dumpbin
+            if ([string]::IsNullOrEmpty($verdict)) {
+                Pass "[$config] $target is a valid PE importing no denylisted module"
             } else {
-                Fail "[$config] $target dynamically imports denylisted modules: $($badDlls -join ', ')"
+                Fail "[$config] $target dynamic-import evidence rejected: $verdict"
             }
         }
     }
