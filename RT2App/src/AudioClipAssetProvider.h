@@ -19,10 +19,12 @@
 // AudioClipAssetProvider — app-owned immutable clip-byte cache (audio A2).
 //
 // Lifetime: the app owns one provider for the app session plus a value-held
-// AssetResolutionContext refreshed from the current context immediately
-// before Play/Preview. Callers borrow the provider pointer for one session
-// only. The provider never decodes audio; decoding remains the injected
-// backend's responsibility (A4).
+// asset root and an OWNED database snapshot refreshed from the current
+// context immediately before Play/Preview. The snapshot (not the caller's
+// non-owning pointer) backs every resolve, so project/database replacement
+// can never leave a dangling pointer behind. Callers borrow the provider
+// pointer for one session only. The provider never decodes audio; decoding
+// remains the injected backend's responsibility (A4).
 //
 // Resolution: an AudioSourceComponent::clip AssetReference resolves to a
 // ResolvedAudioClip holding the stable identity (effective asset ID),
@@ -64,12 +66,25 @@ class AudioClipAssetProvider final
 public:
     AudioClipAssetProvider() = default;
 
-    // Value-copy borrow rule: the provider holds the context by value, never
-    // by reference into host internals. The host refreshes it from the
-    // current AssetResolutionContext immediately before Play/Preview.
+    // Value snapshot rule: the provider copies the asset root and OWNS a
+    // snapshot copy of the database. AssetResolutionContext::database is
+    // explicitly non-owning (AssetResolver.h) and the project layer replaces
+    // its database object on refresh (ProjectContext holds a replaceable
+    // shared_ptr), so retaining the caller's pointer would read freed memory
+    // after a project/database replacement whenever a resolve lands before
+    // the next refresh. The snapshot freezes exactly the "one provider
+    // snapshot per Play/Preview" the plan requires; refresh via SetContext.
+    // The host refreshes it from the current AssetResolutionContext
+    // immediately before Play/Preview.
     void SetContext(const AssetResolutionContext& ctx)
     {
         m_Context = ctx;
+        if (ctx.database != nullptr)
+            m_DatabaseSnapshot =
+                std::make_shared<const AssetDatabase>(*ctx.database);
+        else
+            m_DatabaseSnapshot.reset();
+        m_Context.database = m_DatabaseSnapshot.get();
     }
     const AssetResolutionContext& Context() const { return m_Context; }
 
@@ -93,6 +108,10 @@ private:
     };
 
     AssetResolutionContext m_Context;
+    // Owned database snapshot backing m_Context.database. Keeps every
+    // resolve valid for the provider's lifetime, independent of the
+    // project layer's database replacement cadence.
+    std::shared_ptr<const AssetDatabase> m_DatabaseSnapshot;
     std::unordered_map<std::string, CacheEntry> m_Cache;
     size_t m_ReadCount = 0;
 };

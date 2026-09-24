@@ -140,7 +140,12 @@ Result<ResolvedAudioClip> AudioClipAssetProvider::ResolveClip(
     {
         ResolvedAudioClip out;
         out.bytes = it->second.bytes;
-        out.canonicalPath = resolved.resolvedPath;
+        // The advertised path is the computed canonical path, not the raw
+        // resolution spelling: an asset root or reference through a
+        // junction/symlink (or any other alias spelling) must report the
+        // same canonical identity the cache key — and the A4 decoded
+        // generation key — is built from.
+        out.canonicalPath = std::filesystem::path(canonical);
         out.effectiveId = resolved.effectiveId;
         out.fingerprint = freshHash;
         return Result<ResolvedAudioClip>::Ok(std::move(out));
@@ -155,7 +160,7 @@ Result<ResolvedAudioClip> AudioClipAssetProvider::ResolveClip(
 
     ResolvedAudioClip out;
     out.bytes = std::move(stored);
-    out.canonicalPath = resolved.resolvedPath;
+    out.canonicalPath = std::filesystem::path(canonical);
     out.effectiveId = resolved.effectiveId;
     out.fingerprint = freshHash;
     return Result<ResolvedAudioClip>::Ok(std::move(out));

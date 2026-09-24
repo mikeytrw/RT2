@@ -385,6 +385,22 @@ bool DispatchContentBrowserAssetDrop(
         callbacks.instantiatePrefab(pathString);
         return true;
     }
+    // Audio A2 first import: WAV/FLAC/MP3 drops assign or validate the
+    // clip's sidecar identity through the host's importAudioClip callback
+    // (ResolveOrAssign flow, no decode). Ogg/Opus stay unsupported: they
+    // are out of scope for the first delivery.
+    if (extension == ".wav" || extension == ".flac" || extension == ".mp3")
+    {
+        if (!callbacks.importAudioClip)
+        {
+            error.code = Error::InvalidArgument;
+            error.path = pathString;
+            error.detail = "audio clip drop has no import callback";
+            return false;
+        }
+        callbacks.importAudioClip(pathString);
+        return true;
+    }
 
     error.code = Error::InvalidArgument;
     error.path = pathString;

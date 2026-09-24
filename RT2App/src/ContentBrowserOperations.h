@@ -62,11 +62,18 @@ using ContentBrowserReimportCallback = std::function<bool(
 // The browser's drag payload is dispatched through the existing scene-import
 // callbacks. Keeping this seam CPU-only makes the payload contract permanent
 // and testable without constructing ImGui or Walnut.
+//
+// Audio first import (A2): importAudioClip assigns or validates the clip's
+// sidecar identity (the ResolveOrAssign flow) without decoding anything —
+// decoding stays the injected backend's job (A4). The inspector clip
+// browse/drop authoring and Preview surface belong to A7; this callback is
+// the Content Browser "new clip appears in the project" action only.
 struct ContentBrowserDropCallbacks
 {
     std::function<void(const std::string&)> importGltf;
     std::function<void(const std::string&, const ImportSettings&)> importObj;
     std::function<void(const std::string&)> instantiatePrefab;
+    std::function<void(const std::string&)> importAudioClip;
 };
 
 bool DispatchContentBrowserAssetDrop(

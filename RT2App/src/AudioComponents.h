@@ -180,6 +180,15 @@ inline bool ValidateAudioSourceComponent(
                         "asset identity");
     }
 
+    // The bus is a closed set. An out-of-range value (for example a stale
+    // cast or a corrupted payload) must not reach the codec: Save would
+    // serialize AudioBusName's "unknown" fallback and write a scene Load
+    // rejects. Reject it here with the same UUID+dotted-path contract as
+    // every other authored violation.
+    if (source.bus != AudioBus::Master && source.bus != AudioBus::Music &&
+        source.bus != AudioBus::Effects && source.bus != AudioBus::UI)
+        return fail("bus", "audio source bus must be master, music, effects, or ui");
+
     if (source.bus == AudioBus::Master)
         return fail("bus", "Master is a mixer parent and cannot be a source bus");
 

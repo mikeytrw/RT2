@@ -19,9 +19,14 @@
 //   it never imports miniaudio into CPU targets and never pretends the
 //   check executes without decoder output.
 // - Provider: app-owned AudioClipAssetProvider returns canonical path,
-//   effective identity, fingerprint, and immutable source bytes from a
-//   refreshed context; same-size/same-mtime rewrites yield new fingerprints
-//   while old resolved bytes stay immutable.
+//   effective identity, fingerprint, and immutable source bytes from an
+//   OWNED database snapshot taken at refresh (no dangling project pointer);
+//   same-size/same-mtime rewrites yield new fingerprints while old resolved
+//   bytes stay immutable; alias spellings share one entry and report one
+//   canonical identity.
+// - Content Browser first import: audio drops dispatch to the host
+//   importAudioClip callback, which performs sidecar first assignment
+//   (ResolveOrAssign, no decode); repeat drops reuse the minted identity.
 // - Routes: clone, duplicate, copy/paste, recovery, prefab (audioSource key,
 //   non-overridable presence/fields) carry the source exactly.
 // - Dependency protection: audio dependants resolve by ID and path fallback.
@@ -81,6 +86,7 @@ namespace
 {
 
 const UUID kClipId = UUID::Parse("550e8400-e29b-41d4-a716-446655440201");
+const UUID kOtherClipId = UUID::Parse("550e8400-e29b-41d4-a716-446655440205");
 const UUID kEntityId = UUID::Parse("550e8400-e29b-41d4-a716-446655440202");
 
 std::filesystem::path UniqueTempDir(const std::string& tag)
@@ -326,7 +332,19 @@ TEST_CASE("A2_ClipExtensionClassification: WAV/FLAC/MP3 only, case-insensitive")
     CHECK(bus == AudioBus::UI);
     CHECK_FALSE(AudioBusFromName("Mono", bus));
     CHECK_FALSE(AudioBusFromName("", bus));
+    CHECK_FALSE(AudioBusFromName("unknown", bus));
     CHECK(std::string(AudioBusName(AudioBus::Music)) == "music");
+
+    // An out-of-range enum value is rejected by the shared validator with
+    // the "bus" dotted field — otherwise Save would serialize AudioBusName's
+    // "unknown" fallback and write a scene Load rejects.
+    std::string busDetail;
+    std::string busField;
+    AudioSourceComponent garbageBus = MakeSource(kClipId);
+    garbageBus.bus = static_cast<AudioBus>(255);
+    CHECK_FALSE(ValidateAudioSourceComponent(garbageBus, true, std::nullopt,
+                                             busDetail, &busField));
+    CHECK(busField == "bus");
 }
 
 TEST_CASE("A2_WatchPolicyAudioRefresh: clip extensions invalidate the database")
@@ -607,6 +625,12 @@ TEST_CASE("A2_SaveInvalidInputs: in-memory violations fail with UUID and dotted 
     master.bus = AudioBus::Master;
     expectSaveFail(master, true, "audioSource.bus");
 
+    // Out-of-range enum: the shared validator refuses it before the codec
+    // could serialize an "unknown" bus Load rejects.
+    AudioSourceComponent garbage = MakeSource(kClipId);
+    garbage.bus = static_cast<AudioBus>(255);
+    expectSaveFail(garbage, true, "audioSource.bus");
+
     AudioSourceComponent ui = MakeSource(kClipId);
     ui.bus = AudioBus::UI;
     ui.spatial = true;
@@ -732,6 +756,139 @@ TEST_CASE("A2_ProviderLoudFailures: wrong kind, extension, and missing file")
     CHECK_FALSE(r3.IsOk());
     CHECK(r3.error.path == kEntityId.ToString());
     CHECK(r3.error.detail.find(kEntityId.ToString()) != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("A2_ProviderOwnsDatabaseSnapshot: replacement cannot dangle or leak")
+{
+    // The provider snapshots the database at SetContext: mutating or
+    // destroying the caller's database afterwards must neither corrupt
+    // later resolves nor read freed memory. Discrimination: with a retained
+    // raw pointer, the post-mutation resolve below fails Conflict (the live
+    // database is ambiguous); with the owned snapshot it still succeeds.
+    const auto dir = UniqueTempDir("a2_provider_snapshot");
+    const auto sfx = dir / "sfx";
+    std::filesystem::create_directories(sfx);
+    const std::vector<char> hitBytes = {'R', 'I', 'F', 'F', 'h', 'i', 't', '!'};
+    const std::vector<char> otherBytes = {'R', 'I', 'F', 'F', 'o', 't', 'h', 'r'};
+    WriteFileBytes(sfx / "hit.wav", hitBytes);
+    WriteFileBytes(sfx / "other.wav", otherBytes);
+    Error err;
+    REQUIRE(WriteSidecarId(AssetSidecarPath(sfx / "hit.wav"), kClipId, err));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(sfx / "other.wav"), kOtherClipId, err));
+
+    AssetReference hitRef;
+    hitRef.kind = AssetKind::AudioClip;
+    hitRef.path = "sfx/hit.wav";
+    hitRef.assetId = kClipId;
+    AssetReference otherRef;
+    otherRef.kind = AssetKind::AudioClip;
+    otherRef.path = "sfx/other.wav";
+    otherRef.assetId = kClipId;
+
+    AudioClipAssetProvider provider;
+    AssetDatabase live;
+    std::vector<AssetDatabaseDiagnostic> dbDiags;
+    live.AddOrUpdate(Record("sfx/hit.wav", kClipId), dbDiags);
+    provider.SetContext(AssetResolutionContext{dir, &live});
+
+    // Mutate the live database after the snapshot: the same ID is now
+    // claimed by two paths, so the LIVE database is ambiguous.
+    live.AddOrUpdate(Record("sfx/other.wav", kClipId), dbDiags);
+    CHECK(live.LookupById(kClipId).status ==
+          AssetIdLookupResult::Status::Ambiguous);
+
+    // The provider still resolves through its pre-mutation snapshot.
+    auto held = provider.ResolveClip(hitRef, kEntityId, "Emitter");
+    REQUIRE(held.IsOk());
+    REQUIRE(held.value.bytes != nullptr);
+    CHECK(*held.value.bytes == hitBytes);
+    CHECK(held.value.effectiveId == kClipId);
+
+    // A refresh replaces the snapshot: the new database is live immediately.
+    AssetDatabase second;
+    second.AddOrUpdate(Record("sfx/other.wav", kClipId), dbDiags);
+    provider.SetContext(AssetResolutionContext{dir, &second});
+    auto moved = provider.ResolveClip(otherRef, kEntityId, "Emitter");
+    REQUIRE(moved.IsOk());
+    REQUIRE(moved.value.bytes != nullptr);
+    CHECK(*moved.value.bytes == otherBytes);
+
+    // The source database may die with its scope; the snapshot outlives it.
+    {
+        AssetDatabase scoped;
+        scoped.AddOrUpdate(Record("sfx/hit.wav", kClipId), dbDiags);
+        provider.SetContext(AssetResolutionContext{dir, &scoped});
+    }
+    auto afterScope = provider.ResolveClip(hitRef, kEntityId, "Emitter");
+    REQUIRE(afterScope.IsOk());
+    CHECK(*afterScope.value.bytes == hitBytes);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("A2_ProviderCanonicalizesAliasPaths: hit and miss report one identity")
+{
+    // Both the miss and hit branches must advertise the COMPUTED canonical
+    // path, not the raw resolution spelling: a linked/case-variant alias of
+    // the same file shares the cache entry and reports the same identity
+    // the A4 decoded-generation key is built from. Discrimination: with the
+    // raw spelling advertised, the alias resolve below reports a different
+    // canonicalPath than the first resolve.
+    const auto dir = UniqueTempDir("a2_provider_alias");
+    const auto sfx = dir / "sfx";
+    std::filesystem::create_directories(sfx);
+    const std::vector<char> bytes = {'R', 'I', 'F', 'F', 'a', 'l', 'i', 'a', 's'};
+    WriteFileBytes(sfx / "hit.wav", bytes);
+    Error err;
+    REQUIRE(WriteSidecarId(AssetSidecarPath(sfx / "hit.wav"), kClipId, err));
+
+    AudioClipAssetProvider provider;
+    provider.SetContext(AssetResolutionContext{dir, nullptr});
+
+    AssetReference ref;
+    ref.kind = AssetKind::AudioClip;
+    ref.path = "sfx/hit.wav";
+    auto first = provider.ResolveClip(ref, kEntityId, "Emitter");
+    REQUIRE(first.IsOk());
+    const std::filesystem::path expected =
+        CanonicalAssetPath(dir / "sfx" / "hit.wav");
+    CHECK(first.value.canonicalPath == expected);
+
+#ifdef _WIN32
+    // Case-variant spelling: the filesystem is case-insensitive, so this
+    // names the same file through a different lexical spelling.
+    AssetReference upper;
+    upper.kind = AssetKind::AudioClip;
+    upper.path = "SFX/HIT.WAV";
+    auto alias = provider.ResolveClip(upper, kEntityId, "Emitter");
+    REQUIRE(alias.IsOk());
+    CHECK(alias.value.canonicalPath == expected);
+    CHECK(alias.value.canonicalPath == first.value.canonicalPath);
+    CHECK(alias.value.fingerprint == first.value.fingerprint);
+    CHECK(alias.value.bytes == first.value.bytes); // shared cache owner
+    CHECK(provider.CacheEntryCount() == 1);
+#endif
+
+    // Directory-link spelling when the platform grants it. Junctions and
+    // symlinks need no fixture: a missing privilege skips this block with
+    // a message while the case-variant discriminator above still guards.
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(sfx, dir / "link", linkError);
+    if (linkError)
+    {
+        MESSAGE("directory links unavailable; linked-alias probe skipped: " <<
+                linkError.message());
+    }
+    else
+    {
+        AssetReference linked;
+        linked.kind = AssetKind::AudioClip;
+        linked.path = "link/hit.wav";
+        auto viaLink = provider.ResolveClip(linked, kEntityId, "Emitter");
+        REQUIRE(viaLink.IsOk());
+        CHECK(viaLink.value.canonicalPath == expected);
+        CHECK(provider.CacheEntryCount() == 1);
+    }
     std::filesystem::remove_all(dir);
 }
 
@@ -987,25 +1144,79 @@ TEST_CASE("A2_DependantsSeeAudioClip: ID-exact and path-fallback protection")
     std::filesystem::remove_all(root);
 }
 
-TEST_CASE("A2_ContentBrowserDropLeavesAudioToA7: no silent import callback")
+TEST_CASE("A2_ContentBrowserAudioFirstImport: drop assigns the clip sidecar")
 {
-    // A2 classifies clips and protects their references; the drag-drop
-    // authoring callback (clip browse/drop onto a source) belongs to the A7
-    // inspector surface. A drop must therefore invoke no existing callback
-    // rather than silently importing as a model or prefab.
+    // The A2-promised Content Browser first-import action: dropping a new
+    // WAV/FLAC/MP3 runs the production dispatch arm into the host's
+    // importAudioClip callback, which performs the sidecar first assignment
+    // (ResolveOrAssign flow, no decode). A second drop of the same file
+    // reuses the minted identity. The inspector clip browse/drop authoring
+    // and Preview surface remain A7 scope; this action is the "new clip
+    // appears in the project" path only.
+    const auto dir = UniqueTempDir("a2_audio_import");
+    const auto clip = dir / "new.wav";
+    WriteFileBytes(clip, {'R', 'I', 'F', 'F', 'n', 'e', 'w', '!'});
+    const std::string clipString = clip.u8string();
+    REQUIRE_FALSE(std::filesystem::exists(AssetSidecarPath(clip)));
+
+    // No callback wired: loud failure naming the drop, no sidecar minted.
+    {
+        ContentBrowserDropCallbacks empty;
+        Error error;
+        CHECK_FALSE(
+            DispatchContentBrowserAssetDrop(clipString, empty, error));
+        CHECK(error.code == Error::InvalidArgument);
+        CHECK(error.detail.find("audio clip drop has no import callback") !=
+              std::string::npos);
+        CHECK_FALSE(std::filesystem::exists(AssetSidecarPath(clip)));
+    }
+
+    // Production path: the host callback runs the real first-assignment
+    // flow against the dropped file.
+    DeterministicUuidProvider ids;
+    UUID assigned = UUID::Nil();
+    bool minted = false;
+    Error importError;
     ContentBrowserDropCallbacks callbacks;
-    bool called = false;
-    callbacks.importGltf = [&](const std::string&) { called = true; };
+    bool gltfCalled = false;
+    bool objCalled = false;
+    bool prefabCalled = false;
+    callbacks.importGltf = [&](const std::string&) { gltfCalled = true; };
     callbacks.importObj = [&](const std::string&, const ImportSettings&) {
-        called = true;
+        objCalled = true;
     };
-    callbacks.instantiatePrefab = [&](const std::string&) { called = true; };
+    callbacks.instantiatePrefab = [&](const std::string&) {
+        prefabCalled = true;
+    };
+    callbacks.importAudioClip = [&](const std::string& dropped) {
+        assigned = ResolveOrAssign(dropped, ids, minted, importError);
+    };
     Error error;
-    const std::string wav =
-        (std::filesystem::absolute("drop-assets") / "hit.wav").u8string();
-    CHECK_FALSE(DispatchContentBrowserAssetDrop(wav, callbacks, error));
-    CHECK_FALSE(called);
+    REQUIRE(DispatchContentBrowserAssetDrop(clipString, callbacks, error));
+    CHECK(error.IsOk());
+    CHECK(importError.IsOk());
+    CHECK(minted);
+    CHECK_FALSE(assigned.IsNull());
+    CHECK(ReadSidecarId(AssetSidecarPath(clip), error) == assigned);
+    CHECK_FALSE(gltfCalled);
+    CHECK_FALSE(objCalled);
+    CHECK_FALSE(prefabCalled);
+
+    // A second drop of the same clip reuses the minted identity.
+    minted = true;
+    assigned = UUID::Nil();
+    REQUIRE(DispatchContentBrowserAssetDrop(clipString, callbacks, error));
+    CHECK(importError.IsOk());
+    CHECK_FALSE(minted);
+    CHECK(ReadSidecarId(AssetSidecarPath(clip), error) == assigned);
+
+    // Ogg stays unsupported: out of scope for the first delivery.
+    const auto ogg = dir / "hit.ogg";
+    WriteFileBytes(ogg, {'O', 'g', 'g', 'S'});
+    CHECK_FALSE(DispatchContentBrowserAssetDrop(ogg.u8string(), callbacks,
+                                               error));
     CHECK(error.code == Error::InvalidArgument);
+    std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("A2_CpuIsolationAndProjectWiring: no miniaudio; tracked lists carry the unit")
