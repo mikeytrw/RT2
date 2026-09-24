@@ -133,6 +133,18 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- Audio A3: CPU world/voice policy + recording fake (CPU-only;
+         standard library plus audio headers — no miniaudio or device). -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\AudioWorld.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\FakeAudioBackend.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <!-- T4: shared CPU collision decode + host-owned immutable cache
          (CPU-only; tinygltf/tinyobj declarations only — implementations link
          from SceneLoader.cpp below). -->

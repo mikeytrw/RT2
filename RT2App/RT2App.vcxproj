@@ -222,6 +222,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <!-- Audio A2: clip asset/provider persistence (CPU-only). -->
     <ClInclude Include="src\AudioClipAssetProvider.h" />
     <ClInclude Include="src\AudioComponents.h" />
+    <!-- Audio A3: CPU world/voice policy (CPU-only; no miniaudio/device). -->
+    <ClInclude Include="src\AudioBackend.h" />
+    <ClInclude Include="src\AudioSpatialMath.h" />
+    <ClInclude Include="src\AudioWorld.h" />
+    <ClInclude Include="src\FakeAudioBackend.h" />
     <ClInclude Include="src\BackgroundWork.h" />
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
@@ -473,6 +478,17 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     </ClCompile>
     <!-- Audio A2: clip asset/provider persistence (CPU-only). -->
     <ClCompile Include="src\AudioClipAssetProvider.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- Audio A3: CPU world/voice policy (CPU-only). -->
+    <ClCompile Include="src\AudioWorld.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\FakeAudioBackend.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
