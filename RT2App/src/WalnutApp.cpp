@@ -471,25 +471,72 @@ public:
 		// Audio A2 first import: assign or validate the clip sidecar (no
 		// decode), then refresh the project database so the Content Browser
 		// lists the clip. Failures are loud: the dispatcher reports the
-		// returned Error instead of a successful import.
+		// returned Error instead of a successful import. Success additionally
+		// requires the refreshed database to expose the imported record —
+		// a refresh that silently dropped the clip is reported as a failure.
 		m_EditorUI.SetOnImportAudioClip(
 			[this](const std::string& path, rt2::core::Error& error) -> bool
 		{
+			if (!m_ProjectContext)
+			{
+				error.code = rt2::core::Error::InvalidRuntimeState;
+				error.path = path;
+				error.detail = "audio import requires an open project";
+				m_LastStatusMsg = "Audio import failed: no project is open";
+				return false;
+			}
+			const std::filesystem::path root =
+				m_ProjectContext->project.assetRoot.lexically_normal();
+			std::filesystem::path absolute = std::filesystem::u8path(path);
+			if (absolute.is_relative())
+				absolute = root / absolute;
+			absolute = absolute.lexically_normal();
+			{
+				std::error_code relError;
+				const std::filesystem::path rel =
+					std::filesystem::relative(absolute, root, relError);
+				if (relError || rel.empty() || *rel.begin() == "..")
+				{
+					error.code = rt2::core::Error::InvalidArgument;
+					error.path = path;
+					error.detail =
+						"audio clip is outside the active project asset root";
+					m_LastStatusMsg = "Audio import failed: file is outside the project";
+					return false;
+				}
+			}
 			rt2::core::OsUuidProvider uuids;
 			rt2::core::AudioClipFirstImportResult imported;
-			if (!rt2::core::ImportAudioClipAsset(path, uuids, imported, error))
+			if (!rt2::core::ImportAudioClipAsset(absolute.u8string(), uuids,
+			                                     imported, error))
 			{
 				m_LastStatusMsg = "Audio import failed: " + error.Format();
 				printf("[Audio] %s\n", m_LastStatusMsg.c_str());
 				return false;
 			}
-			if (m_ProjectContext && !RefreshProjectAssets())
+			if (!RefreshProjectAssets())
 			{
 				error.code = rt2::core::Error::Io;
 				error.path = path;
 				error.detail =
 					"audio clip imported but the Content Browser refresh failed";
 				m_LastStatusMsg = "Audio imported, but the Content Browser refresh failed";
+				printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+			std::error_code relError;
+			const std::filesystem::path rel =
+				std::filesystem::relative(absolute, root, relError);
+			if (relError || !m_ProjectContext->database ||
+				!rt2::core::AudioClipRecordMatches(
+					*m_ProjectContext->database, rel.generic_string(),
+					imported.assetId))
+			{
+				error.code = rt2::core::Error::InvalidRuntimeState;
+				error.path = path;
+				error.detail =
+					"audio clip imported but missing from the refreshed project database";
+				m_LastStatusMsg = "Audio imported, but the clip is missing from the browser";
 				printf("[Audio] %s\n", m_LastStatusMsg.c_str());
 				return false;
 			}
@@ -1924,6 +1971,36 @@ public:
 		ImGui::SameLine();
 		if (ImGui::Button("Refresh"))
 			RefreshProjectAssets();
+		ImGui::SameLine();
+		// Audio A2 first import, usable with no drag payload: a sidecar-less
+		// clip never appears as a browser drag source (records are
+		// sidecar-backed), so this picker initiates the import. Files under
+		// the asset root import in place; external files are copied in.
+		// Inspector clip authoring and Preview remain A7 scope.
+		if (ImGui::Button("Import Audio..."))
+		{
+			std::string picked = FileDialog::OpenFile(
+				L"Audio Clips (*.wav;*.flac;*.mp3)\0*.wav;*.flac;*.mp3\0WAV (*.wav)\0*.wav\0FLAC (*.flac)\0*.flac\0MP3 (*.mp3)\0*.mp3\0",
+				m_ProjectContext->project.assetRoot);
+			if (!picked.empty())
+			{
+				std::filesystem::path inProject;
+				rt2::core::Error resolveError;
+				if (!rt2::core::ResolveAudioClipImportSource(
+						std::filesystem::u8path(picked),
+						m_ProjectContext->project.assetRoot, inProject,
+						resolveError))
+				{
+					m_LastStatusMsg =
+						"Audio import failed: " + resolveError.Format();
+					printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+				}
+				else
+				{
+					m_EditorUI.ImportAssetPathFromDrop(inProject.u8string());
+				}
+			}
+		}
 		ImGui::Separator();
 
 		const auto records = rt2::core::SearchContentBrowserAssets(

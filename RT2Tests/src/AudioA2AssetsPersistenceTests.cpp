@@ -1275,11 +1275,13 @@ TEST_CASE("A2_AudioFirstImportMalformedSidecar: repair is refused loudly")
 {
     // A malformed sidecar is not silently adopted or overwritten by the
     // import action: the drop fails with the parse Error so the user fixes
-    // or removes the sidecar first.
+    // or removes the sidecar first. The refused import preserves the exact
+    // sidecar bytes — the action performs no write on any failure path.
     const auto dir = UniqueTempDir("a2_audio_import_malformed");
     const auto clip = dir / "odd.wav";
     WriteFileBytes(clip, {'R', 'I', 'F', 'F', 'o', 'd', 'd', '!'});
     WriteFileBinary(AssetSidecarPath(clip), "not-a-uuid");
+    const std::string beforeBytes = ReadFileBinary(AssetSidecarPath(clip));
 
     DeterministicUuidProvider ids;
     AudioClipFirstImportResult result;
@@ -1287,13 +1289,14 @@ TEST_CASE("A2_AudioFirstImportMalformedSidecar: repair is refused loudly")
     CHECK_FALSE(
         ImportAudioClipAsset(clip.u8string(), ids, result, error));
     CHECK(error.code == Error::Parse);
+    CHECK(ReadFileBinary(AssetSidecarPath(clip)) == beforeBytes);
 
-    // A separate malformed clip for the dispatch half: the direct action
-    // above repairs by overwrite, so reusing the same file would no longer
-    // be malformed.
+    // A separate malformed clip keeps the dispatch half independent of
+    // the direct half above.
     const auto clip2 = dir / "odd2.wav";
     WriteFileBytes(clip2, {'R', 'I', 'F', 'F', 'o', 'd', 'd', '2'});
     WriteFileBinary(AssetSidecarPath(clip2), "not-a-uuid-either");
+    const std::string beforeBytes2 = ReadFileBinary(AssetSidecarPath(clip2));
     ContentBrowserDropCallbacks callbacks;
     callbacks.importAudioClip =
         [&](const std::string& dropped, Error& error) {
@@ -1304,7 +1307,122 @@ TEST_CASE("A2_AudioFirstImportMalformedSidecar: repair is refused loudly")
     CHECK_FALSE(DispatchContentBrowserAssetDrop(clip2.u8string(), callbacks,
                                                dispatchError));
     CHECK(dispatchError.code == Error::Parse);
+    CHECK(ReadFileBinary(AssetSidecarPath(clip2)) == beforeBytes2);
     std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("A2_AudioImportSourcePolicy: in-root passes, external copies, clashes refuse")
+{
+    // The initiation policy behind the Content Browser "Import Audio..."
+    // button: no drag payload is needed. Picks under the asset root import
+    // in place; external picks are copied in; nothing is silently
+    // overwritten and nothing outside the root is adopted.
+    const auto root = UniqueTempDir("a2_audio_source") / "Assets";
+    const auto external = UniqueTempDir("a2_audio_source_ext");
+    std::filesystem::create_directories(root / "sfx");
+    const std::vector<char> clipBytes = {'R', 'I', 'F', 'F', 's', 'r', 'c', '!'};
+    WriteFileBytes(root / "sfx" / "inside.wav", clipBytes);
+    WriteFileBytes(external / "outside.flac", clipBytes);
+    Error error;
+    std::filesystem::path resolved;
+
+    // In-root pick: returned normalized as is, no copy, no side effects.
+    REQUIRE(ResolveAudioClipImportSource(root / "sfx" / "inside.wav", root,
+                                         resolved, error));
+    CHECK(error.IsOk());
+    CHECK(resolved == (root / "sfx" / "inside.wav").lexically_normal());
+
+    // External pick: copied to assetRoot/<filename>, source untouched.
+    REQUIRE(ResolveAudioClipImportSource(external / "outside.flac", root,
+                                         resolved, error));
+    CHECK(error.IsOk());
+    CHECK(resolved == (root / "outside.flac").lexically_normal());
+    REQUIRE(std::filesystem::exists(resolved));
+    {
+        std::ifstream in(resolved, std::ios::binary);
+        std::string copied((std::istreambuf_iterator<char>(in)), {});
+        CHECK(copied == std::string(clipBytes.begin(), clipBytes.end()));
+    }
+
+    // Destination name clash: loud refusal, no overwrite.
+    WriteFileBytes(external / "inside.wav", clipBytes);
+    CHECK_FALSE(ResolveAudioClipImportSource(external / "inside.wav",
+                                             root / "sfx", resolved, error));
+    CHECK(error.code == Error::InvalidArgument);
+
+    // Non-clip extension, missing file, and non-absolute inputs refuse.
+    WriteFileBytes(external / "note.txt", clipBytes);
+    CHECK_FALSE(ResolveAudioClipImportSource(external / "note.txt", root,
+                                             resolved, error));
+    CHECK(error.code == Error::InvalidArgument);
+    CHECK_FALSE(ResolveAudioClipImportSource(external / "gone.wav", root,
+                                             resolved, error));
+    CHECK(error.code == Error::MissingAsset);
+    CHECK_FALSE(ResolveAudioClipImportSource(
+        std::filesystem::path("sfx/inside.wav"), root, resolved, error));
+    CHECK_FALSE(ResolveAudioClipImportSource(root / "sfx" / "inside.wav",
+                                             std::filesystem::path(),
+                                             resolved, error));
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(external);
+}
+
+TEST_CASE("A2_AudioRecordMatchPolicy: refreshed database must expose the import")
+{
+    // The host verifies this after its refresh before reporting success, so
+    // a refresh that silently dropped the clip cannot be announced.
+    std::vector<AssetDatabaseDiagnostic> diags;
+    AssetDatabase database;
+    database.AddOrUpdate(Record("sfx/hit.wav", kClipId), diags);
+    CHECK(AudioClipRecordMatches(database, "sfx/hit.wav", kClipId));
+    CHECK_FALSE(AudioClipRecordMatches(database, "sfx/hit.wav", kOtherClipId));
+    CHECK_FALSE(AudioClipRecordMatches(database, "sfx/missing.wav", kClipId));
+    CHECK_FALSE(AudioClipRecordMatches(database, "", kClipId));
+    CHECK_FALSE(
+        AudioClipRecordMatches(database, "sfx/hit.wav", UUID::Nil()));
+}
+
+TEST_CASE("A2_AudioInitiationChain: external pick to browser-visible record")
+{
+    // The complete host initiation chain with production functions only:
+    // an external pick (no drag payload, no sidecar anywhere) resolves to
+    // an in-project copy, imports through the production dispatch shape,
+    // and a rescan exposes the minted record — the same layers the
+    // "Import Audio..." button composes.
+    const auto root = UniqueTempDir("a2_audio_chain") / "Assets";
+    const auto external = UniqueTempDir("a2_audio_chain_ext");
+    std::filesystem::create_directories(root);
+    const std::vector<char> clipBytes = {'R', 'I', 'F', 'F', 'c', 'h', 'n', '!'};
+    WriteFileBytes(external / "theme.mp3", clipBytes);
+    Error error;
+
+    std::filesystem::path inProject;
+    REQUIRE(ResolveAudioClipImportSource(external / "theme.mp3", root,
+                                         inProject, error));
+
+    DeterministicUuidProvider ids;
+    ContentBrowserDropCallbacks callbacks;
+    callbacks.importAudioClip =
+        [&](const std::string& dropped, Error& error) {
+            AudioClipFirstImportResult inner;
+            return ImportAudioClipAsset(dropped, ids, inner, error);
+        };
+    REQUIRE(DispatchContentBrowserAssetDrop(inProject.u8string(), callbacks,
+                                            error));
+    CHECK(error.IsOk());
+
+    ProjectAssetScanResult scan;
+    REQUIRE(ScanProjectAssets(root, scan, error));
+    REQUIRE(scan.database != nullptr);
+    const AssetRecord* record = scan.database->FindByPath("theme.mp3");
+    REQUIRE(record != nullptr);
+    CHECK_FALSE(record->assetId.IsNull());
+    CHECK(ReadSidecarId(AssetSidecarPath(inProject), error) ==
+          record->assetId);
+    CHECK(AudioClipRecordMatches(*scan.database, "theme.mp3",
+                                 record->assetId));
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(external);
 }
 
 TEST_CASE("A2_CpuIsolationAndProjectWiring: no miniaudio; tracked lists carry the unit")

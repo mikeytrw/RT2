@@ -359,6 +359,20 @@ bool ImportAudioClipAsset(const std::string& droppedPath,
         error.detail = "audio clip file not found";
         return false;
     }
+    // A present-but-unusable sidecar refuses BEFORE ResolveOrAssign:
+    // ResolveOrAssign would mint a fresh UUID and overwrite the malformed
+    // sidecar before returning the earlier parse error, so a refused import
+    // would replace the user's bytes. A refusal here preserves them exactly
+    // (this function performs no write on any failure path).
+    {
+        Error sidecarError;
+        (void)ReadSidecarId(AssetSidecarPath(clip), sidecarError);
+        if (!sidecarError.IsOk())
+        {
+            error = sidecarError;
+            return false;
+        }
+    }
     bool minted = false;
     const UUID id = ResolveOrAssign(clip, uuids, minted, error);
     if (!error.IsOk() || id.IsNull())
@@ -379,6 +393,87 @@ bool ImportAudioClipAsset(const std::string& droppedPath,
     result.minted = minted;
     result.assetId = id;
     return true;
+}
+
+bool ResolveAudioClipImportSource(const std::filesystem::path& picked,
+                                  const std::filesystem::path& assetRoot,
+                                  std::filesystem::path& inProject,
+                                  Error& error)
+{
+    error = Error{};
+    inProject.clear();
+    if (picked.empty() || assetRoot.empty() || !picked.is_absolute() ||
+        !assetRoot.is_absolute())
+    {
+        error.code = Error::InvalidArgument;
+        error.path = picked.u8string();
+        error.detail =
+            "audio import source and project asset root must be absolute paths";
+        return false;
+    }
+    if (!IsAudioClipPath(picked.u8string()))
+    {
+        error.code = Error::InvalidArgument;
+        error.path = picked.u8string();
+        error.detail =
+            "audio first import requires a .wav, .flac, or .mp3 path";
+        return false;
+    }
+    std::error_code fileError;
+    if (!std::filesystem::is_regular_file(picked, fileError) || fileError)
+    {
+        error.code = Error::MissingAsset;
+        error.path = picked.u8string();
+        error.detail = "audio import source file not found";
+        return false;
+    }
+    const std::filesystem::path normRoot =
+        assetRoot.lexically_normal();
+    const std::filesystem::path normPicked =
+        picked.lexically_normal();
+    // Lexical containment: the normalized pick must live under the
+    // normalized root. Anything else is external and is copied in.
+    bool withinRoot = false;
+    {
+        std::error_code relError;
+        const std::filesystem::path rel =
+            std::filesystem::relative(normPicked, normRoot, relError);
+        withinRoot = !relError && !rel.empty() && *rel.begin() != "..";
+    }
+    if (withinRoot)
+        return !(inProject = normPicked).empty();
+    const std::filesystem::path destination =
+        normRoot / normPicked.filename();
+    std::error_code existsError;
+    if (std::filesystem::exists(destination, existsError) && !existsError)
+    {
+        error.code = Error::InvalidArgument;
+        error.path = destination.u8string();
+        error.detail =
+            "audio import destination already exists; rename one file first";
+        return false;
+    }
+    if (!std::filesystem::copy_file(picked, destination, fileError) ||
+        fileError)
+    {
+        error.code = Error::Io;
+        error.path = destination.u8string();
+        error.detail =
+            "failed to copy audio clip into the project: " + fileError.message();
+        return false;
+    }
+    inProject = destination;
+    return true;
+}
+
+bool AudioClipRecordMatches(const AssetDatabase& database,
+                            const std::string& relativePath,
+                            const UUID& assetId)
+{
+    if (relativePath.empty() || assetId.IsNull())
+        return false;
+    const AssetRecord* record = database.FindByPath(relativePath);
+    return record != nullptr && record->assetId == assetId;
 }
 
 bool DispatchContentBrowserAssetDrop(

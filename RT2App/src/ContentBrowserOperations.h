@@ -100,6 +100,27 @@ bool ImportAudioClipAsset(const std::string& droppedPath,
                           AudioClipFirstImportResult& result,
                           Error& error);
 
+// Resolve the file a first-import initiation picked into the in-project
+// absolute path to import. A pick already under the active asset root is
+// returned (normalized) as is; an external pick is copied to
+// assetRoot/<filename> first. Loud failures: non-absolute or missing
+// inputs, non-clip extensions, missing source file, and destination name
+// clashes (an existing file is never silently overwritten). The Content
+// Browser "Import Audio..." button and any future sidecar-less listing both
+// route through this policy, so drag payloads are not required to import.
+bool ResolveAudioClipImportSource(const std::filesystem::path& picked,
+                                  const std::filesystem::path& assetRoot,
+                                  std::filesystem::path& inProject,
+                                  Error& error);
+
+// Confirm the refreshed database exposes the imported clip: the record at
+// the project-relative path must exist and carry the imported asset ID.
+// The host checks this after its refresh before reporting success, so a
+// refresh that silently dropped the clip cannot be announced as imported.
+bool AudioClipRecordMatches(const AssetDatabase& database,
+                            const std::string& relativePath,
+                            const UUID& assetId);
+
 bool DispatchContentBrowserAssetDrop(
     std::string_view path,
     const ContentBrowserDropCallbacks& callbacks,
