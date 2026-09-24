@@ -1,5 +1,6 @@
 #include "ContentBrowserOperations.h"
 
+#include "AudioComponents.h"
 #include "SceneAssetReferenceVisitor.h"
 #include "SceneDocument.h"
 
@@ -333,6 +334,53 @@ bool ContentBrowserCanOperate(bool projectActive)
     return projectActive;
 }
 
+bool ImportAudioClipAsset(const std::string& droppedPath,
+                          IUuidProvider& uuids,
+                          AudioClipFirstImportResult& result,
+                          Error& error)
+{
+    error = Error{};
+    result = AudioClipFirstImportResult{};
+    if (droppedPath.empty() || !IsAudioClipPath(droppedPath))
+    {
+        error.code = Error::InvalidArgument;
+        error.path = droppedPath;
+        error.detail =
+            "audio first import requires a .wav, .flac, or .mp3 path";
+        return false;
+    }
+    const std::filesystem::path clip =
+        std::filesystem::u8path(droppedPath);
+    std::error_code fileError;
+    if (!std::filesystem::is_regular_file(clip, fileError) || fileError)
+    {
+        error.code = Error::MissingAsset;
+        error.path = droppedPath;
+        error.detail = "audio clip file not found";
+        return false;
+    }
+    bool minted = false;
+    const UUID id = ResolveOrAssign(clip, uuids, minted, error);
+    if (!error.IsOk() || id.IsNull())
+    {
+        // ResolveOrAssign surfaces sidecar write failures and malformed
+        // sidecars here. Unlike model import there is no session entity to
+        // fall back to — the durable sidecar identity IS the product — so
+        // any error, or a nil identity, refuses the import loudly instead
+        // of reporting success the browser cannot honor.
+        if (error.IsOk())
+        {
+            error.code = Error::InvalidArgument;
+            error.path = droppedPath;
+            error.detail = "audio first import produced no durable identity";
+        }
+        return false;
+    }
+    result.minted = minted;
+    result.assetId = id;
+    return true;
+}
+
 bool DispatchContentBrowserAssetDrop(
     std::string_view path,
     const ContentBrowserDropCallbacks& callbacks,
@@ -387,8 +435,11 @@ bool DispatchContentBrowserAssetDrop(
     }
     // Audio A2 first import: WAV/FLAC/MP3 drops assign or validate the
     // clip's sidecar identity through the host's importAudioClip callback
-    // (ResolveOrAssign flow, no decode). Ogg/Opus stay unsupported: they
-    // are out of scope for the first delivery.
+    // (ImportAudioClipAsset production action, no decode). The callback is
+    // fallible: success requires a true return AND an empty Error, so a
+    // failed sidecar write or malformed sidecar can never be reported as a
+    // successful import. Ogg/Opus stay unsupported: they are out of scope
+    // for the first delivery.
     if (extension == ".wav" || extension == ".flac" || extension == ".mp3")
     {
         if (!callbacks.importAudioClip)
@@ -398,7 +449,24 @@ bool DispatchContentBrowserAssetDrop(
             error.detail = "audio clip drop has no import callback";
             return false;
         }
-        callbacks.importAudioClip(pathString);
+        Error callbackError;
+        const bool accepted = callbacks.importAudioClip(pathString,
+                                                        callbackError);
+        if (!accepted || !callbackError.IsOk())
+        {
+            if (callbackError.IsOk())
+            {
+                error.code = Error::InvalidArgument;
+                error.path = pathString;
+                error.detail =
+                    "audio clip import reported failure without detail";
+            }
+            else
+            {
+                error = callbackError;
+            }
+            return false;
+        }
         return true;
     }
 

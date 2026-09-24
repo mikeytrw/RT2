@@ -468,6 +468,36 @@ public:
 			}
 			return id;
 		});
+		// Audio A2 first import: assign or validate the clip sidecar (no
+		// decode), then refresh the project database so the Content Browser
+		// lists the clip. Failures are loud: the dispatcher reports the
+		// returned Error instead of a successful import.
+		m_EditorUI.SetOnImportAudioClip(
+			[this](const std::string& path, rt2::core::Error& error) -> bool
+		{
+			rt2::core::OsUuidProvider uuids;
+			rt2::core::AudioClipFirstImportResult imported;
+			if (!rt2::core::ImportAudioClipAsset(path, uuids, imported, error))
+			{
+				m_LastStatusMsg = "Audio import failed: " + error.Format();
+				printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+			if (m_ProjectContext && !RefreshProjectAssets())
+			{
+				error.code = rt2::core::Error::Io;
+				error.path = path;
+				error.detail =
+					"audio clip imported but the Content Browser refresh failed";
+				m_LastStatusMsg = "Audio imported, but the Content Browser refresh failed";
+				printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+			m_LastStatusMsg = imported.minted
+				? "Audio clip imported"
+				: "Audio clip identity confirmed";
+			return true;
+		});
 		m_EditorUI.SetOnImportWithOptions(
 			[this](const std::string& path,
 			       const ImportSettings& settings) -> SceneManager::EntityId

@@ -316,6 +316,13 @@ void SceneEditorUI::ImportAssetPathFromDrop(const std::string& path)
             (void)m_OnImportGltf(droppedPath);
         };
     }
+    if (m_OnImportAudioClip)
+    {
+        callbacks.importAudioClip =
+            [this](const std::string& droppedPath, rt2::core::Error& error) {
+                return m_OnImportAudioClip(droppedPath, error);
+            };
+    }
     callbacks.instantiatePrefab = [this](const std::string& droppedPath) {
         InstantiatePrefabAssetCommand(droppedPath);
     };

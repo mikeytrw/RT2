@@ -81,6 +81,14 @@ public:
 		std::function<SceneManager::EntityId(const std::string&, const ImportSettings&)> cb)
 	{ m_OnImportWithOptions = std::move(cb); }
 
+	// Called when a WAV/FLAC/MP3 asset is dropped: the host assigns or
+	// validates the clip's sidecar identity (no decode) and refreshes the
+	// project database so the clip becomes visible. Returns true with an
+	// empty Error only when the durable identity is confirmed; any sidecar
+	// write/parse failure returns false with a loud Error.
+	void SetOnImportAudioClip(std::function<bool(const std::string&, rt2::core::Error&)> cb)
+	{ m_OnImportAudioClip = std::move(cb); }
+
 	void SetDialogInitialDirectoryProvider(
 		std::function<std::filesystem::path()> provider)
 	{ m_DialogInitialDirectory = std::move(provider); }
@@ -364,6 +372,7 @@ private:
 	std::function<SceneManager::EntityId(const std::string&)> m_OnLoadMeshFile;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnImportGltf;
 	std::function<SceneManager::EntityId(const std::string&, const ImportSettings&)> m_OnImportWithOptions;
+	std::function<bool(const std::string&, rt2::core::Error&)> m_OnImportAudioClip;
 	std::function<std::filesystem::path()> m_DialogInitialDirectory;
 	std::function<std::filesystem::path()> m_ScriptDialogInitialDirectory;
 	std::function<std::filesystem::path()> m_PrefabAssetRoot;

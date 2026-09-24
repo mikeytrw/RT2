@@ -64,17 +64,41 @@ using ContentBrowserReimportCallback = std::function<bool(
 // and testable without constructing ImGui or Walnut.
 //
 // Audio first import (A2): importAudioClip assigns or validates the clip's
-// sidecar identity (the ResolveOrAssign flow) without decoding anything —
-// decoding stays the injected backend's job (A4). The inspector clip
+// sidecar identity (the ImportAudioClipAsset production action below: the
+// ResolveOrAssign flow, no decode) and reports success only when the durable
+// identity is confirmed. Unlike model import there is no session-local
+// fallback — an audio import with no written sidecar has no product, because
+// the browser lists sidecar-backed records only. A failed sidecar write or
+// malformed sidecar therefore returns false with a loud Error, and the
+// dispatcher propagates it instead of reporting success. The inspector clip
 // browse/drop authoring and Preview surface belong to A7; this callback is
-// the Content Browser "new clip appears in the project" action only.
+// the Content Browser "new clip appears in the project" action only, and the
+// host refreshes the project database after success (WalnutApp mirrors the
+// glTF arm) so the clip becomes visible.
 struct ContentBrowserDropCallbacks
 {
     std::function<void(const std::string&)> importGltf;
     std::function<void(const std::string&, const ImportSettings&)> importObj;
     std::function<void(const std::string&)> instantiatePrefab;
-    std::function<void(const std::string&)> importAudioClip;
+    std::function<bool(const std::string&, Error&)> importAudioClip;
 };
+
+// Production audio first-import action (A2, CPU-only). Returns true with an
+// empty error only when the clip's durable sidecar identity is confirmed on
+// disk: a fresh mint must be written, a reuse must read back a valid
+// sidecar. Any ResolveOrAssign error — failed sidecar write or malformed
+// sidecar content — returns false with a loud Error naming the clip or
+// sidecar path. Decodes nothing; mutates no database (the host refreshes,
+// exactly like the model import arms).
+struct AudioClipFirstImportResult
+{
+    bool minted = false;
+    UUID assetId;
+};
+bool ImportAudioClipAsset(const std::string& droppedPath,
+                          IUuidProvider& uuids,
+                          AudioClipFirstImportResult& result,
+                          Error& error);
 
 bool DispatchContentBrowserAssetDrop(
     std::string_view path,

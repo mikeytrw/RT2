@@ -1147,17 +1147,27 @@ TEST_CASE("A2_DependantsSeeAudioClip: ID-exact and path-fallback protection")
 TEST_CASE("A2_ContentBrowserAudioFirstImport: drop assigns the clip sidecar")
 {
     // The A2-promised Content Browser first-import action: dropping a new
-    // WAV/FLAC/MP3 runs the production dispatch arm into the host's
-    // importAudioClip callback, which performs the sidecar first assignment
-    // (ResolveOrAssign flow, no decode). A second drop of the same file
-    // reuses the minted identity. The inspector clip browse/drop authoring
-    // and Preview surface remain A7 scope; this action is the "new clip
-    // appears in the project" path only.
+    // WAV/FLAC/MP3 runs the production dispatch arm into the production
+    // ImportAudioClipAsset action (sidecar ResolveOrAssign, no decode). A
+    // second drop of the same file reuses the minted identity. The
+    // installed dispatch callback is the same one-line production shape the
+    // host installs — not test-only logic — and the inspector clip
+    // browse/drop authoring plus Preview surface remain A7 scope.
     const auto dir = UniqueTempDir("a2_audio_import");
     const auto clip = dir / "new.wav";
     WriteFileBytes(clip, {'R', 'I', 'F', 'F', 'n', 'e', 'w', '!'});
     const std::string clipString = clip.u8string();
     REQUIRE_FALSE(std::filesystem::exists(AssetSidecarPath(clip)));
+
+    // Production adapter: the exact callback shape the host installs.
+    // All loud logic lives in ImportAudioClipAsset; this only adapts its
+    // result struct to the dispatch contract.
+    DeterministicUuidProvider ids;
+    auto productionCallback =
+        [&](const std::string& dropped, Error& error) {
+            AudioClipFirstImportResult result;
+            return ImportAudioClipAsset(dropped, ids, result, error);
+        };
 
     // No callback wired: loud failure naming the drop, no sidecar minted.
     {
@@ -1171,12 +1181,6 @@ TEST_CASE("A2_ContentBrowserAudioFirstImport: drop assigns the clip sidecar")
         CHECK_FALSE(std::filesystem::exists(AssetSidecarPath(clip)));
     }
 
-    // Production path: the host callback runs the real first-assignment
-    // flow against the dropped file.
-    DeterministicUuidProvider ids;
-    UUID assigned = UUID::Nil();
-    bool minted = false;
-    Error importError;
     ContentBrowserDropCallbacks callbacks;
     bool gltfCalled = false;
     bool objCalled = false;
@@ -1188,27 +1192,33 @@ TEST_CASE("A2_ContentBrowserAudioFirstImport: drop assigns the clip sidecar")
     callbacks.instantiatePrefab = [&](const std::string&) {
         prefabCalled = true;
     };
-    callbacks.importAudioClip = [&](const std::string& dropped) {
-        assigned = ResolveOrAssign(dropped, ids, minted, importError);
-    };
+    callbacks.importAudioClip = productionCallback;
+
+    // First drop mints and writes the sidecar through the dispatcher.
     Error error;
     REQUIRE(DispatchContentBrowserAssetDrop(clipString, callbacks, error));
     CHECK(error.IsOk());
-    CHECK(importError.IsOk());
-    CHECK(minted);
+    Error readError;
+    const UUID assigned = ReadSidecarId(AssetSidecarPath(clip), readError);
+    CHECK(readError.IsOk());
     CHECK_FALSE(assigned.IsNull());
-    CHECK(ReadSidecarId(AssetSidecarPath(clip), error) == assigned);
     CHECK_FALSE(gltfCalled);
     CHECK_FALSE(objCalled);
     CHECK_FALSE(prefabCalled);
 
     // A second drop of the same clip reuses the minted identity.
-    minted = true;
-    assigned = UUID::Nil();
     REQUIRE(DispatchContentBrowserAssetDrop(clipString, callbacks, error));
-    CHECK(importError.IsOk());
-    CHECK_FALSE(minted);
-    CHECK(ReadSidecarId(AssetSidecarPath(clip), error) == assigned);
+    CHECK(error.IsOk());
+    CHECK(ReadSidecarId(AssetSidecarPath(clip), readError) == assigned);
+
+    // The refreshed database lists the clip: this is what makes it visible
+    // in the Content Browser, which shows sidecar-backed records only.
+    ProjectAssetScanResult scan;
+    REQUIRE(ScanProjectAssets(dir, scan, error));
+    REQUIRE(scan.database != nullptr);
+    const AssetRecord* record = scan.database->FindByPath("new.wav");
+    REQUIRE(record != nullptr);
+    CHECK(record->assetId == assigned);
 
     // Ogg stays unsupported: out of scope for the first delivery.
     const auto ogg = dir / "hit.ogg";
@@ -1216,6 +1226,84 @@ TEST_CASE("A2_ContentBrowserAudioFirstImport: drop assigns the clip sidecar")
     CHECK_FALSE(DispatchContentBrowserAssetDrop(ogg.u8string(), callbacks,
                                                error));
     CHECK(error.code == Error::InvalidArgument);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("A2_AudioFirstImportWriteFailure: dispatcher reports the loud error")
+{
+    // A sidecar that cannot be written (a directory blocks the sidecar
+    // path) must fail the drop loudly. Discrimination: with the previous
+    // void callback shape the dispatcher returned success here; the
+    // fallible contract returns false with the write Error instead.
+    const auto dir = UniqueTempDir("a2_audio_import_fail");
+    const auto clip = dir / "blocked.wav";
+    WriteFileBytes(clip, {'R', 'I', 'F', 'F', 'x', 'x', 'x', 'x'});
+    std::error_code ec;
+    std::filesystem::create_directories(AssetSidecarPath(clip), ec);
+    REQUIRE_FALSE(ec);
+
+    // Direct production action first: loud Io failure, no identity adopted.
+    DeterministicUuidProvider ids;
+    AudioClipFirstImportResult result;
+    Error actionError;
+    CHECK_FALSE(ImportAudioClipAsset(clip.u8string(), ids, result,
+                                     actionError));
+    CHECK_FALSE(actionError.IsOk());
+    CHECK(actionError.code == Error::Io);
+    const bool namesSidecarOrClip =
+        actionError.detail.find("sidecar") != std::string::npos ||
+        actionError.path.find("blocked.wav") != std::string::npos;
+    CHECK(namesSidecarOrClip);
+
+    // Then through the dispatcher with the production callback installed:
+    // the same failure propagates instead of reporting success.
+    ContentBrowserDropCallbacks callbacks;
+    callbacks.importAudioClip =
+        [&](const std::string& dropped, Error& error) {
+            AudioClipFirstImportResult inner;
+            return ImportAudioClipAsset(dropped, ids, inner, error);
+        };
+    Error dispatchError;
+    CHECK_FALSE(DispatchContentBrowserAssetDrop(clip.u8string(), callbacks,
+                                               dispatchError));
+    CHECK_FALSE(dispatchError.IsOk());
+    CHECK(dispatchError.code == Error::Io);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("A2_AudioFirstImportMalformedSidecar: repair is refused loudly")
+{
+    // A malformed sidecar is not silently adopted or overwritten by the
+    // import action: the drop fails with the parse Error so the user fixes
+    // or removes the sidecar first.
+    const auto dir = UniqueTempDir("a2_audio_import_malformed");
+    const auto clip = dir / "odd.wav";
+    WriteFileBytes(clip, {'R', 'I', 'F', 'F', 'o', 'd', 'd', '!'});
+    WriteFileBinary(AssetSidecarPath(clip), "not-a-uuid");
+
+    DeterministicUuidProvider ids;
+    AudioClipFirstImportResult result;
+    Error error;
+    CHECK_FALSE(
+        ImportAudioClipAsset(clip.u8string(), ids, result, error));
+    CHECK(error.code == Error::Parse);
+
+    // A separate malformed clip for the dispatch half: the direct action
+    // above repairs by overwrite, so reusing the same file would no longer
+    // be malformed.
+    const auto clip2 = dir / "odd2.wav";
+    WriteFileBytes(clip2, {'R', 'I', 'F', 'F', 'o', 'd', 'd', '2'});
+    WriteFileBinary(AssetSidecarPath(clip2), "not-a-uuid-either");
+    ContentBrowserDropCallbacks callbacks;
+    callbacks.importAudioClip =
+        [&](const std::string& dropped, Error& error) {
+            AudioClipFirstImportResult inner;
+            return ImportAudioClipAsset(dropped, ids, inner, error);
+        };
+    Error dispatchError;
+    CHECK_FALSE(DispatchContentBrowserAssetDrop(clip2.u8string(), callbacks,
+                                               dispatchError));
+    CHECK(dispatchError.code == Error::Parse);
     std::filesystem::remove_all(dir);
 }
 
