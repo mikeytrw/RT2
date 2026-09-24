@@ -43,6 +43,20 @@ Human-readable references (same bytes): release
 mismatch. Never edit the vendored files; a pin change re-vendors all three
 bytes plus this record together.
 
+## Whitespace-gate exception (narrow, A1 review P1)
+
+The pinned upstream files carry trailing whitespace (for example
+`miniaudio.c:59` and `miniaudio.h:7525`; an unqualified `git diff --check`
+over the A1 range fails only on these lines). Those bytes must not be
+normalized: byte identity above is the invariant. `git diff --check`
+therefore runs over every RT2-owned path while excluding exactly the three
+manifest-pinned files. `run_audio_a1_gates.ps1` derives the exclusion list
+from the hash manifest in this record, so the exemption covers precisely
+the pinned set and nothing else; the per-file SHA-256 gate is the
+complementary check. To vendor a fourth file, extend this manifest,
+`.gitattributes` (`eol=lf`), and the gate together — new vendor files never
+inherit the exemption silently.
+
 ## License
 
 `vendor/miniaudio/LICENSE` is the upstream license file verbatim (byte

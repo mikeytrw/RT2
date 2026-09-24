@@ -5,26 +5,36 @@
 #
 # Proves required checks 16/17 at the A1 scope (probe shell + build
 # isolation; full decoder/mixer/sample oracles belong to A4):
-#   1. Vendored byte identity: SHA256 of vendor/miniaudio/{miniaudio.h,
-#      miniaudio.c,LICENSE} matches the hashes recorded in
-#      RT2AudioBackend/VENDORING.md (which must also match this script's
-#      constants, so neither can drift alone).
+#   1. Vendored byte identity: SHA256 of each manifest file matches the hash
+#      recorded for THAT file in RT2AudioBackend/VENDORING.md. The record is
+#      the single source of truth (parsed, not string-searched), so a
+#      swapped/misfiled hash fails loudly here.
 #   2. Pin identity: MA_VERSION_* macros read back as 0.11.25 and the
 #      license preserves the upstream public-domain/MIT-0 choice verbatim.
-#   3. Exactly-one-compilation: the generated RT2AudioBackend.vcxproj holds
-#      exactly one MiniaudioNoDeviceAdapter.cpp TU and one miniaudio.c TU;
-#      no other generated project compiles any RT2AudioBackend or miniaudio
-#      source. A deliberately duplicated source therefore fails loudly here.
+#   3. Exactly-one-compilation: every project reachable from the generated
+#      solution is censused. RT2AudioBackend holds exactly one
+#      MiniaudioNoDeviceAdapter.cpp TU and one miniaudio.c TU; no other
+#      project compiles any RT2AudioBackend or miniaudio source. A
+#      deliberately duplicated source therefore fails loudly here.
 #   4. Link boundary: RT2App and RT2AudioProbe carry a ProjectReference to
-#      RT2AudioBackend; RT2Tests, RT2SliceRunner and RT2ImGuiProbe carry
-#      none. A deliberately removed link therefore fails loudly here.
-#   5. CPU imports: RT2Tests and RT2SliceRunner binaries import no
-#      miniaudio, WASAPI-adjacent audio, Vulkan, ImGui, Walnut, GLFW,
-#      shaderc, SPIR-V, or NGX module (import-DLL denylist plus ma_* symbol
-#      scan). Premake wiring: root/RT2App/RT2Tests premake files declare the
-#      boundary above.
+#      RT2AudioBackend (plus full AdditionalDependencies scan); RT2Tests,
+#      RT2SliceRunner and RT2ImGuiProbe carry none, proven by the same
+#      predicate that must fire on RT2AudioProbe as positive control
+#      (miniaudio links statically, so binary symbol scans are inert and
+#      are not used). A deliberately removed link therefore fails loudly.
+#   5. Dynamic imports: RT2Tests and RT2SliceRunner binaries dynamically
+#      import no Vulkan, ImGui, Walnut, GLFW, shaderc, SPIR-V, or NGX
+#      module. This rules out dynamic audio/GPU dependencies only; static
+#      isolation is proven by check 4. Premake wiring: root/RT2App/RT2Tests
+#      premake files declare the boundary above.
 #   6. Probe proof: RT2AudioProbe runs green in fixed float32 stereo 48 kHz
 #      no-device mode with exact frame-count output.
+#   7. Whitespace: `git diff --check` passes over every RT2-owned path
+#      (staged and unstaged) while excluding exactly the manifest-pinned
+#      vendor files, which carry upstream trailing whitespace that must
+#      never be normalized; their SHA-256 gate (check 1) is the
+#      complementary check. A stray trailing space in RT2-owned code fails
+#      loudly here.
 #
 # Exits 0 when every check passes in every checked configuration, 1
 # otherwise. Must run from the repository root (AGENTS.md).
@@ -45,25 +55,68 @@ function Pass([string]$message) {
     Write-Host "A1 GATE PASS: $message" -ForegroundColor Green
 }
 
-# ---------------------------------------------------------------- pin bytes
-$expectedHashes = @{
-    "RT2AudioBackend/vendor/miniaudio/miniaudio.h" = "01D3AC6049132BDCCC30BD467B7C1D030C090E8F30EB0CEB2DA14BEA0BA7143A";
-    "RT2AudioBackend/vendor/miniaudio/miniaudio.c" = "721EA23C26F13BFB0E5BACD96BB9F40684DE1B3B31456D0DC168A87EEF18978F";
-    "RT2AudioBackend/vendor/miniaudio/LICENSE"     = "457F1B500E0ADF6BC059EDDDFA78A2F62012E7C3BB43476C20E0BD23B25BA0EB";
-}
-
+# ------------------------------------------------- vendoring manifest (P3)
+# Single source of truth: parse the file->hash mapping from VENDORING.md's
+# own "Byte hashes" section, so a swapped or misfiled hash fails loudly
+# instead of passing on global string presence. Exactly three entries are
+# allowed: a fourth vendor file must extend this manifest, .gitattributes,
+# and the whitespace exemption together, never silently.
 $vendoringRecord = Get-Content "RT2AudioBackend/VENDORING.md" -Raw
-foreach ($entry in $expectedHashes.GetEnumerator()) {
+$manifestPattern = '- `vendor/miniaudio/(?<file>[^`]+)`:[\r\n]+\s+`(?<hash>[0-9A-Fa-f]{64})`'
+$vendoredManifest = @{}
+foreach ($m in [regex]::Matches($vendoringRecord, $manifestPattern)) {
+    $vendoredManifest["RT2AudioBackend/vendor/miniaudio/" + $m.Groups["file"].Value] =
+        $m.Groups["hash"].Value.ToUpperInvariant()
+}
+if ($vendoredManifest.Count -ne 3) {
+    Fail "VENDORING.md manifest parses to $($vendoredManifest.Count) file->hash entries, want exactly 3"
+}
+foreach ($entry in $vendoredManifest.GetEnumerator()) {
     $path = $entry.Key
     $want = $entry.Value
     if (-not (Test-Path $path)) { Fail "vendored file missing: $path"; continue }
-    $got = (Get-FileHash $path -Algorithm SHA256).Hash
+    $got = (Get-FileHash $path -Algorithm SHA256).Hash.ToUpperInvariant()
     if ($got -ne $want) {
-        Fail "byte identity mismatch: $path`n  want $want`n  got  $got"
-    } elseif (-not $vendoringRecord.Contains($want)) {
-        Fail "VENDORING.md does not record the $path hash $want (record/script drift)"
+        Fail "byte identity mismatch: $path`n  manifest $want`n  got      $got"
     } else {
         Pass "byte identity: $path"
+    }
+}
+
+# ------------------------------------------- whitespace gate, narrow vendor exception (P1)
+# The manifest-pinned vendor files carry upstream trailing whitespace that
+# must never be normalized (byte identity above is the invariant; exception
+# recorded in VENDORING.md). Check every other path, staged and unstaged;
+# the exemption list is derived from the manifest so it covers precisely the
+# pinned set and nothing else.
+$vendorExcludes = @($vendoredManifest.Keys | ForEach-Object { ":!$_" })
+foreach ($staged in @($false, $true)) {
+    $label = if ($staged) { "staged" } else { "unstaged" }
+    # Default autocrlf stays in effect so CRLF worktrees check normally;
+    # the vendor exemption is a pathspec. Keep only violation-shaped stdout
+    # lines ("path:line: message") so git's own stderr chatter can never
+    # masquerade as a violation or mask one.
+    if ($staged) { $diffArgs = @("diff", "--cached", "--check", "--", ".") + $vendorExcludes }
+    else { $diffArgs = @("diff", "--check", "--", ".") + $vendorExcludes }
+    # Violations print on stdout as "path:line: message"; git's own stderr
+    # chatter (e.g. autocrlf notices starting with "warning:") is filtered
+    # so only real violations can fail this check. The preference is
+    # relaxed around the native call because Windows PowerShell 5.1 turns
+    # native stderr into a terminating error under Stop.
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $wsRaw = (& git @diffArgs 2>&1 | Out-String)
+    $wsCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevPref
+    $wsLines = @($wsRaw -split "`r?`n" |
+        Where-Object { $_ -match '^[^:]+:\d+: ' })
+    $wsOutput = ($wsLines -join "`n").Trim()
+    if ($wsCode -eq 0 -and [string]::IsNullOrWhiteSpace($wsOutput)) {
+        Pass "whitespace clean over RT2-owned paths ($label, 3 vendor files exempt)"
+    } elseif ($wsCode -ne 0 -and -not [string]::IsNullOrWhiteSpace($wsOutput)) {
+        Fail "whitespace violations ($label, vendor exemption applied):`n$wsOutput"
+    } else {
+        Fail "git diff --check errored ($label, exit $wsCode): $wsOutput"
     }
 }
 
@@ -103,29 +156,71 @@ function Get-ProjectReferences([string]$vcxprojPath) {
     return @($xml.SelectNodes("//m:ProjectReference", $ns) | ForEach-Object { $_.GetAttribute("Include") })
 }
 
-if (-not (Test-Path $backendVcxproj)) {
-    Fail "generated project missing: $backendVcxproj (regenerate with premake5)"
-} else {
-    $backendCompiles = Get-ClCompiles $backendVcxproj
-    $adapterHits = @($backendCompiles | Where-Object { $_ -like "*MiniaudioNoDeviceAdapter.cpp" })
-    $miniaudioHits = @($backendCompiles | Where-Object { $_ -like "*miniaudio.c" })
-    # Includes are project-relative: require exactly one hit that lives
-    # in-project (no ".." escape into another target's tree).
-    if ($adapterHits.Count -eq 1 -and $adapterHits[0] -notlike "*..*") {
-        Pass "exactly one adapter TU in RT2AudioBackend ($($adapterHits[0]))"
-    } else {
-        Fail "adapter TU count in RT2AudioBackend is $($adapterHits.Count), want exactly 1 in-project ($($adapterHits -join '; '))"
+function Get-LinkInputs([string]$vcxprojPath) {
+    # Every static-link input that could carry the backend: project
+    # references plus all per-config AdditionalDependencies entries.
+    $xml = [xml](Get-Content $vcxprojPath -Raw)
+    $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+    $ns.AddNamespace("m", "http://schemas.microsoft.com/developer/msbuild/2003")
+    $refs = @($xml.SelectNodes("//m:ProjectReference", $ns) | ForEach-Object { $_.GetAttribute("Include") })
+    $libs = @($xml.SelectNodes("//m:Link/m:AdditionalDependencies", $ns) | ForEach-Object { $_.InnerText })
+    return @{ Refs = $refs; Libs = $libs }
+}
+function Test-BackendLinkInput([string]$vcxprojPath) {
+    # True when any compile-visible link input names the backend library.
+    # Static linkage means "contains miniaudio" iff this predicate fires,
+    # which the RT2AudioProbe positive control below keeps honest.
+    $inputs = Get-LinkInputs $vcxprojPath
+    foreach ($ref in $inputs.Refs) {
+        if ($ref -like "*RT2AudioBackend*") { return $true }
     }
-    if ($miniaudioHits.Count -eq 1 -and $miniaudioHits[0] -notlike "*..*") {
-        Pass "exactly one miniaudio.c TU in RT2AudioBackend ($($miniaudioHits[0]))"
-    } else {
-        Fail "miniaudio.c TU count in RT2AudioBackend is $($miniaudioHits.Count), want exactly 1 in-project ($($miniaudioHits -join '; '))"
+    foreach ($lib in $inputs.Libs) {
+        if ($lib -like "*AudioBackend*" -or $lib -like "*miniaudio*") { return $true }
     }
+    return $false
 }
 
-foreach ($proj in ($linkProjects + $cpuProjects)) {
-    if (-not (Test-Path $proj)) { Fail "generated project missing: $proj (regenerate with premake5)"; continue }
+# --------------------------------------- solution-wide TU census (P2, second)
+# Enumerate every project reachable from the generated solution instead of a
+# fixed named list, so a duplicate smuggled into Walnut, GLFW, ImGui, or a
+# Bullet project cannot pass. The named link-policy checks below stay as the
+# consumer/CPU-target contract.
+$slnProjects = @()
+$slnPath = "RT2App.sln"
+if (-not (Test-Path $slnPath)) {
+    Fail "generated solution missing: $slnPath (regenerate with premake5)"
+} else {
+    $slnText = Get-Content $slnPath -Raw
+    $slnProjects = @([regex]::Matches($slnText, '"([^"]+\.vcxproj)"') |
+        ForEach-Object { $_.Groups[1].Value -replace '\\','/' } |
+        Sort-Object -Unique)
+    Pass "solution enumerates $($slnProjects.Count) generated projects"
+}
+
+if ((Test-Path $backendVcxproj) -and ($slnProjects -notcontains $backendVcxproj)) {
+    Fail "solution does not contain $backendVcxproj (regenerate with premake5)"
+}
+
+foreach ($proj in $slnProjects) {
+    if (-not (Test-Path $proj)) { Fail "solution project missing on disk: $proj (regenerate with premake5)"; continue }
     $compiles = Get-ClCompiles $proj
+    if ($proj -eq $backendVcxproj) {
+        $adapterHits = @($compiles | Where-Object { $_ -like "*MiniaudioNoDeviceAdapter.cpp" })
+        $miniaudioHits = @($compiles | Where-Object { $_ -like "*miniaudio.c" })
+        # Includes are project-relative: require exactly one hit that lives
+        # in-project (no ".." escape into another target's tree).
+        if ($adapterHits.Count -eq 1 -and $adapterHits[0] -notlike "*..*") {
+            Pass "exactly one adapter TU in RT2AudioBackend ($($adapterHits[0]))"
+        } else {
+            Fail "adapter TU count in RT2AudioBackend is $($adapterHits.Count), want exactly 1 in-project ($($adapterHits -join '; '))"
+        }
+        if ($miniaudioHits.Count -eq 1 -and $miniaudioHits[0] -notlike "*..*") {
+            Pass "exactly one miniaudio.c TU in RT2AudioBackend ($($miniaudioHits[0]))"
+        } else {
+            Fail "miniaudio.c TU count in RT2AudioBackend is $($miniaudioHits.Count), want exactly 1 in-project ($($miniaudioHits -join '; '))"
+        }
+        continue
+    }
     $leaks = @($compiles | Where-Object { $_ -like "*RT2AudioBackend*" -or $_ -like "*miniaudio*" })
     if ($leaks.Count -eq 0) {
         Pass "no backend/miniaudio TU compiled in $proj"
@@ -134,26 +229,51 @@ foreach ($proj in ($linkProjects + $cpuProjects)) {
     }
 }
 
-foreach ($proj in $linkProjects) {
+# Global reference invariant over the same enumeration: only the two allowed
+# consumers may reference the backend from any solution project.
+foreach ($proj in $slnProjects) {
     if (-not (Test-Path $proj)) { continue }
+    if ($proj -eq $backendVcxproj) { continue }
     $refs = Get-ProjectReferences $proj
-    if (@($refs | Where-Object { $_ -like "*RT2AudioBackend*" }).Count -ge 1) {
-        Pass "$proj links RT2AudioBackend (ProjectReference present)"
+    $hasRef = (@($refs | Where-Object { $_ -like "*RT2AudioBackend*" }).Count -gt 0)
+    $allowed = ($proj -eq "RT2App/RT2App.vcxproj") -or ($proj -eq "RT2AudioProbe/RT2AudioProbe.vcxproj")
+    if ($hasRef -and -not $allowed) {
+        Fail "reference leak: $proj references RT2AudioBackend outside the two consumers"
+    }
+}
+if ($slnProjects.Count -gt 0) {
+    Pass "no solution project outside RT2App/RT2AudioProbe references the backend"
+}
+
+# Named link-policy contract (kept alongside the global census): the two
+# allowed consumers must carry a backend link input, CPU targets must not.
+# The predicate is the same one the positive control below exercises, so a
+# vacuous detector cannot pass both sides at once.
+foreach ($proj in $linkProjects) {
+    if (-not (Test-Path $proj)) { Fail "generated project missing: $proj (regenerate with premake5)"; continue }
+    if (Test-BackendLinkInput $proj) {
+        Pass "$proj links RT2AudioBackend (link input present)"
     } else {
-        Fail "missing-link: $proj carries no ProjectReference to RT2AudioBackend"
+        Fail "missing-link: $proj carries no RT2AudioBackend link input"
     }
 }
 foreach ($proj in $cpuProjects) {
-    if (-not (Test-Path $proj)) { continue }
-    $refs = Get-ProjectReferences $proj
-    $text = (Get-Content $proj -Raw)
-    $bad = (@($refs | Where-Object { $_ -like "*RT2AudioBackend*" }).Count -gt 0) -or
-           ($text -like "*RT2AudioBackend.lib*")
-    if (-not $bad) {
+    if (-not (Test-Path $proj)) { Fail "generated project missing: $proj (regenerate with premake5)"; continue }
+    if (-not (Test-BackendLinkInput $proj)) {
         Pass "$proj does not link RT2AudioBackend"
     } else {
-        Fail "CPU-boundary leak: $proj references RT2AudioBackend"
+        Fail "CPU-boundary leak: $proj carries an RT2AudioBackend link input"
     }
+}
+# Positive control: RT2AudioProbe unquestionably contains and executes
+# miniaudio, so the link-input detector must fire on it. If it does not,
+# the detector is vacuous and the CPU passes above prove nothing.
+if (-not (Test-Path "RT2AudioProbe/RT2AudioProbe.vcxproj")) {
+    Fail "generated project missing: RT2AudioProbe/RT2AudioProbe.vcxproj (regenerate with premake5)"
+} elseif (Test-BackendLinkInput "RT2AudioProbe/RT2AudioProbe.vcxproj") {
+    Pass "positive control: link-input detector fires on RT2AudioProbe"
+} else {
+    Fail "positive control: link-input detector does not fire on RT2AudioProbe (detector vacuous)"
 }
 
 # ------------------------------------------------------------ premake wiring
@@ -179,7 +299,12 @@ if ($slicePremake -notlike "*RT2AudioBackend*" -and $slicePremake -notlike "*min
     Fail "RT2SliceRunner premake references backend/miniaudio"
 }
 
-# ---------------------------------------------------------------- CPU imports
+# ------------------------------------------------- dynamic-import evidence
+# Miniaudio links statically and resolves its Windows backend dynamically,
+# so a binary symbol scan is inert (it stays green even on RT2AudioProbe,
+# which unquestionably executes miniaudio) and is not used here. Static
+# isolation is proven by the link-input census and positive control above;
+# this section only rules out dynamic audio/GPU dependencies.
 function Find-DumpBin {
     $candidates = @()
     if ($env:VSINSTALLDIR) {
@@ -196,11 +321,10 @@ function Find-DumpBin {
 }
 
 $importDenyList = @("vulkan", "glfw", "imgui", "walnut", "shaderc", "spirv", "nvngx", "ngx", "miniaudio")
-$symbolDenyList = @("ma_engine_init", "ma_engine_read_pcm_frames", "ma_device_init", "ma_decoder_init")
 $configs = if ($Configuration -eq "Both") { @("Release", "Debug") } else { @($Configuration) }
 $dumpbin = Find-DumpBin
 if (-not $dumpbin) {
-    Fail "dumpbin.exe not found; cannot prove the CPU import boundary"
+    Fail "dumpbin.exe not found; cannot check dynamic-import evidence"
 } else {
     foreach ($config in $configs) {
         foreach ($target in @("RT2Tests", "RT2SliceRunner")) {
@@ -212,19 +336,9 @@ if (-not $dumpbin) {
                 if ($imports -like "*$deny*") { $badDlls += $deny }
             }
             if ($badDlls.Count -eq 0) {
-                Pass "[$config] $target imports carry no denylisted module"
+                Pass "[$config] $target dynamically imports no denylisted module"
             } else {
-                Fail "[$config] $target imports denylisted modules: $($badDlls -join ', ')"
-            }
-            $symbols = & $dumpbin /SYMBOLS $exe 2>&1 | Out-String
-            $badSyms = @()
-            foreach ($deny in $symbolDenyList) {
-                if ($symbols.Contains($deny)) { $badSyms += $deny }
-            }
-            if ($badSyms.Count -eq 0) {
-                Pass "[$config] $target exports no miniaudio device/decoder symbols"
-            } else {
-                Fail "[$config] $target leaks backend symbols: $($badSyms -join ', ')"
+                Fail "[$config] $target dynamically imports denylisted modules: $($badDlls -join ', ')"
             }
         }
     }
