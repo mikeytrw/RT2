@@ -26,7 +26,8 @@
 // PrimitiveComponent, ImportedMeshSourceComponent, MaterialOverrideComponent
 // with the full SceneMaterial + sourceMaterialKey, LightComponent,
 // CameraComponent, MotionComponent, ScriptComponent, PrefabInstanceComponent,
-// PrefabMemberComponent, and the four T2 physics components).
+// PrefabMemberComponent, the four T2 physics components, and the A2 audio
+// source component).
 //
 // Root sibling anchors preserve exact Outliner position. Restoration fails
 // atomically rather than silently appending if the anchors are inconsistent
@@ -109,6 +110,17 @@ struct SubtreeEntityRecord
 
 	bool      hasPhysicsSlider = false;
 	PhysicsSliderComponent physicsSlider{};
+
+	// Audio A2: authored source data rides every subtree path (Undo/Redo
+	// snapshots, clipboard copy/paste staging, prefab create/instantiate)
+	// exactly like every other persisted component. Plain values only — no
+	// decoder state, no device handles, no PCM.
+	bool      hasAudioSource = false;
+	AudioSourceComponent audioSource{};
+
+	// Whether the owning entity carries a Transform (BuildSubtreeRecord
+	// reflects the registry; ApplySubtreeRecord always ensures one).
+	bool      hasTransform = true;
 };
 
 struct RootSiblingAnchor

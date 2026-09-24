@@ -217,7 +217,7 @@ inline bool PrefabCanonicalComponentEqual(const PhysicsHingeComponent& a,
 }
 
 inline bool PrefabCanonicalComponentEqual(const PhysicsSliderComponent& a,
-                                          const PhysicsSliderComponent& b) noexcept
+                                           const PhysicsSliderComponent& b) noexcept
 {
     return a.otherBody == b.otherBody &&
            PrefabCanonicalVec3Equal(a.axis, b.axis) &&
@@ -228,6 +228,24 @@ inline bool PrefabCanonicalComponentEqual(const PhysicsSliderComponent& a,
                                      b.motorTargetVelocity) &&
            PrefabCanonicalFloatEqual(a.motorMaxForce, b.motorMaxForce) &&
            a.motorEnabled == b.motorEnabled;
+}
+
+// Audio A2: exact-value canonical equality over durable authored fields
+// only. The source carries no transient state (no decoder state, no device
+// handles, no PCM), so the comparison is spelled field-by-field here so a
+// future transient field cannot silently enter the comparison.
+inline bool PrefabCanonicalComponentEqual(const AudioSourceComponent& a,
+                                          const AudioSourceComponent& b) noexcept
+{
+    return PrefabCanonicalAssetReferenceEqual(a.clip, b.clip) &&
+           a.bus == b.bus && a.autoplay == b.autoplay && a.loop == b.loop &&
+           a.spatial == b.spatial &&
+           PrefabCanonicalFloatEqual(a.gain, b.gain) &&
+           PrefabCanonicalFloatEqual(a.pitch, b.pitch) &&
+           PrefabCanonicalFloatEqual(a.minDistance, b.minDistance) &&
+           PrefabCanonicalFloatEqual(a.maxDistance, b.maxDistance) &&
+           PrefabCanonicalFloatEqual(a.rolloff, b.rolloff) &&
+           a.priority == b.priority;
 }
 
 inline bool OptionalPrimitiveComponentCanonicalEqual(

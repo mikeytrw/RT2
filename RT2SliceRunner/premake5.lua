@@ -49,6 +49,7 @@ project "RT2SliceRunner"
     "../RT2App/src/NgxSupport.cpp",
         "../RT2App/src/AssetIdentity.cpp",
         "../RT2App/src/AssetDatabase.cpp",
+        "../RT2App/src/AudioClipAssetProvider.cpp",
         "../RT2App/src/PrefabSerializer.cpp",
         "../RT2App/src/PrefabEditorActions.cpp",
         "../RT2App/src/PrefabEditorPresentation.cpp",

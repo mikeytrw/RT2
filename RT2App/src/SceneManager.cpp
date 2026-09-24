@@ -183,7 +183,7 @@ void RemapCopiedScriptFields(
 // unit of classification is the FOREST of copied entities, not each selected
 // root in isolation.
 //
-// CopyAuthoredComponents copies all 17 persisted components verbatim
+// CopyAuthoredComponents copies all 18 persisted components verbatim
 // (SceneManager.cpp:89-93), so a copy of a prefab instance would share the
 // SOURCE's instanceId: duplicating an instance produces two entities (and two
 // member groups) claiming the same instance identity. W3 groups overrides by
@@ -2248,6 +2248,11 @@ SubtreeEntityRecord BuildSubtreeRecord(const entt::registry& reg, entt::entity e
 		r.translation = tf->translation;
 		r.rotation    = tf->rotation;
 		r.scale       = tf->scale;
+		r.hasTransform = true;
+	}
+	else
+	{
+		r.hasTransform = false;
 	}
 
 	if (const auto* vc = reg.try_get<VisibleComponent>(e))
@@ -2340,6 +2345,17 @@ SubtreeEntityRecord BuildSubtreeRecord(const entt::registry& reg, entt::entity e
 	{
 		r.hasPhysicsSlider = true;
 		r.physicsSlider    = *psl;
+	}
+
+	// Audio A2: authored source rides subtree snapshots (Undo/Redo),
+	// clipboard staging, and prefab records exactly like every other
+	// persisted component. CopyAuthoredComponents covers the registry-copy
+	// path via PersistedComponents::ForEach; this record path covers the
+	// snapshot/clipboard/prefab-file paths.
+	if (const auto* au = reg.try_get<AudioSourceComponent>(e))
+	{
+		r.hasAudioSource = true;
+		r.audioSource    = *au;
 	}
 
 	return r;
@@ -2445,6 +2461,13 @@ void ApplySubtreeRecord(const SubtreeEntityRecord& record, entt::registry& reg,
 		reg.emplace_or_replace<PhysicsSliderComponent>(e, record.physicsSlider);
 	else
 		reg.remove<PhysicsSliderComponent>(e);
+
+	// Audio A2: structural restore reinstates the recorded source verbatim —
+	// restore never remaps or invents clip references.
+	if (record.hasAudioSource)
+		reg.emplace_or_replace<AudioSourceComponent>(e, record.audioSource);
+	else
+		reg.remove<AudioSourceComponent>(e);
 }
 
 // Compare authored component state on an entity against a record. Returns
@@ -2664,6 +2687,14 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 	if (reg.all_of<PhysicsSliderComponent>(e) != record.hasPhysicsSlider) return false;
 	if (record.hasPhysicsSlider &&
 	    !(*reg.try_get<PhysicsSliderComponent>(e) == record.physicsSlider))
+		return false;
+
+	// Audio A2: exact-value compare. The source is pure authored data
+	// (operator== is the canonical comparison — no eps, no transient
+	// state), so presence and value must both match exactly.
+	if (reg.all_of<AudioSourceComponent>(e) != record.hasAudioSource) return false;
+	if (record.hasAudioSource &&
+	    !(*reg.try_get<AudioSourceComponent>(e) == record.audioSource))
 		return false;
 
 	if (reg.all_of<PrefabMemberComponent>(e) != record.hasPrefabMember) return false;

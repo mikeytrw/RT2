@@ -66,6 +66,17 @@ std::vector<Slot> Collect(Document& document)
         if (auto* instance =
                 document.ecs.registry.template try_get<PrefabInstanceComponent>(entity))
             result.push_back(Slot{&instance->prefab, id, name});
+        // Audio A2: the authored clip reference, unconditionally — matching
+        // the physics collision-reference behavior above. The reference is
+        // visited even when inactive (empty path), malformed (unknown kind
+        // with a non-empty path), or unbound, so Save validation (which
+        // rejects a non-empty path with an unknown kind), migration,
+        // and content-browser dependency protection all see it.
+        // Filtering here would let Save succeed on a v9 file that Load
+        // refuses, and would hide a stale reference until later use.
+        if (auto* audio =
+                document.ecs.registry.template try_get<AudioSourceComponent>(entity))
+            result.push_back(Slot{&audio->clip, id, name});
     }
 
     if (!document.environment.ref.path.empty())

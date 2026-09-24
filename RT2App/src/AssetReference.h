@@ -34,6 +34,7 @@ enum class AssetKind : uint8_t
     Environment = 3,   // .hdr / .exr environment map
     Script      = 4,   // .lua script asset (Phase 6)
     Prefab      = 5,   // .rt2prefab entity-subtree asset (Phase 8 W0)
+    AudioClip   = 6,   // .wav / .flac / .mp3 audio clip asset (audio A2)
 };
 
 // Asset kind name codec — the serialized "kind" tag. Defined inline in this
@@ -50,6 +51,7 @@ inline const char* AssetKindName(AssetKind k)
         case AssetKind::Environment: return "environment";
         case AssetKind::Script:      return "script";
         case AssetKind::Prefab:      return "prefab";
+        case AssetKind::AudioClip:   return "audioclip";
         default:                     return "unknown";
     }
 }
@@ -61,6 +63,7 @@ inline AssetKind AssetKindFromName(const std::string& s)
     if (s == "environment") return AssetKind::Environment;
     if (s == "script")      return AssetKind::Script;
     if (s == "prefab")      return AssetKind::Prefab;
+    if (s == "audioclip")   return AssetKind::AudioClip;
     return AssetKind::Unknown;
 }
 

@@ -14,20 +14,25 @@
 #include <vector>
 
 // ============================================================================
-// SceneSerializer — native .rt2scene JSON format (schema version 8).
+// SceneSerializer — native .rt2scene JSON format (schema version 9).
 //
 // Operates on SceneDocument (not bare ECSScene) so it can persist the
 // environment map path, scene metadata, and UUID index alongside ECS data.
 //
-// Schema version 8 (T2 physics persistence foundation):
-//   - Reads v3 through v8; v1/v2 are rejected deliberately.
+// Schema version 9 (audio A2 asset/persistence foundation):
+//   - Reads v3 through v9; v1/v2 are rejected deliberately.
+//   - v9 adds the authored AudioSourceComponent payload (audioSource). v3-v8
+//     input carries none and migrates to "no source" (absent component).
+//   - v9 performs strict dotted-field validation of the audio block; a
+//     present-but-malformed block is a loud transactional Parse failure
+//     naming the entity UUID, never a silent default.
 //   - v8 adds the four authored physics component payloads (physicsBody,
 //     physicsShape, physicsHinge, physicsSlider). v3-v7 input carries none
 //     and migrates to "no body" (absent physics = no body).
 //   - Serializes durable asset references (ImportedMeshSourceComponent) and
 //     authored material overrides (MaterialOverrideComponent). Does NOT
-//     serialize decoded vertex buffers, pixel data, GPU handles, or
-//     transient MeshRegistry indices.
+//     serialize decoded vertex buffers, pixel data, GPU handles, decoded
+//     audio PCM, device handles, or transient MeshRegistry indices.
 //   - Environment: path only; pixels are re-read on load via
 //     SceneAssetResolver::ResolveEnvironment.
 //   - Primitive meshes (PrimitiveComponent) remain directly serializable.
@@ -40,7 +45,8 @@
 //   PrimitiveComponent, LightComponent, CameraComponent, MotionComponent,
 //   ImportedMeshSourceComponent, MaterialOverrideComponent, ScriptComponent,
 //   PhysicsBodyComponent, PhysicsShapeComponent, PhysicsHingeComponent,
-//   PhysicsSliderComponent (v8+; absent before).
+//   PhysicsSliderComponent (v8+; absent before),
+//   AudioSourceComponent (v9+; absent before).
 //
 // Save:
 //   - Atomic: write to path + ".tmp", then ReplaceFileW/MoveFileExW.
@@ -55,7 +61,7 @@
 //   - Transactional: parse into a temporary document; only on success does
 //     the caller swap it in as the live authoring scene. A parse/schema
 //     failure cannot corrupt the live scene.
-//   - Schema version check: only v3 through v8 are accepted; every other version fails
+//   - Schema version check: only v3 through v9 are accepted; every other version fails
 //     with Error{SchemaVersion}.
 //   - Does NOT resolve external assets; the caller runs SceneAssetResolver
 //     after a successful load to rebuild meshes/textures/environment.
@@ -131,10 +137,11 @@ public:
     // activates the clone.
     static bool CloneInMemory(const SceneDocument& src, SceneDocument& dst, Error& err);
 
-    // Current schema version (written by Save). v8 adds the four authored
-    // physics component payloads; v7 adds primitive override markers; v6's
-    // original eight override keys remain readable.
-    static constexpr uint32_t SchemaVersion = 8;
+    // Current schema version (written by Save). v9 adds the authored audio
+    // source payload; v8 adds the four authored physics component payloads;
+    // v7 adds primitive override markers; v6's original eight override keys
+    // remain readable.
+    static constexpr uint32_t SchemaVersion = 9;
     // v6 introduced prefab override vectors and project-owned identity. Keep
     // this boundary separate from the current version so v6 scenes retain
     // their existing semantics after v7 is introduced.

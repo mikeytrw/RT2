@@ -25,7 +25,8 @@ AssetFileEventKind ClassifyExtension(const std::string& extension)
     if (extension == ".glb" || extension == ".gltf" ||
         extension == ".obj" || extension == ".hdr" ||
         extension == ".exr" || extension == ".rt2meta" ||
-        extension == ".rt2prefab")
+        extension == ".rt2prefab" || extension == ".wav" ||
+        extension == ".flac" || extension == ".mp3")
         return AssetFileEventKind::DatabaseRefresh;
     return AssetFileEventKind::Ignore;
 }
