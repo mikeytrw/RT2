@@ -499,7 +499,7 @@ TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (up
 }
 
 // ---------------------------------------------------------------------------
-// 1. All 17 persisted components (T2: +4 physics) have a wire key, and the table's order
+// 1. All 18 persisted components (T2: +4 physics; A2: +1 audio) have a wire key, and the table's order
 //    matches PersistedComponents::ForEach order ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â driven by an actual ForEach
 //    visitor, not a hand-written list that could drift the same way.
 //
@@ -520,14 +520,16 @@ TEST_CASE("Phase 8 W3: prefab key table matches PersistedComponents::ForEach")
     // alone (the visitor could have been extended to agree with an oversized
     // table). This is the runtime shadow of static_assert 1.
     // T2: four non-overridable physics components join the table (13 -> 17).
+    // Audio A2: one non-overridable audio source joins the table (17 -> 18).
     CHECK(kPrefabTable.size() == PersistedComponents::Count);
-    CHECK(kPrefabTable.size() == 17);
+    CHECK(kPrefabTable.size() == 18);
 }
 
 // ---------------------------------------------------------------------------
-// 2. Exactly 9 are overridable, and each of the 8 excluded components is
+// 2. Exactly 9 are overridable, and each of the 9 excluded components is
 //    rejected by name (T2: the four physics components join the excluded
-//    set; the overridable total stays 9).
+//    set; audio A2: the audio source joins it; the overridable total stays
+//    9).
 //
 //    Discrimination faults:
 //      a) flip NameComponent's bit to false in kPrefabTable -> count drops to
@@ -565,6 +567,9 @@ TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 8 excluded by name")
     REQUIRE_FALSE(IsOverridable<PhysicsShapeComponent>());
     REQUIRE_FALSE(IsOverridable<PhysicsHingeComponent>());
     REQUIRE_FALSE(IsOverridable<PhysicsSliderComponent>());
+    // Audio A2: the audio source is scene-serializable but excluded from
+    // prefab propagation/override wires.
+    REQUIRE_FALSE(IsOverridable<AudioSourceComponent>());
 
     // Rejection by name (boundary): a wire name of an excluded component must
     // resolve to a non-overridable classification, not fall through to a
@@ -572,7 +577,8 @@ TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 8 excluded by name")
     const char* excluded[] = { "meshRef", "importedSource",
                                "prefabInstance", "prefabMember",
                                "physicsBody", "physicsShape",
-                               "physicsHinge", "physicsSlider" };
+                               "physicsHinge", "physicsSlider",
+                               "audioSource" };
     for (const char* wire : excluded)
     {
         const auto key = FindComponentByWire(wire);
@@ -592,15 +598,15 @@ TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 8 excluded by name")
 }
 
 // ---------------------------------------------------------------------------
-// 3. Wire key <-> name round-trips for all 17 (T2: +4 physics): every
-//    specialized type's wire
+// 3. Wire key <-> name round-trips for all 18 (T2: +4 physics; A2: +1 audio):
+//    every specialized type's wire
 //    resolves back to the classification that produced it, and no two table
 //    rows share a wire (a duplicated wire would make one component's override
 //    ambiguous and the reverse lookup would return the wrong row).
 //
 //    Discrimination faults:
 //      a) give CameraComponent the same wire as ScriptComponent in the table
-//         -> the wire set has 16 distinct members instead of 17, and the
+//         -> the wire set has 17 distinct members instead of 18, and the
 //         round-trip for the duplicated row resolves to the earlier one ->
 //         RED.
 //      b) rename a wire constant in the specialization only (e.g.
@@ -608,7 +614,7 @@ TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 8 excluded by name")
 //         keeps "motion" -> the ForEach round-trip fails -> RED.
 //    Revert both -> GREEN.
 // ---------------------------------------------------------------------------
-TEST_CASE("Phase 8 W3: wire key <-> name round-trips for all 17 components")
+TEST_CASE("Phase 8 W3: wire key <-> name round-trips for all 18 components")
 {
     std::size_t index = 0;
     PersistedComponents::ForEach([&](auto tag) {
@@ -633,7 +639,7 @@ TEST_CASE("Phase 8 W3: wire key <-> name round-trips for all 17 components")
     });
     REQUIRE(index == PersistedComponents::Count);
 
-    // No two rows share a wire: 17 distinct wires for 17 rows.
+    // No two rows share a wire: 18 distinct wires for 18 rows.
     std::size_t distinct = 0;
     for (std::size_t i = 0; i < kPrefabTable.size(); ++i)
     {
@@ -645,7 +651,7 @@ TEST_CASE("Phase 8 W3: wire key <-> name round-trips for all 17 components")
         if (!seen) ++distinct;
     }
     CHECK(distinct == kPrefabTable.size());
-    CHECK(distinct == 17);
+    CHECK(distinct == 18);
 }
 
 // ---------------------------------------------------------------------------

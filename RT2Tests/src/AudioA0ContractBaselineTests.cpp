@@ -85,14 +85,13 @@ TEST_CASE("A0 GREEN_PersistedCoverageExact17: generic list visits every authored
 {
     // Tripwire for required check 1. PersistedComponents::Count alone cannot
     // catch a removed ForEach entry, so this case pins the full visitation:
-    // exactly 17 visits covering each of the 17 authored types named in
-    // PersistedComponents.h:25-41. Removing any one entry (the A2 analogue is
+    // exactly 18 visits covering each of the 18 authored types named in
+    // PersistedComponents.h. Removing any one entry (the A2 analogue is
     // forgetting AudioSourceComponent) turns this red while Count still
-    // reads 17.
+    // reads 18.
     //
-    // Owner handoff: A2 adds AudioSourceComponent, bumps Count 17 -> 18, and
-    // updates this case to require all 18.
-    CHECK(PersistedComponents::Count == 17);
+    // A2 fulfilled the handoff: AudioSourceComponent added, Count 17 -> 18.
+    CHECK(PersistedComponents::Count == 18);
 
     std::set<std::type_index> seen;
     size_t visits = 0;
@@ -102,8 +101,8 @@ TEST_CASE("A0 GREEN_PersistedCoverageExact17: generic list visits every authored
             ++visits;
             seen.insert(std::type_index(typeid(typename decltype(tag)::Type)));
         });
-    CHECK(visits == 17);
-    CHECK(seen.size() == 17);
+    CHECK(visits == 18);
+    CHECK(seen.size() == 18);
 
     CHECK(seen.count(std::type_index(typeid(NameComponent))) == 1);
     CHECK(seen.count(std::type_index(typeid(Transform))) == 1);
@@ -122,36 +121,38 @@ TEST_CASE("A0 GREEN_PersistedCoverageExact17: generic list visits every authored
     CHECK(seen.count(std::type_index(typeid(PhysicsShapeComponent))) == 1);
     CHECK(seen.count(std::type_index(typeid(PhysicsHingeComponent))) == 1);
     CHECK(seen.count(std::type_index(typeid(PhysicsSliderComponent))) == 1);
+    CHECK(seen.count(std::type_index(typeid(AudioSourceComponent))) == 1);
 }
 
 TEST_CASE("A0 GREEN_AssetKindCodecHasNoAudioKindYet")
 {
-    // Baseline for required checks 2 and 17. The five durable kinds
-    // round-trip through the shared name codec (AssetReference.h:44-65); no
-    // audio name resolves today. Save validation rejects an Unknown kind
-    // with a non-empty path loudly (SceneSerializer.cpp:417-422), so an
+    // Baseline for required checks 2 and 17. The six durable kinds
+    // round-trip through the shared name codec (AssetReference.h); the audio
+    // name resolves since A2. Save validation rejects an Unknown kind
+    // with a non-empty path loudly (SceneSerializer.cpp), so an
     // audio-shaped path can never smuggle itself through the codec.
     //
-    // Owner handoff: A2 adds AssetKind::AudioClip with its wire name and
-    // updates this case to require the new round-trip.
+    // A2 fulfilled the handoff: AssetKind::AudioClip with wire "audioclip".
     CHECK(std::string(AssetKindName(AssetKind::Model)) == "model");
     CHECK(std::string(AssetKindName(AssetKind::Texture)) == "texture");
     CHECK(std::string(AssetKindName(AssetKind::Environment)) == "environment");
     CHECK(std::string(AssetKindName(AssetKind::Script)) == "script");
     CHECK(std::string(AssetKindName(AssetKind::Prefab)) == "prefab");
+    CHECK(std::string(AssetKindName(AssetKind::AudioClip)) == "audioclip");
     CHECK(AssetKindFromName("model") == AssetKind::Model);
     CHECK(AssetKindFromName("texture") == AssetKind::Texture);
     CHECK(AssetKindFromName("environment") == AssetKind::Environment);
     CHECK(AssetKindFromName("script") == AssetKind::Script);
     CHECK(AssetKindFromName("prefab") == AssetKind::Prefab);
+    CHECK(AssetKindFromName("audioclip") == AssetKind::AudioClip);
 
-    CHECK(AssetKindFromName("audioclip") == AssetKind::Unknown);
     CHECK(AssetKindFromName("audio") == AssetKind::Unknown);
     CHECK(AssetKindFromName("wav") == AssetKind::Unknown);
 
     AssetReference audioShaped;
+    audioShaped.kind = AssetKind::AudioClip;
     audioShaped.path = "sfx/hit.wav";
-    CHECK_FALSE(audioShaped.IsValid());
+    CHECK(audioShaped.IsValid());
 }
 
 TEST_CASE("A0 GREEN_VisitorSeesBothPhysicsRefsUnconditionally")
@@ -159,11 +160,11 @@ TEST_CASE("A0 GREEN_VisitorSeesBothPhysicsRefsUnconditionally")
     // Baseline for required check 2. Both stored collision-geometry
     // references of a physics shape are visited even when malformed
     // (Unknown kind with a non-empty path - exactly the input save
-    // validation refuses). A2 must give AudioSourceComponent::clip the same
-    // unconditional treatment; filtering here would let Save succeed on a
-    // file Load refuses.
+    // validation refuses). AudioSourceComponent::clip receives the same
+    // unconditional treatment since A2; filtering here would let Save
+    // succeed on a file Load refuses.
     //
-    // Owner handoff: A2 adds the audio slot and updates the census below.
+    // A2 fulfilled the handoff: the audio slot below is part of the census.
     DeterministicUuidProvider provider;
     SceneDocument doc;
     doc.SetUuidProvider(&provider);
@@ -182,16 +183,21 @@ TEST_CASE("A0 GREEN_VisitorSeesBothPhysicsRefsUnconditionally")
     script.asset.path = "scripts/cover.lua";
     doc.ecs.registry.emplace<ScriptComponent>(emitter, script);
 
+    AudioSourceComponent audio;
+    audio.clip.kind = AssetKind::AudioClip;
+    audio.clip.path = "sfx/hit.wav";
+    doc.ecs.registry.emplace<AudioSourceComponent>(emitter, audio);
+
     const std::vector<SceneAssetReferenceSlot> slots =
         CollectSceneAssetReferences(doc);
-    REQUIRE(slots.size() == 3);
+    REQUIRE(slots.size() == 4);
     CHECK(HasSlotWithPath(slots, "stale/hull.bin"));
     CHECK(HasSlotWithPath(slots, "stale/trimesh.bin"));
     CHECK(HasSlotWithPath(slots, "scripts/cover.lua"));
 
-    // No component in this tree produces an audio-shaped reference, so the
-    // census above is exact: there is no fourth slot to miss.
-    CHECK_FALSE(HasSlotWithPath(slots, "sfx/hit.wav"));
+    // The audio clip reference is visited unconditionally, exactly like the
+    // physics collision references above.
+    CHECK(HasSlotWithPath(slots, "sfx/hit.wav"));
 }
 
 TEST_CASE("A0 GREEN_PlayRefusedWhilePlayingLeavesSessionUndisturbed")

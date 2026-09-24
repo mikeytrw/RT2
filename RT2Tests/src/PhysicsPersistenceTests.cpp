@@ -255,16 +255,16 @@ TEST_CASE("T2 GREEN_V8Roundtrip: all four physics components survive save and lo
     Error err;
     REQUIRE(SaveSceneForTest(f.manager.AuthoringDoc(), path, err));
 
-    // The file carries schema version 8.
+    // The file carries schema version 9 (audio A2).
     const json saved = json::parse(ReadFileBinary(path));
     REQUIRE(saved.contains("version"));
-    CHECK(saved["version"].get<uint32_t>() == 8u);
+    CHECK(saved["version"].get<uint32_t>() == 9u);
     CHECK(saved["version"].get<uint32_t>() ==
           SceneSerializer::SchemaVersion);
 
     SceneDocument loaded;
     REQUIRE(SceneSerializer::Load(loaded, path, err));
-    CHECK(loaded.metadata.schemaVersion == 8u);
+    CHECK(loaded.metadata.schemaVersion == 9u);
 
     const auto loadedBall = loaded.FindByUuid(ball);
     const auto loadedAnchor = loaded.FindByUuid(anchor);
@@ -292,7 +292,7 @@ TEST_CASE("T2 GREEN_V8Roundtrip: all four physics components survive save and lo
     std::filesystem::remove_all(dir);
 }
 
-TEST_CASE("T2 GREEN_V3V7Migration: scenes without physics load as no-body with core data intact")
+TEST_CASE("T2 GREEN_V3V8Migration: scenes without physics load as no-body with core data intact")
 {
     PhysicsFixture f;
     const auto ball = f.CreateEmpty("Ball");
@@ -303,19 +303,20 @@ TEST_CASE("T2 GREEN_V3V7Migration: scenes without physics load as no-body with c
     Error err;
     REQUIRE(SaveSceneForTest(f.manager.AuthoringDoc(), path, err));
     const json saved = json::parse(ReadFileBinary(path));
-    REQUIRE(saved["version"].get<uint32_t>() == 8u);
+    REQUIRE(saved["version"].get<uint32_t>() == 9u);
 
-    for (uint32_t version = 3; version <= 7; ++version)
+    for (uint32_t version = 3; version <= 8; ++version)
     {
         json relabeled = saved;
         relabeled["version"] = version;
-        // v3-v7 input carries no physics blocks: strip them.
+        // v3-v8 input carries no physics blocks: strip them.
         for (auto& entity : relabeled["entities"])
         {
             entity.erase("physicsBody");
             entity.erase("physicsShape");
             entity.erase("physicsHinge");
             entity.erase("physicsSlider");
+            entity.erase("audioSource");
         }
         const auto versionPath =
             dir / ("physics_v" + std::to_string(version) + ".rt2scene");
@@ -357,7 +358,7 @@ TEST_CASE("T2 GREEN_PhysicsCodecCoverage: all persisted components survive every
     // scene JSON read/write, BuildDocumentFromRecords, CloneInMemory,
     // SubtreeEntityRecord capture/apply/exact-match, prefab record
     // conversions) turns this red; PersistedComponents::Count alone cannot.
-    CHECK(PersistedComponents::Count == 17);
+    CHECK(PersistedComponents::Count == 18);
 
     PhysicsFixture f;
     const auto covered = f.CreateEmpty("Covered");
@@ -857,7 +858,7 @@ TEST_CASE("T2 RED_BadConstraintUuidRefused: dangling, self, and missing-owner re
 
 TEST_CASE("T2 physics prefab wires are non-overridable and carry no propagation adapter")
 {
-    CHECK(PersistedComponents::Count == 17);
+    CHECK(PersistedComponents::Count == 18);
     CHECK(CountOverridableEntries() == 9);
 
     CHECK_FALSE(IsOverridable<PhysicsBodyComponent>());
