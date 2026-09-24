@@ -268,6 +268,13 @@ project "RT2App"
     links
     {
         "Walnut",
+        -- Audio A1: isolated miniaudio backend. RT2App links the static
+        -- library; it never compiles the adapter or miniaudio.c directly
+        -- (those translation units live in top-level RT2AudioBackend, and
+        -- the A1 gate script fails loudly if they appear here). Removing
+        -- this entry breaks the RT2App->RT2AudioBackend ProjectReference
+        -- the gate requires.
+        "RT2AudioBackend",
         -- T1: pinned Bullet core. Explicit link order BulletDynamics,
         -- BulletCollision, LinearMath; every consumer links all three (no
         -- transitive-static-link assumptions).

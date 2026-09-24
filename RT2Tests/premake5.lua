@@ -73,6 +73,11 @@
     -- CPU-only pins + deferred 20-check ownership map; no miniaudio/device imports.
     files { "src/AudioA0ContractBaselineTests.cpp" }
 
+    -- Audio A1: backend pin/format boundary checks (same rationale).
+    -- Includes only the miniaudio-free AudioBackendPin.h; the adapter and
+    -- miniaudio.c stay in top-level RT2AudioBackend and are never linked here.
+    files { "src/AudioA1BackendBoundaryTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
@@ -124,6 +129,7 @@
        "../Walnut/vendor/glm",
        "../Walnut/vendor/stb_image",
        "../RT2App/vendor",
+       "../RT2AudioBackend/src",      -- Audio A1: miniaudio-free pin header only
        "../RT2App/vendor/bullet/src",   -- T1: pinned Bullet core (src include root only)
        "../RT2App/vendor/tinygltf",
        "../RT2App/vendor/entt/src",

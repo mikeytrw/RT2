@@ -1399,6 +1399,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ProjectReference Include="..\Walnut\Walnut\Walnut.vcxproj">
       <Project>{C038E8D9-ACDA-12B0-9595-260481D69900}</Project>
     </ProjectReference>
+    <!-- Audio A1: isolated miniaudio backend (top-level RT2AudioBackend;
+         GUID pinned via uuid in RT2AudioBackend/premake5.lua). -->
+    <ProjectReference Include="..\RT2AudioBackend\RT2AudioBackend.vcxproj">
+      <Project>{D7F38CC6-437F-FA8A-4C90-7D7FB89A568B}</Project>
+    </ProjectReference>
     <!-- T1: pinned Bullet core libraries (same explicit order and GUIDs as
          RT2Tests; see note there). -->
     <ProjectReference Include="vendor\bullet\BulletDynamics.vcxproj">

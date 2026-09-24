@@ -4,3 +4,9 @@
 /RT2App/shaders/secondary_raygen.rgen text eol=lf
 /docs/rr-guide-report-*.json text eol=lf
 /docs/agx-minimal-wrensch-source.glsl text eol=lf
+# Audio A1: byte-pinned upstream miniaudio (SHA256 in
+# RT2AudioBackend/VENDORING.md, enforced by run_audio_a1_gates.ps1). Any
+# CRLF conversion would break byte identity, so force LF end to end.
+/RT2AudioBackend/vendor/miniaudio/miniaudio.h text eol=lf
+/RT2AudioBackend/vendor/miniaudio/miniaudio.c text eol=lf
+/RT2AudioBackend/vendor/miniaudio/LICENSE text eol=lf
