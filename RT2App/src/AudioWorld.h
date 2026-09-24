@@ -4,10 +4,12 @@
 #define RT2_AUDIO_WORLD_H
 
 #include "AudioBackend.h"
+#include "AudioClipProvider.h"
 #include "core/UUID.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -54,9 +56,12 @@
 //
 // Clip identity seam: A3 Play requests carry an opaque clipKey standing in
 // for the A4 (asset ID, canonical path, content fingerprint, decode format)
-// tuple. The world registers one synthetic mono/stereo generation per key
-// with the backend. A4 replaces the key with ResolvedAudioClip decode flow;
-// the slot/token/status contracts below do not change.
+// tuple. The world fetches one immutable generation per key from the
+// injected IAudioClipProvider and registers that shared generation with the
+// backend, so decoded channels, identity, and failure are owned by real
+// provider content rather than caller claims. A4 replaces the test
+// provider with ResolvedAudioClip decode flow; the slot/token/status
+// contracts below do not change.
 // ============================================================================
 
 namespace rt2::audio {
@@ -77,7 +82,10 @@ struct AudioPlayRequest
     float sourcePosition[3] = { 0.0f, 0.0f, 0.0f };
     bool hasTransform = true;
     std::string clipKey; // empty = unbound source (refused loudly)
-    int decodedChannels = 1;
+    // NOTE: no channel-count claim. The decoded channel count is owned by
+    // the generation the injected IAudioClipProvider returns and is
+    // enforced at drain time; a caller can never talk the world into
+    // treating stereo bytes as mono.
 };
 
 struct AudioSourcePose
@@ -122,11 +130,13 @@ struct AudioUpdateStats
 class AudioWorld
 {
 public:
-    // `backend` is borrowed and must outlive the world (the host owns the
-    // device/backend; the session owns the world). `session` must be valid.
+    // `backend` and `provider` are borrowed and must outlive the world (the
+    // host owns the device/backend; the session owns the world). `session`
+    // must be valid.
     // A zero maxVoices config selects the 64-voice default.
-    AudioWorld(IAudioBackend* backend, AudioSessionId session,
-               AudioOwnerKind owner, AudioWorldConfig config = {});
+    AudioWorld(IAudioBackend* backend, IAudioClipProvider* provider,
+               AudioSessionId session, AudioOwnerKind owner,
+               AudioWorldConfig config = {});
     ~AudioWorld(); // best-effort StopSessionVoices; use Shutdown for loud errors
 
     AudioWorld(const AudioWorld&) = delete;
@@ -196,6 +206,7 @@ public:
     uint64_t StealCount() const { return m_StealCount; }
     uint64_t QueueOverflowCount() const { return m_QueueOverflowCount; }
     uint64_t StaleCompletionCount() const { return m_StaleCompletions; }
+    size_t CachedClipGenerationCount() const { return m_ClipHandles.size(); }
 
     // Test/observer access to live slots.
     std::vector<AudioWorldVoiceHandle> LiveVoicesForSource(const core::UUID& source) const;
@@ -217,7 +228,6 @@ private:
         float position[3] = { 0.0f, 0.0f, 0.0f };
         bool hasTransform = true;
         std::string clipKey;
-        int decodedChannels = 1;
         // Pause/SetGain/SetPitch payload.
         bool pauseValue = false;
         float scalarValue = 0.0f;
@@ -273,8 +283,9 @@ private:
     void NotePlayFailure(const core::UUID& source, uint64_t sequence);
     SourceState& StateFor(const core::UUID& source);
     const SourceState* FindState(const core::UUID& source) const;
-    bool ResolveClipHandle(const std::string& clipKey, int decodedChannels,
-                           BackendClipHandle& outHandle, core::Error& outError);
+    bool ResolveClipHandle(const std::string& clipKey, BackendClipHandle& outHandle,
+                           std::shared_ptr<const DecodedAudioGeneration>& outGeneration,
+                           core::Error& outError);
     bool ComputeVoiceMix(const VoiceSlot& slot, const SourceState& state,
                          const AudioListenerPose& listener, BackendVoiceMix& outMix,
                          core::Error& outError) const;
@@ -288,10 +299,14 @@ private:
     bool ExecuteSetPitch(const Command& cmd);
     void ReclaimSlot(size_t index, BackendCompletionReason reason,
                      const core::Error& error, AudioUpdateStats* stats);
-    void StopVoiceInternal(size_t index, bool countAsStolen);
+    // Stops and frees a live slot. Always detaches (even when the backend
+    // reports an error) and reports the backend result, so explicit Stop
+    // callers observe typed failures while the census stays correct.
+    bool StopVoiceInternal(size_t index, bool countAsStolen, core::Error& outError);
     int FindStealVictim(uint8_t incomingPriority) const;
 
     IAudioBackend* m_Backend = nullptr;
+    IAudioClipProvider* m_Provider = nullptr;
     AudioSessionId m_Session;
     AudioOwnerKind m_Owner = AudioOwnerKind::Runtime;
     uint32_t m_MaxVoices = kAudioDefaultVoiceCap;
@@ -300,8 +315,11 @@ private:
     std::vector<Command> m_Queue;
     bool m_Draining = false;
 
-    // Per-source bookkeeping.
-    std::vector<std::pair<core::UUID, SourceState>> m_Sources;
+    // Per-source bookkeeping. A node-based map (never reallocated by
+    // insert) so a backend callback that registers a new source cannot
+    // invalidate state other commands are working with (finding 3). Every
+    // backend boundary below additionally re-finds its state by UUID.
+    std::map<core::UUID, SourceState> m_Sources;
     std::vector<core::UUID> m_Destroying;
 
     // clipKey -> backend handle cache for this session.

@@ -224,6 +224,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\AudioComponents.h" />
     <!-- Audio A3: CPU world/voice policy (CPU-only; no miniaudio/device). -->
     <ClInclude Include="src\AudioBackend.h" />
+    <ClInclude Include="src\AudioClipProvider.h" />
     <ClInclude Include="src\AudioSpatialMath.h" />
     <ClInclude Include="src\AudioWorld.h" />
     <ClInclude Include="src\FakeAudioBackend.h" />

@@ -293,6 +293,43 @@ void RecordingFakeAudioBackend::ScriptDecodeError(
     m_ScriptedDecodeErrors[clipKey] = error;
 }
 
+core::Result<std::shared_ptr<const DecodedAudioGeneration>>
+RecordingFakeAudioBackend::FetchDecodedGeneration(const std::string& clipKey)
+{
+    generationFetches.push_back(clipKey);
+    auto errorIt = m_ScriptedGenerationErrors.find(clipKey);
+    if (errorIt != m_ScriptedGenerationErrors.end())
+        return core::Result<std::shared_ptr<const DecodedAudioGeneration>>::Fail(
+            errorIt->second.code, errorIt->second.path, errorIt->second.detail);
+    auto it = m_ScriptedGenerations.find(clipKey);
+    if (it != m_ScriptedGenerations.end())
+        return core::Result<std::shared_ptr<const DecodedAudioGeneration>>::Ok(it->second);
+    // Explicit test-double default: mono 48 kHz silence. The engine never
+    // fabricates content; this default lives in the double and is
+    // overridden per key by ScriptGeneration/ScriptGenerationError.
+    auto generation = std::make_shared<DecodedAudioGeneration>();
+    generation->channels = 1;
+    generation->sampleRate = 48000;
+    generation->frameCount = 48000;
+    generation->pcmInterleaved.assign(
+        static_cast<size_t>(generation->frameCount) * generation->channels, 0.0f);
+    return core::Result<std::shared_ptr<const DecodedAudioGeneration>>::Ok(
+        std::move(generation));
+}
+
+void RecordingFakeAudioBackend::ScriptGeneration(
+    const std::string& clipKey,
+    std::shared_ptr<const DecodedAudioGeneration> generation)
+{
+    m_ScriptedGenerations[clipKey] = std::move(generation);
+}
+
+void RecordingFakeAudioBackend::ScriptGenerationError(
+    const std::string& clipKey, const core::Error& error)
+{
+    m_ScriptedGenerationErrors[clipKey] = error;
+}
+
 bool RecordingFakeAudioBackend::IsTokenLive(BackendVoiceToken token) const
 {
     return m_LiveTokens.find(token.opaque) != m_LiveTokens.end();
@@ -308,6 +345,7 @@ void RecordingFakeAudioBackend::ClearRecords()
     busGains.clear();
     stopSessions.clear();
     releases.clear();
+    generationFetches.clear();
     registerCalls = 0;
     drainCalls = 0;
 }

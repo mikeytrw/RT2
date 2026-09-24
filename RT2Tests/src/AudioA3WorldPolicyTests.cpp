@@ -108,7 +108,6 @@ AudioPlayRequest PlayReq(const UUID& source, const AudioSourceComponent& compone
     request.sourcePosition[2] = 0.0f;
     request.hasTransform = true;
     request.clipKey = clipKey;
-    request.decodedChannels = 1;
     return request;
 }
 
@@ -139,6 +138,17 @@ BackendVoiceMix RequireVoiceMix(AudioWorld& world, const UUID& source)
     return mix;
 }
 
+std::shared_ptr<const DecodedAudioGeneration> TestGeneration(uint32_t channels)
+{
+    auto generation = std::make_shared<DecodedAudioGeneration>();
+    generation->channels = channels;
+    generation->sampleRate = 48000;
+    generation->frameCount = 8;
+    generation->pcmInterleaved.assign(
+        static_cast<size_t>(generation->frameCount) * channels, 0.25f);
+    return generation;
+}
+
 } // namespace
 
 TEST_CASE("A3_SpatialCenter_NonSpatialUsesEqualPowerCenter")
@@ -146,7 +156,7 @@ TEST_CASE("A3_SpatialCenter_NonSpatialUsesEqualPowerCenter")
     // Mutation: replacing center gains with 1.0/1.0 (or baking bus gain)
     // turns this red. Non-spatial voices ignore distance and layout.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     QueuePlayChecked(world, PlayReq(source, OneShot(1.0f), "center-a"));
@@ -166,7 +176,7 @@ TEST_CASE("A3_SpatialHardLeftCenterRight_ExactGains")
     // cos/sin law turns the center case red; negating the right axis flips
     // left and right. minDistance 10 keeps distance gain at unity.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     AudioSourceComponent component = SpatialOneShot(1.0f);
     component.minDistance = 10.0f;
@@ -212,7 +222,7 @@ TEST_CASE("A3_SpatialDistance_RolloffCutoffAndZeroRolloff")
     // Mutation: dropping the pow(1-t, rolloff) term (or the max-distance
     // cutoff) turns the mid/far cases red.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     AudioSourceComponent component = SpatialOneShot(1.0f);
     component.minDistance = 1.0f;
@@ -268,14 +278,29 @@ TEST_CASE("A3_SpatialRefusals_StereoMissingTransformAndBadPoses")
     // Mutation: accepting stereo spatial clips (implicit downmix) turns the
     // first two checks red; skipping the finite/degenerate guards turns the
     // Update cases red (NaN mix published instead of last-valid retained).
+    // Channel ownership lives in the provider generation: the request
+    // carries no channel claim, so scripting a stereo generation is the
+    // only way to feed stereo bytes, and the drain refuses them loudly.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+    backend.ScriptGeneration("spatial-stereo", TestGeneration(2));
 
     const UUID stereoSource = NextUuid();
     AudioPlayRequest stereo = PlayReq(stereoSource, SpatialOneShot(), "spatial-stereo");
-    stereo.decodedChannels = 2;
     uint64_t sequence = 0;
-    CHECK_FALSE(world.QueuePlay(stereo, sequence));
+    // Admission cannot know the decoded layout: true means queued, and the
+    // typed refusal surfaces as the sequence-scoped result at drain.
+    REQUIRE(world.QueuePlay(stereo, sequence));
+    CHECK(sequence == 1);
+    world.Update(TestListener(), nullptr, 0, 0);
+    CHECK(world.LiveVoicesForSource(stereoSource).empty());
+    CHECK(backend.starts.empty());
+    AudioSourceStatus stereoStatus = world.GetSourceStatus(stereoSource);
+    CHECK(stereoStatus.hasResult);
+    CHECK_FALSE(stereoStatus.lastResultOk);
+    CHECK(stereoStatus.lastResultSequence == 1);
+    CHECK(stereoStatus.lastError.code == Error::InvalidArgument);
+    CHECK(stereoStatus.aggregate == AudioSourceAggregate::Failed);
 
     const UUID noTransformSource = NextUuid();
     AudioPlayRequest noTransform = PlayReq(noTransformSource, SpatialOneShot(), "spatial-notransform");
@@ -314,7 +339,7 @@ TEST_CASE("A3_QueueOverflow_RefusesWithoutMutation")
     // Mutation: silently growing past 256 (or dropping an old command to
     // make room) turns the refusal and census checks red. Check 8/11.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     for (uint32_t i = 0; i < kAudioCommandQueueCapacity; ++i)
     {
@@ -339,7 +364,7 @@ TEST_CASE("A3_DrainFifo_OrderAndReentrantNextFrame")
     // Mutation: executing the live queue without freezing (LIFO, or
     // same-frame re-entrant execution) turns the order and frame checks red.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID first = NextUuid();
     const UUID second = NextUuid();
@@ -385,7 +410,7 @@ TEST_CASE("A3_Steal_LowestPriorityOldestSlotVictim")
     AudioWorldConfig config;
     config.maxVoices = 2;
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime, config);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime, config);
 
     const UUID low = NextUuid();
     const UUID mid = NextUuid();
@@ -409,7 +434,7 @@ TEST_CASE("A3_Steal_LowestPriorityOldestSlotVictim")
     AudioWorldConfig pair;
     pair.maxVoices = 2;
     RecordingFakeAudioBackend backend2;
-    AudioWorld world2(&backend2, TestSession(), AudioOwnerKind::Runtime, pair);
+    AudioWorld world2(&backend2, &backend2, TestSession(), AudioOwnerKind::Runtime, pair);
     const UUID a = NextUuid();
     const UUID b = NextUuid();
     QueuePlayChecked(world2, PlayReq(a, OneShot(1.0f, 50), "tie-a"));
@@ -432,7 +457,7 @@ TEST_CASE("A3_Steal_ProtectedLoopsRefuseUnlessStrictlyGreater")
     AudioWorldConfig config;
     config.maxVoices = 1;
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime, config);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime, config);
 
     AudioSourceComponent loop = OneShot(1.0f, 10);
     loop.loop = true;
@@ -465,7 +490,7 @@ TEST_CASE("A3_StaleHandle_CannotControlRecycledSlot")
     // Mutation: matching slots by index without the generation check lets
     // the stale stop kill the recycled voice. Check 7.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     QueuePlayChecked(world, PlayReq(source, OneShot(), "stale-a"));
@@ -496,7 +521,7 @@ TEST_CASE("A3_StaleCompletion_CannotReclaimReusedGeneration")
     // Mutation: reclaiming by backend token without matching the slot's
     // current generation frees the wrong (reused) voice. Check 7/8.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     QueuePlayChecked(world, PlayReq(source, OneShot(), "stalecomp-a"));
@@ -525,7 +550,7 @@ TEST_CASE("A3_LoopPlay_IsIdempotentPerSource")
     // Mutation: allocating a second slot for the duplicate loop turns the
     // census red; dropping the refresh loses the mix update.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     AudioSourceComponent loop = OneShot(0.5f, 10);
     loop.loop = true;
@@ -536,6 +561,13 @@ TEST_CASE("A3_LoopPlay_IsIdempotentPerSource")
 
     CHECK(world.LiveVoiceCount() == 1);
     CHECK(backend.starts.size() == 1);
+    // The refresh carries its play sequence onto the slot, so a later
+    // terminal failure for this voice replaces the refreshed success.
+    std::vector<AudioWorldVoiceHandle> idemVoices = world.LiveVoicesForSource(source);
+    REQUIRE(idemVoices.size() == 1);
+    uint64_t storedSequence = 0;
+    REQUIRE(world.GetVoicePlaySequence(idemVoices[0], storedSequence));
+    CHECK(storedSequence == 2);
     AudioSourceStatus status = world.GetSourceStatus(source);
     CHECK(status.aggregate == AudioSourceAggregate::Playing);
     CHECK(status.liveVoiceCount == 1);
@@ -549,7 +581,7 @@ TEST_CASE("A3_Stop_StopsEveryVoiceOwnedBySource")
     // Mutation: stopping only the newest voice leaves two live and turns
     // the census red; forgetting the terminal reset leaves Completed.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     QueuePlayChecked(world, PlayReq(source, OneShot(), "stop-a"));
@@ -575,7 +607,7 @@ TEST_CASE("A3_Destroying_RefusesDropsAndStopsBeforeRemoval")
     // Mutation: accepting commands for destroying UUIDs, keeping queued
     // ones, or leaving live voices turns the respective checks red.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     QueuePlayChecked(world, PlayReq(source, OneShot(), "destroy-a"));
@@ -608,7 +640,7 @@ TEST_CASE("A3_SessionCensus_StopAndShutdownReturnToBaseline")
     // Mutation: leaking a slot, a queued command, or a clip generation
     // across Stop/Shutdown turns the baseline checks red. Check 6.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID a = NextUuid();
     const UUID b = NextUuid();
@@ -647,7 +679,7 @@ TEST_CASE("A3_PauseStep_SampleTimeFrozenAndInitiallyPaused")
     // initially-paused start turns the cursor checks red. Check 12 (A3
     // share: pause/Step/initialPaused never advance sample time).
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     QueuePlayChecked(world, PlayReq(source, OneShot(), "pause-a"));
@@ -713,7 +745,7 @@ TEST_CASE("A3_OverlapAB_CompletionOrFailureKeepsBLive")
     // (or terminalize the source while B is audible) turns the status
     // checks red. Check 20, completion-first half.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     const uint64_t seqA = QueuePlayChecked(world, PlayReq(source, OneShot(), "overlap-a"));
@@ -746,7 +778,7 @@ TEST_CASE("A3_OverlapAB_FailureOfADoesNotReplaceBResult")
     // Check 20, failure-first half: B's failure stays visible while A
     // remains audible, and only B's completion terminalizes.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     QueuePlayChecked(world, PlayReq(source, OneShot(), "overlapfail-a"));
@@ -764,10 +796,13 @@ TEST_CASE("A3_OverlapAB_FailureOfADoesNotReplaceBResult")
     AudioSourceStatus status = world.GetSourceStatus(source);
     CHECK(status.liveVoiceCount == 1);
     CHECK(status.aggregate == AudioSourceAggregate::Playing);
-    // A's earlier success cannot resurface, and B's failure is terminal
-    // history without terminalizing the still-audible source.
+    // A's earlier success cannot resurface, and B's failure is published
+    // as the sequence-scoped result without terminalizing the still-
+    // audible source. Mutation: leaving lastResult at B's successful start
+    // turns the next three checks red (finding 1).
     CHECK(status.lastResultSequence == seqB);
-    CHECK(status.lastResultOk);
+    CHECK_FALSE(status.lastResultOk);
+    CHECK(status.lastError.code == Error::Io);
     CHECK_FALSE(world.Diagnostics().empty());
 
     backend.CompleteToken(backend.starts[0].token, BackendCompletionReason::Completed);
@@ -782,7 +817,7 @@ TEST_CASE("A3_PartialBackendFailures_LeaveNoLeakedSlot")
     // Stop, or dropping voices on a failed completion drain turns the
     // census checks red.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     Error startError;
     startError.code = Error::Io;
@@ -817,6 +852,13 @@ TEST_CASE("A3_PartialBackendFailures_LeaveNoLeakedSlot")
     world.Update(TestListener(), nullptr, 0, 0);
     CHECK(world.LiveVoiceCount() == 0);
     CHECK_FALSE(world.Diagnostics().empty());
+    // The typed backend failure surfaces as the Stop result (finding 4)
+    // while the census still returns to baseline.
+    AudioSourceStatus stopStatus = world.GetSourceStatus(source);
+    CHECK(stopStatus.hasResult);
+    CHECK_FALSE(stopStatus.lastResultOk);
+    CHECK(stopStatus.lastResultSequence == stopSequence);
+    CHECK(stopStatus.lastError.code == Error::Io);
 
     // A failing completion drain changes nothing.
     QueuePlayChecked(world, PlayReq(source, OneShot(), "partial-a"));
@@ -838,7 +880,7 @@ TEST_CASE("A3_BusAndSessionErrors_AreTypedAndNonMutating")
     // turns the gain checks red; claiming pause after a refused atomic
     // turns the session check red.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     Error error;
     CHECK_FALSE(world.SetBusGain(AudioBus::Music,
@@ -868,7 +910,7 @@ TEST_CASE("A3_VoiceIdentity_StoresSequenceGenerationAndToken")
     // Mutation: recording the wrong play sequence on a slot (or sharing one
     // backend token across two slots) turns the identity checks red.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     const UUID source = NextUuid();
     const uint64_t seqA = QueuePlayChecked(world, PlayReq(source, OneShot(), "ident-a"));
@@ -898,7 +940,7 @@ TEST_CASE("A3_CapDefaults64AndQueueCapacity256")
     // Mutation: changing either bound without updating the suite turns
     // these pins red. Check 8 (command 257 refuses).
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
     CHECK(world.SessionVoiceCap() == 64);
     CHECK(kAudioCommandQueueCapacity == 256);
     CHECK(kAudioDefaultVoiceCap == 64);
@@ -906,7 +948,7 @@ TEST_CASE("A3_CapDefaults64AndQueueCapacity256")
     AudioWorldConfig small;
     small.maxVoices = 3;
     RecordingFakeAudioBackend backend2;
-    AudioWorld world2(&backend2, TestSession(), AudioOwnerKind::Runtime, small);
+    AudioWorld world2(&backend2, &backend2, TestSession(), AudioOwnerKind::Runtime, small);
     CHECK(world2.SessionVoiceCap() == 3);
 }
 
@@ -916,7 +958,7 @@ TEST_CASE("A3_BusPolicy_MasterSourceAndUiSpatialRefused")
     // these refusals red; both rules come from A2 validation via the READY
     // plan and must hold at the queue boundary too.
     RecordingFakeAudioBackend backend;
-    AudioWorld world(&backend, TestSession(), AudioOwnerKind::Runtime);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
 
     AudioSourceComponent master = OneShot();
     master.bus = AudioBus::Master;
@@ -934,4 +976,249 @@ TEST_CASE("A3_BusPolicy_MasterSourceAndUiSpatialRefused")
     QueuePlayChecked(world, PlayReq(NextUuid(), uiFlat, "bus-ui-flat"));
     world.Update(TestListener(), nullptr, 0, 0);
     CHECK(world.LiveVoiceCount() == 1);
+}
+
+TEST_CASE("A3_StealFailedStart_KeepsVictimAndCountsNothing")
+{
+    // Mutation: stopping the victim before the replacement starts (or
+    // counting the steal first) ends with zero voices and one recorded
+    // steal when StartVoice fails. Finding 2.
+    AudioWorldConfig config;
+    config.maxVoices = 1;
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime, config);
+
+    AudioSourceComponent loop = OneShot(1.0f, 10);
+    loop.loop = true;
+    const UUID victim = NextUuid();
+    QueuePlayChecked(world, PlayReq(victim, loop, "atomic-victim"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoiceCount() == 1);
+
+    Error startError;
+    startError.code = Error::Io;
+    startError.path = "audio device";
+    startError.detail = "injected incoming start failure";
+    backend.FailNextStart(startError);
+
+    const UUID incoming = NextUuid();
+    QueuePlayChecked(world, PlayReq(incoming, OneShot(1.0f, 11), "atomic-incoming"));
+    world.Update(TestListener(), nullptr, 0, 0);
+
+    // The victim is untouched, the incoming voice is absent, and no steal
+    // was counted: prepare-then-commit is atomic.
+    CHECK(world.LiveVoicesForSource(victim).size() == 1);
+    CHECK(world.LiveVoicesForSource(incoming).empty());
+    CHECK(world.StealCount() == 0);
+    CHECK(backend.stops.empty());
+    AudioSourceStatus incomingStatus = world.GetSourceStatus(incoming);
+    CHECK(incomingStatus.hasResult);
+    CHECK_FALSE(incomingStatus.lastResultOk);
+    CHECK(incomingStatus.lastError.code == Error::Io);
+    CHECK(incomingStatus.aggregate == AudioSourceAggregate::Failed);
+    AudioSourceStatus victimStatus = world.GetSourceStatus(victim);
+    CHECK(victimStatus.aggregate == AudioSourceAggregate::Playing);
+    CHECK(victimStatus.lastResultOk);
+}
+
+TEST_CASE("A3_ReentrantFirstPlay_CreatesSecondSourceSafely")
+{
+    // Mutation: retaining a SourceState& across the StartVoice callback
+    // (vector storage) dangles when the callback registers a second source,
+    // corrupting the first voice's result, terminal, or mix. Finding 3.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+
+    const UUID first = NextUuid();
+    const UUID second = NextUuid();
+    backend.onStartVoice = [&](BackendVoiceToken) {
+        uint64_t sequence = 0;
+        REQUIRE(world.QueuePlay(PlayReq(second, OneShot(0.9f), "reentrant-second"), sequence));
+        CHECK(sequence == 1);
+    };
+    // Only the first source exists when the callback fires, so any spare
+    // state capacity cannot hide the reallocation.
+    QueuePlayChecked(world, PlayReq(first, OneShot(0.5f), "reentrant-first"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    backend.onStartVoice = nullptr;
+
+    REQUIRE(world.LiveVoicesForSource(first).size() == 1);
+    const BackendVoiceMix firstMix = RequireVoiceMix(world, first);
+    CHECK(firstMix.left == doctest::Approx(0.5f * kCenter).epsilon(1e-5));
+    uint64_t firstSequence = 0;
+    REQUIRE(world.GetVoicePlaySequence(world.LiveVoicesForSource(first)[0], firstSequence));
+    CHECK(firstSequence == 1);
+    AudioSourceStatus firstStatus = world.GetSourceStatus(first);
+    CHECK(firstStatus.lastResultSequence == 1);
+    CHECK(firstStatus.lastResultOk);
+    CHECK(world.LiveVoicesForSource(second).empty());
+    CHECK(world.QueuedCommandCount() == 1);
+
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoicesForSource(second).size() == 1);
+    const BackendVoiceMix secondMix = RequireVoiceMix(world, second);
+    CHECK(secondMix.left == doctest::Approx(0.9f * kCenter).epsilon(1e-5));
+    CHECK(world.LiveVoicesForSource(first).size() == 1);
+}
+
+TEST_CASE("A3_StopFailure_DirectApiPropagatesTypedError")
+{
+    // Mutation: clearing outError after a failed StopVoice (or refusing to
+    // detach) turns the error and census checks red. Finding 4.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+
+    const UUID source = NextUuid();
+    QueuePlayChecked(world, PlayReq(source, OneShot(), "stopdirect-a"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoicesForSource(source).size() == 1);
+    const AudioWorldVoiceHandle voice = world.LiveVoicesForSource(source)[0];
+    BackendVoiceToken token;
+    REQUIRE(world.GetVoiceBackendToken(voice, token));
+
+    Error stopError;
+    stopError.code = Error::Io;
+    stopError.path = "audio device";
+    stopError.detail = "injected direct stop failure";
+    backend.FailStopForToken(token, stopError);
+
+    Error error;
+    CHECK_FALSE(world.TryStopVoice(voice, error));
+    CHECK(error.code == Error::Io);
+    // Detachment is final even though the result is loud.
+    CHECK(world.LiveVoiceCount() == 0);
+    CHECK_FALSE(backend.IsTokenLive(token));
+}
+
+TEST_CASE("A3_ProviderFailure_RefusesPlayLoudly")
+{
+    // Mutation: bypassing the provider (or swallowing its error) turns the
+    // fetch, start-absence, and typed-result checks red. Finding 5.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+
+    Error fetchError;
+    fetchError.code = Error::Io;
+    fetchError.path = "clip store";
+    fetchError.detail = "injected fetch failure";
+    backend.ScriptGenerationError("missing-clip", fetchError);
+
+    const UUID source = NextUuid();
+    QueuePlayChecked(world, PlayReq(source, OneShot(), "missing-clip"));
+    world.Update(TestListener(), nullptr, 0, 0);
+
+    REQUIRE(backend.generationFetches.size() == 1);
+    CHECK(backend.generationFetches[0] == "missing-clip");
+    CHECK(backend.starts.empty());
+    CHECK(world.LiveVoiceCount() == 0);
+    AudioSourceStatus status = world.GetSourceStatus(source);
+    CHECK(status.hasResult);
+    CHECK_FALSE(status.lastResultOk);
+    CHECK(status.lastResultSequence == 1);
+    CHECK(status.lastError.code == Error::Io);
+    CHECK(status.aggregate == AudioSourceAggregate::Failed);
+}
+
+TEST_CASE("A3_LoopRefreshFailure_ReplacesRefreshedResult")
+{
+    // Mutation: keeping the original play sequence on an idempotent loop
+    // refresh lets the later failure fall below the refreshed terminal and
+    // the source wrongly reads Completed. Finding 1, loop half.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+
+    AudioSourceComponent loop = OneShot(1.0f, 10);
+    loop.loop = true;
+    const UUID source = NextUuid();
+    QueuePlayChecked(world, PlayReq(source, loop, "loopfail-a"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    QueuePlayChecked(world, PlayReq(source, loop, "loopfail-a"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoiceCount() == 1);
+    REQUIRE(backend.starts.size() == 1);
+
+    Error backendError;
+    backendError.code = Error::Io;
+    backendError.path = "audio device";
+    backendError.detail = "injected loop failure";
+    backend.CompleteToken(backend.starts[0].token, BackendCompletionReason::Failed, backendError);
+    world.Update(TestListener(), nullptr, 0, 0);
+
+    AudioSourceStatus status = world.GetSourceStatus(source);
+    CHECK(status.liveVoiceCount == 0);
+    CHECK(status.aggregate == AudioSourceAggregate::Failed);
+    CHECK(status.lastResultSequence == 2);
+    CHECK_FALSE(status.lastResultOk);
+    CHECK(status.lastError.code == Error::Io);
+}
+
+TEST_CASE("A3_SpatialOverflow_FiniteIntermediatesFailLoudly")
+{
+    // Mutation: accepting infinite squared distances or cross products
+    // publishes a silent cutoff/NaN mix instead of failing. Finding 6.
+    // Each coordinate below individually passes the 1e20 position guard.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+
+    const UUID source = NextUuid();
+    QueuePlayChecked(world, PlayReq(source, SpatialOneShot(), "overflow-good"));
+    const AudioSourcePose goodPose = PoseFor(source, 0.0f, 0.0f, -5.0f);
+    world.Update(TestListener(), &goodPose, 1, 0);
+    const BackendVoiceMix baseline = RequireVoiceMix(world, source);
+
+    const AudioSourcePose bigPose = PoseFor(source, 9.0e19f, 9.0e19f, 9.0e19f);
+    AudioUpdateStats stats = world.Update(TestListener(), &bigPose, 1, 0);
+    CHECK(stats.mixFailures == 1);
+    CHECK(world.LiveVoiceCount() == 1);
+    const BackendVoiceMix retained = RequireVoiceMix(world, source);
+    CHECK(retained.left == doctest::Approx(baseline.left).epsilon(1e-6));
+    CHECK(retained.right == doctest::Approx(baseline.right).epsilon(1e-6));
+
+    // A large finite listener basis overflows the right-axis cross product.
+    AudioListenerPose bigListener = TestListener();
+    bigListener.forward[0] = 1.0e19f;
+    bigListener.forward[1] = 1.0e19f;
+    bigListener.forward[2] = 0.0f;
+    bigListener.up[0] = 1.0e19f;
+    bigListener.up[1] = -1.0e19f;
+    bigListener.up[2] = 1.0e19f;
+    stats = world.Update(bigListener, &goodPose, 1, 0);
+    CHECK(stats.mixFailures == 1);
+    CHECK(world.LiveVoiceCount() == 1);
+    const BackendVoiceMix retainedListener = RequireVoiceMix(world, source);
+    CHECK(std::isfinite(retainedListener.left));
+    CHECK(std::isfinite(retainedListener.right));
+    CHECK_FALSE(world.Diagnostics().empty());
+}
+
+TEST_CASE("A3_ShutdownReleaseFailure_RetainsHandleForRetry")
+{
+    // Mutation: clearing the cache on release failure loses the retry
+    // handle and leaks the backend generation. Finding 7.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+
+    const UUID source = NextUuid();
+    QueuePlayChecked(world, PlayReq(source, OneShot(), "retry-a"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoiceCount() == 1);
+    REQUIRE(world.CachedClipGenerationCount() == 1);
+
+    Error releaseError;
+    releaseError.code = Error::Io;
+    releaseError.path = "audio device";
+    releaseError.detail = "injected release failure";
+    backend.FailNextRelease(releaseError);
+
+    Error shutdownError;
+    CHECK_FALSE(world.Shutdown(shutdownError));
+    CHECK(shutdownError.code == Error::Io);
+    CHECK(world.LiveVoiceCount() == 0);
+    CHECK(world.CachedClipGenerationCount() == 1);
+    CHECK(backend.RetainedGenerationCount() == 1);
+
+    REQUIRE(world.Shutdown(shutdownError));
+    CHECK(shutdownError.IsOk());
+    CHECK(world.CachedClipGenerationCount() == 0);
+    CHECK(backend.RetainedGenerationCount() == 0);
 }

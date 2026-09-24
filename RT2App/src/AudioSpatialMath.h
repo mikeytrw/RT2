@@ -123,20 +123,27 @@ inline core::Result<BackendVoiceMix> ComputeSpatialMix(
     const float fx = in.listener.forward[0];
     const float fy = in.listener.forward[1];
     const float fz = in.listener.forward[2];
-    const float fLen = std::sqrt(fx * fx + fy * fy + fz * fz);
-    if (!(fLen > 1e-6f))
+    const float fSquare = fx * fx + fy * fy + fz * fz;
+    if (!std::isfinite(fSquare) || !(fSquare > 1e-12f))
         return fail(core::Error::InvalidTransform, "degenerate listener forward basis");
+    const float fLen = std::sqrt(fSquare);
 
     const float ux = in.listener.up[0];
     const float uy = in.listener.up[1];
     const float uz = in.listener.up[2];
-    // right = cross(forward, up), normalized.
+    // right = cross(forward, up), normalized. Large finite basis
+    // components can overflow the cross product to infinity, which the
+    // length check below would otherwise accept as non-degenerate.
     float rx = fy * uz - fz * uy;
     float ry = fz * ux - fx * uz;
     float rz = fx * uy - fy * ux;
-    const float rLen = std::sqrt(rx * rx + ry * ry + rz * rz);
-    if (!(rLen > 1e-6f))
+    if (!std::isfinite(rx) || !std::isfinite(ry) || !std::isfinite(rz))
+        return fail(core::Error::InvalidTransform,
+                    "overflowing listener right basis");
+    const float rSquare = rx * rx + ry * ry + rz * rz;
+    if (!std::isfinite(rSquare) || !(rSquare > 1e-12f))
         return fail(core::Error::InvalidTransform, "degenerate listener right basis");
+    const float rLen = std::sqrt(rSquare);
     rx /= rLen;
     ry /= rLen;
     rz /= rLen;
@@ -144,7 +151,14 @@ inline core::Result<BackendVoiceMix> ComputeSpatialMix(
     const float dx = in.sourcePosition[0] - in.listener.position[0];
     const float dy = in.sourcePosition[1] - in.listener.position[1];
     const float dz = in.sourcePosition[2] - in.listener.position[2];
-    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    // Individually bounded coordinates can still overflow their squared
+    // distance to infinity; an infinite distance must fail loudly rather
+    // than collapse silently to the max-distance cutoff.
+    const float dSquare = dx * dx + dy * dy + dz * dz;
+    if (!std::isfinite(dSquare))
+        return fail(core::Error::InvalidTransform,
+                    "overflowing source distance");
+    const float dist = std::sqrt(dSquare);
 
     float distanceGain = 1.0f;
     if (dist <= in.component.minDistance)

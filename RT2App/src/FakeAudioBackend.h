@@ -4,6 +4,7 @@
 #define RT2_FAKE_AUDIO_BACKEND_H
 
 #include "AudioBackend.h"
+#include "AudioClipProvider.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -18,21 +19,38 @@
 // (audio integration, A3 policy core).
 //
 // CPU-only test support: records every call, scripts typed failures, and
-// advances scripted completions without decoding. Links into RT2Tests and
-// RT2SliceRunner. Never used by production (A4 owns the miniaudio adapter).
+// advances scripted completions without decoding. It also implements
+// IAudioClipProvider, serving scripted decoded generations so A3 policy
+// tests exercise provider failure, clip identity, and real decoded-channel
+// ownership without a miniaudio decoder (which remains A4's work). Links
+// into RT2Tests and RT2SliceRunner. Never used by production (A4 owns the
+// miniaudio adapter).
 //
 // Teardown semantics mirror the production contract: StopVoice and
 // StopSessionVoices detach/invalidate tokens even when they report an
 // error, so an injected failure can never leave a session-owned sound
 // reachable afterwards.
+//
+// Unscripted clip keys yield an explicit test-double default (mono 48 kHz
+// silent generation), recorded in generationFetches. This default belongs
+// to the double, not the engine: AudioWorld never fabricates PCM and fails
+// loudly when the provider does.
 // ============================================================================
 
 namespace rt2::audio {
 
-class RecordingFakeAudioBackend final : public IAudioBackend
+class RecordingFakeAudioBackend final : public IAudioBackend,
+                                          public IAudioClipProvider
 {
 public:
     RecordingFakeAudioBackend() = default;
+
+    // --- IAudioClipProvider ---
+    core::Result<std::shared_ptr<const DecodedAudioGeneration>> FetchDecodedGeneration(
+        const std::string& clipKey) override;
+    void ScriptGeneration(const std::string& clipKey,
+                          std::shared_ptr<const DecodedAudioGeneration> generation);
+    void ScriptGenerationError(const std::string& clipKey, const core::Error& error);
 
     // --- IAudioBackend ---
     core::Result<std::shared_ptr<const DecodedAudioGeneration>> DecodeClip(
@@ -104,6 +122,7 @@ public:
     std::vector<std::pair<AudioBus, float>> busGains;
     std::vector<AudioSessionId> stopSessions;
     std::vector<BackendClipHandle> releases;
+    std::vector<std::string> generationFetches;
     size_t registerCalls = 0;
     size_t drainCalls = 0;
 
@@ -122,6 +141,8 @@ private:
 
     std::map<std::string, std::shared_ptr<const DecodedAudioGeneration>> m_ScriptedDecodes;
     std::map<std::string, core::Error> m_ScriptedDecodeErrors;
+    std::map<std::string, std::shared_ptr<const DecodedAudioGeneration>> m_ScriptedGenerations;
+    std::map<std::string, core::Error> m_ScriptedGenerationErrors;
     std::map<uint64_t, core::Error> m_StopErrorsByToken;
 
     bool m_FailNextStart = false;

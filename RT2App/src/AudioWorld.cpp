@@ -24,9 +24,11 @@ bool MixChanged(const BackendVoiceMix& a, const BackendVoiceMix& b)
 
 } // namespace
 
-AudioWorld::AudioWorld(IAudioBackend* backend, AudioSessionId session,
-                       AudioOwnerKind owner, AudioWorldConfig config)
+AudioWorld::AudioWorld(IAudioBackend* backend, IAudioClipProvider* provider,
+                       AudioSessionId session, AudioOwnerKind owner,
+                       AudioWorldConfig config)
     : m_Backend(backend)
+    , m_Provider(provider)
     , m_Session(session)
     , m_Owner(owner)
     , m_MaxVoices(config.maxVoices == 0 ? kAudioDefaultVoiceCap : config.maxVoices)
@@ -54,18 +56,17 @@ AudioWorld::~AudioWorld()
 
 AudioWorld::SourceState& AudioWorld::StateFor(const core::UUID& source)
 {
-    for (auto& entry : m_Sources)
-        if (entry.first == source)
-            return entry.second;
-    m_Sources.emplace_back(source, SourceState{});
-    return m_Sources.back().second;
+    auto it = m_Sources.find(source);
+    if (it != m_Sources.end())
+        return it->second;
+    return m_Sources.emplace(source, SourceState{}).first->second;
 }
 
 const AudioWorld::SourceState* AudioWorld::FindState(const core::UUID& source) const
 {
-    for (const auto& entry : m_Sources)
-        if (entry.first == source)
-            return &entry.second;
+    auto it = m_Sources.find(source);
+    if (it != m_Sources.end())
+        return &it->second;
     return nullptr;
 }
 
@@ -127,10 +128,12 @@ bool AudioWorld::QueuePlay(const AudioPlayRequest& request, uint64_t& outSequenc
     }
     if (request.clipKey.empty())
         return false;
+    // Admission validates authored fields and Transform presence only. The
+    // decoded channel count is owned by the provider generation fetched at
+    // drain time, so mono is enforced at commit, not here.
     std::string detail;
-    const std::optional<int> channels(request.decodedChannels);
     if (!ValidateAudioSourceComponent(request.component, request.hasTransform,
-                                      channels, detail, nullptr))
+                                      std::nullopt, detail, nullptr))
         return false;
 
     SourceState& state = StateFor(request.source);
@@ -149,7 +152,6 @@ bool AudioWorld::QueuePlay(const AudioPlayRequest& request, uint64_t& outSequenc
     cmd.position[2] = request.sourcePosition[2];
     cmd.hasTransform = request.hasTransform;
     cmd.clipKey = request.clipKey;
-    cmd.decodedChannels = request.decodedChannels;
     m_Queue.push_back(std::move(cmd));
     outSequence = sequence;
     return true;
@@ -262,25 +264,44 @@ bool AudioWorld::QueueSetPitch(const core::UUID& source, float pitch, uint64_t& 
     return true;
 }
 
-bool AudioWorld::ResolveClipHandle(const std::string& clipKey, int decodedChannels,
-                                   BackendClipHandle& outHandle, core::Error& outError)
+bool AudioWorld::ResolveClipHandle(
+    const std::string& clipKey, BackendClipHandle& outHandle,
+    std::shared_ptr<const DecodedAudioGeneration>& outGeneration, core::Error& outError)
 {
+    if (m_Provider == nullptr)
+    {
+        outError.code = core::Error::InvalidRuntimeState;
+        outError.path = "audio clip provider";
+        outError.detail = "no clip provider injected";
+        return false;
+    }
+    // A cached key reuses its registered handle, but the generation is
+    // always re-fetched so provider failure, replacement, and channel
+    // ownership stay observable on every play.
+    core::Result<std::shared_ptr<const DecodedAudioGeneration>> fetched =
+        m_Provider->FetchDecodedGeneration(clipKey);
+    if (!fetched.IsOk())
+    {
+        outError = fetched.error;
+        return false;
+    }
+    if (!fetched.value || fetched.value->channels == 0)
+    {
+        outError.code = core::Error::InvalidArgument;
+        outError.path = "audio clip generation";
+        outError.detail = "provider returned an empty decoded generation";
+        return false;
+    }
     for (const auto& entry : m_ClipHandles)
         if (entry.first == clipKey)
         {
             outHandle = entry.second;
+            outGeneration = fetched.value;
             return true;
         }
 
-    auto generation = std::make_shared<DecodedAudioGeneration>();
-    generation->channels = static_cast<uint32_t>(decodedChannels > 0 ? decodedChannels : 1);
-    generation->sampleRate = 48000;
-    generation->frameCount = 48000;
-    generation->pcmInterleaved.assign(
-        static_cast<size_t>(generation->frameCount) * generation->channels, 0.0f);
-
     core::Result<BackendClipHandle> registered =
-        m_Backend->RegisterDecodedGeneration(std::move(generation));
+        m_Backend->RegisterDecodedGeneration(fetched.value);
     if (!registered.IsOk())
     {
         outError = registered.error;
@@ -288,6 +309,7 @@ bool AudioWorld::ResolveClipHandle(const std::string& clipKey, int decodedChanne
     }
     m_ClipHandles.emplace_back(clipKey, registered.value);
     outHandle = registered.value;
+    outGeneration = fetched.value;
     return true;
 }
 
@@ -342,18 +364,25 @@ int AudioWorld::FindStealVictim(uint8_t incomingPriority) const
     return victim;
 }
 
-void AudioWorld::StopVoiceInternal(size_t index, bool countAsStolen)
+bool AudioWorld::StopVoiceInternal(size_t index, bool countAsStolen, core::Error& outError)
 {
     VoiceSlot& slot = m_Slots[index];
     if (!slot.live)
-        return;
-    core::Error error;
-    if (!m_Backend->StopVoice(slot.backendToken, error))
-        RecordDiagnostic("StopVoice failed for stolen/stopped voice: " + error.Format());
+    {
+        outError = core::Error{};
+        return true;
+    }
+    // Teardown detaches even on error: the slot is freed before returning
+    // so a failure cannot leave a session-owned voice reachable, while the
+    // typed failure still propagates to explicit Stop callers.
+    const bool backendOk = m_Backend->StopVoice(slot.backendToken, outError);
+    if (!backendOk)
+        RecordDiagnostic("StopVoice failed for stolen/stopped voice: " + outError.Format());
     slot.live = false;
     slot.backendToken = BackendVoiceToken{};
     if (countAsStolen)
         ++m_StealCount;
+    return backendOk;
 }
 
 void AudioWorld::ReclaimSlot(size_t index, BackendCompletionReason reason,
@@ -372,9 +401,11 @@ void AudioWorld::ReclaimSlot(size_t index, BackendCompletionReason reason,
     // Overlap rules. A Failed completion refreshes the terminal outcome
     // immediately (when it is not older than the recorded one): only the
     // newest play's failure may stand, and an older voice's later
-    // completion must not clear it. Completed/Stopped completions refresh
-    // the terminal only for the final voice, so an older voice cannot
-    // terminalize a still-audible newer one.
+    // completion must not clear it. The same newest-relevant failure is
+    // published as the sequence-scoped lastResult, so a failed voice never
+    // hides behind its own successful start. Completed/Stopped completions
+    // refresh the terminal only for the final voice, so an older voice
+    // cannot terminalize a still-audible newer one.
     SourceState& state = StateFor(source);
     if (reason == BackendCompletionReason::Failed)
     {
@@ -384,6 +415,8 @@ void AudioWorld::ReclaimSlot(size_t index, BackendCompletionReason reason,
             state.terminalPlayOk = false;
             state.hasTerminalPlay = true;
         }
+        if (!state.hasResult || playSequence >= state.lastResultSequence)
+            RecordSourceResult(source, playSequence, false, error);
         if (stats != nullptr)
             ++stats->completionsReclaimed;
         return;
@@ -458,7 +491,9 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     state.hasPose = true;
 
     // Looping Play is idempotent per source: a live loop is refreshed, not
-    // duplicated.
+    // duplicated. The refresh carries the new play sequence on the slot so
+    // a later terminal failure for this voice replaces the refreshed
+    // success instead of an older one.
     for (size_t i = 0; i < m_Slots.size(); ++i)
     {
         VoiceSlot& slot = m_Slots[i];
@@ -481,6 +516,7 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
                 return false;
             }
             slot.lastMix = mix;
+            slot.playSequence = cmd.sequence;
             RecordSourceResult(cmd.source, cmd.sequence, true, core::Error{});
             state.terminalPlaySequence = cmd.sequence;
             state.terminalPlayOk = true;
@@ -489,7 +525,10 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
         }
     }
 
-    // Find a free slot; otherwise steal deterministically.
+    // Find a free slot; otherwise name a steal victim deterministically.
+    // The victim is stopped only after the replacement is fully prepared
+    // and started, so a clip, mix, or backend failure can never silence a
+    // valid voice (finding 2).
     int target = -1;
     for (size_t i = 0; i < m_Slots.size(); ++i)
         if (!m_Slots[i].live)
@@ -497,10 +536,11 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
             target = static_cast<int>(i);
             break;
         }
+    int victim = -1;
     if (target < 0)
     {
-        target = FindStealVictim(cmd.component.priority);
-        if (target < 0)
+        victim = FindStealVictim(cmd.component.priority);
+        if (victim < 0)
         {
             core::Error error;
             error.code = core::Error::InvalidRuntimeState;
@@ -511,18 +551,19 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
             RecordDiagnostic("voice steal refused: " + error.Format());
             return false;
         }
-        StopVoiceInternal(static_cast<size_t>(target), true);
-        ++stats.voicesStolen;
     }
 
+    // The decoded channel count is owned by the provider generation, never
+    // by a caller claim.
     BackendClipHandle clipHandle;
+    std::shared_ptr<const DecodedAudioGeneration> generation;
     {
         core::Error error;
-        if (!ResolveClipHandle(cmd.clipKey, cmd.decodedChannels, clipHandle, error))
+        if (!ResolveClipHandle(cmd.clipKey, clipHandle, generation, error))
         {
             RecordSourceResult(cmd.source, cmd.sequence, false, error);
             NotePlayFailure(cmd.source, cmd.sequence);
-            RecordDiagnostic("clip generation register failed: " + error.Format());
+            RecordDiagnostic("clip generation fetch failed: " + error.Format());
             return false;
         }
     }
@@ -535,7 +576,7 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     input.sourcePosition[1] = cmd.position[1];
     input.sourcePosition[2] = cmd.position[2];
     input.hasTransform = cmd.hasTransform;
-    input.decodedChannels = cmd.decodedChannels;
+    input.decodedChannels = static_cast<int>(generation->channels);
     input.listener = m_LastListener;
     core::Result<BackendVoiceMix> initial = ComputeSpatialMix(input, "audio source voice");
     if (!initial.IsOk())
@@ -559,13 +600,25 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     core::Result<BackendVoiceToken> started = m_Backend->StartVoice(clipHandle, start);
     if (!started.IsOk())
     {
-        // No slot consumed: the failure leaves no leaked or half-mapped
-        // voice behind.
+        // The victim (if any) is untouched and no steal is counted: the
+        // failure leaves no silenced voice and no half-mapped slot behind.
         RecordSourceResult(cmd.source, cmd.sequence, false, started.error);
         NotePlayFailure(cmd.source, cmd.sequence);
         RecordDiagnostic("backend StartVoice failed: " + started.error.Format());
         return false;
     }
+
+    // Commit: the replacement exists, so the victim may now be removed.
+    // Re-find source state by UUID: the start callback above may have
+    // registered new sources (finding 3).
+    if (victim >= 0)
+    {
+        core::Error victimError;
+        StopVoiceInternal(static_cast<size_t>(victim), true, victimError);
+        ++stats.voicesStolen;
+        target = victim;
+    }
+    SourceState& fresh = StateFor(cmd.source);
 
     VoiceSlot& slot = m_Slots[static_cast<size_t>(target)];
     slot.live = true;
@@ -585,28 +638,41 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     slot.backendToken = started.value;
     slot.clipHandle = clipHandle;
     slot.clipKey = cmd.clipKey;
-    slot.decodedChannels = cmd.decodedChannels;
+    slot.decodedChannels = static_cast<int>(generation->channels);
     slot.lastMix = initial.value;
     slot.cursorFrames = 0.0;
 
     RecordSourceResult(cmd.source, cmd.sequence, true, core::Error{});
-    state.terminalPlaySequence = cmd.sequence;
-    state.terminalPlayOk = true;
-    state.hasTerminalPlay = true;
+    fresh.terminalPlaySequence = cmd.sequence;
+    fresh.terminalPlayOk = true;
+    fresh.hasTerminalPlay = true;
     return true;
 }
 
 bool AudioWorld::ExecuteStop(const Command& cmd)
 {
+    // Every voice is detached even when the backend reports an error, but
+    // the first typed failure is published as the command result (finding
+    // 4): teardown is loud and final, never silent.
+    bool ok = true;
+    core::Error firstError;
     for (size_t i = 0; i < m_Slots.size(); ++i)
         if (m_Slots[i].live && m_Slots[i].source == cmd.source)
-            StopVoiceInternal(i, false);
+        {
+            core::Error stopError;
+            if (!StopVoiceInternal(i, false, stopError))
+            {
+                ok = false;
+                if (firstError.IsOk())
+                    firstError = stopError;
+            }
+        }
     SourceState& state = StateFor(cmd.source);
     state.hasTerminalPlay = false;
     state.terminalPlayOk = false;
     state.terminalPlaySequence = 0;
-    RecordSourceResult(cmd.source, cmd.sequence, true, core::Error{});
-    return true;
+    RecordSourceResult(cmd.source, cmd.sequence, ok, firstError);
+    return ok;
 }
 
 bool AudioWorld::ExecutePause(const Command& cmd)
@@ -922,7 +988,10 @@ void AudioWorld::NotifySourcesDestroying(const core::UUID* sources, size_t count
         // not outlive its entity.
         for (size_t i = 0; i < m_Slots.size(); ++i)
             if (m_Slots[i].live && m_Slots[i].source == source)
-                StopVoiceInternal(i, false);
+            {
+                core::Error stopError;
+                StopVoiceInternal(i, false, stopError);
+            }
         state.hasTerminalPlay = false;
         RecordDiagnostic("source destroying: voices stopped and queued commands dropped");
     }
@@ -945,19 +1014,14 @@ void AudioWorld::ClearQueuedCommands()
 {
     for (const Command& cmd : m_Queue)
     {
-        SourceState* state = nullptr;
-        for (auto& entry : m_Sources)
-            if (entry.first == cmd.source)
-            {
-                state = &entry.second;
-                break;
-            }
-        if (state == nullptr)
+        auto it = m_Sources.find(cmd.source);
+        if (it == m_Sources.end())
             continue;
-        if (state->queuedCount > 0)
-            --state->queuedCount;
-        if (cmd.sequence == state->newestAcceptedSequence)
-            state->newestQueued = false;
+        SourceState& state = it->second;
+        if (state.queuedCount > 0)
+            --state.queuedCount;
+        if (cmd.sequence == state.newestAcceptedSequence)
+            state.newestQueued = false;
     }
     m_Queue.clear();
 }
@@ -990,18 +1054,23 @@ bool AudioWorld::Shutdown(core::Error& outError)
 {
     bool ok = StopAllVoices(outError);
     core::Error firstError = outError;
-    for (const auto& entry : m_ClipHandles)
+    // A failed release retains its cache entry so an explicit retry can
+    // still release it; entries leave the cache only on success.
+    for (auto it = m_ClipHandles.begin(); it != m_ClipHandles.end();)
     {
         core::Error releaseError;
-        if (!m_Backend->ReleaseDecodedGeneration(entry.second, releaseError))
+        if (m_Backend->ReleaseDecodedGeneration(it->second, releaseError))
         {
-            ok = false;
-            if (firstError.IsOk())
-                firstError = releaseError;
-            RecordDiagnostic("ReleaseDecodedGeneration failed: " + releaseError.Format());
+            it = m_ClipHandles.erase(it);
+            continue;
         }
+        ok = false;
+        if (firstError.IsOk())
+            firstError = releaseError;
+        RecordDiagnostic("ReleaseDecodedGeneration failed, handle retained for retry: " +
+                         releaseError.Format());
+        ++it;
     }
-    m_ClipHandles.clear();
     outError = firstError;
     return ok;
 }
@@ -1017,7 +1086,10 @@ bool AudioWorld::TryStopVoice(AudioWorldVoiceHandle handle, core::Error& outErro
         return false;
     }
     const size_t index = static_cast<size_t>(handle.slot);
-    StopVoiceInternal(index, false);
+    // The slot is detached even when the backend reports an error, but the
+    // typed failure propagates instead of a false success.
+    if (!StopVoiceInternal(index, false, outError))
+        return false;
     outError = core::Error{};
     return true;
 }
