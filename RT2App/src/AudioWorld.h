@@ -322,11 +322,27 @@ private:
     std::map<core::UUID, SourceState> m_Sources;
     std::vector<core::UUID> m_Destroying;
 
-    // clipKey -> backend handle cache for this session.
-    std::vector<std::pair<std::string, BackendClipHandle>> m_ClipHandles;
+    // clipKey -> backend handle cache for this session. The entry binds
+    // the registered backend handle to the exact generation object it was
+    // registered for: a re-fetched generation under the same key is a new
+    // immutable identity and registers anew, so a new channel layout can
+    // never pair with an old backend clip (finding R2). Old entries stay
+    // cached until Shutdown, so overlapping old/new generations of one key
+    // remain valid independently.
+    struct ClipCacheEntry
+    {
+        std::string clipKey;
+        std::shared_ptr<const DecodedAudioGeneration> generation;
+        BackendClipHandle handle;
+    };
+    std::vector<ClipCacheEntry> m_ClipHandles;
 
     float m_BusGains[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool m_SessionPaused = false;
+    // Bumped by StopAllVoices (and therefore Shutdown). A start prepared
+    // before a reentrant session stop must not be mapped afterwards; the
+    // world compares this across backend callbacks (finding R3).
+    uint64_t m_SessionEpoch = 0;
 
     AudioListenerPose m_LastListener;
     bool m_HasListener = false;

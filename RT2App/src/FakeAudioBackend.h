@@ -60,6 +60,23 @@ public:
     bool ReleaseDecodedGeneration(BackendClipHandle handle, core::Error& outError) override;
     core::Result<BackendVoiceToken> StartVoice(
         BackendClipHandle clip, const BackendVoiceStart& start) override;
+    // Atomic victim replacement (finding R1): the victim is detached and
+    // the replacement started as one capacity-unit commit. Recorded in
+    // both stops and starts so the atomic stop+start stays auditable.
+    core::Result<BackendVoiceToken> ReplaceVoice(
+        BackendVoiceToken victim, BackendClipHandle clip,
+        const BackendVoiceStart& start) override;
+    void FailNextReplace(const core::Error& error)
+    { m_NextReplaceError = error; m_FailNextReplace = true; }
+    // Hard backend voice cap (finding R1 discriminator). Zero (default)
+    // means unbounded. StartVoice beyond the cap fails loudly; ReplaceVoice
+    // is exempt because it commits within one capacity unit.
+    void SetMaxLiveVoices(size_t maxLive) { m_MaxLiveVoices = maxLive; }
+    size_t PeakLiveTokens() const { return m_PeakLiveTokens; }
+    // Generation bound to a registered handle (finding R2 observability).
+    // Null when the handle is unknown or released.
+    std::shared_ptr<const DecodedAudioGeneration> RegisteredGeneration(
+        BackendClipHandle handle) const;
     bool StopVoice(BackendVoiceToken token, core::Error& outError) override;
     bool PauseVoice(BackendVoiceToken token, bool paused, core::Error& outError) override;
     bool SetVoiceMix(BackendVoiceToken token, const BackendVoiceMix& mix,
@@ -143,6 +160,7 @@ private:
     std::map<std::string, core::Error> m_ScriptedDecodeErrors;
     std::map<std::string, std::shared_ptr<const DecodedAudioGeneration>> m_ScriptedGenerations;
     std::map<std::string, core::Error> m_ScriptedGenerationErrors;
+    std::map<std::string, std::shared_ptr<const DecodedAudioGeneration>> m_DefaultGenerations;
     std::map<uint64_t, core::Error> m_StopErrorsByToken;
 
     bool m_FailNextStart = false;
@@ -165,6 +183,16 @@ private:
     core::Error m_NextRegisterError;
     bool m_FailNextRelease = false;
     core::Error m_NextReleaseError;
+    bool m_FailNextReplace = false;
+    core::Error m_NextReplaceError;
+    size_t m_MaxLiveVoices = 0;
+    size_t m_PeakLiveTokens = 0;
+
+    void NoteLiveChanged()
+    {
+        if (m_LiveTokens.size() > m_PeakLiveTokens)
+            m_PeakLiveTokens = m_LiveTokens.size();
+    }
 };
 
 } // namespace rt2::audio

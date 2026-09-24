@@ -73,13 +73,67 @@ core::Result<BackendVoiceToken> RecordingFakeAudioBackend::StartVoice(
         error.detail = "unknown backend clip handle";
         return core::Result<BackendVoiceToken>::Fail(error.code, error.path, error.detail);
     }
+    if (m_MaxLiveVoices > 0 && m_LiveTokens.size() >= m_MaxLiveVoices)
+    {
+        core::Error error;
+        error.code = core::Error::InvalidRuntimeState;
+        error.path = "audio voice start";
+        error.detail = "backend voice cap reached";
+        return core::Result<BackendVoiceToken>::Fail(error.code, error.path, error.detail);
+    }
     BackendVoiceToken token;
     token.opaque = m_NextTokenId++;
     m_LiveTokens[token.opaque] = start.session;
+    NoteLiveChanged();
     starts.push_back(StartRecord{ clip, start, token });
     if (onStartVoice)
         onStartVoice(token);
     return core::Result<BackendVoiceToken>::Ok(token);
+}
+
+core::Result<BackendVoiceToken> RecordingFakeAudioBackend::ReplaceVoice(
+    BackendVoiceToken victim, BackendClipHandle clip, const BackendVoiceStart& start)
+{
+    // Failed preparation preserves the victim: nothing is detached and no
+    // new voice exists.
+    if (m_FailNextReplace)
+    {
+        m_FailNextReplace = false;
+        return core::Result<BackendVoiceToken>::Fail(
+            m_NextReplaceError.code, m_NextReplaceError.path, m_NextReplaceError.detail);
+    }
+    auto victimIt = m_LiveTokens.find(victim.opaque);
+    if (victimIt == m_LiveTokens.end())
+    {
+        return core::Result<BackendVoiceToken>::Fail(
+            core::Error::InvalidArgument, "audio voice replace",
+            "unknown victim backend voice token");
+    }
+    if (m_Generations.find(clip.opaque) == m_Generations.end())
+    {
+        return core::Result<BackendVoiceToken>::Fail(
+            core::Error::InvalidArgument, "audio voice replace",
+            "unknown backend clip handle");
+    }
+    // One capacity-unit commit: the victim leaves the live set in the same
+    // step the replacement enters it, so the peak never exceeds the cap.
+    m_LiveTokens.erase(victimIt);
+    stops.push_back(victim);
+    BackendVoiceToken token;
+    token.opaque = m_NextTokenId++;
+    m_LiveTokens[token.opaque] = start.session;
+    NoteLiveChanged();
+    starts.push_back(StartRecord{ clip, start, token });
+    return core::Result<BackendVoiceToken>::Ok(token);
+}
+
+std::shared_ptr<const DecodedAudioGeneration> RecordingFakeAudioBackend::RegisteredGeneration(
+    BackendClipHandle handle) const
+{
+    auto it = m_Generations.find(handle.opaque);
+    if (it == m_Generations.end())
+        return nullptr;
+    return it->second;
 }
 
 bool RecordingFakeAudioBackend::StopVoice(BackendVoiceToken token, core::Error& outError)
@@ -304,15 +358,21 @@ RecordingFakeAudioBackend::FetchDecodedGeneration(const std::string& clipKey)
     auto it = m_ScriptedGenerations.find(clipKey);
     if (it != m_ScriptedGenerations.end())
         return core::Result<std::shared_ptr<const DecodedAudioGeneration>>::Ok(it->second);
-    // Explicit test-double default: mono 48 kHz silence. The engine never
+    // Explicit test-double default: one memoized mono 48 kHz silent
+    // generation per key, mirroring a content cache that returns the same
+    // immutable object while the bytes are unchanged. The engine never
     // fabricates content; this default lives in the double and is
     // overridden per key by ScriptGeneration/ScriptGenerationError.
+    auto memoized = m_DefaultGenerations.find(clipKey);
+    if (memoized != m_DefaultGenerations.end())
+        return core::Result<std::shared_ptr<const DecodedAudioGeneration>>::Ok(memoized->second);
     auto generation = std::make_shared<DecodedAudioGeneration>();
     generation->channels = 1;
     generation->sampleRate = 48000;
     generation->frameCount = 48000;
     generation->pcmInterleaved.assign(
         static_cast<size_t>(generation->frameCount) * generation->channels, 0.0f);
+    m_DefaultGenerations[clipKey] = generation;
     return core::Result<std::shared_ptr<const DecodedAudioGeneration>>::Ok(
         std::move(generation));
 }

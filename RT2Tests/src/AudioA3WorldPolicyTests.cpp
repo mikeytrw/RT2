@@ -999,7 +999,7 @@ TEST_CASE("A3_StealFailedStart_KeepsVictimAndCountsNothing")
     startError.code = Error::Io;
     startError.path = "audio device";
     startError.detail = "injected incoming start failure";
-    backend.FailNextStart(startError);
+    backend.FailNextReplace(startError);
 
     const UUID incoming = NextUuid();
     QueuePlayChecked(world, PlayReq(incoming, OneShot(1.0f, 11), "atomic-incoming"));
@@ -1019,6 +1019,143 @@ TEST_CASE("A3_StealFailedStart_KeepsVictimAndCountsNothing")
     AudioSourceStatus victimStatus = world.GetSourceStatus(victim);
     CHECK(victimStatus.aggregate == AudioSourceAggregate::Playing);
     CHECK(victimStatus.lastResultOk);
+}
+
+TEST_CASE("A3_StealHardCap_ReplaceCommitsWithinCapacity")
+{
+    // Mutation: starting the replacement as an extra voice (StartVoice
+    // while the victim is live) always fails against the hard backend cap,
+    // so the legal steal never lands. Finding R1.
+    AudioWorldConfig config;
+    config.maxVoices = 1;
+    RecordingFakeAudioBackend backend;
+    backend.SetMaxLiveVoices(1);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime, config);
+
+    AudioSourceComponent loop = OneShot(1.0f, 10);
+    loop.loop = true;
+    const UUID victim = NextUuid();
+    QueuePlayChecked(world, PlayReq(victim, loop, "hardcap-victim"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoiceCount() == 1);
+
+    const UUID incoming = NextUuid();
+    QueuePlayChecked(world, PlayReq(incoming, OneShot(1.0f, 11), "hardcap-incoming"));
+    world.Update(TestListener(), nullptr, 0, 0);
+
+    // The atomic swap committed: exactly one voice, and the backend never
+    // observed two live voices at once.
+    CHECK(world.LiveVoicesForSource(victim).empty());
+    REQUIRE(world.LiveVoicesForSource(incoming).size() == 1);
+    CHECK(world.StealCount() == 1);
+    CHECK(backend.LiveTokenCount() == 1);
+    CHECK(backend.PeakLiveTokens() == 1);
+    AudioSourceStatus incomingStatus = world.GetSourceStatus(incoming);
+    CHECK(incomingStatus.aggregate == AudioSourceAggregate::Playing);
+    CHECK(incomingStatus.lastResultOk);
+
+    // A refused replacement preserves the new victim the same way a
+    // refused start does.
+    const UUID third = NextUuid();
+    Error replaceError;
+    replaceError.code = Error::Io;
+    replaceError.path = "audio device";
+    replaceError.detail = "injected replace failure";
+    backend.FailNextReplace(replaceError);
+    QueuePlayChecked(world, PlayReq(third, OneShot(1.0f, 12), "hardcap-third"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    CHECK(world.LiveVoicesForSource(incoming).size() == 1);
+    CHECK(world.LiveVoicesForSource(third).empty());
+    CHECK(world.StealCount() == 1);
+    CHECK(backend.PeakLiveTokens() == 1);
+}
+
+TEST_CASE("A3_SameKeyGenerationReplace_RegistersNewHandle")
+{
+    // Mutation: reusing the cached backend handle for a re-fetched
+    // generation pairs the old stereo clip with the new mono metadata, so
+    // the second start reuses the first handle. Finding R2.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+    backend.ScriptGeneration("shared-key", TestGeneration(2));
+
+    const UUID flatSource = NextUuid();
+    QueuePlayChecked(world, PlayReq(flatSource, OneShot(), "shared-key"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoiceCount() == 1);
+    REQUIRE(backend.starts.size() == 1);
+
+    // The same key now resolves a mono generation (old voices keep the old
+    // stereo generation alive independently).
+    auto mono = TestGeneration(1);
+    backend.ScriptGeneration("shared-key", mono);
+    const UUID spatialSource = NextUuid();
+    QueuePlayChecked(world, PlayReq(spatialSource, SpatialOneShot(), "shared-key"));
+    const AudioSourcePose pose = PoseFor(spatialSource, 0.0f, 0.0f, -5.0f);
+    world.Update(TestListener(), &pose, 1, 0);
+
+    REQUIRE(world.LiveVoiceCount() == 2);
+    REQUIRE(backend.starts.size() == 2);
+    CHECK(backend.starts[1].clip != backend.starts[0].clip);
+    // The handle used for the spatial start is registered for the exact
+    // mono generation the validation observed.
+    std::shared_ptr<const DecodedAudioGeneration> registered =
+        backend.RegisteredGeneration(backend.starts[1].clip);
+    REQUIRE(registered.get() != nullptr);
+    CHECK(registered.get() == mono.get());
+    CHECK(registered->channels == 1);
+    const BackendVoiceMix spatialMix = RequireVoiceMix(world, spatialSource);
+    // Exact attenuation oracle: distance 5 with min 1 / max 30 /
+    // rolloff 1 gives (1 - 4/29) = 25/29.
+    CHECK(spatialMix.left == doctest::Approx((25.0f / 29.0f) * kCenter).epsilon(1e-5));
+    CHECK(spatialMix.right == doctest::Approx((25.0f / 29.0f) * kCenter).epsilon(1e-5));
+}
+
+TEST_CASE("A3_ReentrantDestroyDuringStart_DiscardsVoice")
+{
+    // Mutation: mapping the just-started token without rechecking the
+    // destruction mark leaves a live backend voice on a destroyed source.
+    // Finding R3, destruction half.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+
+    const UUID doomed = NextUuid();
+    backend.onStartVoice = [&](BackendVoiceToken) {
+        world.NotifySourcesDestroying(&doomed, 1);
+    };
+    QueuePlayChecked(world, PlayReq(doomed, OneShot(), "doomed-a"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    backend.onStartVoice = nullptr;
+
+    CHECK(world.LiveVoiceCount() == 0);
+    CHECK(world.LiveVoicesForSource(doomed).empty());
+    CHECK(backend.LiveTokenCount() == 0);
+    AudioSourceStatus status = world.GetSourceStatus(doomed);
+    CHECK_FALSE(status.lastResultOk);
+    CHECK(status.lastResultSequence == 1);
+    CHECK(world.QueuedCommandCount() == 0);
+}
+
+TEST_CASE("A3_ReentrantStopDuringStart_DiscardsVoice")
+{
+    // Finding R3, session-stop half: a session Stop issued from the start
+    // callback must leave zero session voices and no mapped slot.
+    RecordingFakeAudioBackend backend;
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime);
+
+    const UUID source = NextUuid();
+    backend.onStartVoice = [&](BackendVoiceToken) {
+        Error error;
+        REQUIRE(world.StopAllVoices(error));
+    };
+    QueuePlayChecked(world, PlayReq(source, OneShot(), "stopped-a"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    backend.onStartVoice = nullptr;
+
+    CHECK(world.LiveVoiceCount() == 0);
+    CHECK(world.LiveVoicesForSource(source).empty());
+    CHECK(backend.LiveTokenCount() == 0);
+    CHECK(world.QueuedCommandCount() == 0);
 }
 
 TEST_CASE("A3_ReentrantFirstPlay_CreatesSecondSourceSafely")

@@ -293,9 +293,9 @@ bool AudioWorld::ResolveClipHandle(
         return false;
     }
     for (const auto& entry : m_ClipHandles)
-        if (entry.first == clipKey)
+        if (entry.clipKey == clipKey && entry.generation == fetched.value)
         {
-            outHandle = entry.second;
+            outHandle = entry.handle;
             outGeneration = fetched.value;
             return true;
         }
@@ -307,7 +307,11 @@ bool AudioWorld::ResolveClipHandle(
         outError = registered.error;
         return false;
     }
-    m_ClipHandles.emplace_back(clipKey, registered.value);
+    ClipCacheEntry entry;
+    entry.clipKey = clipKey;
+    entry.generation = fetched.value;
+    entry.handle = registered.value;
+    m_ClipHandles.push_back(std::move(entry));
     outHandle = registered.value;
     outGeneration = fetched.value;
     return true;
@@ -526,9 +530,11 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     }
 
     // Find a free slot; otherwise name a steal victim deterministically.
-    // The victim is stopped only after the replacement is fully prepared
-    // and started, so a clip, mix, or backend failure can never silence a
-    // valid voice (finding 2).
+    // The victim is replaced only through the backend's atomic
+    // ReplaceVoice commit: preparation (fetch, mix, reservation) happens
+    // first with the victim untouched, and the swap itself consumes one
+    // capacity unit, so a clip, mix, or backend failure can never silence
+    // a valid voice and a hard-cap backend never observes an extra voice.
     int target = -1;
     for (size_t i = 0; i < m_Slots.size(); ++i)
         if (!m_Slots[i].live)
@@ -597,24 +603,57 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     start.initialRight = initial.value.right;
     start.pitch = initial.value.pitch;
 
-    core::Result<BackendVoiceToken> started = m_Backend->StartVoice(clipHandle, start);
+    // Backend callbacks may destroy sources or stop the session before the
+    // call below returns; capture the epoch to detect it afterwards.
+    const uint64_t epochBefore = m_SessionEpoch;
+    BackendVoiceToken victimToken;
+    if (victim >= 0)
+        victimToken = m_Slots[static_cast<size_t>(victim)].backendToken;
+
+    core::Result<BackendVoiceToken> started =
+        (victim >= 0)
+            ? m_Backend->ReplaceVoice(victimToken, clipHandle, start)
+            : m_Backend->StartVoice(clipHandle, start);
     if (!started.IsOk())
     {
         // The victim (if any) is untouched and no steal is counted: the
         // failure leaves no silenced voice and no half-mapped slot behind.
         RecordSourceResult(cmd.source, cmd.sequence, false, started.error);
         NotePlayFailure(cmd.source, cmd.sequence);
-        RecordDiagnostic("backend StartVoice failed: " + started.error.Format());
+        RecordDiagnostic(victim >= 0 ? "backend ReplaceVoice failed: " + started.error.Format()
+                                    : "backend StartVoice failed: " + started.error.Format());
         return false;
     }
 
-    // Commit: the replacement exists, so the victim may now be removed.
+    // Lifecycle recheck (finding R3): a start callback may have marked this
+    // source destroying or stopped the session mid-call. The just-started
+    // token is stopped and discarded instead of mapped, leaving zero
+    // source/session voices. In the steal path the committed victim
+    // replacement stands; only the un-mappable incoming voice is dropped.
+    if (IsDestroying(cmd.source) || m_SessionEpoch != epochBefore)
+    {
+        core::Error discardError;
+        m_Backend->StopVoice(started.value, discardError);
+        core::Error error;
+        error.code = core::Error::InvalidRuntimeState;
+        error.path = "audio source voice";
+        error.detail = "source entered destruction or session stopped during start";
+        RecordSourceResult(cmd.source, cmd.sequence, false, error);
+        NotePlayFailure(cmd.source, cmd.sequence);
+        RecordDiagnostic("started voice discarded: " + error.detail);
+        return false;
+    }
+
+    // Commit: free the replaced victim world-side (the backend already
+    // detached its token) and install the replacement in its slot.
     // Re-find source state by UUID: the start callback above may have
     // registered new sources (finding 3).
     if (victim >= 0)
     {
-        core::Error victimError;
-        StopVoiceInternal(static_cast<size_t>(victim), true, victimError);
+        VoiceSlot& victimSlot = m_Slots[static_cast<size_t>(victim)];
+        victimSlot.live = false;
+        victimSlot.backendToken = BackendVoiceToken{};
+        ++m_StealCount;
         ++stats.voicesStolen;
         target = victim;
     }
@@ -1028,6 +1067,9 @@ void AudioWorld::ClearQueuedCommands()
 
 bool AudioWorld::StopAllVoices(core::Error& outError)
 {
+    // A reentrant start prepared before this call must observe the epoch
+    // change afterwards and discard its token instead of mapping it.
+    ++m_SessionEpoch;
     core::Error backendError;
     const bool backendOk = m_Backend->StopSessionVoices(m_Session, backendError);
     // Teardown detaches even when the backend reports an error loudly.
@@ -1059,7 +1101,7 @@ bool AudioWorld::Shutdown(core::Error& outError)
     for (auto it = m_ClipHandles.begin(); it != m_ClipHandles.end();)
     {
         core::Error releaseError;
-        if (m_Backend->ReleaseDecodedGeneration(it->second, releaseError))
+        if (m_Backend->ReleaseDecodedGeneration(it->handle, releaseError))
         {
             it = m_ClipHandles.erase(it);
             continue;

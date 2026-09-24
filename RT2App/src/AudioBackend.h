@@ -190,6 +190,20 @@ public:
 
     virtual core::Result<BackendVoiceToken> StartVoice(
         BackendClipHandle clip, const BackendVoiceStart& start) = 0;
+    // Atomic victim replacement for full-capacity steals. Stops `victim`
+    // and starts the described voice as a single capacity-unit commit:
+    // preparation (clip lookup, mix, reservation) must succeed before the
+    // victim is touched, and at no point is an extra audible voice
+    // observable, so a backend whose capacity equals the world cap can
+    // still honor a legal steal. On success the victim token is dead and
+    // the returned token is live. On failure the victim remains live and
+    // mapped and no new voice exists. Reentrancy: backend callbacks may
+    // run before return; the world rechecks lifecycle afterwards.
+    // (Added 2026-09-24 for the A3 fixup re-review; it extends, not
+    // replaces, the StartVoice path used whenever a free slot exists.)
+    virtual core::Result<BackendVoiceToken> ReplaceVoice(
+        BackendVoiceToken victim, BackendClipHandle clip,
+        const BackendVoiceStart& start) = 0;
     virtual bool StopVoice(BackendVoiceToken token, core::Error& outError) = 0;
     virtual bool PauseVoice(BackendVoiceToken token, bool paused, core::Error& outError) = 0;
     virtual bool SetVoiceMix(BackendVoiceToken token, const BackendVoiceMix& mix,
