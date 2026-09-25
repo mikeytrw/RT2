@@ -538,7 +538,17 @@ void RuntimeSceneController::UpdateAudioSlot(float frameDt)
             printf("[Runtime] Audio no-device stall: requested %u frames, rendered none\n",
                    frames);
     }
-    // Phase 3 (accounting): advance exactly the voices that rendered.
+    // Phase 3 (reconcile, re-review P2): reap voices that naturally
+    // completed inside the rendered prefix BEFORE advancing survivors, so
+    // a finished one-shot settles to Completed with zero census in the
+    // same frame instead of lingering live/Playing into the next script
+    // update. Runs after every slot with a render attempt, including
+    // short prefixes; a hard render failure still polls (the backend
+    // reports nothing new, so it is a no-op there).
+    m_AudioWorld->ReconcilePostRender();
+    // Phase 4 (accounting): advance exactly the voices that rendered.
+    // Short-read behavior is preserved: survivors move by the successful
+    // reported prefix, and reclaimed voices never advance past content.
     m_AudioWorld->AdvanceCursors(advance);
 }
 

@@ -1924,6 +1924,117 @@ int main()
     }
     Pass("S20 A5 semantic/render/accounting phase order with real PCM");
 
+    // ---- S20b: short one-shot settles same-frame, survivor advances ----
+    //
+    // A 100-frame one-shot plus a looping tone rendered in one 800-frame
+    // no-device block: post-render reconciliation reaps the finished voice
+    // (Completed status, zero census for its key) before the frame
+    // returns, while the survivor advances by exactly the rendered block.
+    // A second semantic pass (the next frame's script window) observes the
+    // same settled state with no resurrection.
+    {
+        ProductionBackendConfig shortConfig;
+        shortConfig.forceNoDevice = true;
+        ProductionAudioBackend shortBackend;
+        std::string shortError;
+        if (!shortBackend.Initialize(shortConfig, shortError))
+            return Fail("S20b backend init failed");
+        const std::vector<char> wavShort = BuildWavF32MonoDC(0.25f, 100);
+        const std::string kShort = ProductionAudioBackend::BuildClipKey(
+            "asset:short100", "clips/short100.wav",
+            ProductionAudioBackend::FingerprintBytes(wavShort.data(), wavShort.size()),
+            "f32le");
+        shortBackend.SetClipByteResolver(
+            [&wavShort, &kShort, &byteMap](
+                const std::string& key) -> rt2::core::Result<AudioClipBytes> {
+                if (key == kShort)
+                    return rt2::core::Result<AudioClipBytes>::Ok(
+                        AudioClipBytes{ kShort,
+                                        std::make_shared<const std::vector<char>>(wavShort) });
+                auto it = byteMap.find(key);
+                if (it == byteMap.end())
+                    return rt2::core::Result<AudioClipBytes>::Fail(
+                        rt2::core::Error::MissingAsset, key,
+                        "probe has no bytes for this key");
+                return rt2::core::Result<AudioClipBytes>::Ok(it->second);
+            });
+        const AudioSessionId shortSession{ 78 };
+        AudioWorld shortWorld(&shortBackend, &shortBackend, shortSession,
+                              AudioOwnerKind::Runtime, AudioWorldConfig{});
+        std::array<uint8_t, 16> shortId{};
+        shortId[15] = 8;
+        const rt2::core::UUID shortSrc(shortId);
+        std::array<uint8_t, 16> longId{};
+        longId[15] = 9;
+        const rt2::core::UUID longSrc(longId);
+        auto stageAuto = [&](const rt2::core::UUID& src, const std::string& key,
+                             bool loop) {
+            AudioPlayRequest req;
+            req.source = src;
+            req.component.bus = AudioBus::Effects;
+            req.component.autoplay = true;
+            req.component.loop = loop;
+            req.component.spatial = false;
+            req.component.gain = 1.0f;
+            req.component.pitch = 1.0f;
+            req.component.minDistance = 1.0f;
+            req.component.maxDistance = 30.0f;
+            req.component.rolloff = 1.0f;
+            req.component.priority = 128;
+            req.hasTransform = false;
+            req.clipKey = key;
+            shortWorld.StageAutoplay(req);
+        };
+        stageAuto(shortSrc, kShort, false);
+        stageAuto(longSrc, kMono, true);
+        AudioListenerPose shortListener;
+        shortWorld.UpdateSemantic(shortListener, nullptr, 0);
+        if (shortWorld.LiveVoiceCount() != 2)
+            return Fail("S20b autoplay did not start both voices");
+        std::vector<float> block(800 * kNoDeviceChannels, -1234.5f);
+        AudioPcmWriteBuffer blockBuf{ block.data(), block.size() };
+        auto blockRender = shortBackend.RenderNoDeviceFrames(blockBuf, 800);
+        if (!blockRender.IsOk() || blockRender.value != 800)
+            return Fail("S20b block render failed");
+        shortWorld.ReconcilePostRender();
+        shortWorld.AdvanceCursors(800);
+        if (!shortWorld.LiveVoicesForSource(shortSrc).empty())
+            return Fail("S20b finished one-shot still live after reconcile");
+        if (shortWorld.GetSourceStatus(shortSrc).aggregate !=
+            AudioSourceAggregate::Completed)
+            return Fail("S20b finished one-shot status is not Completed");
+        if (shortBackend.ActiveVoicesForKey(kShort) != 0 ||
+            shortBackend.LiveVoiceCount() != 1)
+            return Fail("S20b backend census did not settle to the survivor");
+        {
+            auto survivors = shortWorld.LiveVoicesForSource(longSrc);
+            if (survivors.size() != 1)
+                return Fail("S20b survivor loop lost");
+            double cursor = 0.0;
+            if (!shortWorld.GetVoiceCursor(survivors[0], cursor) || cursor != 800.0)
+                return Fail("S20b survivor did not advance by the rendered block");
+        }
+        // Next frame: settled state persists, survivor continues.
+        shortWorld.UpdateSemantic(shortListener, nullptr, 0);
+        if (!shortWorld.LiveVoicesForSource(shortSrc).empty() ||
+            shortWorld.GetSourceStatus(shortSrc).aggregate !=
+                AudioSourceAggregate::Completed)
+            return Fail("S20b settled state did not persist to the next frame");
+        shortWorld.AdvanceCursors(800);
+        {
+            auto survivors = shortWorld.LiveVoicesForSource(longSrc);
+            double cursor = 0.0;
+            if (survivors.size() != 1 ||
+                !shortWorld.GetVoiceCursor(survivors[0], cursor) || cursor != 1600.0)
+                return Fail("S20b survivor did not continue to 1600");
+        }
+        rt2::core::Error shortShutdownError;
+        if (!shortWorld.Shutdown(shortShutdownError))
+            return Fail("S20b world shutdown failed");
+        shortBackend.Shutdown();
+    }
+    Pass("S20b short one-shot settles same-frame, survivor advances");
+
     backend.Shutdown();
     if (backend.Status().productionNoDevice)
         return Fail("shutdown backend still reports no-device");

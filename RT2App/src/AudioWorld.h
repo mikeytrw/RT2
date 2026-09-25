@@ -180,6 +180,19 @@ public:
                                     size_t poseCount);
     void AdvanceCursors(uint32_t frames);
 
+    // --- A5 re-review P2: post-render completion reconciliation ---
+    //
+    // Non-blocking backend completion poll for the PCM block the host just
+    // rendered. A voice that naturally completed mid-block (one-shot source
+    // cursor exhausted, device at end) is reclaimed here — status, census,
+    // and cursor settle before the frame returns instead of lingering
+    // live/Playing into the next script update. The controller calls this
+    // after rendering and before advancing survivors, so a completed voice
+    // never advances and only rendered voices move. Safe to call with no
+    // render (polls nothing new) and on sink-free hosts (equivalent to the
+    // tail drain already inside UpdateSemantic).
+    AudioUpdateStats ReconcilePostRender();
+
     // Immediate mixer/session controls (not queued).
     bool SetBusGain(AudioBus bus, float gain, core::Error& outError);
     float BusGain(AudioBus bus) const;

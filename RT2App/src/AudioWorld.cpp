@@ -972,11 +972,18 @@ void AudioWorld::AdvanceCursors(uint32_t frames)
     // hardware/fake sessions with no PCM sink, the deterministic frame
     // delta the host reports). Only live, unpaused voices of an unpaused
     // session move: paused voices and Step frames stay sample-frozen.
+    // Voices reclaimed by ReconcilePostRender before this call never
+    // advance past their content.
     if (frames == 0 || m_SessionPaused)
         return;
     for (auto& slot : m_Slots)
         if (slot.live && !slot.paused)
             slot.cursorFrames += static_cast<double>(frames);
+}
+
+AudioUpdateStats AudioWorld::ReconcilePostRender()
+{
+    return DrainCompletions();
 }
 
 AudioUpdateStats AudioWorld::Step(const AudioListenerPose& listener,

@@ -50,6 +50,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -131,9 +132,23 @@ public:
     bool refuseAudioArmed = false;
     bool audioRefusalsObserved = false;
     bool voicesStoppedAtCallback = true;
+    // Next-OnUpdate census arm (A5 re-review P2): while armed, every
+    // OnUpdate observes that the watched source owns no live voice, so
+    // the script window inherits settled (not stale-Playing) state.
+    bool censusArmed = false;
+    UUID censusSource;
+    bool censusCleanAtUpdate = true;
 
     void OnFixedUpdate(float) override {}
-    void OnUpdate(float) override {}
+    void OnUpdate(float) override
+    {
+        if (censusArmed && ctrl != nullptr &&
+            ctrl->TryGetAudioWorld() != nullptr &&
+            !ctrl->TryGetAudioWorld()
+                 ->LiveVoicesForSource(censusSource)
+                 .empty())
+            censusCleanAtUpdate = false;
+    }
     void SyncScriptEnvironments() override {}
     void OnEntitiesDestroying(const std::vector<UUID>& uuids) override
     {
@@ -191,6 +206,17 @@ public:
         const float* buffer = nullptr;
     };
     std::vector<RenderSight> sights;
+
+    // Natural-completion arm (A5 re-review P2, off by default so the
+    // ordering oracles above keep their endless generations): while
+    // armed, each render stages a backend completion for every live
+    // non-looping voice whose cumulatively rendered frames exhaust its
+    // decoded content, modelling the production engine's exhausted-cursor
+    // discovery. The controller's post-render reconciliation reaps those
+    // completions in the same frame.
+    bool autoCompleteExhausted = false;
+    std::map<uint64_t, uint32_t> renderedFrames;
+    std::set<uint64_t> completedTokens;
 
     size_t LiveTokenCount() const { return inner.LiveTokenCount(); }
 
@@ -293,6 +319,31 @@ public:
         for (uint32_t f = 0; f < requestedFrames * 2; ++f)
             interleavedStereo.data[f] = marker;
         sights.push_back(sight);
+        if (autoCompleteExhausted)
+        {
+            for (const auto& record : inner.starts)
+            {
+                if (record.start.loop)
+                    continue;
+                if (!inner.IsTokenLive(record.token))
+                    continue;
+                if (completedTokens.count(record.token.opaque) != 0)
+                    continue;
+                renderedFrames[record.token.opaque] += requestedFrames;
+                const auto generation =
+                    inner.RegisteredGeneration(record.clip);
+                if (generation &&
+                    renderedFrames[record.token.opaque] >=
+                        generation->frameCount)
+                {
+                    Error completionError;
+                    inner.CompleteToken(
+                        record.token, BackendCompletionReason::Completed,
+                        completionError);
+                    completedTokens.insert(record.token.opaque);
+                }
+            }
+        }
         return Result<uint32_t>::Ok(requestedFrames);
     }
 
@@ -1374,4 +1425,72 @@ TEST_CASE("A5_CandidatePinsGenerationsThroughCommit_BudgetRefusedPreCommit")
     ctrl2.Stop(f.Authoring(), bridge);
     CHECK(ctrl2.AudioPinnedGenerationCount() == 0);
     CHECK(backend2.LiveTokenCount() == 0);
+}
+
+TEST_CASE("A5_NoDeviceNaturalCompletionSettlesSameFrame")
+{
+    // A5 re-review P2: a 100-frame one-shot rendered inside an 800-frame
+    // no-device slot settles to Completed with zero census before the
+    // frame returns; the surviving loop advances by the rendered prefix;
+    // the next OnUpdate observes settled state. The mutation (no
+    // post-render reconcile) leaves the finished voice live/Playing with
+    // an 800-frame cursor until the following frame.
+    A5Fixture f;
+    const UUID shortClip = f.Create("ShortOneShot");
+    f.Registry().emplace<AudioSourceComponent>(
+        f.Handle(shortClip),
+        A5BoundSource("audio/short.wav", true, false, false));
+    const UUID loop = f.Create("LongLoop");
+    f.Registry().emplace<AudioSourceComponent>(
+        f.Handle(loop),
+        A5BoundSource("audio/long.wav", true, true, false));
+
+    A5NoDeviceOrderBackend backend;
+    backend.autoCompleteExhausted = true;
+    auto tiny = std::make_shared<DecodedAudioGeneration>();
+    tiny->channels = 1;
+    tiny->sampleRate = 48000;
+    tiny->frameCount = 100;
+    tiny->pcmInterleaved.assign(
+        static_cast<size_t>(tiny->frameCount), 0.25f);
+    backend.inner.ScriptGeneration(A5Key("audio/short.wav"), tiny);
+    // audio/long.wav serves the fake default (48000 silent frames): the
+    // survivor that must keep advancing.
+
+    A5RecordingBridge bridge;
+    A5DestroyProbe probe;
+    RuntimeSceneController ctrl;
+    probe.ctrl = &ctrl;
+    probe.censusArmed = true;
+    probe.censusSource = shortClip;
+    ctrl.SetScriptDispatch(&probe);
+    ctrl.SetAudioBackend(&backend);
+    ctrl.SetAudioClipProvider(&backend);
+    Error err;
+    REQUIRE(ctrl.Play(f.Authoring(), bridge, err));
+    AudioWorld* world = ctrl.TryGetAudioWorld();
+    REQUIRE(world != nullptr);
+
+    ctrl.Update(kFixedDt, bridge);
+    // Settled in the same frame: no live voice, Completed aggregate, and
+    // the backend census holds only the survivor.
+    CHECK(world->LiveVoicesForSource(shortClip).empty());
+    CHECK(world->GetSourceStatus(shortClip).aggregate ==
+          AudioSourceAggregate::Completed);
+    CHECK(world->LiveVoiceCount() == 1);
+    CHECK(backend.LiveTokenCount() == 1);
+    // The survivor advanced by exactly the rendered prefix.
+    CHECK(A5RequireCursor(*world, loop) == doctest::Approx(800.0));
+    // Next frame including the script window: still settled, no
+    // resurrection, no extra starts for the finished source.
+    const size_t startsAfterFirst = backend.inner.starts.size();
+    ctrl.Update(kFixedDt, bridge);
+    CHECK(world->LiveVoicesForSource(shortClip).empty());
+    CHECK(world->GetSourceStatus(shortClip).aggregate ==
+          AudioSourceAggregate::Completed);
+    CHECK(world->LiveVoiceCount() == 1);
+    CHECK(backend.inner.starts.size() == startsAfterFirst);
+    CHECK(probe.censusCleanAtUpdate);
+    ctrl.Stop(f.Authoring(), bridge);
+    CHECK(backend.LiveTokenCount() == 0);
 }
