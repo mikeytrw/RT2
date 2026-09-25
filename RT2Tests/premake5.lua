@@ -86,6 +86,10 @@
     -- CPU-only world + recording fake; no miniaudio/device imports.
     files { "src/AudioA3WorldPolicyTests.cpp" }
 
+    -- Audio A5: runtime lifecycle/listener tests (same rationale).
+    -- CPU-only controller + recording fake; no miniaudio/device imports.
+    files { "src/AudioA5RuntimeLifecycleTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

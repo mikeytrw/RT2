@@ -291,6 +291,7 @@ bool RecordingFakeAudioBackend::StopSessionVoices(AudioSessionId session, core::
 core::Result<uint32_t> RecordingFakeAudioBackend::RenderNoDeviceFrames(
     AudioPcmWriteBuffer interleavedStereo, uint32_t requestedFrames)
 {
+    ++renderCalls;
     (void)interleavedStereo;
     (void)requestedFrames;
     return core::Result<uint32_t>::Fail(
@@ -413,6 +414,7 @@ void RecordingFakeAudioBackend::ClearRecords()
     generationFetches.clear();
     registerCalls = 0;
     drainCalls = 0;
+    renderCalls = 0;
 }
 
 } // namespace rt2::audio

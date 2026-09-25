@@ -252,6 +252,9 @@ project "RT2App"
        "../Walnut/vendor/glfw/include",
        "../Walnut/vendor/glm",
        "../Walnut/vendor/stb_image",
+       -- Audio A5: production backend interface (header only; the adapter
+       -- and miniaudio.c still compile exactly once in RT2AudioBackend).
+       "../RT2AudioBackend/src",
 
        "../Walnut/Walnut/src",
 

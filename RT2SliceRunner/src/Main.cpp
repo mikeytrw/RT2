@@ -1,6 +1,7 @@
 #include "SceneSerializer.h"
 #include "SceneDocument.h"
 #include "RuntimeSceneController.h"
+#include "FakeAudioBackend.h"
 #include "ISceneRenderBridge.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
@@ -529,6 +530,13 @@ static int RunScriptScenario(const std::string& scenarioPath,
 
     // --- Wire up the script system ---
     NullSceneRenderBridge bridge;
+    // Audio A5: CPU-only session audio for headless runs. The runner owns
+    // one recording fake for the process (declared before the controller
+    // so it outlives every session); the controller borrows it per Play.
+    // The default identity listener pose stands in for the rendered camera
+    // headless. Bound scene sources decode against the fake's
+    // scripted/default generations, so audio paths run deterministically.
+    rt2::audio::RecordingFakeAudioBackend audioFake;
     RuntimeSceneController ctrl;
     AssetResolutionContext scriptAssetContext{
         scenePath.parent_path(), nullptr};
@@ -543,6 +551,8 @@ static int RunScriptScenario(const std::string& scenarioPath,
     ctrl.SetScriptDispatch(&scriptSys);
     ctrl.SetInputService(&input);
     ctrl.SetRuntimeCommandSink(&sink);
+    ctrl.SetAudioBackend(&audioFake);
+    ctrl.SetAudioClipProvider(&audioFake);
 
     // --- Capture authoring entity count as the forbidSpawn baseline ---
     size_t authoringEntityCount = 0;
@@ -958,7 +968,11 @@ int main(int argc, char** argv)
 
     // --- Play ---
     NullSceneRenderBridge bridge;
+    // Audio A5: same CPU-only session audio as the scenario path above.
+    rt2::audio::RecordingFakeAudioBackend audioFake;
     RuntimeSceneController ctrl;
+    ctrl.SetAudioBackend(&audioFake);
+    ctrl.SetAudioClipProvider(&audioFake);
 
     if (!ctrl.Play(authoring, bridge, err))
     {

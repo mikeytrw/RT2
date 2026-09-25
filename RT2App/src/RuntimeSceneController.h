@@ -18,7 +18,15 @@
 #include "core/Error.h"
 #include "core/UUID.h"
 #include "ECSComponents.h"
+// Audio A5: runtime audio lifecycle + listener. CPU-only session policy
+// (AudioWorld) plus the backend/generation seams the host owns. No
+// miniaudio, device, Vulkan, ImGui, or Walnut types: this header still
+// links into RT2Tests and RT2SliceRunner unchanged.
+#include "AudioBackend.h"
+#include "AudioClipProvider.h"
+#include "AudioWorld.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -35,31 +43,44 @@
 // cleanly into RT2Tests and RT2SliceRunner (which supply a null/recording
 // bridge) while RT2App supplies a real bridge backed by RendererGPU.
 //
-// Lifecycle (Phase 4 completion, T3 physics candidate-commit):
+// Lifecycle (Phase 4 completion, T3 physics candidate-commit, Audio A5):
 //   Play(authoring):
 //     1. Validate physics early invariants on the authoring document (loud
 //        typed Error naming the entity UUID; no mutation on failure).
+//     1b. Validate authored audio invariants the same way. Bound sources
+//        with no installed audio seams refuse here (never silently
+//        audio-free).
 //     2. Construct runtime document, set UUID provider, CloneInMemory.
 //     3. InitPrevTransforms (rebuilds world transforms + snapshots prev).
 //     4. Construct a complete private PhysicsWorld candidate; commit to
 //        ownership only on success. On any candidate failure, destroy the
 //        candidate, reset the clone, stay Edit with a zero accumulator, and
 //        emit no bridge call and no script callback.
+//     4b. Construct a private AudioWorld candidate: synchronously
+//        resolve/decode EVERY persisted bound clip (autoplay or not) and
+//        stage autoplay with no backend voice started. Any clip failure
+//        rolls back 4 and 4b together (physics destroyed, clone reset,
+//        still Edit, no voice/callback/bridge).
 //     5. Bridge FullSync + ResetTemporalState.
 //     6. Set m_State = Playing.
 //     7. Fire OnSceneStart(runtime).
 //   Pause:
 //     Clear the accumulator so stale wall-clock time cannot become queued
 //     simulation on resume. No simulation runs while paused. Queue
-//     submission remains allowed while Paused.
+//     submission remains allowed while Paused. The audio session freezes
+//     atomically (a voice started while paused carries initialPaused).
 //   Step:
 //     Valid only while Paused. Runs exactly one fixed tick (MotionSystem +
 //     deferred structural changes + SceneGraph + one batched sync) plus one
 //     presentation pass. Drains the deferred queue at the safe point. The
-//     accumulator is NOT advanced. Returns false if not paused.
+//     accumulator is NOT advanced. The audio slot processes commands and
+//     state sample-frozen (zero no-device frames). Returns false if paused.
 //   Stop:
 //     1. Set m_Stopping (queue submission disabled).
 //     2. Fire OnSceneStop(runtime).
+//     2b. Clear queued audio, stop session voices, release generations,
+//        and assert the voice/command census baseline (AudioWorld teardown
+//        before the clone is destroyed).
 //     3. Destroy the PhysicsWorld (constraints, then ghosts/bodies, then
 //        shapes, then the world; any surviving handle is a hard error).
 //     4. Clear m_PendingOperations.
@@ -182,8 +203,10 @@ public:
     // authoring document for rendering.
     void Stop(const SceneDocument& authoring, ISceneRenderBridge& bridge);
 
-    // Per-frame update while Playing. Runs the fixed-step accumulator and
-    // one batched transform sync. No-op if not Playing.
+    // Per-frame update while Playing. Runs the fixed-step accumulator,
+    // one batched transform sync, then the post-GPU-sync/pre-render audio
+    // slot (final world-matrix poses + host-injected listener pose).
+    // No-op if not Playing.
     void Update(float frameDt, ISceneRenderBridge& bridge);
 
     SceneRunState GetState() const { return m_State; }
@@ -442,6 +465,83 @@ public:
     // must not advance it.
     float DebugAccumulator() const { return m_Accumulator; }
 
+    // ---- Audio A5: runtime audio lifecycle + listener -------------------
+    //
+    // The host owns the audio backend and the decoded-generation provider
+    // for the host session and injects the borrowed pointers here before
+    // Play; the controller borrows them for one Play session only (the same
+    // Sol B2 shape as the collision provider). The host MUST declare those
+    // objects before the controller so reverse member destruction destroys
+    // the session (AudioWorld) before the backend/provider. The Play
+    // candidate freezes the host's already-refreshed provider snapshot: the
+    // controller never refreshes mid-session, and the next Play picks up a
+    // fresh host snapshot.
+    //
+    // Clip keys: the controller maps each bound AudioSourceComponent to an
+    // opaque generation key through m_AudioClipKeyBuilder. The default
+    // builder derives "audioclip:<clip path>" (deterministic; CPU tests
+    // script fake generations under those keys). A production host injects
+    // a builder that resolves through its frozen AudioClipAssetProvider
+    // snapshot and formats the backend's identity tuple.
+    //
+    // A null backend/generation pair means "no audio session". Play with
+    // bound audio sources but no seams refuses loudly (silent no-audio
+    // would be the characteristic swallowed failure); Play with no bound
+    // sources proceeds with no AudioWorld either way.
+    using AudioClipKeyBuilder = std::function<Result<std::string>(
+        const AssetReference& clip, const UUID& entityUuid,
+        const std::string& entityName)>;
+
+    void SetAudioBackend(rt2::audio::IAudioBackend* backend)
+    {
+        m_AudioBackend = backend;
+    }
+    void SetAudioClipProvider(rt2::audio::IAudioClipProvider* provider)
+    {
+        m_AudioGenerations = provider;
+    }
+    void SetAudioClipKeyBuilder(AudioClipKeyBuilder builder)
+    {
+        m_AudioClipKeyBuilder = std::move(builder);
+    }
+    // The host injects the actual rendered camera's pose before Update and
+    // Step (WalnutApp selects m_RuntimeCamActive ? m_RuntimeCam : m_Cam,
+    // the same camera it renders). There is deliberately no persisted
+    // listener component.
+    void SetAudioListenerPose(const rt2::audio::AudioListenerPose& pose)
+    {
+        m_AudioListenerPose = pose;
+    }
+    const rt2::audio::AudioListenerPose& AudioListenerPose() const
+    {
+        return m_AudioListenerPose;
+    }
+    void SetAudioWorldConfig(rt2::audio::AudioWorldConfig config)
+    {
+        m_AudioWorldConfig = config;
+    }
+
+    // Committed session world. Null in Edit, after Stop, after a refused
+    // Play, and when the session has no bound audio sources.
+    rt2::audio::AudioWorld* TryGetAudioWorld() { return m_AudioWorld.get(); }
+    const rt2::audio::AudioWorld* TryGetAudioWorld() const
+    {
+        return m_AudioWorld.get();
+    }
+    rt2::audio::AudioSessionId AudioSession() const { return m_AudioSession; }
+    size_t AudioLiveVoiceCount() const
+    {
+        return m_AudioWorld ? m_AudioWorld->LiveVoiceCount() : 0;
+    }
+    size_t AudioQueuedCommandCount() const
+    {
+        return m_AudioWorld ? m_AudioWorld->QueuedCommandCount() : 0;
+    }
+    size_t AudioStagedAutoplayCount() const
+    {
+        return m_AudioWorld ? m_AudioWorld->StagedAutoplayCount() : 0;
+    }
+
     // Phase-1 batch validation as a standalone predicate (T5 destroy-policy
     // seam): duplicate-UUID, parent-resolution, destroy-target, AND the
     // constrained-body rule — a destroy batch that would orphan a surviving
@@ -571,6 +671,49 @@ private:
                                                 const char* opName);
     RuntimeSceneMutator m_Mutator;
     bool m_Stopping = false;
+
+    // ---- Audio A5 session state (borrowed seams + committed world) -------
+    rt2::audio::IAudioBackend* m_AudioBackend = nullptr;
+    rt2::audio::IAudioClipProvider* m_AudioGenerations = nullptr;
+    AudioClipKeyBuilder m_AudioClipKeyBuilder;
+    rt2::audio::AudioListenerPose m_AudioListenerPose;
+    rt2::audio::AudioWorldConfig m_AudioWorldConfig;
+    std::unique_ptr<rt2::audio::AudioWorld> m_AudioWorld;
+    rt2::audio::AudioSessionId m_AudioSession;
+    // Fractional no-device PCM-frame remainder carried across Playing
+    // Updates so clamped frame time converts to an exact integer count.
+    double m_AudioFrameFrac = 0.0;
+    // Reusable 4096-frame stereo float32 sink for no-device pumping
+    // (production fallback only; never the fake, never hardware mode).
+    std::vector<float> m_AudioScratch;
+
+    // Validates authored audio invariants on the authoring document before
+    // anything is staged (loud typed Error naming the entity UUID; no
+    // mutation on failure). Bound sources with no backend/generation seams
+    // refuse here so Play can never go silently audio-free.
+    bool ValidateAudioForPlay(const SceneDocument& authoring, Error& err) const;
+    // Builds one clip-generation candidate: frozen key, synchronous
+    // resolve/decode of EVERY persisted bound source (autoplay or not),
+    // spatial-mono enforcement, and autoplay staging with no backend
+    // voice/callback/bridge publication. Returns false (err set, no
+    // mutation of committed state) when any source fails.
+    bool StageAudioCandidate(Error& err,
+                             std::unique_ptr<rt2::audio::AudioWorld>& outWorld);
+    // Collects one pose per runtime audio source from FINAL world matrices
+    // (translation of worldMatrix, not local TRS or pre-step state).
+    void CollectAudioPoses(
+        std::vector<rt2::audio::AudioSourcePose>& outPoses) const;
+    // Post-GPU-sync/pre-render audio slot for Playing Updates: poses,
+    // no-device pumping, then the world drain. No-op without a session.
+    void UpdateAudioSlot(float frameDt);
+    // Sample-frozen audio slot for Paused Steps: poses + world Step, zero
+    // no-device frames. No-op without a session.
+    void StepAudioSlot();
+    // Loud session teardown shared by Stop and failed-Play rollback:
+    // clears queued audio, stops session voices, releases generations,
+    // and returns the world/voice census to baseline before the runtime
+    // clone is destroyed. Prints (never swallows) backend failures.
+    void TeardownAudioSession(const char* context);
 };
 
 } // namespace rt2::core

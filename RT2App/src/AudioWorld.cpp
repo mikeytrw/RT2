@@ -177,6 +177,10 @@ bool AudioWorld::QueueStop(const core::UUID& source, uint64_t& outSequence)
     cmd.kind = CommandKind::Stop;
     cmd.source = source;
     cmd.sequence = sequence;
+    // A5: a queued Stop suppresses pending autoplay even before a voice
+    // exists. Recorded only on the accepted path: a refused (queue-full)
+    // command mutates nothing.
+    SuppressAutoplay(source);
     m_Queue.push_back(std::move(cmd));
     outSequence = sequence;
     return true;
@@ -203,6 +207,9 @@ bool AudioWorld::QueuePause(const core::UUID& source, bool paused, uint64_t& out
     cmd.source = source;
     cmd.sequence = sequence;
     cmd.pauseValue = paused;
+    // A5: a queued Pause suppresses pending autoplay even before a voice
+    // exists (same accepted-path-only rule as Stop).
+    SuppressAutoplay(source);
     m_Queue.push_back(std::move(cmd));
     outSequence = sequence;
     return true;
@@ -485,6 +492,10 @@ AudioUpdateStats AudioWorld::DrainCompletions()
 
 bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
 {
+    // A5: an explicitly executed Play consumes pending autoplay staging for
+    // its source, executed or refused. The explicit command's result stands;
+    // synthesis must not add a duplicate voice afterwards.
+    m_StagedAutoplay.erase(cmd.source);
     SourceState& state = StateFor(cmd.source);
     state.component = cmd.component;
     state.hasComponent = true;
@@ -693,6 +704,9 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
 
 bool AudioWorld::ExecuteStop(const Command& cmd)
 {
+    // A5: an executed Stop suppresses pending autoplay even when no voice
+    // exists, so on_create Stop precedes first-frame autoplay synthesis.
+    SuppressAutoplay(cmd.source);
     // Every voice is detached even when the backend reports an error, but
     // the first typed failure is published as the command result (finding
     // 4): teardown is loud and final, never silent.
@@ -719,6 +733,9 @@ bool AudioWorld::ExecuteStop(const Command& cmd)
 
 bool AudioWorld::ExecutePause(const Command& cmd)
 {
+    // A5: an executed Pause suppresses pending autoplay even when no voice
+    // exists (same on_create-precedence rule as Stop).
+    SuppressAutoplay(cmd.source);
     bool ok = true;
     core::Error firstError;
     for (size_t i = 0; i < m_Slots.size(); ++i)
@@ -896,6 +913,12 @@ AudioUpdateStats AudioWorld::Update(const AudioListenerPose& listener,
         }
     }
 
+    // A5 first-frame autoplay synthesis: runs after the frozen FIFO (so
+    // accepted on_create commands precede autoplay) and after final poses
+    // land (so the initial mix observes post-transform state). One-shot:
+    // the staged set is consumed whether or not each entry plays.
+    SynthesizeStagedAutoplay(stats);
+
     // Refresh mixes from final world poses. Failures retain the last valid
     // mix and record a diagnostic without touching command results.
     for (size_t i = 0; i < m_Slots.size(); ++i)
@@ -1008,6 +1031,15 @@ void AudioWorld::NotifySourcesDestroying(const core::UUID* sources, size_t count
         if (!already)
             m_Destroying.push_back(source);
 
+        // A5: a dying source never reaches autoplay synthesis. Drop its
+        // staging and its suppression mark together so neither outlives
+        // the entity.
+        m_StagedAutoplay.erase(source);
+        m_AutoplaySuppressed.erase(
+            std::remove(m_AutoplaySuppressed.begin(),
+                        m_AutoplaySuppressed.end(), source),
+            m_AutoplaySuppressed.end());
+
         // Drop queued commands for the destroying source.
         SourceState& state = StateFor(source);
         std::vector<Command> kept;
@@ -1052,6 +1084,105 @@ bool AudioWorld::IsDestroying(const core::UUID& source) const
     return false;
 }
 
+void AudioWorld::StageAutoplay(const AudioPlayRequest& request)
+{
+    // Staging is Play-candidate bookkeeping: the candidate has already
+    // validated the component and proven the clip decodable, so this only
+    // refuses degenerate input (unbound key, dying target).
+    if (request.clipKey.empty())
+        return;
+    if (IsDestroying(request.source))
+        return;
+    m_StagedAutoplay[request.source] = request;
+}
+
+bool AudioWorld::HasStagedAutoplay(const core::UUID& source) const
+{
+    return m_StagedAutoplay.find(source) != m_StagedAutoplay.end();
+}
+
+void AudioWorld::SuppressAutoplay(const core::UUID& source)
+{
+    if (m_StagedAutoplay.find(source) == m_StagedAutoplay.end())
+        return;
+    if (IsAutoplaySuppressed(source))
+        return;
+    m_AutoplaySuppressed.push_back(source);
+}
+
+bool AudioWorld::IsAutoplaySuppressed(const core::UUID& source) const
+{
+    for (const auto& marked : m_AutoplaySuppressed)
+        if (marked == source)
+            return true;
+    return false;
+}
+
+void AudioWorld::SynthesizeStagedAutoplay(AudioUpdateStats& stats)
+{
+    if (m_StagedAutoplay.empty())
+        return;
+    // One-shot consume: move the set out so staging submitted re-entrantly
+    // during synthesis lands in the next (empty) set instead of this drain.
+    std::map<core::UUID, AudioPlayRequest> staged;
+    staged.swap(m_StagedAutoplay);
+    std::vector<core::UUID> suppressed;
+    suppressed.swap(m_AutoplaySuppressed);
+    const auto isSuppressed = [&](const core::UUID& s) {
+        for (const auto& marked : suppressed)
+            if (marked == s)
+                return true;
+        return false;
+    };
+    for (auto& entry : staged)
+    {
+        const core::UUID& source = entry.first;
+        const AudioPlayRequest& req = entry.second;
+        if (isSuppressed(source) || IsDestroying(source) || req.clipKey.empty())
+            continue;
+        SourceState& state = StateFor(source);
+        // FIFO merge: gain/pitch accepted after staging (on_create or test
+        // orchestration) override the staged authored snapshot, so
+        // gain/pitch-then-Play applies without a duplicate voice. Clip,
+        // bus, loop, spatial, and attenuation stay authored: scalar
+        // commands never rewrite them.
+        AudioSourceComponent component = req.component;
+        if (state.hasComponent)
+        {
+            component.gain = state.component.gain;
+            component.pitch = state.component.pitch;
+        }
+        const uint64_t sequence = state.newestAcceptedSequence + 1;
+        state.newestAcceptedSequence = sequence;
+        state.newestQueued = false;
+        Command cmd;
+        cmd.kind = CommandKind::Play;
+        cmd.source = source;
+        cmd.sequence = sequence;
+        cmd.component = component;
+        // Final poses landed above, so the initial mix observes
+        // post-transform state; fall back to the staged Play-time pose when
+        // the controller supplied no pose for this source.
+        if (state.hasPose)
+        {
+            cmd.position[0] = state.lastPosition[0];
+            cmd.position[1] = state.lastPosition[1];
+            cmd.position[2] = state.lastPosition[2];
+            cmd.hasTransform = state.lastHasTransform;
+        }
+        else
+        {
+            cmd.position[0] = req.sourcePosition[0];
+            cmd.position[1] = req.sourcePosition[1];
+            cmd.position[2] = req.sourcePosition[2];
+            cmd.hasTransform = req.hasTransform;
+        }
+        cmd.clipKey = req.clipKey;
+        ExecutePlay(cmd, stats);
+        ++stats.commandsExecuted;
+    }
+}
+
 void AudioWorld::ClearQueuedCommands()
 {
     for (const Command& cmd : m_Queue)
@@ -1085,6 +1216,10 @@ bool AudioWorld::StopAllVoices(core::Error& outError)
     for (auto& entry : m_Sources)
         entry.second.hasTerminalPlay = false;
     m_Destroying.clear();
+    // A5: the session is over, so pending autoplay staging and its
+    // suppression marks end with it.
+    m_StagedAutoplay.clear();
+    m_AutoplaySuppressed.clear();
     if (!backendOk)
     {
         outError = backendError;

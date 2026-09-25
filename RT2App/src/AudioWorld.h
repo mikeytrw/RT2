@@ -177,6 +177,24 @@ public:
     void ClearDestroying();
     bool IsDestroying(const core::UUID& source) const;
 
+    // --- A5 autoplay staging (runtime lifecycle) ---
+    //
+    // The Play candidate records every bound autoplay source here WITHOUT
+    // queueing: no sequence is consumed and no backend/provider call is
+    // made, so a refused Play publishes no voice, callback, or bridge
+    // operation. The first Update/Step drains accepted commands (e.g.
+    // on_create work) first and only then synthesizes one play per
+    // still-enabled, unsuppressed, non-destroying staged source, giving
+    // on_create deterministic precedence over first-frame autoplay. A
+    // per-source Stop/Pause (queued or executed) suppresses its pending
+    // autoplay even when no voice exists. An explicitly executed Play for a
+    // staged source consumes its staging, so gain/pitch-then-Play applies
+    // in FIFO order without a duplicate voice. Staging is one-shot: the
+    // first Update/Step consumes the whole set.
+    void StageAutoplay(const AudioPlayRequest& request);
+    bool HasStagedAutoplay(const core::UUID& source) const;
+    size_t StagedAutoplayCount() const { return m_StagedAutoplay.size(); }
+
     // Defensive queue clear (Stop/reload/quarantine path; AudioWorld Stop
     // also clears defensively).
     void ClearQueuedCommands();
@@ -293,6 +311,15 @@ private:
     bool ExecuteCommand(const Command& cmd, const AudioListenerPose& listener,
                         AudioUpdateStats& stats);
     bool ExecutePlay(const Command& cmd, AudioUpdateStats& stats);
+    // Records autoplay suppression for a staged source. Inserts only while
+    // its staging is still pending, so post-synthesis stops cannot pollute
+    // a future session's one-shot set.
+    void SuppressAutoplay(const core::UUID& source);
+    bool IsAutoplaySuppressed(const core::UUID& source) const;
+    // Synthesizes one play per pending staged source after the frozen FIFO
+    // has drained and final poses have landed. Consumes the whole staged
+    // set (enabled or suppressed) exactly once.
+    void SynthesizeStagedAutoplay(AudioUpdateStats& stats);
     bool ExecuteStop(const Command& cmd);
     bool ExecutePause(const Command& cmd);
     bool ExecuteSetGain(const Command& cmd);
@@ -336,6 +363,13 @@ private:
         BackendClipHandle handle;
     };
     std::vector<ClipCacheEntry> m_ClipHandles;
+
+    // A5 staged autoplay (source UUID -> Play-time request). Populated by
+    // the Play candidate only; consumed once by the first Update/Step.
+    std::map<core::UUID, AudioPlayRequest> m_StagedAutoplay;
+    // A5 pending-autoplay suppression marks. Populated by per-source
+    // Stop/Pause while staging is pending; consumed with the staged set.
+    std::vector<core::UUID> m_AutoplaySuppressed;
 
     float m_BusGains[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool m_SessionPaused = false;

@@ -144,6 +144,10 @@ public:
     std::vector<std::string> generationFetches;
     size_t registerCalls = 0;
     size_t drainCalls = 0;
+    // A5: the controller must call RenderNoDeviceFrames only while the
+    // backend reports production no-device mode. The fake refuses that
+    // call loudly, and this count proves the controller never made it.
+    size_t renderCalls = 0;
 
     size_t LiveTokenCount() const { return m_LiveTokens.size(); }
     bool IsTokenLive(BackendVoiceToken token) const;

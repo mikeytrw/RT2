@@ -25,6 +25,8 @@
 #include "PrefabPropagationLive.h"
 #include "RuntimeSceneController.h"
 #include "PhysicsCollisionAssetProvider.h"
+#include "AudioClipAssetProvider.h"
+#include "ProductionAudioBackend.h"
 #include "ScriptSystem.h"
 #include "ScriptFieldRegistry.h"
 #include "ScriptFieldResolver.h"
@@ -2822,6 +2824,10 @@ public:
 		// Drive the runtime controller when Playing.
 		if (m_Runtime.GetState() == rt2::core::SceneRunState::Playing && m_RenderBridge)
 		{
+			// Audio A5: the actual rendered camera is the sole listener
+			// authority. Inject its pose before Update so the post-GPU-sync
+			// audio slot mixes from what the player sees.
+			InjectAudioListenerPose();
 			m_Runtime.Update(ts, *m_RenderBridge);
 		}
 
@@ -2940,6 +2946,15 @@ public:
 			const std::string report = m_Ngx->Snapshot().Format();
 			printf("[NGX] %s\n", report.c_str());
 			RT_LOG("[NGX] %s", report.c_str());
+		}
+		// Audio A5: shut the production backend down explicitly. Member
+		// order already guarantees the session died first (the controller
+		// is declared after the backend), so no session voice can outlive
+		// the device; this is the loud host-side close.
+		if (m_AudioBackendReady)
+		{
+			m_AudioBackend.Shutdown();
+			m_AudioBackendReady = false;
 		}
 	}
 
@@ -4435,6 +4450,21 @@ private:
 	// borrows the provider for one Play session only.
 	rt2::core::AssetResolutionContext               m_PhysicsAssetContext;
 	std::unique_ptr<rt2::core::PhysicsCollisionAssetProvider> m_PhysicsProvider;
+	// Audio A5: host-owned production backend + clip-byte provider.
+	// Declared BEFORE the controller on purpose (same Sol B2 shape as the
+	// physics provider above): reverse member destruction then destroys
+	// the session (AudioWorld, owned by the controller) BEFORE the
+	// backend/provider, so the device outlives every runtime session by
+	// construction. The provider snapshot is refreshed immediately before
+	// Play; the controller borrows both pointers for one Play session
+	// only. The resolved-clip map backs the candidate key builder and the
+	// backend byte resolver for the frozen session (A5 stages no new keys
+	// mid-session; Lua-driven keys arrive in A6).
+	rt2::audio::backend::ProductionAudioBackend    m_AudioBackend;
+	rt2::core::AudioClipAssetProvider             m_AudioClipProvider;
+	rt2::core::AssetResolutionContext             m_AudioAssetContext;
+	std::map<std::string, rt2::core::ResolvedAudioClip> m_AudioResolvedClips;
+	bool m_AudioBackendReady = false;
 	rt2::core::RuntimeSceneController m_Runtime;
 	Camera m_RuntimeCam;           // separate camera for Play mode
 	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
@@ -5102,6 +5132,78 @@ private:
 		m_PhysicsProvider->SetContext(m_PhysicsAssetContext);
 		m_Runtime.SetCollisionProvider(m_PhysicsProvider.get());
 
+		// Audio A5: host-owned session audio. (Re)open the production
+		// backend once (hardware device first, diagnosed 48 kHz stereo
+		// no-device fallback inside the backend), freeze one provider
+		// snapshot from the current asset context, and wire the candidate
+		// key builder plus the backend byte resolver against that frozen
+		// snapshot. The controller borrows both for the Play session only;
+		// a project switch or refresh mid-Play never affects the running
+		// session (the next Play picks it up). A backend that refuses to
+		// initialize leaves the seams unset: bound sources then refuse
+		// Play loudly at the controller boundary instead of playing
+		// silently audio-free.
+		if (!m_AudioBackendReady)
+		{
+			rt2::audio::backend::ProductionBackendConfig audioConfig;
+			std::string audioError;
+			if (!m_AudioBackend.Initialize(audioConfig, audioError))
+				printf("[Audio] Backend unavailable, sessions run without audio: %s\n",
+				       audioError.c_str());
+			else
+				m_AudioBackendReady = true;
+		}
+		if (m_AudioBackendReady)
+		{
+			m_AudioAssetContext = CurrentAssetContext();
+			m_AudioClipProvider.SetContext(m_AudioAssetContext);
+			m_AudioResolvedClips.clear();
+			m_AudioBackend.SetClipByteResolver(
+				[this](const std::string& key)
+					-> rt2::core::Result<rt2::audio::AudioClipBytes> {
+					using BytesResult =
+						rt2::core::Result<rt2::audio::AudioClipBytes>;
+					const auto it = m_AudioResolvedClips.find(key);
+					if (it == m_AudioResolvedClips.end())
+						return BytesResult::Fail(
+							rt2::core::Error::MissingAsset, key,
+							"audio clip key was not staged by this session's "
+							"Play candidate");
+					rt2::audio::AudioClipBytes bytes;
+					bytes.clipKey = key;
+					bytes.bytes = it->second.bytes;
+					return BytesResult::Ok(std::move(bytes));
+				});
+			m_Runtime.SetAudioBackend(&m_AudioBackend);
+			m_Runtime.SetAudioClipProvider(&m_AudioBackend);
+			m_Runtime.SetAudioClipKeyBuilder(
+				[this](const AssetReference& ref,
+				       const rt2::core::UUID& entityUuid,
+				       const std::string& entityName)
+					-> rt2::core::Result<std::string> {
+					using KeyResult = rt2::core::Result<std::string>;
+					rt2::core::Result<rt2::core::ResolvedAudioClip> resolved =
+						m_AudioClipProvider.ResolveClip(ref, entityUuid,
+						                                entityName);
+					if (!resolved.IsOk())
+						return KeyResult::Fail(resolved.error.code,
+						                       resolved.error.path,
+						                       resolved.error.detail);
+					const std::string key =
+						rt2::audio::backend::ProductionAudioBackend::BuildClipKey(
+							resolved.value.effectiveId.ToString(),
+							resolved.value.canonicalPath.u8string(),
+							resolved.value.fingerprint, "f32le");
+					m_AudioResolvedClips[key] = resolved.value;
+					return KeyResult::Ok(key);
+				});
+		}
+		else
+		{
+			m_Runtime.SetAudioBackend(nullptr);
+			m_Runtime.SetAudioClipProvider(nullptr);
+		}
+
 		// Phase 4: inject the production UUID provider so the runtime document
 		// can generate fresh UUIDs for deferred-create operations. The
 		// provider is stateless and the UUID spaces are disjoint (the runtime
@@ -5152,9 +5254,39 @@ private:
 		printf("[Play] Paused\n");
 	}
 
+	// Audio A5: builds the listener pose from the actual rendered camera
+	// (m_RuntimeCamActive ? m_RuntimeCam : m_Cam — the same selection the
+	// frame renders at OnUIRender) and hands it to the controller. Called
+	// before every Update and before the separate EnterStep path. There is
+	// deliberately no persisted listener component.
+	void InjectAudioListenerPose()
+	{
+		const Camera& activeCam = m_RuntimeCamActive ? m_RuntimeCam : m_Cam;
+		const glm::vec3 pos = activeCam.GetPosition();
+		const glm::vec3 fwd = activeCam.GetDirection();
+		glm::vec3 up{ 0.0f, 1.0f, 0.0f };
+		const float parallel = std::fabs(glm::dot(fwd, up));
+		if (!(parallel < 0.999f))
+			up = glm::vec3(1.0f, 0.0f, 0.0f);
+		rt2::audio::AudioListenerPose pose;
+		pose.position[0] = pos.x;
+		pose.position[1] = pos.y;
+		pose.position[2] = pos.z;
+		pose.forward[0] = fwd.x;
+		pose.forward[1] = fwd.y;
+		pose.forward[2] = fwd.z;
+		pose.up[0] = up.x;
+		pose.up[1] = up.y;
+		pose.up[2] = up.z;
+		m_Runtime.SetAudioListenerPose(pose);
+	}
+
 	void EnterStep()
 	{
 		if (!m_RenderBridge) return;
+		// Audio A5: same listener authority as Update (the separate
+		// EnterStep path injects the exact camera used by rendering).
+		InjectAudioListenerPose();
 		m_Runtime.Step(*m_RenderBridge);
 	}
 
