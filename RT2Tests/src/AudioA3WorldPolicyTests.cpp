@@ -1158,6 +1158,89 @@ TEST_CASE("A3_ReentrantStopDuringStart_DiscardsVoice")
     CHECK(world.QueuedCommandCount() == 0);
 }
 
+TEST_CASE("A3_ReentrantDestroyDuringReplace_ReconcilesVictim")
+{
+    // Mutation: discarding the incoming token before freeing the committed
+    // victim slot leaves the dead victim mapped as Playing while the
+    // backend holds zero tokens. Finding R4: the replacement callback
+    // fires after the commit, and the victim slot must agree with the
+    // backend on every return path.
+    AudioWorldConfig config;
+    config.maxVoices = 1;
+    RecordingFakeAudioBackend backend;
+    backend.SetMaxLiveVoices(1);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime, config);
+
+    AudioSourceComponent loop = OneShot(1.0f, 10);
+    loop.loop = true;
+    const UUID victim = NextUuid();
+    QueuePlayChecked(world, PlayReq(victim, loop, "replace-doom-victim"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoiceCount() == 1);
+
+    const UUID incoming = NextUuid();
+    backend.onStartVoice = [&](BackendVoiceToken) {
+        world.NotifySourcesDestroying(&incoming, 1);
+    };
+    QueuePlayChecked(world, PlayReq(incoming, OneShot(1.0f, 11), "replace-doom-incoming"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    backend.onStartVoice = nullptr;
+
+    // Backend and world censuses agree at zero: the victim is freed
+    // world-side and the incoming token was discarded, never mapped.
+    CHECK(backend.LiveTokenCount() == 0);
+    CHECK(world.LiveVoiceCount() == 0);
+    CHECK(world.LiveVoicesForSource(victim).empty());
+    CHECK(world.LiveVoicesForSource(incoming).empty());
+    // The committed swap still counts, and the peak never exceeded the
+    // hard cap; the victim is stole-Completed, never false-Playing.
+    CHECK(world.StealCount() == 1);
+    CHECK(backend.PeakLiveTokens() == 1);
+    CHECK(backend.stops.size() == 2);
+    AudioSourceStatus victimStatus = world.GetSourceStatus(victim);
+    CHECK(victimStatus.liveVoiceCount == 0);
+    CHECK(victimStatus.aggregate == AudioSourceAggregate::Completed);
+    AudioSourceStatus incomingStatus = world.GetSourceStatus(incoming);
+    CHECK(incomingStatus.lastResultSequence == 1);
+    CHECK_FALSE(incomingStatus.lastResultOk);
+    CHECK(incomingStatus.aggregate == AudioSourceAggregate::Failed);
+}
+
+TEST_CASE("A3_ReentrantStopDuringReplace_LeavesZeroCensus")
+{
+    // Finding R4, session-stop half: a session Stop issued from the
+    // replacement callback must leave zero backend and world voices even
+    // though the victim swap already committed.
+    AudioWorldConfig config;
+    config.maxVoices = 1;
+    RecordingFakeAudioBackend backend;
+    backend.SetMaxLiveVoices(1);
+    AudioWorld world(&backend, &backend, TestSession(), AudioOwnerKind::Runtime, config);
+
+    AudioSourceComponent loop = OneShot(1.0f, 10);
+    loop.loop = true;
+    const UUID victim = NextUuid();
+    QueuePlayChecked(world, PlayReq(victim, loop, "replace-stop-victim"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    REQUIRE(world.LiveVoiceCount() == 1);
+
+    const UUID incoming = NextUuid();
+    backend.onStartVoice = [&](BackendVoiceToken) {
+        Error error;
+        REQUIRE(world.StopAllVoices(error));
+    };
+    QueuePlayChecked(world, PlayReq(incoming, OneShot(1.0f, 11), "replace-stop-incoming"));
+    world.Update(TestListener(), nullptr, 0, 0);
+    backend.onStartVoice = nullptr;
+
+    CHECK(backend.LiveTokenCount() == 0);
+    CHECK(world.LiveVoiceCount() == 0);
+    CHECK(world.LiveVoicesForSource(victim).empty());
+    CHECK(world.LiveVoicesForSource(incoming).empty());
+    CHECK(world.QueuedCommandCount() == 0);
+    CHECK(backend.PeakLiveTokens() == 1);
+}
+
 TEST_CASE("A3_ReentrantFirstPlay_CreatesSecondSourceSafely")
 {
     // Mutation: retaining a SourceState& across the StartVoice callback

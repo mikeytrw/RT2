@@ -124,6 +124,11 @@ core::Result<BackendVoiceToken> RecordingFakeAudioBackend::ReplaceVoice(
     m_LiveTokens[token.opaque] = start.session;
     NoteLiveChanged();
     starts.push_back(StartRecord{ clip, start, token });
+    // The callback fires after the commit, at the same point a device-side
+    // completion/callback would observe the swapped voice. Tests use it to
+    // prove the world reconciles lifecycle marked mid-replacement.
+    if (onStartVoice)
+        onStartVoice(token);
     return core::Result<BackendVoiceToken>::Ok(token);
 }
 

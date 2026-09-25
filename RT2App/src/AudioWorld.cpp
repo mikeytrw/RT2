@@ -625,11 +625,28 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
         return false;
     }
 
+    // Commit the replacement first: the backend has already detached the
+    // victim token, so the victim world slot must agree even when the
+    // lifecycle check below discards the incoming voice. Otherwise a dead
+    // victim stays mapped as Playing while the backend holds zero tokens.
+    // Re-find source state by UUID afterwards: the start callback above
+    // may have registered new sources (finding 3).
+    if (victim >= 0)
+    {
+        VoiceSlot& victimSlot = m_Slots[static_cast<size_t>(victim)];
+        victimSlot.live = false;
+        victimSlot.backendToken = BackendVoiceToken{};
+        ++m_StealCount;
+        ++stats.voicesStolen;
+        target = victim;
+    }
+
     // Lifecycle recheck (finding R3): a start callback may have marked this
     // source destroying or stopped the session mid-call. The just-started
     // token is stopped and discarded instead of mapped, leaving zero
     // source/session voices. In the steal path the committed victim
-    // replacement stands; only the un-mappable incoming voice is dropped.
+    // replacement above stands; only the un-mappable incoming voice is
+    // dropped, so backend and world censuses still agree.
     if (IsDestroying(cmd.source) || m_SessionEpoch != epochBefore)
     {
         core::Error discardError;
@@ -642,20 +659,6 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
         NotePlayFailure(cmd.source, cmd.sequence);
         RecordDiagnostic("started voice discarded: " + error.detail);
         return false;
-    }
-
-    // Commit: free the replaced victim world-side (the backend already
-    // detached its token) and install the replacement in its slot.
-    // Re-find source state by UUID: the start callback above may have
-    // registered new sources (finding 3).
-    if (victim >= 0)
-    {
-        VoiceSlot& victimSlot = m_Slots[static_cast<size_t>(victim)];
-        victimSlot.live = false;
-        victimSlot.backendToken = BackendVoiceToken{};
-        ++m_StealCount;
-        ++stats.voicesStolen;
-        target = victim;
     }
     SourceState& fresh = StateFor(cmd.source);
 

@@ -120,8 +120,10 @@ public:
     void ScriptDecodeError(const std::string& clipKey, const core::Error& error);
 
     // Re-entrancy hook invoked synchronously inside StartVoice after the
-    // token is allocated. Tests use it to prove drain-frozen FIFO timing:
-    // commands queued here wait for the next presentation frame.
+    // token is allocated, and inside ReplaceVoice after the victim swap
+    // commits. Tests use it to prove drain-frozen FIFO timing (commands
+    // queued here wait for the next frame) and lifecycle rechecks
+    // (destruction/Stop marked here must discard the new voice).
     std::function<void(BackendVoiceToken)> onStartVoice;
 
     // --- Recorded traffic ---
