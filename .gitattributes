@@ -10,3 +10,11 @@
 /RT2AudioBackend/vendor/miniaudio/miniaudio.h text eol=lf
 /RT2AudioBackend/vendor/miniaudio/miniaudio.c text eol=lf
 /RT2AudioBackend/vendor/miniaudio/LICENSE text eol=lf
+# Audio A4: decoder fixtures are byte-exact oracle inputs. Any EOL
+# conversion would corrupt them and change content fingerprints, so they
+# are binary end to end (this also keeps the ASCII corrupt fixture out of
+# `git diff --check`).
+/RT2AudioProbe/fixtures/*.wav binary
+/RT2AudioProbe/fixtures/*.flac binary
+/RT2AudioProbe/fixtures/*.mp3 binary
+/RT2AudioProbe/fixtures/*.bin binary

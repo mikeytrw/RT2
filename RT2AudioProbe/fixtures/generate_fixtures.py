@@ -84,9 +84,12 @@ def main() -> int:
     (HERE / "corrupt_empty_data.wav").write_bytes(good[:44])
     print("wrote corrupt_empty_data.wav")
     # No decoder magic anywhere (ASCII text: no RIFF/fLaC/MP3 sync): must
-    # refuse in every decoder. (0xFF bytes would false-sync as MP3.)
+    # refuse in every decoder. (0xFF bytes would false-sync as MP3.) No
+    # trailing whitespace: the file is binary-pinned (see .gitattributes).
     (HERE / "corrupt_magic.bin").write_bytes(
-        b"THIS IS NOT AUDIO DATA - no RIFF, fLaC, or MP3 sync lives here. " * 4
+        (b"THIS IS NOT AUDIO DATA - no RIFF, fLaC, or MP3 sync lives here. " * 4).rstrip(
+            b" "
+        )
     )
     print("wrote corrupt_magic.bin")
     return 0
