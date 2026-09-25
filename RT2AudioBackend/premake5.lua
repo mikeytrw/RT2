@@ -1,9 +1,9 @@
 -- RT2AudioBackend/premake5.lua
 --
 -- A1: isolated miniaudio backend static library (review finding 7 closure).
--- The concrete adapter (src/MiniaudioNoDeviceAdapter.cpp) and vendored
--- vendor/miniaudio/miniaudio.c live in this top-level project, outside both
--- RT2App/src and RT2App/vendor, so the broad RT2App src/**.cpp and
+-- The concrete adapters (src/MiniaudioNoDeviceAdapter.cpp, A4
+-- src/ProductionAudioBackend.cpp) and vendored vendor/miniaudio/miniaudio.c
+-- live in this top-level project, outside both RT2App/src and RT2App/vendor, so the broad RT2App src/**.cpp and
 -- vendor/**.c globs cannot compile either translation unit a second time.
 -- RT2App and RT2AudioProbe link this library; RT2Tests and RT2SliceRunner
 -- must never compile or link it (enforced by run_audio_a1_gates.ps1).
@@ -29,10 +29,12 @@ project "RT2AudioBackend"
    -- tracked references stable.
    uuid "D7F38CC6-437F-FA8A-4C90-7D7FB89A568B"
 
-   files {
+    files {
       "src/AudioBackendPin.h",
       "src/MiniaudioNoDeviceAdapter.h",
       "src/MiniaudioNoDeviceAdapter.cpp",
+      "src/ProductionAudioBackend.h",
+      "src/ProductionAudioBackend.cpp",
       "vendor/miniaudio/miniaudio.h",
       "vendor/miniaudio/miniaudio.c",
    }
@@ -40,6 +42,12 @@ project "RT2AudioBackend"
    includedirs {
       "src",
       "vendor/miniaudio",
+      -- A4: the production backend implements the CPU-only IAudioBackend /
+      -- IAudioClipProvider interfaces declared in RT2App/src. This is a
+      -- header-only dependency (no RT2App translation unit is compiled or
+      -- linked here); the A1 gate still proves CPU targets neither compile
+      -- nor link this library.
+      "../RT2App/src",
    }
 
    targetdir ("%{wks.location}/bin/" .. outputdir .. "/%{prj.name}")

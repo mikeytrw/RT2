@@ -17,8 +17,12 @@ project "RT2AudioProbe"
 
    files { "src/**.h", "src/**.cpp" }
 
-   includedirs {
+    includedirs {
       "../RT2AudioBackend/src",
+      -- A4: the production backend header implements the CPU-only
+      -- IAudioBackend / IAudioClipProvider interfaces from RT2App/src
+      -- (header-only; this target compiles no RT2App translation unit).
+      "../RT2App/src",
    }
 
    links {
