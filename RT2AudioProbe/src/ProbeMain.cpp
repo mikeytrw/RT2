@@ -12,12 +12,15 @@
 //   S2  WAV mono f32 decode (determinism, rate/channels/count, sine shape)
 //   S3  WAV stereo f32 decode (channels distinct, L matches mono)
 //   S4  FLAC lossless decode (matches s16 master within 1 ulp)
+//   S4b zero-total FLAC is valid unknown length (identical PCM)
 //   S5  MP3 decode (energy, range, rate/channels)
 //   S6  corrupt inputs refuse with typed errors and publish no cache entry
 //   S7  fingerprint/key mismatch and malformed keys refuse
 //   S8  Fetch dedupe (same key, same immutable object)
 //   S9  old/new fingerprint overlap on one path (distinct PCM, concurrent)
 //   S10 Register/Release (double handle, unknown, live-handle refusal)
+//   S10b registration budget enforcement (10 MiB RED, identity dedupe,
+//       evict-only-unpinned)
 //   S11 exact L/R transport (hard-left/center/hard-right, attenuation,
 //       bus and Master halving through real group volumes)
 //   S12 pitch-2.0 completion range through the thread-safe pitch path
@@ -578,6 +581,38 @@ int main()
     }
     Pass("S4 FLAC lossless decode matches s16 master");
 
+    // ---- S4b: zero-total FLAC is valid unknown length ----
+    //
+    // A STREAMINFO total of zero means unknown (RFC 9639), not corrupt:
+    // the same audio bytes with zeroed total must decode to identical PCM
+    // while a nonzero advertised total still refuses truncation (S6).
+    {
+        if (flac.size() < 26 || std::memcmp(flac.data(), "fLaC", 4) != 0 ||
+            (flac[4] & 0x7F) != 0)
+            return Fail("FLAC fixture has no leading STREAMINFO");
+        std::vector<char> flacUnknown = flac;
+        auto* patched = reinterpret_cast<unsigned char*>(flacUnknown.data());
+        patched[21] &= 0xF0; // keep bps bits, clear total-high nibble
+        patched[22] = patched[23] = patched[24] = patched[25] = 0;
+        const std::string kFlacUnknown = ProductionAudioBackend::BuildClipKey(
+            "asset:flacunknown", "clips/unknown.flac",
+            ProductionAudioBackend::FingerprintBytes(flacUnknown.data(),
+                                                     flacUnknown.size()),
+            "f32le");
+        AudioClipBytes unknownBytes{ kFlacUnknown,
+                                     std::make_shared<const std::vector<char>>(flacUnknown) };
+        auto decodedUnknown = backend.DecodeClip(unknownBytes);
+        if (!decodedUnknown.IsOk())
+            return Fail("zero-total FLAC refused as corrupt");
+        if (decodedUnknown.value->channels != 2 || decodedUnknown.value->frameCount != 48000)
+            return Fail("zero-total FLAC generation has wrong format/count");
+        auto decodedKnown = backend.FetchDecodedGeneration(kFlac);
+        if (!decodedKnown.IsOk() ||
+            decodedKnown.value->pcmInterleaved != decodedUnknown.value->pcmInterleaved)
+            return Fail("zero-total FLAC PCM differs from the advertised-total decode");
+    }
+    Pass("S4b zero-total FLAC is valid unknown length");
+
     // ---- S5: MP3 ----
     {
         auto decoded = backend.FetchDecodedGeneration(kMp3);
@@ -752,6 +787,101 @@ int main()
             return Fail("S10 cleanup failed");
     }
     Pass("S10 register/release incl. live-handle refusal");
+
+    // ---- S10b: registration budget enforcement ----
+    //
+    // Direct registrations count against the same bound as decoded ones
+    // (the A3 provider seam can supply generations independently of
+    // Fetch). A 10 MiB supplied generation under a 1 MiB budget fails
+    // typed Io and pins nothing; an already-held object adds nothing
+    // (identity dedupe); a fitting registration evicts only unpinned
+    // cache entries.
+    {
+        // 10 MiB RED under a 1 MiB budget.
+        ProductionBackendConfig regConfig;
+        regConfig.forceNoDevice = true;
+        regConfig.decodedCacheBudgetBytes = 1048576;
+        ProductionAudioBackend reg;
+        std::string errorText;
+        if (!reg.Initialize(regConfig, errorText))
+            return Fail("registration-budget backend init failed");
+        auto big = MakeDC(0.25f, 2621440); // mono f32 = exactly 10 MiB
+        auto rBig = reg.RegisterDecodedGeneration(big);
+        if (rBig.IsOk())
+            return Fail("10 MiB direct registration unexpectedly fit a 1 MiB budget");
+        if (rBig.error.code != rt2::core::Error::Io)
+            return Fail("over-budget registration is not typed Io");
+        if (rBig.error.detail.find("requires") == std::string::npos ||
+            rBig.error.detail.find("10485760") == std::string::npos ||
+            rBig.error.detail.find("resident") == std::string::npos ||
+            rBig.error.detail.find("budget") == std::string::npos)
+            return Fail("over-budget registration does not name byte counts");
+        if (reg.DecodedCacheResidentBytes() != 0 || reg.LiveVoiceCount() != 0)
+            return Fail("refused registration pinned memory");
+        reg.Shutdown();
+    }
+    {
+        // Identity dedupe + evict-only-unpinned on registration.
+        ProductionBackendConfig evConfig;
+        evConfig.forceNoDevice = true;
+        evConfig.decodedCacheBudgetBytes = 200000;
+        ProductionAudioBackend ev;
+        std::string errorText;
+        if (!ev.Initialize(evConfig, errorText))
+            return Fail("eviction backend init failed");
+        ev.SetClipByteResolver(
+            [&byteMap](const std::string& key) -> rt2::core::Result<AudioClipBytes> {
+                auto it = byteMap.find(key);
+                if (it == byteMap.end())
+                    return rt2::core::Result<AudioClipBytes>::Fail(
+                        rt2::core::Error::MissingAsset, key, "probe has no bytes for this key");
+                return rt2::core::Result<AudioClipBytes>::Ok(it->second);
+            });
+        BackendClipHandle hA;
+        {
+            auto fetchedA = ev.FetchDecodedGeneration(kMono); // 192000 B
+            if (!fetchedA.IsOk())
+                return Fail("eviction fetch A failed");
+            auto regA = ev.RegisterDecodedGeneration(fetchedA.value);
+            if (!regA.IsOk())
+                return Fail("eviction register A failed");
+            hA = regA.value;
+            // Same object twice: distinct handle, residency counted once.
+            auto regA2 = ev.RegisterDecodedGeneration(fetchedA.value);
+            if (!regA2.IsOk() || regA2.value == hA)
+                return Fail("same-object re-register must yield a distinct handle");
+            if (ev.DecodedCacheResidentBytes() != 192000)
+                return Fail("residency double-counted one object");
+            rt2::core::Error error;
+            if (!ev.ReleaseDecodedGeneration(regA2.value, error))
+                return Fail("second handle release failed");
+        } // fetchedA dies here; hA alone pins A.
+        // A fitting registration that needs eviction while A is pinned
+        // must fail instead of exceeding the bound (192000 + 16000 > 200000).
+        auto smallT = MakeDC(0.25f, 4000); // 16000 B
+        if (ev.RegisterDecodedGeneration(smallT).IsOk())
+            return Fail("registration unexpectedly evicted the pinned A");
+        // Releasing the pin lets the same registration evict A and fit.
+        rt2::core::Error error;
+        if (!ev.ReleaseDecodedGeneration(hA, error))
+            return Fail("eviction release A failed");
+        auto rT = ev.RegisterDecodedGeneration(smallT);
+        if (!rT.IsOk())
+            return Fail("registration after unpin failed");
+        if (ev.DecodedCacheEntryCount() != 0)
+            return Fail("evicted entry census wrong");
+        if (ev.DecodedCacheResidentBytes() != 16000)
+            return Fail("post-eviction residency wrong");
+        const AudioSessionId evSession{ 41 };
+        auto tT = ev.StartVoice(rT.value, MakeStart(evSession, AudioBus::Effects, 0.5f, 0.5f));
+        if (!tT.IsOk())
+            return Fail("voice from registered generation failed");
+        if (!ev.StopVoice(tT.value, error) ||
+            !ev.ReleaseDecodedGeneration(rT.value, error))
+            return Fail("S10b cleanup failed");
+        ev.Shutdown();
+    }
+    Pass("S10b registration budget enforcement");
 
     // ---- S11: exact L/R transport + bus/master gains ----
     //
@@ -1130,10 +1260,13 @@ int main()
 
     // ---- S16b: injected short/hard render results ----
     //
-    // The engine pads with silence instead of short-reading, so the
-    // successful-prefix and hard-failure branches are forced with the
-    // render fault hook through the real production path (scratch render
-    // plus caller-buffer discipline, not a parallel fake).
+    // The engine pads with silence instead of short-reading, so these
+    // branches are forced with the render fault hook. ShortOnce performs
+    // the real engine render and truncates only the reported prefix.
+    // FailOnce is labeled simulation: it returns the typed failure before
+    // the engine read, covering the production failure branch and
+    // caller-buffer discipline — valid engine state cannot force a
+    // miniaudio-internal read failure.
     {
         auto dcRegistered = backend.RegisterDecodedGeneration(MakeDC(0.25f));
         if (!dcRegistered.IsOk())
@@ -1227,6 +1360,9 @@ int main()
             return Fail("capped ReplaceVoice failed");
         if (capped.PeakLiveVoices() != 1 || capped.LiveVoiceCount() != 1)
             return Fail("ReplaceVoice exceeded the hard cap");
+        // Audible start + audible replace = two sound starts.
+        if (capped.SoundStartCallCount() != 2)
+            return Fail("audible replace did not start its sound exactly once");
         rt2::core::Error error;
         if (capped.StopVoice(tA.value, error))
             return Fail("victim token unexpectedly valid after replace");
@@ -1295,6 +1431,9 @@ int main()
         auto current = paused.StartVoice(handle, first);
         if (!current.IsOk())
             return Fail("S17b first start failed");
+        // Frozen at creation: the session pause means no sound start.
+        if (paused.SoundStartCallCount() != 0)
+            return Fail("paused start unexpectedly started its sound");
 
         std::atomic<bool> stopReader{ false };
         std::atomic<uint64_t> badFrames{ 0 };
@@ -1336,6 +1475,14 @@ int main()
         reader.join();
         if (!replaceOk)
             return Fail("paused replacement chain failed");
+        // Never-start proof (finding R1): 200 paused replacements chained
+        // under concurrent rendering without a single sound start, so no
+        // audio callback could have been in flight when gains published.
+        // Combined with the all-silence render census above and the exact
+        // resumed gains below, the Pause/Step blip is excluded by
+        // construction, not just unobserved.
+        if (paused.SoundStartCallCount() != 0)
+            return Fail("paused replacement started its sound");
         if (badFrames.load() != 0)
             return Fail("paused replacement leaked audible frames under concurrent render");
         if (renderedFrames.load() == 0)
@@ -1351,6 +1498,9 @@ int main()
             return Fail("surviving paused voice is not frozen");
         if (!paused.SetSessionPaused(pauseSession, false, error))
             return Fail("S17b resume failed");
+        // Resume starts the one surviving frozen voice exactly once.
+        if (paused.SoundStartCallCount() != 1)
+            return Fail("resume did not start the surviving voice exactly once");
         if (!Settle(paused))
             return Fail("S17b resume settle failed");
         RenderAll(paused, out, 512, renderOk);

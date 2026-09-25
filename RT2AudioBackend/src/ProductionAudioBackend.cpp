@@ -149,11 +149,12 @@ uint32_t ReadU32LE(const unsigned char* p) noexcept
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
-// Container-advertised length check (finding 2). WAV and FLAC carry their
-// frame count in the container; a header that promises more frames than
-// the bytes deliver is corruption, not a shorter clip, and must refuse
-// rather than publish a prefix. MP3 carries no trustworthy total, so it
-// stays decoder-error-driven (enforce == false).
+// Container-advertised length check (finding 2, amended by finding R3).
+// WAV and FLAC carry their frame count in the container; a header that
+// promises more frames than the bytes deliver is corruption, not a
+// shorter clip, and must refuse rather than publish a prefix. A FLAC
+// STREAMINFO total of zero means unknown length (valid per RFC 9639) and
+// stays decoder-driven, as does MP3, which carries no trustworthy total.
 struct ContainerCheck
 {
     bool ok = true;            // false: malformed container (refuse with detail)
@@ -313,8 +314,9 @@ ContainerCheck CheckFlacLength(const unsigned char* bytes, size_t size)
                 (static_cast<uint64_t>(s[16]) << 8) | static_cast<uint64_t>(s[17]);
             if (total == 0)
             {
-                out.ok = false;
-                out.detail = "FLAC STREAMINFO advertises an unknown length";
+                // Zero means the length is unknown, which is valid FLAC
+                // (RFC 9639 STREAMINFO): the entry stays decoder-driven
+                // and only non-end decoder errors can still refuse it.
                 return out;
             }
             out.enforce = true;
@@ -665,6 +667,10 @@ struct ProductionAudioBackend::Impl
     uint64_t nextTokenId = 1;
     uint64_t nextHandleId = 1;
     size_t peakLiveVoices = 0;
+    // Successful ma_sound_start calls. Test observability for the paused
+    // never-start guarantee (finding R1): a paused ReplaceVoice must not
+    // add to this count.
+    uint64_t startCalls = 0;
 
     // Group selection and voice lifecycle live on Impl (defined here in
     // the .cpp) so no ma_* type and no private-type name leaks into the
@@ -1326,6 +1332,65 @@ core::Result<rt2::audio::BackendClipHandle> ProductionAudioBackend::RegisterDeco
         return ResultHandle::Fail(core::Error::InvalidArgument,
                                   "audio clip generation",
                                   "decoded generation has an invalid sample rate");
+    // Budget enforcement (finding R2): a supplied generation counts against
+    // the same bound as decoded ones — the A3 provider seam can supply
+    // generations independently of FetchDecodedGeneration. An object
+    // already held (cache entry or earlier registration) adds nothing
+    // (residency dedupes by identity); otherwise unpinned cache entries
+    // are evicted LRU until it fits. Handles stay per-registration; only
+    // residency dedupes. Over-budget registration fails loudly and pins
+    // nothing.
+    const size_t needBytes = Impl::GenerationBytes(generation);
+    bool alreadyCounted = false;
+    for (const auto& entry : m_impl->decodeCache)
+    {
+        if (entry.second.generation.get() == generation.get())
+        {
+            alreadyCounted = true;
+            break;
+        }
+    }
+    if (!alreadyCounted)
+    {
+        for (const auto& entry : m_impl->clips)
+        {
+            if (entry.second.get() == generation.get())
+            {
+                alreadyCounted = true;
+                break;
+            }
+        }
+    }
+    size_t resident = m_impl->PinnedResidentBytes();
+    const size_t added = alreadyCounted ? 0 : needBytes;
+    while (resident + added > m_impl->config.decodedCacheBudgetBytes)
+    {
+        const Impl::CacheEntry* victim = nullptr;
+        std::string victimKey;
+        size_t victimBytes = 0;
+        for (const auto& entry : m_impl->decodeCache)
+        {
+            if (!Impl::IsEvictable(entry.second))
+                continue;
+            if (victim == nullptr || entry.second.lastUsed < victim->lastUsed)
+            {
+                victim = &entry.second;
+                victimKey = entry.first;
+                victimBytes = entry.second.byteSize;
+            }
+        }
+        if (victim == nullptr)
+        {
+            return ResultHandle::Fail(
+                core::Error::Io, "audio clip generation",
+                "decoded cache budget exceeded for direct registration: requires " +
+                    std::to_string(needBytes) + " bytes, resident " +
+                    std::to_string(resident) + " of budget " +
+                    std::to_string(m_impl->config.decodedCacheBudgetBytes));
+        }
+        m_impl->decodeCache.erase(victimKey);
+        resident -= std::min(resident, victimBytes);
+    }
     rt2::audio::BackendClipHandle handle;
     handle.opaque = m_impl->nextHandleId++;
     m_impl->clips[handle.opaque] = std::move(generation);
@@ -1456,6 +1521,7 @@ core::Result<rt2::audio::BackendVoiceToken> ProductionAudioBackend::StartVoice(
                                      "miniaudio sound start failed");
         }
         voice->started = true;
+        ++m_impl->startCalls;
     }
     voice->paused = start.initialPaused;
     voice->token.opaque = m_impl->nextTokenId++;
@@ -1507,41 +1573,39 @@ core::Result<rt2::audio::BackendVoiceToken> ProductionAudioBackend::ReplaceVoice
         }
     }
 
-    // Preparation (fallible) precedes the commit: the replacement sound is
-    // initialized and started SILENT at zero gain, so no audible voice
-    // exists beyond the victim yet. Any failure here leaves the victim
-    // live, mapped, and audible.
-    std::unique_ptr<Impl::Voice> replacement;
-    if (!m_impl->PrepareVoice(generation, ownerKey, clip, start, true, replacement, validation))
-        return ResultToken::Fail(validation.code, validation.path, validation.detail);
-    if (ma_sound_start(&replacement->sound) != MA_SUCCESS)
-    {
-        m_impl->DestroyVoiceObjects(replacement.get());
-        return ResultToken::Fail(core::Error::InvalidRuntimeState,
-                                 "audio voice replace",
-                                 "miniaudio replacement sound start failed");
-    }
-    replacement->started = true;
-
-    // Commit: stop the victim (silent from here), destroy its objects,
-    // then settle the replacement before publishing audible gain. The peak
-    // live count never exceeds the cap: the victim leaves in the same step
-    // the replacement enters it.
-    //
-    // Pause-safe ordering (finding 3): when the replacement must end up
-    // stopped (initialPaused or a paused session), its already-started
-    // silent sound is stopped BEFORE the real gains are published. The
-    // hardware callback can render between any two main-thread operations,
-    // so publishing audible gain onto a still-started sound would make a
-    // Pause/Step-created voice briefly audible, breaking the A3
-    // initialPaused guarantee. The (started, nonzero-gain,
-    // paused-required) combination is unreachable by construction: the
-    // sound is stopped while its gains are still zero, and it is started
-    // with nonzero gains only when it must end up audible.
-    const std::string victimKey = victimVoice->clipKey;
+    // Preparation (fallible) precedes the commit. Whether the replacement
+    // must end up audible is decided BEFORE any sound is started
+    // (finding R1): a replacement that must remain paused is never
+    // started at all, so no audio callback can be in flight for it when
+    // its gains are published — stopping first would still leave a window
+    // for a callback that already passed miniaudio's state check. Any
+    // failure here leaves the victim live, mapped, and audible.
     const bool sessionPaused =
         (m_impl->pausedSessions.find(start.session.value) != m_impl->pausedSessions.end());
     const bool shouldBeStarted = !start.initialPaused && !sessionPaused;
+    std::unique_ptr<Impl::Voice> replacement;
+    if (!m_impl->PrepareVoice(generation, ownerKey, clip, start, true, replacement, validation))
+        return ResultToken::Fail(validation.code, validation.path, validation.detail);
+    if (shouldBeStarted)
+    {
+        if (ma_sound_start(&replacement->sound) != MA_SUCCESS)
+        {
+            m_impl->DestroyVoiceObjects(replacement.get());
+            return ResultToken::Fail(core::Error::InvalidRuntimeState,
+                                     "audio voice replace",
+                                     "miniaudio replacement sound start failed");
+        }
+        replacement->started = true;
+        ++m_impl->startCalls;
+    }
+
+    // Commit: stop the victim (silent from here), destroy its objects,
+    // then publish the replacement's real gains and swap the map entry.
+    // The peak live count never exceeds the cap: the victim leaves in the
+    // same step the replacement enters it. A never-started replacement
+    // stays inaudible through publication; an audible one follows a
+    // stopped victim with no overlap.
+    const std::string victimKey = victimVoice->clipKey;
     ma_sound_stop(&victimVoice->sound);
     m_impl->DestroyVoiceObjects(victimVoice);
     m_impl->voices.erase(victimIt);
@@ -1555,11 +1619,6 @@ core::Result<rt2::audio::BackendVoiceToken> ProductionAudioBackend::ReplaceVoice
         }
     }
 
-    if (!shouldBeStarted)
-    {
-        ma_sound_stop(&replacement->sound);
-        replacement->started = false;
-    }
     replacement->gain.packed.store(
         PackStereoGain(start.initialLeft, start.initialRight),
         std::memory_order_release);
@@ -1654,6 +1713,7 @@ bool ProductionAudioBackend::PauseVoice(rt2::audio::BackendVoiceToken token, boo
             return false;
         }
         voice->started = true;
+        ++m_impl->startCalls;
     }
     else if (!shouldBeStarted && voice->started)
     {
@@ -1815,6 +1875,7 @@ bool ProductionAudioBackend::SetSessionPaused(rt2::audio::AudioSessionId session
                 continue;
             }
             voice->started = true;
+            ++m_impl->startCalls;
         }
         else if (!shouldBeStarted && voice->started)
         {
@@ -1950,9 +2011,12 @@ core::Result<uint32_t> ProductionAudioBackend::RenderNoDeviceFrames(
     // attachments reports zero).
     //
     // Test-fault injection (finding 5): FailOnce simulates the hard engine
-    // failure without touching the engine or caller storage; ShortOnce
-    // performs the real render but reports a truncated successful prefix.
-    // Both consume the armed fault.
+    // failure at the render boundary without touching the engine or caller
+    // storage; ShortOnce performs the real render but reports a truncated
+    // successful prefix. Both consume the armed fault. The FailOnce label
+    // is honest simulation: it covers the production failure branch
+    // (typed error + zero caller mutation), not a miniaudio-internal read
+    // failure, which valid engine state cannot force.
     if (m_impl->renderFault == TestRenderFault::FailOnce)
     {
         m_impl->renderFault = TestRenderFault::None;
@@ -2018,6 +2082,11 @@ size_t ProductionAudioBackend::LiveVoiceCount() const
 size_t ProductionAudioBackend::PeakLiveVoices() const
 {
     return (m_impl != nullptr) ? m_impl->peakLiveVoices : 0;
+}
+
+uint64_t ProductionAudioBackend::SoundStartCallCount() const
+{
+    return (m_impl != nullptr) ? m_impl->startCalls : 0;
 }
 
 size_t ProductionAudioBackend::ActiveVoicesForKey(const std::string& clipKey) const

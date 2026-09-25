@@ -126,8 +126,12 @@ public:
         // Next RenderNoDeviceFrames performs the real engine render but
         // reports only the first ShortFrames() frames (successful prefix).
         ShortOnce = 1,
-        // Next RenderNoDeviceFrames returns the typed engine-failure error
-        // and publishes nothing into caller storage.
+        // Next RenderNoDeviceFrames simulates the hard engine failure at
+        // the render boundary (pre-read): it returns the typed
+        // engine-failure error and publishes nothing into caller storage.
+        // This exercises the production failure branch and caller-buffer
+        // discipline honestly labeled as simulation — a miniaudio-internal
+        // read failure is not forceable with valid engine state.
         FailOnce = 2,
     };
     void TestHook_SetRenderFault(TestRenderFault fault, uint32_t shortFrames = 0);
@@ -203,6 +207,10 @@ public:
     size_t DecodedCacheResidentBytes() const;
     size_t LiveVoiceCount() const;
     size_t PeakLiveVoices() const;
+    // Successful ma_sound_start calls since Initialize. Test observability
+    // for the paused never-start guarantee: a paused StartVoice or
+    // ReplaceVoice must leave this count unchanged.
+    uint64_t SoundStartCallCount() const;
     // Number of live voices referencing `clipKey` (zero-reference LRU
     // observability for the probe).
     size_t ActiveVoicesForKey(const std::string& clipKey) const;
