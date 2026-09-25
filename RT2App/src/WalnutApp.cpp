@@ -2947,6 +2947,19 @@ public:
 			printf("[NGX] %s\n", report.c_str());
 			RT_LOG("[NGX] %s", report.c_str());
 		}
+		// Audio A5 fixup: if a Play session is active, Stop it while the
+		// bridge and backend are still alive (OnSceneStop, explicit audio
+		// teardown with zero voice/command census, physics destroy, clone
+		// reset, authoring re-sync) BEFORE shutting the backend down.
+		// Declaration order alone protects only implicit member
+		// destruction; this explicit Shutdown would otherwise clear all
+		// backend voices/handles while the controller still owns a live
+		// AudioWorld, whose destructor would then stop a session against
+		// an uninitialized backend.
+		if ((m_Runtime.GetState() == rt2::core::SceneRunState::Playing ||
+		     m_Runtime.GetState() == rt2::core::SceneRunState::Paused) &&
+		    m_RenderBridge)
+			EnterStop();
 		// Audio A5: shut the production backend down explicitly. Member
 		// order already guarantees the session died first (the controller
 		// is declared after the backend), so no session voice can outlive

@@ -163,6 +163,23 @@ public:
     AudioUpdateStats Step(const AudioListenerPose& listener,
                           const AudioSourcePose* poses, size_t poseCount);
 
+    // --- A5 fixup: split semantic publication from sample accounting ---
+    //
+    // Hosts with a PCM sink must render between the two: UpdateSemantic
+    // drains commands (including first-frame autoplay), lands final poses,
+    // and publishes mixes WITHOUT moving cursors; the host then renders
+    // exactly the voices/mixes the semantic phase published; AdvanceCursors
+    // moves only live unpaused voices of an unpaused session by the frames
+    // actually rendered. Rendering before the semantic phase would emit a
+    // silent first block while advancing the new voice's cursor, and would
+    // delay same-frame Stop/motion by one frame. Update above is the exact
+    // composition (semantic, then advance) so queue/drain/status contracts
+    // are unchanged for sink-free hosts.
+    AudioUpdateStats UpdateSemantic(const AudioListenerPose& listener,
+                                    const AudioSourcePose* poses,
+                                    size_t poseCount);
+    void AdvanceCursors(uint32_t frames);
+
     // Immediate mixer/session controls (not queued).
     bool SetBusGain(AudioBus bus, float gain, core::Error& outError);
     float BusGain(AudioBus bus) const;

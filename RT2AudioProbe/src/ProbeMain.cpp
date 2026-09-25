@@ -38,6 +38,9 @@
 //       function (TSan: unavailable on MSVC; design is allocation-free
 //       with one acquire load per block)
 //   S19b SetVoiceMix stress through a real rendering voice
+//   S20 A5 semantic/render/accounting phase order through AudioWorld:
+//       first-frame autoplay renders audible PCM, same-frame Stop renders
+//       silence, cursors advance by exactly what rendered
 //
 // Fixtures live in RT2AudioProbe/fixtures (generated; see README.md). The
 // probe reads them into immutable byte vectors and decodes from memory:
@@ -45,8 +48,10 @@
 
 #include "AudioBackendPin.h"
 #include "ProductionAudioBackend.h"
+#include "AudioWorld.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -1808,6 +1813,116 @@ int main()
             return Fail("S19b cleanup failed");
     }
     Pass("S19b SetVoiceMix stress through a real rendering voice");
+
+    // ---- S20: A5 semantic/render/accounting phase order, real PCM ----
+    //
+    // Drives AudioWorld's split phases against the production no-device
+    // engine in controller order (semantic, render, advance). The semantic
+    // phase drains first-frame autoplay and publishes mixes; only then is
+    // PCM rendered; cursors advance by exactly what rendered. Rendering
+    // before the semantic phase (the pre-fixup controller order) would
+    // leave this first block silent while still advancing the cursor.
+    // Runs on a fresh backend so earlier sections' voices cannot leak
+    // into the silence oracle.
+    {
+        ProductionBackendConfig a5Config;
+        a5Config.forceNoDevice = true;
+        ProductionAudioBackend a5backend;
+        std::string a5Error;
+        if (!a5backend.Initialize(a5Config, a5Error))
+            return Fail("S20 backend init failed");
+        a5backend.SetClipByteResolver(
+            [&byteMap](const std::string& key) -> rt2::core::Result<AudioClipBytes> {
+                auto it = byteMap.find(key);
+                if (it == byteMap.end())
+                    return rt2::core::Result<AudioClipBytes>::Fail(
+                        rt2::core::Error::MissingAsset, key,
+                        "probe has no bytes for this key");
+                return rt2::core::Result<AudioClipBytes>::Ok(it->second);
+            });
+        const AudioSessionId a5Session{ 77 };
+        AudioWorld a5world(&a5backend, &a5backend, a5Session,
+                           AudioOwnerKind::Runtime, AudioWorldConfig{});
+        std::array<uint8_t, 16> a5IdBytes{};
+        a5IdBytes[15] = 7;
+        const rt2::core::UUID a5src(a5IdBytes);
+        AudioPlayRequest staged;
+        staged.source = a5src;
+        staged.component.bus = AudioBus::Effects;
+        staged.component.autoplay = true;
+        staged.component.loop = false;
+        staged.component.spatial = false;
+        staged.component.gain = 1.0f;
+        staged.component.pitch = 1.0f;
+        staged.component.minDistance = 1.0f;
+        staged.component.maxDistance = 30.0f;
+        staged.component.rolloff = 1.0f;
+        staged.component.priority = 128;
+        staged.hasTransform = false;
+        staged.clipKey = kMono;
+        a5world.StageAutoplay(staged);
+        if (a5world.StagedAutoplayCount() != 1)
+            return Fail("S20 autoplay staging lost");
+        AudioListenerPose listener; // identity: origin, -Z forward, +Y up
+        a5world.UpdateSemantic(listener, nullptr, 0);
+        if (a5world.LiveVoiceCount() != 1)
+            return Fail("S20 first-frame autoplay produced no voice");
+        if (a5world.StagedAutoplayCount() != 0)
+            return Fail("S20 staging not consumed");
+        std::vector<float> first(800 * kNoDeviceChannels, -1234.5f);
+        AudioPcmWriteBuffer firstBuf{ first.data(), first.size() };
+        auto firstRender = a5backend.RenderNoDeviceFrames(firstBuf, 800);
+        if (!firstRender.IsOk() || firstRender.value != 800)
+            return Fail("S20 first-block render failed");
+        if (MaxAbs(first.data(), first.size()) < 0.05f)
+            return Fail("S20 first autoplay block is silent (render ran before semantic)");
+        a5world.AdvanceCursors(800);
+        {
+            auto voices = a5world.LiveVoicesForSource(a5src);
+            if (voices.size() != 1)
+                return Fail("S20 voice lost after first block");
+            double cursor = 0.0;
+            if (!a5world.GetVoiceCursor(voices[0], cursor) || cursor != 800.0)
+                return Fail("S20 cursor did not advance by exactly what rendered");
+        }
+        // Same-frame Stop: the semantic phase stops the voice, so the
+        // next rendered block carries no tone. The engine flushes a
+        // single residual frame after a mid-stream sound destroy (observed
+        // peak 0.33 on one stereo frame, then exact zeros), so the oracle
+        // is energy-based with an exact-silence tail: under the pre-fixup
+        // render-first order this block would carry the full tone (~100%
+        // of the first block's energy).
+        uint64_t stopSeq = 0;
+        if (!a5world.QueueStop(a5src, stopSeq))
+            return Fail("S20 stop queue refused");
+        a5world.UpdateSemantic(listener, nullptr, 0);
+        if (a5world.LiveVoiceCount() != 0)
+            return Fail("S20 stop did not take effect in its own frame");
+        std::vector<float> second(800 * kNoDeviceChannels, -1234.5f);
+        AudioPcmWriteBuffer secondBuf{ second.data(), second.size() };
+        auto secondRender = a5backend.RenderNoDeviceFrames(secondBuf, 800);
+        if (!secondRender.IsOk() || secondRender.value != 800)
+            return Fail("S20 post-stop render failed");
+        double firstEnergy = 0.0;
+        for (float s : first)
+            firstEnergy += (double)s * (double)s;
+        double secondEnergy = 0.0;
+        for (float s : second)
+            secondEnergy += (double)s * (double)s;
+        if (!(secondEnergy < 0.01 * firstEnergy))
+            return Fail("S20 post-stop block carries tone energy (stop not effective same frame)");
+        if (MaxAbs(second.data() + 2, second.size() - 2) != 0.0f)
+            return Fail("S20 post-stop tail is not exactly silent");
+        a5world.AdvanceCursors(800); // no live voices: must not crash
+        rt2::core::Error shutdownError;
+        if (!a5world.Shutdown(shutdownError))
+            return Fail("S20 world shutdown failed");
+        if (a5world.LiveVoiceCount() != 0 ||
+            a5world.CachedClipGenerationCount() != 0)
+            return Fail("S20 shutdown census not at baseline");
+        a5backend.Shutdown();
+    }
+    Pass("S20 A5 semantic/render/accounting phase order with real PCM");
 
     backend.Shutdown();
     if (backend.Status().productionNoDevice)

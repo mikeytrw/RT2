@@ -529,6 +529,15 @@ public:
         return m_AudioWorld.get();
     }
     rt2::audio::AudioSessionId AudioSession() const { return m_AudioSession; }
+    // Session-pinned decoded generations (A5 fixup): one shared holder per
+    // validated candidate source, assigned on commit and cleared by session
+    // teardown. Pins keep the production LRU from evicting a validated
+    // generation while later sources are fetched or first-frame voices
+    // start; they reference the same immutable objects (no extra bytes).
+    size_t AudioPinnedGenerationCount() const
+    {
+        return m_AudioPinnedGenerations.size();
+    }
     size_t AudioLiveVoiceCount() const
     {
         return m_AudioWorld ? m_AudioWorld->LiveVoiceCount() : 0;
@@ -680,6 +689,10 @@ private:
     rt2::audio::AudioWorldConfig m_AudioWorldConfig;
     std::unique_ptr<rt2::audio::AudioWorld> m_AudioWorld;
     rt2::audio::AudioSessionId m_AudioSession;
+    // A5 fixup: candidate-validated decoded generations pinned for the
+    // session (see StageAudioCandidate). Empty in Edit and after teardown.
+    std::vector<std::shared_ptr<const rt2::audio::DecodedAudioGeneration>>
+        m_AudioPinnedGenerations;
     // Fractional no-device PCM-frame remainder carried across Playing
     // Updates so clamped frame time converts to an exact integer count.
     double m_AudioFrameFrac = 0.0;

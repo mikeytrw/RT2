@@ -866,6 +866,19 @@ AudioUpdateStats AudioWorld::Update(const AudioListenerPose& listener,
                                     const AudioSourcePose* poses, size_t poseCount,
                                     uint32_t framesToAdvance)
 {
+    // Composed frame: semantic drain/publication first, then sample-time
+    // accounting. Hosts with a PCM sink (the controller's no-device slot)
+    // call UpdateSemantic, render, then AdvanceCursors so rendered audio
+    // and cursor/completion accounting agree voice by voice.
+    AudioUpdateStats stats = UpdateSemantic(listener, poses, poseCount);
+    AdvanceCursors(framesToAdvance);
+    return stats;
+}
+
+AudioUpdateStats AudioWorld::UpdateSemantic(const AudioListenerPose& listener,
+                                            const AudioSourcePose* poses,
+                                            size_t poseCount)
+{
     AudioUpdateStats stats = DrainCompletions();
 
     // Freeze the queue once per presentation frame. Re-entrant submissions
@@ -950,15 +963,20 @@ AudioUpdateStats AudioWorld::Update(const AudioListenerPose& listener,
     AudioUpdateStats tail = DrainCompletions();
     stats.completionsReclaimed += tail.completionsReclaimed;
     stats.staleCompletions += tail.staleCompletions;
-
-    // Sample-time advance: only ordinary Updates move unpaused voices.
-    if (framesToAdvance > 0 && !m_SessionPaused)
-    {
-        for (auto& slot : m_Slots)
-            if (slot.live && !slot.paused)
-                slot.cursorFrames += static_cast<double>(framesToAdvance);
-    }
     return stats;
+}
+
+void AudioWorld::AdvanceCursors(uint32_t frames)
+{
+    // Sample-time accounting for frames the host actually rendered (or, on
+    // hardware/fake sessions with no PCM sink, the deterministic frame
+    // delta the host reports). Only live, unpaused voices of an unpaused
+    // session move: paused voices and Step frames stay sample-frozen.
+    if (frames == 0 || m_SessionPaused)
+        return;
+    for (auto& slot : m_Slots)
+        if (slot.live && !slot.paused)
+            slot.cursorFrames += static_cast<double>(frames);
 }
 
 AudioUpdateStats AudioWorld::Step(const AudioListenerPose& listener,

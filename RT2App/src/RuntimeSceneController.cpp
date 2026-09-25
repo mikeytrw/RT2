@@ -359,6 +359,15 @@ bool RuntimeSceneController::StageAudioCandidate(
     // missing/corrupt/unsupported clip, or a spatial source whose decoded
     // generation is not mono, refuses Play atomically with zero session
     // voices, handles, callbacks, and bridge calls.
+    //
+    // A5 fixup: every validated generation is retained in the session pin
+    // set as it is fetched. The production LRU evicts only generations
+    // with no outside holder, so holding A while fetching B turns a
+    // combined over-budget candidate into a loud pre-commit refusal
+    // instead of a silent eviction that commits and fails a voice later.
+    // Pins live exactly with the session (assigned on commit, cleared by
+    // session teardown); a refused candidate's local pins die with it.
+    std::vector<std::shared_ptr<const rt2::audio::DecodedAudioGeneration>> pins;
     for (const BoundSource& entry : bound)
     {
         std::string key;
@@ -410,6 +419,10 @@ bool RuntimeSceneController::StageAudioCandidate(
                          " decoded to stereo (spatial sources must be mono)";
             return false;
         }
+        // Pin the validated generation before the next source is fetched:
+        // a later over-budget fetch then refuses loudly instead of
+        // evicting this source's proof underneath a committed Play.
+        pins.push_back(fetched.value);
         if (entry.component.autoplay)
         {
             rt2::audio::AudioPlayRequest req;
@@ -424,6 +437,7 @@ bool RuntimeSceneController::StageAudioCandidate(
         }
     }
     m_AudioSession = session;
+    m_AudioPinnedGenerations = std::move(pins);
     outWorld = std::move(world);
     return true;
 }
@@ -470,6 +484,14 @@ void RuntimeSceneController::UpdateAudioSlot(float frameDt)
         return;
     std::vector<rt2::audio::AudioSourcePose> poses;
     CollectAudioPoses(poses);
+    // Phase 1 (semantic) runs BEFORE any PCM is rendered: drain the FIFO
+    // (queued Stop/Play and first-frame autoplay), land final poses, and
+    // publish mixes. Rendering first would emit a silent first block for
+    // autoplay while advancing the new voice's cursor, and would delay a
+    // same-frame Stop or source/listener move by one frame.
+    m_AudioWorld->UpdateSemantic(m_AudioListenerPose,
+                                 poses.empty() ? nullptr : poses.data(),
+                                 poses.size());
     // Ordinary Playing Updates convert clamped frame time to an integer
     // PCM-frame count with a fractional accumulator. The count drives both
     // the production no-device pump and the world's sample-cursor advance,
@@ -479,6 +501,8 @@ void RuntimeSceneController::UpdateAudioSlot(float frameDt)
                          m_AudioFrameFrac;
     const uint32_t frames = static_cast<uint32_t>(std::floor(exact));
     m_AudioFrameFrac = exact - static_cast<double>(frames);
+    // Phase 2 (PCM): production no-device fallback only. The fake and
+    // hardware sessions report no PCM here.
     uint32_t advance = frames;
     if (m_AudioBackend != nullptr && frames > 0 &&
         m_AudioBackend->Status().productionNoDevice)
@@ -514,9 +538,8 @@ void RuntimeSceneController::UpdateAudioSlot(float frameDt)
             printf("[Runtime] Audio no-device stall: requested %u frames, rendered none\n",
                    frames);
     }
-    m_AudioWorld->Update(m_AudioListenerPose,
-                         poses.empty() ? nullptr : poses.data(), poses.size(),
-                         advance);
+    // Phase 3 (accounting): advance exactly the voices that rendered.
+    m_AudioWorld->AdvanceCursors(advance);
 }
 
 void RuntimeSceneController::StepAudioSlot()
@@ -551,6 +574,10 @@ void RuntimeSceneController::TeardownAudioSession(const char* context)
            "AudioWorld teardown must return the queued-command census to zero");
     m_AudioWorld.reset();
     m_AudioSession = rt2::audio::AudioSessionId{};
+    // A5 fixup: release the candidate pins with the session. World,
+    // backend, and voice holders are already gone, so pinned generations
+    // become evictable exactly when the session ends — never mid-session.
+    m_AudioPinnedGenerations.clear();
     m_AudioFrameFrac = 0.0;
 }
 

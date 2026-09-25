@@ -15,7 +15,18 @@ project "RT2AudioProbe"
    -- Pinned identity (same rationale as RT2AudioBackend).
    uuid "67AB1F1E-D36B-9B54-9CA6-E4D10826E030"
 
-   files { "src/**.h", "src/**.cpp" }
+    files { "src/**.h", "src/**.cpp" }
+
+    -- A5 fixup: S20 drives AudioWorld's split phases against the
+    -- production no-device engine. These CPU-only engine sources (plus
+    -- their core TU dependencies) carry no miniaudio/device types; the
+    -- adapter and miniaudio.c still compile exactly once in
+    -- RT2AudioBackend (A1 gate).
+    files {
+        "../RT2App/src/AudioWorld.cpp",
+        "../RT2App/src/core/UUID.cpp",
+        "../RT2App/src/core/Error.cpp",
+    }
 
     includedirs {
       "../RT2AudioBackend/src",
