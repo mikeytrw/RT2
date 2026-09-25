@@ -40,9 +40,11 @@ struct ProductionBackendConfig
     // the editor leaves it false so real hardware is used when present.
     bool forceNoDevice = false;
     // Immutable decoded-generation cache budget (READY plan: 256 MiB
-    // default, configurable at startup). Eviction is deterministic LRU
-    // among zero-voice-reference generations; active generations are
-    // never evicted.
+    // default, configurable at startup). The budget counts every live PCM
+    // object the backend holds — cache entries and registered handles
+    // alike. Eviction is deterministic LRU among entries with no owners
+    // outside the cache (no live voices, no registrations, no world or
+    // provider holders); pinned generations are never evicted.
     size_t decodedCacheBudgetBytes = 256ULL * 1024ULL * 1024ULL;
     // Hard backend voice cap. StartVoice beyond the cap fails loudly;
     // ReplaceVoice commits within one capacity unit and is exempt.
@@ -105,6 +107,30 @@ public:
     void Shutdown();
 
     void SetClipByteResolver(ClipByteResolver resolver);
+
+    // --- Test-only fault hooks (RT2AudioProbe-driven; inert unless armed) ---
+    //
+    // Each hook is single-shot: the Initialize/Render that observes it
+    // consumes it. They exist so the probe can force paths no real input
+    // reaches deterministically (hardware-open failure, per-group init
+    // failure, short/hard render results). Production hosts never arm them.
+    // Fires the hardware-open failure once on the next Initialize that
+    // does not force no-device: the engine reopens diagnosed no-device.
+    void TestHook_FailHardwareOpenOnce();
+    // Fails one mixer-group init ("master", "music", "effects", or "ui") on
+    // the next Initialize; "" disarms. Only owned groups are unwound.
+    void TestHook_FailGroupInit(const std::string& group);
+    enum class TestRenderFault : uint8_t
+    {
+        None = 0,
+        // Next RenderNoDeviceFrames performs the real engine render but
+        // reports only the first ShortFrames() frames (successful prefix).
+        ShortOnce = 1,
+        // Next RenderNoDeviceFrames returns the typed engine-failure error
+        // and publishes nothing into caller storage.
+        FailOnce = 2,
+    };
+    void TestHook_SetRenderFault(TestRenderFault fault, uint32_t shortFrames = 0);
 
     // --- IAudioClipProvider (immutable generations, fingerprint LRU) ---
     core::Result<std::shared_ptr<const rt2::audio::DecodedAudioGeneration>> FetchDecodedGeneration(

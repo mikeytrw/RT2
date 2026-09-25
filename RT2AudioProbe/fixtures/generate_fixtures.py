@@ -77,7 +77,8 @@ def main() -> int:
     write_wav(HERE / "tone660_stereo_s16.wav", 2, stereo_s16, 2)
 
     good = (HERE / "tone440_mono_f32.wav").read_bytes()
-    # Mid-data cut: still decodes, with fewer frames (graceful prefix).
+    # Mid-data cut with the header still advertising the full second: a
+    # corrupt clip that must refuse (length mismatch), not decode short.
     (HERE / "corrupt_truncated.wav").write_bytes(good[: len(good) - 3])
     print("wrote corrupt_truncated.wav")
     # Valid header, zero data frames: must refuse (empty decode).

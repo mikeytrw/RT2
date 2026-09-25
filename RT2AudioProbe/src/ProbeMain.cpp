@@ -7,6 +7,8 @@
 // Every refusal prints to stderr and exits nonzero (this codebase's
 // characteristic bug is silent failure). Sections:
 //   S1  pin, no-device mode, lock-free gain atomic
+//   S1b forced hardware-open failure falls back to diagnosed no-device
+//   S1c per-group init failure unwinds owned groups only (injected)
 //   S2  WAV mono f32 decode (determinism, rate/channels/count, sine shape)
 //   S3  WAV stereo f32 decode (channels distinct, L matches mono)
 //   S4  FLAC lossless decode (matches s16 master within 1 ulp)
@@ -24,11 +26,15 @@
 //   S15 StopSessionVoices census
 //   S16 RenderNoDeviceFrames validation matrix, idle silence, prefix
 //       discipline, post-shutdown hard failure (caller storage untouched)
+//   S16b injected short/hard render results with caller-buffer proof
 //   S17 hard-cap ReplaceVoice (one-unit commit, victim preserved on failure)
+//   S17b concurrent paused-replacement rendering stays silent
 //   S18 over-budget decode names asset and byte counts, publishes nothing
+//   S18b pinned (registered) generations count against the budget
 //   S19 torn-pair stress on the packed L/R atomic through the real block
 //       function (TSan: unavailable on MSVC; design is allocation-free
 //       with one acquire load per block)
+//   S19b SetVoiceMix stress through a real rendering voice
 //
 // Fixtures live in RT2AudioProbe/fixtures (generated; see README.md). The
 // probe reads them into immutable byte vectors and decodes from memory:
@@ -38,7 +44,9 @@
 #include "ProductionAudioBackend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -232,6 +240,42 @@ std::shared_ptr<const DecodedAudioGeneration> MakeDC(float value, uint32_t frame
     return gen;
 }
 
+// Synthesizes canonical float32 mono WAV bytes (44-byte header + data) for
+// budget-sized decode inputs. Mirrors fixtures/generate_fixtures.py.
+std::vector<char> BuildWavF32MonoDC(float value, uint32_t frames)
+{
+    std::vector<char> bytes;
+    bytes.resize(44 + static_cast<size_t>(frames) * 4);
+    auto put32 = [&](size_t at, uint32_t v) {
+        bytes[at + 0] = static_cast<char>(v & 0xFF);
+        bytes[at + 1] = static_cast<char>((v >> 8) & 0xFF);
+        bytes[at + 2] = static_cast<char>((v >> 16) & 0xFF);
+        bytes[at + 3] = static_cast<char>((v >> 24) & 0xFF);
+    };
+    auto put16 = [&](size_t at, uint32_t v) {
+        bytes[at + 0] = static_cast<char>(v & 0xFF);
+        bytes[at + 1] = static_cast<char>((v >> 8) & 0xFF);
+    };
+    const uint32_t dataBytes = frames * 4;
+    std::memcpy(bytes.data() + 0, "RIFF", 4);
+    put32(4, 36 + dataBytes);
+    std::memcpy(bytes.data() + 8, "WAVE", 4);
+    std::memcpy(bytes.data() + 12, "fmt ", 4);
+    put32(16, 16);
+    put16(20, 3); // IEEE float
+    put16(22, 1); // mono
+    put32(24, 48000);
+    put32(28, 48000 * 4);
+    put16(32, 4);
+    put16(34, 32);
+    std::memcpy(bytes.data() + 36, "data", 4);
+    put32(40, dataBytes);
+    float* samples = reinterpret_cast<float*>(bytes.data() + 44);
+    for (uint32_t f = 0; f < frames; ++f)
+        samples[f] = value;
+    return bytes;
+}
+
 // Renders and discards `frames` engine frames (pipeline settle after a
 // voice start/stop/mix change: the block-cached mixer needs a few frames
 // to flush stale content and latency).
@@ -292,6 +336,62 @@ int main()
             return Fail("no-device status detail does not name the mode");
     }
     Pass("S1 no-device mode + lock-free gain atomic");
+
+    // ---- S1b: injected hardware-open failure falls back ----
+    {
+        ProductionAudioBackend fallback;
+        fallback.TestHook_FailHardwareOpenOnce();
+        ProductionBackendConfig hwConfig; // forceNoDevice == false
+        std::string errorText;
+        if (!fallback.Initialize(hwConfig, errorText))
+        {
+            std::fprintf(stderr, "RT2AudioProbe FAIL: fallback init: %s\n",
+                         errorText.empty() ? "unknown" : errorText.c_str());
+            return 1;
+        }
+        const AudioBackendStatus status = fallback.Status();
+        if (!status.productionNoDevice)
+            return Fail("fallback backend does not report production no-device");
+        if (status.detail.find("fallback") == std::string::npos ||
+            status.detail.find("injected") == std::string::npos)
+            return Fail("fallback diagnostic does not name the injected failure");
+        fallback.Shutdown();
+    }
+    Pass("S1b injected hardware-open failure falls back to diagnosed no-device");
+
+    // ---- S1c: per-group init failure unwinds owned groups only ----
+    {
+        const char* groups[] = { "master", "music", "effects", "ui" };
+        for (const char* group : groups)
+        {
+            ProductionAudioBackend partial;
+            partial.TestHook_FailGroupInit(group);
+            std::string errorText;
+            if (partial.Initialize(config, errorText))
+                return FailDetail(std::string("group-init injection at ") + group +
+                                  " unexpectedly succeeded");
+            if (errorText.find(group) == std::string::npos)
+                return FailDetail(std::string("group-init diagnostic at ") + group +
+                                  " does not name the failed group");
+            if (partial.IsInitialized())
+                return FailDetail(std::string("partial init at ") + group +
+                                  " reports initialized");
+            if (partial.Status().productionNoDevice)
+                return FailDetail(std::string("failed init at ") + group +
+                                  " reports no-device status");
+            if (partial.LiveVoiceCount() != 0 || partial.DecodedCacheEntryCount() != 0)
+                return FailDetail(std::string("failed init at ") + group + " left residue");
+            // A clean retry on the same object proves the unwind left no
+            // half-initialized group behind (an uninitialized-group uninit
+            // would crash instead of failing loudly).
+            std::string retryError;
+            if (!partial.Initialize(config, retryError))
+                return FailDetail(std::string("clean retry after ") + group +
+                                  " failure failed: " + retryError);
+            partial.Shutdown();
+        }
+    }
+    Pass("S1c per-group init failure unwinds owned groups only");
 
     // ---- Fixtures ----
     bool ok = false;
@@ -495,6 +595,12 @@ int main()
     Pass("S5 MP3 decode (energy, range, 48k stereo)");
 
     // ---- S6: corrupt inputs refuse ----
+    //
+    // The READY Play contract refuses any corrupt persisted clip
+    // atomically. A header that promises more frames than the bytes
+    // deliver is corruption, not a shorter clip: the checked-in truncated
+    // WAV (header claims the full second, data is cut) must refuse, as
+    // must a mid-stream FLAC cut (STREAMINFO-advertised vs decoded).
     {
         const size_t before = backend.DecodedCacheEntryCount();
         AudioClipBytes badMagic{ KeyFor(backend, "asset:bad", "clips/bad.bin", magic),
@@ -505,28 +611,34 @@ int main()
             return Fail("cannot read fixtures/corrupt_empty_data.wav");
         AudioClipBytes badEmpty{ KeyFor(backend, "asset:bad", "clips/empty.wav", emptyData),
                                  std::make_shared<const std::vector<char>>(emptyData) };
+        AudioClipBytes badCut{ KeyFor(backend, "asset:bad", "clips/cut.wav", truncated),
+                               std::make_shared<const std::vector<char>>(truncated) };
         auto r1 = backend.DecodeClip(badMagic);
         auto r2 = backend.DecodeClip(badEmpty);
-        if (r1.IsOk() || r2.IsOk())
+        auto r3 = backend.DecodeClip(badCut);
+        if (r1.IsOk() || r2.IsOk() || r3.IsOk())
             return Fail("corrupt input decoded without error");
         if (r1.error.code == rt2::core::Error::None ||
-            r2.error.code == rt2::core::Error::None)
+            r2.error.code == rt2::core::Error::None ||
+            r3.error.code == rt2::core::Error::None)
             return Fail("corrupt refusal carries no typed error");
+        if (r3.error.detail.find("advertises") == std::string::npos &&
+            r3.error.detail.find("decoded") == std::string::npos &&
+            r3.error.detail.find("size") == std::string::npos)
+            return Fail("truncated refusal does not name the length mismatch");
+        // Truncated FLAC: STREAMINFO advertises the full second while the
+        // bytes stop mid-stream.
+        const std::vector<char> flacCut(flac.begin(),
+                                        flac.begin() + static_cast<ptrdiff_t>(flac.size() / 2));
+        AudioClipBytes badFlac{ KeyFor(backend, "asset:bad", "clips/cut.flac", flacCut),
+                                std::make_shared<const std::vector<char>>(flacCut) };
+        auto r4 = backend.DecodeClip(badFlac);
+        if (r4.IsOk())
+            return Fail("truncated FLAC decoded without error");
+        if (r4.error.code == rt2::core::Error::None)
+            return Fail("truncated FLAC refusal carries no typed error");
         if (backend.DecodedCacheEntryCount() != before)
             return Fail("corrupt decode published a cache entry");
-        // Mid-data truncation is a graceful prefix, not a refusal: fewer
-        // frames than the full file, same leading content and energy.
-        AudioClipBytes cut{ KeyFor(backend, "asset:cut", "clips/cut.wav", truncated),
-                            std::make_shared<const std::vector<char>>(truncated) };
-        auto r3 = backend.DecodeClip(cut);
-        if (!r3.IsOk())
-            return Fail("mid-data truncation unexpectedly refused");
-        if (r3.value->frameCount >= 48000 || r3.value->frameCount < 47000)
-            return Fail("truncated decode did not yield a shorter prefix");
-        if (r3.value->pcmInterleaved !=
-            std::vector<float>(monoGen->pcmInterleaved.begin(),
-                               monoGen->pcmInterleaved.begin() + r3.value->frameCount))
-            return Fail("truncated prefix differs from the full decode");
     }
     Pass("S6 corrupt inputs refuse with typed errors");
 
@@ -1016,6 +1128,70 @@ int main()
     }
     Pass("S16 render validation, short-read prefix, hard-failure silence");
 
+    // ---- S16b: injected short/hard render results ----
+    //
+    // The engine pads with silence instead of short-reading, so the
+    // successful-prefix and hard-failure branches are forced with the
+    // render fault hook through the real production path (scratch render
+    // plus caller-buffer discipline, not a parallel fake).
+    {
+        auto dcRegistered = backend.RegisterDecodedGeneration(MakeDC(0.25f));
+        if (!dcRegistered.IsOk())
+            return Fail("S16b DC register failed");
+        const BackendClipHandle handle = dcRegistered.value;
+        auto token =
+            backend.StartVoice(handle, MakeStart(kSession, AudioBus::Effects, 0.5f, 0.5f));
+        if (!token.IsOk())
+            return Fail("S16b voice start failed");
+        if (!Settle(backend))
+            return Fail("S16b settle failed");
+        constexpr float kSentinel = -1234.5f;
+        std::vector<float> guarded(kNoDeviceMaxFramesPerRender * kNoDeviceChannels, kSentinel);
+        // Injected short render: the real engine output is produced, but
+        // only the first 100 frames are reported and published; the caller
+        // tail stays untouched.
+        backend.TestHook_SetRenderFault(ProductionAudioBackend::TestRenderFault::ShortOnce, 100);
+        {
+            AudioPcmWriteBuffer buf{ guarded.data(), guarded.size() };
+            auto shortRes = backend.RenderNoDeviceFrames(buf, 480);
+            if (!shortRes.IsOk() || shortRes.value != 100)
+                return Fail("injected short render did not report its prefix");
+            for (uint32_t f = 0; f < 100; ++f)
+            {
+                if (guarded[f * 2 + 0] != 0.125f || guarded[f * 2 + 1] != 0.125f)
+                    return Fail("injected short prefix is not the settled stream");
+            }
+            if (!AllSentinel(guarded.data() + 100 * 2, guarded.size() - 100 * 2, kSentinel))
+                return Fail("injected short render touched beyond its prefix");
+        }
+        // Injected hard failure: typed error, caller storage untouched.
+        backend.TestHook_SetRenderFault(ProductionAudioBackend::TestRenderFault::FailOnce);
+        {
+            std::fill(guarded.begin(), guarded.end(), kSentinel);
+            AudioPcmWriteBuffer buf{ guarded.data(), guarded.size() };
+            auto hardRes = backend.RenderNoDeviceFrames(buf, 480);
+            if (hardRes.IsOk())
+                return Fail("injected hard failure unexpectedly succeeded");
+            if (hardRes.error.code == rt2::core::Error::None)
+                return Fail("injected hard failure carries no typed error");
+            if (!AllSentinel(guarded.data(), guarded.size(), kSentinel))
+                return Fail("injected hard failure mutated caller storage");
+        }
+        // Faults are single-shot: the next render is normal again.
+        {
+            std::fill(guarded.begin(), guarded.end(), kSentinel);
+            AudioPcmWriteBuffer buf{ guarded.data(), guarded.size() };
+            auto normal = backend.RenderNoDeviceFrames(buf, 480);
+            if (!normal.IsOk() || normal.value != 480 || guarded[0] != 0.125f)
+                return Fail("post-fault render did not resume normally");
+        }
+        rt2::core::Error error;
+        if (!backend.StopVoice(token.value, error) ||
+            !backend.ReleaseDecodedGeneration(handle, error))
+            return Fail("S16b cleanup failed");
+    }
+    Pass("S16b injected short/hard render results");
+
     // ---- S17: hard-cap ReplaceVoice ----
     {
         ProductionBackendConfig capConfig;
@@ -1089,6 +1265,103 @@ int main()
     }
     Pass("S17 hard-cap ReplaceVoice (one-unit commit, victim preserved)");
 
+    // ---- S17b: paused replacement stays silent under concurrent render ----
+    //
+    // The hardware callback can render between any two main-thread
+    // operations, so a paused ReplaceVoice that published audible gain
+    // before stopping its prepared sound would leak audible frames. A
+    // reader thread renders continuously while the main thread chains
+    // paused replacements; every frame must be exactly silent. (This
+    // mirrors standard device usage: the engine mixes on the reader while
+    // the main thread starts/stops/destroys sounds.)
+    {
+        ProductionBackendConfig pauseConfig;
+        pauseConfig.forceNoDevice = true;
+        pauseConfig.maxVoices = 4;
+        ProductionAudioBackend paused;
+        std::string errorText;
+        if (!paused.Initialize(pauseConfig, errorText))
+            return Fail("paused backend init failed");
+        auto dcRegistered = paused.RegisterDecodedGeneration(MakeDC(0.25f));
+        if (!dcRegistered.IsOk())
+            return Fail("S17b DC register failed");
+        const BackendClipHandle handle = dcRegistered.value;
+        const AudioSessionId pauseSession{ 21 };
+        rt2::core::Error error;
+        if (!paused.SetSessionPaused(pauseSession, true, error))
+            return Fail("S17b session pause failed");
+        BackendVoiceStart first = MakeStart(pauseSession, AudioBus::Effects, 0.5f, 0.5f);
+        first.initialPaused = false; // session pause alone must freeze it
+        auto current = paused.StartVoice(handle, first);
+        if (!current.IsOk())
+            return Fail("S17b first start failed");
+
+        std::atomic<bool> stopReader{ false };
+        std::atomic<uint64_t> badFrames{ 0 };
+        std::atomic<uint64_t> renderedFrames{ 0 };
+        std::thread reader([&]() {
+            std::vector<float> chunk(256 * kNoDeviceChannels);
+            for (;;)
+            {
+                AudioPcmWriteBuffer buf{ chunk.data(), chunk.size() };
+                auto res = paused.RenderNoDeviceFrames(buf, 256);
+                if (!res.IsOk() || res.value > 256)
+                {
+                    badFrames.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+                for (uint32_t f = 0; f < res.value; ++f)
+                {
+                    if (chunk[f * 2 + 0] != 0.0f || chunk[f * 2 + 1] != 0.0f)
+                        badFrames.fetch_add(1, std::memory_order_relaxed);
+                }
+                renderedFrames.fetch_add(res.value, std::memory_order_relaxed);
+                if (stopReader.load(std::memory_order_acquire))
+                    return;
+            }
+        });
+        bool replaceOk = true;
+        for (int i = 0; i < 200 && replaceOk; ++i)
+        {
+            BackendVoiceStart next =
+                MakeStart(pauseSession, AudioBus::Effects, 0.5f, 0.5f);
+            next.initialPaused = (i % 2 == 0); // alternate both pause paths
+            auto replaced = paused.ReplaceVoice(current.value, handle, next);
+            if (!replaced.IsOk())
+                replaceOk = false;
+            else
+                current = replaced;
+        }
+        stopReader.store(true, std::memory_order_release);
+        reader.join();
+        if (!replaceOk)
+            return Fail("paused replacement chain failed");
+        if (badFrames.load() != 0)
+            return Fail("paused replacement leaked audible frames under concurrent render");
+        if (renderedFrames.load() == 0)
+            return Fail("concurrent reader rendered nothing");
+        if (paused.LiveVoiceCount() != 1)
+            return Fail("paused replacement chain census wrong");
+        // The surviving voice is frozen: deterministically silent, then
+        // audible after resume (proves it is a real voice, not dead).
+        std::vector<float> out;
+        bool renderOk = false;
+        RenderAll(paused, out, 1024, renderOk);
+        if (!renderOk || !AllZero(out.data(), out.size()))
+            return Fail("surviving paused voice is not frozen");
+        if (!paused.SetSessionPaused(pauseSession, false, error))
+            return Fail("S17b resume failed");
+        if (!Settle(paused))
+            return Fail("S17b resume settle failed");
+        RenderAll(paused, out, 512, renderOk);
+        if (!renderOk || MaxAbs(out.data(), out.size()) < 0.05f)
+            return Fail("resumed replacement carries no energy");
+        if (!paused.StopVoice(current.value, error))
+            return Fail("S17b cleanup stop failed");
+        paused.Shutdown();
+    }
+    Pass("S17b paused replacement stays silent under concurrent render");
+
     // ---- S18: over-budget decode ----
     {
         ProductionBackendConfig tinyConfig;
@@ -1122,6 +1395,101 @@ int main()
         tiny.Shutdown();
     }
     Pass("S18 over-budget decode names asset and byte counts");
+
+    // ---- S18b: pinned generations count against the budget ----
+    //
+    // Two 1 MiB clips under a 1 MiB budget. Fetching and registering A
+    // pins its full PCM; fetching B must then fail loudly instead of
+    // evicting A (whose bytes stay resident through the handle) and
+    // exceeding the bound. After the registration is released, B fits by
+    // evicting the now-unpinned A, and the stale A handle refuses loudly.
+    {
+        constexpr uint32_t kBigFrames = 262144; // mono f32 = exactly 1 MiB
+        const std::vector<char> wavA = BuildWavF32MonoDC(0.25f, kBigFrames);
+        const std::vector<char> wavB = BuildWavF32MonoDC(0.5f, kBigFrames);
+        const std::string kBigA = ProductionAudioBackend::BuildClipKey(
+            "asset:bigA", "clips/bigA.wav",
+            ProductionAudioBackend::FingerprintBytes(wavA.data(), wavA.size()), "f32le");
+        const std::string kBigB = ProductionAudioBackend::BuildClipKey(
+            "asset:bigB", "clips/bigB.wav",
+            ProductionAudioBackend::FingerprintBytes(wavB.data(), wavB.size()), "f32le");
+        ProductionBackendConfig mibConfig;
+        mibConfig.forceNoDevice = true;
+        mibConfig.decodedCacheBudgetBytes = 1048576;
+        ProductionAudioBackend mib;
+        std::string errorText;
+        if (!mib.Initialize(mibConfig, errorText))
+            return Fail("MiB backend init failed");
+        mib.SetClipByteResolver(
+            [&wavA, &wavB, &kBigA, &kBigB](const std::string& key)
+                -> rt2::core::Result<AudioClipBytes> {
+                if (key == kBigA)
+                    return rt2::core::Result<AudioClipBytes>::Ok(
+                        AudioClipBytes{ kBigA,
+                                        std::make_shared<const std::vector<char>>(wavA) });
+                if (key == kBigB)
+                    return rt2::core::Result<AudioClipBytes>::Ok(
+                        AudioClipBytes{ kBigB,
+                                        std::make_shared<const std::vector<char>>(wavB) });
+                return rt2::core::Result<AudioClipBytes>::Fail(
+                    rt2::core::Error::MissingAsset, key, "probe has no bytes for this key");
+            });
+        BackendClipHandle hA;
+        {
+            auto fetchedA = mib.FetchDecodedGeneration(kBigA);
+            if (!fetchedA.IsOk() || fetchedA.value->frameCount != kBigFrames)
+                return Fail("MiB fetch A failed");
+            auto registeredA = mib.RegisterDecodedGeneration(fetchedA.value);
+            if (!registeredA.IsOk())
+                return Fail("MiB register A failed");
+            hA = registeredA.value;
+        } // fetchedA reference dies here; the registration pins A.
+        if (mib.DecodedCacheResidentBytes() != 1048576)
+            return Fail("MiB residency does not count the pinned generation");
+        auto overB = mib.FetchDecodedGeneration(kBigB);
+        if (overB.IsOk())
+            return Fail("MiB fetch B unexpectedly evicted the pinned A");
+        if (overB.error.code != rt2::core::Error::Io)
+            return Fail("MiB pinned-budget failure is not typed Io");
+        if (overB.error.detail.find(kBigB) == std::string::npos ||
+            overB.error.detail.find("1048576") == std::string::npos)
+            return Fail("MiB failure does not name asset and byte counts");
+        if (mib.DecodedCacheEntryCount() != 1 ||
+            mib.DecodedCacheResidentBytes() != 1048576)
+            return Fail("MiB failed fetch mutated the cache census");
+        // A voice still starts from the pinned handle while B is refused.
+        const AudioSessionId mibSession{ 31 };
+        auto tA = mib.StartVoice(hA, MakeStart(mibSession, AudioBus::Effects, 0.5f, 0.5f));
+        if (!tA.IsOk())
+            return Fail("MiB voice from pinned handle failed");
+        rt2::core::Error error;
+        if (!mib.StopVoice(tA.value, error))
+            return Fail("MiB voice stop failed");
+        // Releasing the pin lets B fit by evicting A; the stale A handle
+        // then refuses loudly instead of addressing B's bytes.
+        if (!mib.ReleaseDecodedGeneration(hA, error))
+            return Fail("MiB release A failed");
+        auto fetchedB = mib.FetchDecodedGeneration(kBigB);
+        if (!fetchedB.IsOk())
+            return Fail("MiB fetch B after unpin failed");
+        if (mib.DecodedCacheEntryCount() != 1 ||
+            mib.DecodedCacheResidentBytes() != 1048576)
+            return Fail("MiB post-eviction census wrong");
+        if (mib.StartVoice(hA, MakeStart(mibSession, AudioBus::Effects, 0.5f, 0.5f)).IsOk())
+            return Fail("evicted handle unexpectedly started a voice");
+        auto registeredB = mib.RegisterDecodedGeneration(fetchedB.value);
+        if (!registeredB.IsOk())
+            return Fail("MiB register B failed");
+        auto tB = mib.StartVoice(registeredB.value,
+                                 MakeStart(mibSession, AudioBus::Effects, 0.5f, 0.5f));
+        if (!tB.IsOk())
+            return Fail("MiB voice from B failed");
+        if (!mib.StopVoice(tB.value, error) ||
+            !mib.ReleaseDecodedGeneration(registeredB.value, error))
+            return Fail("S18b cleanup failed");
+        mib.Shutdown();
+    }
+    Pass("S18b pinned generations count against the budget");
 
     // ---- S19: torn-pair stress through the real block function ----
     {
@@ -1193,6 +1561,103 @@ int main()
                     (unsigned long long)countA, (unsigned long long)countB);
     }
     Pass("S19 packed L/R atomic never tears");
+
+    // ---- S19b: SetVoiceMix stress through a real rendering voice ----
+    //
+    // S19 proves the primitive; this drives the production path: a writer
+    // thread alternates two asymmetric pairs via SetVoiceMix on a live
+    // voice while the main thread renders no-device blocks. Each audio
+    // block loads the pair once, so with DC-1.0 input every rendered frame
+    // must equal pair A or pair B bit-exactly — never a torn combination.
+    // (TSan is unavailable on MSVC; the design performs one acquire load
+    // per block and no allocation, I/O, or locking in the audio stage.)
+    {
+        auto dcRegistered = backend.RegisterDecodedGeneration(MakeDC(1.0f));
+        if (!dcRegistered.IsOk())
+            return Fail("S19b DC register failed");
+        const BackendClipHandle handle = dcRegistered.value;
+        constexpr float kSAL = 0.25f;
+        constexpr float kSAR = 0.75f;
+        constexpr float kSBL = 0.75f;
+        constexpr float kSBR = 0.125f;
+        auto token = [&]() {
+            // Looping: the stress renders an unbounded frame count while
+            // the writer runs, so a one-shot voice would exhaust into
+            // post-completion silence (indistinguishable zeros, not tears).
+            BackendVoiceStart looped = MakeStart(kSession, AudioBus::Effects, kSAL, kSAR);
+            looped.loop = true;
+            return backend.StartVoice(handle, looped);
+        }();
+        if (!token.IsOk())
+            return Fail("S19b voice start failed");
+        if (!Settle(backend))
+            return Fail("S19b settle failed");
+        std::atomic<bool> writerDone{ false };
+        std::atomic<uint64_t> mixCalls{ 0 };
+        std::thread writer([&]() {
+            for (int i = 0; i < 20000; ++i)
+            {
+                BackendVoiceMix mix{ (i % 2 == 0) ? kSAL : kSBL,
+                                     (i % 2 == 0) ? kSAR : kSBR, 1.0f };
+                rt2::core::Error mixError;
+                if (backend.SetVoiceMix(token.value, mix, mixError))
+                    mixCalls.fetch_add(1, std::memory_order_relaxed);
+            }
+            writerDone.store(true, std::memory_order_release);
+        });
+        uint64_t torn = 0;
+        uint64_t countA = 0;
+        uint64_t countB = 0;
+        std::vector<float> chunk(512 * kNoDeviceChannels);
+        bool renderFailed = false;
+        for (int guard = 0; guard < 20000 && !renderFailed; ++guard)
+        {
+            AudioPcmWriteBuffer buf{ chunk.data(), chunk.size() };
+            auto res = backend.RenderNoDeviceFrames(buf, 512);
+            if (!res.IsOk() || res.value != 512)
+            {
+                renderFailed = true;
+                break;
+            }
+            for (uint32_t f = 0; f < 512; ++f)
+            {
+                const float l = chunk[f * 2 + 0];
+                const float r = chunk[f * 2 + 1];
+                const bool isA = (l == kSAL && r == kSAR);
+                const bool isB = (l == kSBL && r == kSBR);
+                if (isA)
+                    ++countA;
+                else if (isB)
+                    ++countB;
+                else
+                {
+                    ++torn;
+                    if (torn <= 5)
+                    {
+                        std::fprintf(stderr,
+                                     "RT2AudioProbe DIAG: torn frame l=%.9g r=%.9g\n",
+                                     (double)l, (double)r);
+                    }
+                }
+            }
+            if (writerDone.load(std::memory_order_acquire) && countA > 0 && countB > 0)
+                break;
+        }
+        writer.join();
+        if (renderFailed)
+            return Fail("S19b render failed");
+        if (torn != 0)
+            return FailDetail("torn L/R pair through real voice: " + std::to_string(torn));
+        if (countA == 0 || countB == 0 || mixCalls.load() != 20000)
+            return Fail("real-voice stress never observed both generations");
+        std::printf("RT2AudioProbe: real-voice stress saw A=%llu B=%llu torn=0\n",
+                    (unsigned long long)countA, (unsigned long long)countB);
+        rt2::core::Error error;
+        if (!backend.StopVoice(token.value, error) ||
+            !backend.ReleaseDecodedGeneration(handle, error))
+            return Fail("S19b cleanup failed");
+    }
+    Pass("S19b SetVoiceMix stress through a real rendering voice");
 
     backend.Shutdown();
     if (backend.Status().productionNoDevice)

@@ -52,6 +52,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -135,6 +136,212 @@ core::Error MakeVoiceError(core::Error::Code code, const std::string& path,
     error.path = path;
     error.detail = detail;
     return error;
+}
+
+uint16_t ReadU16LE(const unsigned char* p) noexcept
+{
+    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+uint32_t ReadU32LE(const unsigned char* p) noexcept
+{
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+// Container-advertised length check (finding 2). WAV and FLAC carry their
+// frame count in the container; a header that promises more frames than
+// the bytes deliver is corruption, not a shorter clip, and must refuse
+// rather than publish a prefix. MP3 carries no trustworthy total, so it
+// stays decoder-error-driven (enforce == false).
+struct ContainerCheck
+{
+    bool ok = true;            // false: malformed container (refuse with detail)
+    bool enforce = false;      // true: frames holds the advertised count
+    uint64_t frames = 0;
+    const char* container = "";
+    std::string detail;
+};
+
+ContainerCheck CheckWavLength(const unsigned char* bytes, size_t size)
+{
+    ContainerCheck out;
+    out.container = "WAV";
+    if (size < 12 || std::memcmp(bytes, "RIFF", 4) != 0 ||
+        std::memcmp(bytes + 8, "WAVE", 4) != 0)
+    {
+        out.ok = false;
+        out.detail = "malformed WAV header";
+        return out;
+    }
+    const uint32_t riffSize = ReadU32LE(bytes + 4);
+    if (static_cast<uint64_t>(riffSize) + 8 != size)
+    {
+        out.ok = false;
+        out.detail = "WAV header size does not match the delivered bytes";
+        return out;
+    }
+    bool fmtFound = false;
+    bool dataFound = false;
+    uint32_t dataBytes = 0;
+    uint32_t blockAlign = 0;
+    size_t pos = 12;
+    while (pos + 8 <= size)
+    {
+        char id[5] = { 0, 0, 0, 0, 0 };
+        std::memcpy(id, bytes + pos, 4);
+        const uint32_t chunkSize = ReadU32LE(bytes + pos + 4);
+        const size_t chunkStart = pos + 8;
+        if (static_cast<uint64_t>(chunkStart) + chunkSize > size)
+        {
+            out.ok = false;
+            out.detail = std::string("WAV chunk '") + id + "' overruns the delivered bytes";
+            return out;
+        }
+        if (std::memcmp(id, "fmt ", 4) == 0)
+        {
+            if (chunkSize < 16)
+            {
+                out.ok = false;
+                out.detail = "WAV fmt chunk is too small";
+                return out;
+            }
+            const uint32_t channels = ReadU16LE(bytes + chunkStart + 2);
+            const uint32_t sampleRate = ReadU32LE(bytes + chunkStart + 4);
+            const uint32_t align = ReadU16LE(bytes + chunkStart + 12);
+            const uint32_t bits = ReadU16LE(bytes + chunkStart + 14);
+            if (channels != 1 && channels != 2)
+            {
+                out.ok = false;
+                out.detail = "WAV fmt chunk names an unsupported channel count";
+                return out;
+            }
+            if (sampleRate == 0 || align == 0 ||
+                (bits != 8 && bits != 16 && bits != 24 && bits != 32) ||
+                align != channels * bits / 8)
+            {
+                out.ok = false;
+                out.detail = "WAV fmt chunk is inconsistent";
+                return out;
+            }
+            blockAlign = align;
+            fmtFound = true;
+        }
+        else if (std::memcmp(id, "data", 4) == 0 && !dataFound)
+        {
+            dataBytes = chunkSize;
+            dataFound = true;
+        }
+        pos = chunkStart + chunkSize + (chunkSize & 1);
+    }
+    if (!fmtFound || !dataFound)
+    {
+        out.ok = false;
+        out.detail = "WAV is missing its fmt or data chunk";
+        return out;
+    }
+    if (dataBytes % blockAlign != 0 || dataBytes == 0)
+    {
+        out.ok = false;
+        out.detail = "WAV data chunk is not a whole number of frames";
+        return out;
+    }
+    out.enforce = true;
+    out.frames = dataBytes / blockAlign;
+    return out;
+}
+
+ContainerCheck CheckFlacLength(const unsigned char* bytes, size_t size)
+{
+    ContainerCheck out;
+    out.container = "FLAC";
+    if (size < 4 || std::memcmp(bytes, "fLaC", 4) != 0)
+    {
+        out.ok = false;
+        out.detail = "malformed FLAC marker";
+        return out;
+    }
+    size_t pos = 4;
+    bool first = true;
+    for (;;)
+    {
+        if (pos + 4 > size)
+        {
+            out.ok = false;
+            out.detail = "FLAC metadata overruns the delivered bytes";
+            return out;
+        }
+        const unsigned char header = bytes[pos];
+        const unsigned char type = header & 0x7F;
+        const bool last = (header & 0x80) != 0;
+        const uint32_t length = (static_cast<uint32_t>(bytes[pos + 1]) << 16) |
+                                (static_cast<uint32_t>(bytes[pos + 2]) << 8) |
+                                static_cast<uint32_t>(bytes[pos + 3]);
+        if (static_cast<uint64_t>(pos) + 4 + length > size)
+        {
+            out.ok = false;
+            out.detail = "FLAC metadata block overruns the delivered bytes";
+            return out;
+        }
+        if (first && type != 0)
+        {
+            out.ok = false;
+            out.detail = "FLAC does not start with STREAMINFO";
+            return out;
+        }
+        first = false;
+        if (type == 0)
+        {
+            if (length != 34)
+            {
+                out.ok = false;
+                out.detail = "FLAC STREAMINFO has an unexpected size";
+                return out;
+            }
+            const unsigned char* s = bytes + pos + 4;
+            const uint32_t channels = ((s[12] >> 1) & 7) + 1;
+            if (channels != 1 && channels != 2)
+            {
+                out.ok = false;
+                out.detail = "FLAC STREAMINFO names an unsupported channel count";
+                return out;
+            }
+            const uint64_t total =
+                (static_cast<uint64_t>(s[13] & 0x0F) << 32) |
+                (static_cast<uint64_t>(s[14]) << 24) |
+                (static_cast<uint64_t>(s[15]) << 16) |
+                (static_cast<uint64_t>(s[16]) << 8) | static_cast<uint64_t>(s[17]);
+            if (total == 0)
+            {
+                out.ok = false;
+                out.detail = "FLAC STREAMINFO advertises an unknown length";
+                return out;
+            }
+            out.enforce = true;
+            out.frames = total;
+            return out;
+        }
+        if (last)
+            break;
+        pos += 4 + length;
+    }
+    out.ok = false;
+    out.detail = "FLAC has no STREAMINFO block";
+    return out;
+}
+
+ContainerCheck CheckContainerLength(const void* data, size_t size)
+{
+    ContainerCheck out;
+    if (data == nullptr || size < 4)
+        return out; // too small to identify: decoder-driven
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    if (size >= 12 && std::memcmp(bytes, "RIFF", 4) == 0 &&
+        std::memcmp(bytes + 8, "WAVE", 4) == 0)
+        return CheckWavLength(bytes, size);
+    if (std::memcmp(bytes, "fLaC", 4) == 0)
+        return CheckFlacLength(bytes, size);
+    return out; // MP3 and unidentified content stay decoder-driven
 }
 
 } // namespace
@@ -348,6 +555,29 @@ struct ProductionAudioBackend::Impl
     ProductionBackendConfig config;
     ClipByteResolver resolver;
 
+    // Test-only fault hooks (see header). Inert unless armed by the probe.
+    bool failHardwareOpenOnce = false;
+    std::string failGroupInit;
+    TestRenderFault renderFault = TestRenderFault::None;
+    uint32_t renderShortFrames = 0;
+
+    // No-device reader quiescence (finding 3 follow-up). RenderNoDeviceFrames
+    // sets readActive around the engine read; DestroyVoiceObjects waits for
+    // an in-flight read to exit before freeing voice objects whose gain
+    // stage the reader may be executing. Without this, a concurrent
+    // no-device render could read a voice being destroyed (surfacing as
+    // audible garbage in the S17b stress). The wait is bounded so a stuck
+    // reader can never hang teardown; hardware device reads never set the
+    // flag, so hardware teardown behavior is unchanged (stop, detach,
+    // destroy — the standard miniaudio lifecycle).
+    std::atomic<uint32_t> readActive{ 0 };
+
+    void QuiesceNoDeviceReaders()
+    {
+        for (int i = 0; i < 100000 && readActive.load(std::memory_order_acquire) != 0; ++i)
+            std::this_thread::yield();
+    }
+
     struct Voice
     {
         rt2::audio::BackendVoiceToken token;
@@ -381,8 +611,53 @@ struct ProductionAudioBackend::Impl
     };
     std::unordered_map<std::string, CacheEntry> decodeCache; // clipKey -> immutable generation
     std::unordered_map<std::string, size_t> liveKeyVoices;   // clipKey -> live voice count
-    size_t residentBytes = 0;
     uint64_t lruClock = 0;
+
+    static size_t GenerationBytes(
+        const std::shared_ptr<const rt2::audio::DecodedAudioGeneration>& generation)
+    {
+        if (generation == nullptr)
+            return 0;
+        return generation->pcmInterleaved.size() * sizeof(float);
+    }
+
+    // Total live PCM held by the backend: decode-cache entries AND
+    // registered handles, deduplicated by object identity (finding 4). A
+    // generation pinned by RegisterDecodedGeneration — or retained by
+    // AudioWorld, which keeps its fetched generations until Shutdown —
+    // counts even with zero live voices, so repeating distinct clips in
+    // one session cannot grow memory beyond the configured bound.
+    size_t PinnedResidentBytes() const
+    {
+        std::vector<const rt2::audio::DecodedAudioGeneration*> seen;
+        size_t total = 0;
+        auto account =
+            [&](const std::shared_ptr<const rt2::audio::DecodedAudioGeneration>& generation) {
+                if (generation == nullptr)
+                    return;
+                const auto* raw = generation.get();
+                for (const auto* known : seen)
+                {
+                    if (known == raw)
+                        return;
+                }
+                seen.push_back(raw);
+                total += GenerationBytes(generation);
+            };
+        for (const auto& entry : decodeCache)
+            account(entry.second.generation);
+        for (const auto& entry : clips)
+            account(entry.second);
+        return total;
+    }
+
+    // An entry is evictable only when this cache entry is its sole owner:
+    // no live voices (which hold a reference each), no registered handles,
+    // and no AudioWorld/provider holders. Anything else is pinned.
+    static bool IsEvictable(const CacheEntry& entry)
+    {
+        return entry.generation != nullptr && entry.generation.use_count() == 1;
+    }
 
     std::vector<float> scratch; // 4096-frame stereo no-device render area
     std::vector<float> discardBuffer; // ordinary-editor fallback area (kept for parity)
@@ -408,6 +683,7 @@ struct ProductionAudioBackend::Impl
 
     void DestroyVoiceObjects(Voice* voice)
     {
+        QuiesceNoDeviceReaders();
         if (voice->soundOwned)
         {
             ma_sound_stop(&voice->sound);
@@ -484,6 +760,12 @@ struct ProductionAudioBackend::Impl
             return false;
         }
         voice->soundOwned = true;
+        // Looping lives at both levels: the gain source wraps its cursor,
+        // and the sound seeks back instead of treating the known length as
+        // end-of-stream (without the sound flag, a looping voice would go
+        // silent after one pass while the source still has content).
+        if (start.loop)
+            ma_sound_set_looping(&voice->sound, MA_TRUE);
         ma_sound_set_pitch(&voice->sound, start.pitch);
         voiceOut = std::move(voice);
         return true;
@@ -560,10 +842,25 @@ bool ProductionAudioBackend::Initialize(const ProductionBackendConfig& config,
     {
         engineConfig.noDevice = MA_TRUE;
     }
-    ma_result result = ma_engine_init(&engineConfig, &m_impl->engine);
+    ma_result result;
+    bool injectedHardwareFailure = false;
+    if (!wantNoDevice && m_impl->failHardwareOpenOnce)
+    {
+        // Test hook: simulate a hardware-open failure without touching a
+        // real device, so the fallback path below is forced deterministically.
+        m_impl->failHardwareOpenOnce = false;
+        injectedHardwareFailure = true;
+        result = MA_ERROR;
+    }
+    else
+    {
+        result = ma_engine_init(&engineConfig, &m_impl->engine);
+    }
     if (result != MA_SUCCESS && !wantNoDevice)
     {
-        fallbackReason = "hardware device open failed; reopening no-device";
+        fallbackReason = injectedHardwareFailure
+                             ? "hardware device open failed (injected); reopening no-device"
+                             : "hardware device open failed; reopening no-device";
         ma_engine_config fallbackConfig = ma_engine_config_init();
         fallbackConfig.noDevice = MA_TRUE;
         fallbackConfig.channels = kNoDeviceChannels;
@@ -596,6 +893,20 @@ bool ProductionAudioBackend::Initialize(const ProductionBackendConfig& config,
     // Mixer groups: Master on the endpoint, children under Master. Bus and
     // Master gains apply exactly once via these groups; voice mixes carry
     // explicit L/R only.
+    //
+    // Partial-init unwind (finding 1): each Owned flag is set immediately
+    // after its successful init, and the failure path uninitializes only
+    // owned groups in reverse order. ma_sound_uninit dereferences an
+    // uninitialized object, so touching a never-initialized group here
+    // would crash instead of reporting the diagnosed error.
+    if (m_impl->failGroupInit == "master")
+    {
+        m_impl->failGroupInit.clear();
+        errorText = "RT2AudioBackend: master sound group init failed (injected)";
+        ma_engine_uninit(&m_impl->engine);
+        m_impl->engineOwned = false;
+        return false;
+    }
     if (ma_sound_group_init(&m_impl->engine, 0, nullptr, &m_impl->masterGroup) != MA_SUCCESS)
     {
         errorText = "RT2AudioBackend: master sound group init failed";
@@ -604,28 +915,50 @@ bool ProductionAudioBackend::Initialize(const ProductionBackendConfig& config,
         return false;
     }
     m_impl->masterOwned = true;
-    auto initChild = [&](ma_sound_group* group, const char* name) -> bool {
+    auto initChild = [&](ma_sound_group* group, const char* name, bool& owned) -> bool {
+        if (m_impl->failGroupInit == name)
+        {
+            m_impl->failGroupInit.clear();
+            errorText = std::string("RT2AudioBackend: sound group init failed (") + name +
+                        ", injected)";
+            return false;
+        }
         if (ma_sound_group_init(&m_impl->engine, 0, &m_impl->masterGroup, group) != MA_SUCCESS)
         {
             errorText = std::string("RT2AudioBackend: sound group init failed (") + name + ")";
             return false;
         }
+        owned = true;
         return true;
     };
-    if (!initChild(&m_impl->musicGroup, "music") ||
-        !initChild(&m_impl->effectsGroup, "effects") ||
-        !initChild(&m_impl->uiGroup, "ui"))
+    if (!initChild(&m_impl->musicGroup, "music", m_impl->musicOwned) ||
+        !initChild(&m_impl->effectsGroup, "effects", m_impl->effectsOwned) ||
+        !initChild(&m_impl->uiGroup, "ui", m_impl->uiOwned))
     {
-        ma_sound_group_uninit(&m_impl->uiGroup);
-        ma_sound_group_uninit(&m_impl->effectsGroup);
-        ma_sound_group_uninit(&m_impl->musicGroup);
-        ma_sound_group_uninit(&m_impl->masterGroup);
-        m_impl->masterOwned = false;
+        if (m_impl->uiOwned)
+        {
+            ma_sound_group_uninit(&m_impl->uiGroup);
+            m_impl->uiOwned = false;
+        }
+        if (m_impl->effectsOwned)
+        {
+            ma_sound_group_uninit(&m_impl->effectsGroup);
+            m_impl->effectsOwned = false;
+        }
+        if (m_impl->musicOwned)
+        {
+            ma_sound_group_uninit(&m_impl->musicGroup);
+            m_impl->musicOwned = false;
+        }
+        if (m_impl->masterOwned)
+        {
+            ma_sound_group_uninit(&m_impl->masterGroup);
+            m_impl->masterOwned = false;
+        }
         ma_engine_uninit(&m_impl->engine);
         m_impl->engineOwned = false;
         return false;
     }
-    m_impl->musicOwned = m_impl->effectsOwned = m_impl->uiOwned = true;
 
     m_impl->scratch.assign(
         static_cast<size_t>(kNoDeviceMaxFramesPerRender) * kNoDeviceChannels, 0.0f);
@@ -683,7 +1016,6 @@ void ProductionAudioBackend::Shutdown()
     m_impl->liveKeyVoices.clear();
     m_impl->clips.clear();
     m_impl->decodeCache.clear();
-    m_impl->residentBytes = 0;
     m_impl->pausedSessions.clear();
     if (m_impl->uiOwned)
     {
@@ -715,6 +1047,28 @@ void ProductionAudioBackend::SetClipByteResolver(ClipByteResolver resolver)
 {
     if (m_impl != nullptr)
         m_impl->resolver = std::move(resolver);
+}
+
+void ProductionAudioBackend::TestHook_FailHardwareOpenOnce()
+{
+    if (m_impl != nullptr)
+        m_impl->failHardwareOpenOnce = true;
+}
+
+void ProductionAudioBackend::TestHook_FailGroupInit(const std::string& group)
+{
+    if (m_impl != nullptr)
+        m_impl->failGroupInit = group;
+}
+
+void ProductionAudioBackend::TestHook_SetRenderFault(TestRenderFault fault,
+                                                     uint32_t shortFrames)
+{
+    if (m_impl != nullptr)
+    {
+        m_impl->renderFault = fault;
+        m_impl->renderShortFrames = shortFrames;
+    }
 }
 
 core::Result<std::shared_ptr<const rt2::audio::DecodedAudioGeneration>>
@@ -821,6 +1175,14 @@ ProductionAudioBackend::DecodeClip(const rt2::audio::AudioClipBytes& clip)
             ma_uint64 framesRead = 0;
             const ma_result readResult = ma_decoder_read_pcm_frames(
                 &decoder, chunk, 4096, &framesRead);
+            // A non-end decoder error refuses even when a valid prefix
+            // arrived: a corrupt clip must never publish a shorter success.
+            if (readResult != MA_SUCCESS && readResult != MA_AT_END)
+            {
+                ma_decoder_uninit(&decoder);
+                return ResultGen::Fail(core::Error::Parse, clip.clipKey,
+                                       "audio clip failed partway through decode");
+            }
             if (framesRead > 0)
             {
                 const size_t base = pcm.size();
@@ -837,15 +1199,29 @@ ProductionAudioBackend::DecodeClip(const rt2::audio::AudioClipBytes& clip)
             }
             if (readResult == MA_AT_END || framesRead == 0)
                 break;
-            if (readResult != MA_SUCCESS)
-            {
-                ma_decoder_uninit(&decoder);
-                return ResultGen::Fail(core::Error::Parse, clip.clipKey,
-                                       "audio clip failed partway through decode");
-            }
         }
     }
     ma_decoder_uninit(&decoder);
+    // Container-advertised length enforcement: a header that promises more
+    // frames than the bytes deliver is corruption, not a shorter clip.
+    {
+        const ContainerCheck container =
+            CheckContainerLength(clip.bytes->data(), clip.bytes->size());
+        if (!container.ok)
+            return ResultGen::Fail(core::Error::Parse, clip.clipKey, container.detail);
+        if (container.enforce)
+        {
+            const uint64_t decodedFrames = pcm.size() / channels;
+            if (decodedFrames != container.frames)
+            {
+                return ResultGen::Fail(
+                    core::Error::Parse, clip.clipKey,
+                    std::string(container.container) + " header advertises " +
+                        std::to_string(container.frames) + " frames but decoded " +
+                        std::to_string(decodedFrames));
+            }
+        }
+    }
     if (pcm.empty() || (pcm.size() % channels) != 0)
         return ResultGen::Fail(core::Error::Parse, clip.clipKey,
                                "audio clip decoded to zero frames");
@@ -865,27 +1241,41 @@ ProductionAudioBackend::DecodeClip(const rt2::audio::AudioClipBytes& clip)
 
     const size_t needBytes =
         generation->pcmInterleaved.size() * sizeof(float);
-    // Deterministic zero-reference LRU: evict least-recently-used entries
-    // with no live voices until the candidate fits. Active generations are
-    // never evicted. Failure names the key and byte counts and publishes
-    // nothing.
-    while (m_impl->residentBytes + needBytes > m_impl->config.decodedCacheBudgetBytes)
+    // Pinned-memory LRU: evict least-recently-used entries with no owners
+    // outside this cache until the candidate fits. Pinned generations
+    // (live voices, registered handles, AudioWorld holders) are never
+    // evicted; the insert then fails loudly instead of exceeding the
+    // budget. Failure names the key and byte counts and publishes nothing.
+    size_t resident = m_impl->PinnedResidentBytes();
+    // The same key re-decoded (fingerprint change) replaces its own entry:
+    // its old bytes stop counting once replaced, so exclude them from the
+    // fit check to avoid a self-eviction failure when exactly at budget.
+    {
+        auto replaced = m_impl->decodeCache.find(clip.clipKey);
+        if (replaced != m_impl->decodeCache.end() &&
+            replaced->second.fingerprint != actualFingerprint &&
+            replaced->second.generation != generation &&
+            Impl::IsEvictable(replaced->second))
+        {
+            resident -= std::min(resident, replaced->second.byteSize);
+        }
+    }
+    while (resident + needBytes > m_impl->config.decodedCacheBudgetBytes)
     {
         const Impl::CacheEntry* victim = nullptr;
         std::string victimKey;
+        size_t victimBytes = 0;
         for (const auto& entry : m_impl->decodeCache)
         {
             if (entry.first == clip.clipKey)
                 continue;
-            auto liveIt = m_impl->liveKeyVoices.find(entry.first);
-            const bool active =
-                (liveIt != m_impl->liveKeyVoices.end() && liveIt->second > 0);
-            if (active)
+            if (!Impl::IsEvictable(entry.second))
                 continue;
             if (victim == nullptr || entry.second.lastUsed < victim->lastUsed)
             {
                 victim = &entry.second;
                 victimKey = entry.first;
+                victimBytes = entry.second.byteSize;
             }
         }
         if (victim == nullptr)
@@ -894,11 +1284,11 @@ ProductionAudioBackend::DecodeClip(const rt2::audio::AudioClipBytes& clip)
                 core::Error::Io, clip.clipKey,
                 "decoded cache budget exceeded for asset '" + clip.clipKey +
                     "': requires " + std::to_string(needBytes) + " bytes, resident " +
-                    std::to_string(m_impl->residentBytes) + " of budget " +
+                    std::to_string(resident) + " of budget " +
                     std::to_string(m_impl->config.decodedCacheBudgetBytes));
         }
-        m_impl->residentBytes -= victim->byteSize;
         m_impl->decodeCache.erase(victimKey);
+        resident -= std::min(resident, victimBytes);
     }
 
     Impl::CacheEntry entry;
@@ -906,10 +1296,6 @@ ProductionAudioBackend::DecodeClip(const rt2::audio::AudioClipBytes& clip)
     entry.fingerprint = actualFingerprint;
     entry.byteSize = needBytes;
     entry.lastUsed = ++m_impl->lruClock;
-    auto replaced = m_impl->decodeCache.find(clip.clipKey);
-    if (replaced != m_impl->decodeCache.end())
-        m_impl->residentBytes -= replaced->second.byteSize;
-    m_impl->residentBytes += needBytes;
     m_impl->decodeCache.insert_or_assign(clip.clipKey, std::move(entry));
     return ResultGen::Ok(std::move(generation));
 }
@@ -1138,13 +1524,24 @@ core::Result<rt2::audio::BackendVoiceToken> ProductionAudioBackend::ReplaceVoice
     replacement->started = true;
 
     // Commit: stop the victim (silent from here), destroy its objects,
-    // publish the real gains, and swap the map entry. The peak live count
-    // never exceeds the cap: the victim leaves in the same step the
-    // replacement enters it.
+    // then settle the replacement before publishing audible gain. The peak
+    // live count never exceeds the cap: the victim leaves in the same step
+    // the replacement enters it.
+    //
+    // Pause-safe ordering (finding 3): when the replacement must end up
+    // stopped (initialPaused or a paused session), its already-started
+    // silent sound is stopped BEFORE the real gains are published. The
+    // hardware callback can render between any two main-thread operations,
+    // so publishing audible gain onto a still-started sound would make a
+    // Pause/Step-created voice briefly audible, breaking the A3
+    // initialPaused guarantee. The (started, nonzero-gain,
+    // paused-required) combination is unreachable by construction: the
+    // sound is stopped while its gains are still zero, and it is started
+    // with nonzero gains only when it must end up audible.
     const std::string victimKey = victimVoice->clipKey;
-    const bool victimWasPaused = victimVoice->paused;
     const bool sessionPaused =
         (m_impl->pausedSessions.find(start.session.value) != m_impl->pausedSessions.end());
+    const bool shouldBeStarted = !start.initialPaused && !sessionPaused;
     ma_sound_stop(&victimVoice->sound);
     m_impl->DestroyVoiceObjects(victimVoice);
     m_impl->voices.erase(victimIt);
@@ -1158,19 +1555,15 @@ core::Result<rt2::audio::BackendVoiceToken> ProductionAudioBackend::ReplaceVoice
         }
     }
 
-    replacement->gain.packed.store(
-        PackStereoGain(start.initialLeft, start.initialRight),
-        std::memory_order_release);
-    // A replacement committed while paused must not become audible: stop
-    // the silent sound again when the session or voice requires it.
-    const bool shouldBeStarted = !start.initialPaused && !sessionPaused;
     if (!shouldBeStarted)
     {
         ma_sound_stop(&replacement->sound);
         replacement->started = false;
     }
+    replacement->gain.packed.store(
+        PackStereoGain(start.initialLeft, start.initialRight),
+        std::memory_order_release);
     replacement->paused = start.initialPaused;
-    (void)victimWasPaused;
     replacement->token.opaque = m_impl->nextTokenId++;
     const rt2::audio::BackendVoiceToken token = replacement->token;
     if (!ownerKey.empty())
@@ -1555,14 +1948,34 @@ core::Result<uint32_t> ProductionAudioBackend::RenderNoDeviceFrames(
     // the bus groups keep the production graph attached, so an idle
     // production engine renders full silent frames (a bare engine with no
     // attachments reports zero).
+    //
+    // Test-fault injection (finding 5): FailOnce simulates the hard engine
+    // failure without touching the engine or caller storage; ShortOnce
+    // performs the real render but reports a truncated successful prefix.
+    // Both consume the armed fault.
+    if (m_impl->renderFault == TestRenderFault::FailOnce)
+    {
+        m_impl->renderFault = TestRenderFault::None;
+        return ResultFrames::Fail(core::Error::InvalidRuntimeState,
+                                  "audio no-device render",
+                                  "production engine render failed (injected)");
+    }
     ma_uint64 framesRead = 0;
+    m_impl->readActive.store(1, std::memory_order_release);
     const ma_result result = ma_engine_read_pcm_frames(
         &m_impl->engine, m_impl->scratch.data(), requestedFrames, &framesRead);
+    m_impl->readActive.store(0, std::memory_order_release);
     if (result != MA_SUCCESS || framesRead > requestedFrames)
         return ResultFrames::Fail(core::Error::InvalidRuntimeState,
                                   "audio no-device render",
                                   "production engine render failed");
-    const uint32_t rendered = static_cast<uint32_t>(framesRead);
+    uint32_t rendered = static_cast<uint32_t>(framesRead);
+    if (m_impl->renderFault == TestRenderFault::ShortOnce)
+    {
+        m_impl->renderFault = TestRenderFault::None;
+        if (rendered > m_impl->renderShortFrames)
+            rendered = m_impl->renderShortFrames;
+    }
     if (rendered > 0)
     {
         std::memcpy(interleavedStereo.data, m_impl->scratch.data(),
@@ -1594,7 +2007,7 @@ size_t ProductionAudioBackend::DecodedCacheEntryCount() const
 
 size_t ProductionAudioBackend::DecodedCacheResidentBytes() const
 {
-    return (m_impl != nullptr) ? m_impl->residentBytes : 0;
+    return (m_impl != nullptr) ? m_impl->PinnedResidentBytes() : 0;
 }
 
 size_t ProductionAudioBackend::LiveVoiceCount() const

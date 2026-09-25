@@ -13,7 +13,7 @@ right stereo.
 | `tone660_stereo_s16.wav` | stereo int16 | FLAC/MP3 conversion master |
 | `tone660_stereo_s16.flac` | converted from the s16 stereo master | exact decode (lossless) |
 | `tone660_stereo_48k.mp3` | converted from the s16 stereo master | energy/completion decode (lossy) |
-| `corrupt_truncated.wav` | valid header, data cut mid-frame | graceful prefix: fewer frames, still decodable |
+| `corrupt_truncated.wav` | valid header, data cut mid-frame (header over-advertises) | typed decode refusal (length mismatch) |
 | `corrupt_empty_data.wav` | valid header, zero data frames | typed decode refusal (empty decode) |
 | `corrupt_magic.bin` | ASCII text, no decoder magic | typed decode refusal in every decoder |
 
