@@ -1353,6 +1353,41 @@ TEST_CASE("A7 probe: remove-step seam stops with status, loudly when unbound")
           "Preview stop unavailable: no preview backend is bound");
 }
 
+TEST_CASE("A7 probe: remove diagnostic outlives the branch switch it renders under")
+{
+    // Placement contract for the moved inspector render: after a
+    // successful Remove the working copy is empty, so the next frame
+    // takes the no-source Add branch — the stop message must therefore
+    // live outside any state the branch switch drops. The seam writes a
+    // standalone diagnostic string (asserted here); the render sits after
+    // both authoring branches in RenderAudioEditor. That ordering itself
+    // is reviewer-verified: this TU cannot link the inspector (native
+    // dialogs, gizmo/editor closure). This case guards the invariant the
+    // ordering depends on: folding the message into the working-copy
+    // state would reintroduce the invisible-message defect, and fails here.
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+    AudioSourceComponent live = TwoDSource();
+
+    AudioInspectorWork work;
+    work.Sync(uuid, live);
+    REQUIRE(work.work.has_value());
+    work.Applied(std::nullopt);
+    CHECK_FALSE(work.work.has_value());
+
+    int stops = 0;
+    std::string diagnostic;
+    CHECK(ExecuteAudioRemovePreviewStep(true, [&]() { ++stops; },
+                                        diagnostic));
+    CHECK(stops == 1);
+    CHECK_FALSE(diagnostic.empty());
+    work.Clear();
+    work.Sync(uuid, std::nullopt);
+    CHECK_FALSE(work.work.has_value());
+    CHECK_FALSE(diagnostic.empty());
+    CHECK(diagnostic == "Preview stopped: the previewed source was removed");
+}
+
 TEST_CASE("A7 probe: apply-step seam restarts on clip moves only")
 {
     AudioSceneFixture f;

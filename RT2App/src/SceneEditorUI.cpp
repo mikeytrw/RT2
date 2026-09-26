@@ -2899,8 +2899,6 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 				m_AudioDiagnostic.clear();
 			}
 		}
-		if (!m_AudioDiagnostic.empty())
-			ImGui::TextWrapped("Audio: %s", m_AudioDiagnostic.c_str());
 		if (live.has_value() && ImGui::Button("Remove Audio Source"))
 		{
 			std::optional<AudioSourceComponent> before;
@@ -2936,6 +2934,14 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 			}
 		}
 	}
+	// Closure re-review P2: the diagnostic renders AFTER both authoring
+	// branches (Add and edit/Remove), so a message written by the Remove
+	// step is visible on the next frame even though the no-source branch
+	// bypasses the edit widgets. Previously the sole render sat inside
+	// the edit branch above the Remove button, and the seam-written
+	// "previewed source was removed" status was never displayed.
+	if (!m_AudioDiagnostic.empty())
+		ImGui::TextWrapped("Audio: %s", m_AudioDiagnostic.c_str());
 	ImGui::EndDisabled();
 
 	// ---- Edit-mode audition (never mutates authoring; no prefab bar) ----
