@@ -4,9 +4,11 @@
 #include "SceneHierarchy.h"
 #include "ECSComponents.h"
 #include "GPUSceneData.h"
+#include "AudioComponents.h"
 #include "core/UUID.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cfloat>
 #include <cmath>
@@ -41,7 +43,130 @@ private:
     RuntimeSceneController& m_Controller;
 };
 
+// Audio A5: monotonically increasing session IDs, one per Play attempt
+// (failed attempts consume an ID; IDs are never reused in-process).
+// Starts at 1 so AudioSessionId::IsValid holds for every issued session.
+std::atomic<uint64_t> s_AudioSessionCounter{ 1 };
+
+// Audio A5: production no-device PCM format. Matches the A4 fallback
+// engine (two-channel 48 kHz) and the RenderNoDeviceFrames [1, 4096]
+// chunk contract; the controller pumps a clamped frame delta in bounded
+// chunks into its reusable scratch sink.
+constexpr double kAudioNoDeviceSampleRate = 48000.0;
+constexpr uint32_t kAudioNoDeviceMaxChunk = 4096;
+
+// Audio A6: shared resolution for Lua-driven audio commands. Validates
+// session mutability (silent), the frozen destroy set (loud), a committed
+// audio session (silent: Edit, Stop, or a session with no bound sources),
+// a live runtime entity carrying an authored AudioSourceComponent (loud),
+// and — for Play/PlayAt — a bound clip plus its opaque provider key
+// (loud). Fills the play-time pose from the current world matrix (the same
+// final-world authority A5 poses use; the drain re-derives the mix from
+// final poses anyway). Consumes nothing on any refusal path.
+struct A6ResolvedAudioSource
+{
+    AudioSourceComponent component;
+    glm::vec3 worldPos{ 0.0f, 0.0f, 0.0f };
+    bool hasTransform = false;
+    std::string name;
+    std::string clipKey;
+};
+
+bool A6ResolveAudioSource(const RuntimeSceneController& ctrl,
+                           const UUID& source, const char* opName,
+                           bool requireBoundClip,
+                           A6ResolvedAudioSource& out)
+{
+    if (!ctrl.IsRuntimeMutable())
+        return false;
+    if (ctrl.IsUuidInDestroyDrain(source))
+    {
+        printf("[Audio] %s refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               opName, source.ToString().c_str());
+        return false;
+    }
+    if (ctrl.TryGetAudioWorld() == nullptr)
+        return false;
+    const SceneDocument* doc = ctrl.TryGetRuntimeScene();
+    if (doc == nullptr)
+        return false;
+    const auto e = doc->FindByUuid(source);
+    auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
+    if (e == entt::null || !reg.valid(e))
+    {
+        printf("[Audio] %s refused: unknown UUID %s (no live entity)\n",
+               opName, source.ToString().c_str());
+        return false;
+    }
+    const auto* audio = reg.try_get<AudioSourceComponent>(e);
+    if (audio == nullptr)
+    {
+        printf("[Audio] %s refused for %s "
+               "(no authored AudioSourceComponent)\n",
+               opName, source.ToString().c_str());
+        return false;
+    }
+    out.component = *audio;
+    if (const auto* named = reg.try_get<NameComponent>(e))
+        out.name = named->name;
+    if (const auto* tf = reg.try_get<Transform>(e))
+    {
+        out.worldPos = glm::vec3(tf->worldMatrix[3]);
+        out.hasTransform = true;
+    }
+    if (requireBoundClip && out.component.clip.path.empty())
+    {
+        printf("[Audio] %s refused for %s "
+               "(unbound clip: no audio clip authored)\n",
+               opName, source.ToString().c_str());
+        return false;
+    }
+    // A6: only Play/PlayAt resolve the opaque provider key. Stop, Pause,
+    // SetGain, and SetPitch operate on live voices and source state that
+    // need no clip key — so a clip file (or asset record) that disappears
+    // after a successful Play can never trap a live voice beyond Lua's
+    // reach. Key-builder failure therefore refuses only Play/PlayAt.
+    if (requireBoundClip)
+    {
+        Result<std::string> key =
+            ctrl.BuildAudioClipKey(out.component.clip, source, out.name);
+        if (!key.IsOk())
+        {
+            printf("[Audio] %s refused for %s (clip key build failed: %s)\n",
+                   opName, source.ToString().c_str(),
+                   key.error.Format().c_str());
+            return false;
+        }
+        out.clipKey = std::move(key.value);
+    }
+    return true;
+}
+
+// Precise queue-full refusal text (single-threaded main thread: the count
+// check is exact, so a full queue is never misattributed to the source).
+bool A6AudioQueueFull(const RuntimeSceneController& ctrl, const UUID& source,
+                       const char* opName)
+{
+    const bool full = ctrl.AudioQueuedCommandCount() >=
+        rt2::audio::kAudioCommandQueueCapacity;
+    if (full)
+        printf("[Audio] %s refused for %s (command queue full: %u)\n",
+               opName, source.ToString().c_str(),
+               rt2::audio::kAudioCommandQueueCapacity);
+    return full;
+}
+
 } // namespace
+
+Result<std::string> RuntimeSceneController::BuildAudioClipKey(
+    const AssetReference& clip, const UUID& entityUuid,
+    const std::string& entityName) const
+{
+    if (m_AudioClipKeyBuilder)
+        return m_AudioClipKeyBuilder(clip, entityUuid, entityName);
+    return Result<std::string>::Ok("audioclip:" + clip.path);
+}
 
 // ============================================================================
 // Play
@@ -63,12 +188,25 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     m_PhysicsEventsLuaVisible = false;
     m_DrainDropCount = 0;
     m_LastDrainDrop.clear();
+    // Audio A5: a fresh Play session starts with a zero no-device frame
+    // remainder. m_AudioWorld is null in Edit by invariant (Stop and every
+    // failed-Play rollback reset it); the candidate below commits it.
+    m_AudioFrameFrac = 0.0;
 
     // T3 candidate-commit step 1: validate the physics early invariants on
     // the authoring document BEFORE anything is staged. Loud typed Error
     // naming the entity UUID; no clone, no world, no bridge call, no script
     // callback, accumulator stays zero.
     if (!ValidatePhysicsForPlay(authoring, m_CollisionProvider, err))
+    {
+        m_Accumulator = 0.0f;
+        return false;
+    }
+
+    // Audio A5 candidate-commit step 1b: validate authored audio invariants
+    // on the authoring document before anything is staged. Same atomicity
+    // contract as the physics validation above.
+    if (!ValidateAudioForPlay(authoring, err))
     {
         m_Accumulator = 0.0f;
         return false;
@@ -153,6 +291,29 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
         m_PhysicsWorld = std::move(candidate.value);
     }
 
+    // Audio A5 candidate-commit step 3: freeze the provider snapshot (the
+    // host refreshed it before Play), synchronously resolve/decode EVERY
+    // persisted bound source clip — autoplay or not — into immutable
+    // generations, and stage autoplay state on a private AudioWorld WITHOUT
+    // starting backend voices. Commit to ownership only when every stage
+    // succeeds. Rollback mirrors the physics candidate above: the private
+    // world dies unstaged, the committed physics world is destroyed, the
+    // clone is reset, state stays Edit with a zero accumulator, and no
+    // voice, callback, or bridge call has happened yet.
+    {
+        std::unique_ptr<rt2::audio::AudioWorld> audioCandidate;
+        if (!StageAudioCandidate(err, audioCandidate))
+        {
+            m_PhysicsWorld.reset();
+            m_Runtime.reset();
+            m_Accumulator = 0.0f;
+            m_AudioFrameFrac = 0.0;
+            m_DebugLines.Clear();
+            return false;
+        }
+        m_AudioWorld = std::move(audioCandidate);
+    }
+
     // Activate the runtime document for rendering: full GPU upload + temporal
     // reset. The bridge builds GPUSceneData from m_Runtime and hands it to
     // the renderer.
@@ -194,6 +355,520 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
 }
 
 // ============================================================================
+// Audio A5 — Play candidate validation, staging, and session slots
+// ============================================================================
+
+bool RuntimeSceneController::ValidateAudioForPlay(const SceneDocument& authoring,
+                                                 Error& err) const
+{
+    const auto& reg = authoring.ecs.registry;
+    bool anyBound = false;
+    auto view = reg.view<AudioSourceComponent>();
+    for (auto e : view)
+    {
+        const auto& source = view.get<AudioSourceComponent>(e);
+        const auto* idc = reg.try_get<EntityIdComponent>(e);
+        const auto* named = reg.try_get<NameComponent>(e);
+        const UUID uuid = idc ? idc->id : UUID{};
+        const std::string name = named ? named->name : std::string{};
+        const bool hasTransform = reg.try_get<Transform>(e) != nullptr;
+        if (!source.clip.path.empty())
+            anyBound = true;
+        std::string detail;
+        std::string field;
+        if (!ValidateAudioSourceComponent(source, hasTransform,
+                                                  std::nullopt, detail,
+                                                  &field))
+        {
+            err.code = Error::InvalidArgument;
+            err.path = uuid.ToString() + ":audioSource." + field;
+            err.detail = "invalid AudioSourceComponent on entity " +
+                         uuid.ToString() +
+                         (name.empty() ? "" : " '" + name + "'") +
+                         " audioSource." + field + " " + detail;
+            return false;
+        }
+    }
+    // Bound sources with no audio seams would play silently audio-free —
+    // the codebase's characteristic swallowed failure. Refuse loudly so a
+    // missing host wiring surfaces at the Play boundary, not as a quiet
+    // session. Sessions without bound sources never need seams.
+    if (anyBound && (m_AudioBackend == nullptr || m_AudioGenerations == nullptr))
+    {
+        err.code = Error::InvalidRuntimeState;
+        err.path = "audio backend";
+        err.detail =
+            "Play refused: the scene has bound audio sources but no audio "
+            "backend/generation provider is installed on the controller";
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::StageAudioCandidate(
+    Error& err, std::unique_ptr<rt2::audio::AudioWorld>& outWorld)
+{
+    outWorld.reset();
+    if (!m_Runtime)
+    {
+        err.code = Error::InvalidRuntimeState;
+        err.path = "audio session";
+        err.detail = "audio candidate staging requires a runtime clone";
+        return false;
+    }
+    struct BoundSource
+    {
+        UUID uuid;
+        std::string name;
+        AudioSourceComponent component;
+        bool hasTransform = false;
+        glm::vec3 worldPos{ 0.0f };
+    };
+    std::vector<BoundSource> bound;
+    {
+        const auto& reg = m_Runtime->ecs.registry;
+        auto view = reg.view<AudioSourceComponent>();
+        for (auto e : view)
+        {
+            const auto& source = view.get<AudioSourceComponent>(e);
+            if (source.clip.path.empty())
+                continue; // unbound sources stage nothing (validated above)
+            BoundSource entry;
+            const auto* idc = reg.try_get<EntityIdComponent>(e);
+            const auto* named = reg.try_get<NameComponent>(e);
+            entry.uuid = idc ? idc->id : UUID{};
+            entry.name = named ? named->name : std::string{};
+            entry.component = source;
+            if (const auto* tf = reg.try_get<Transform>(e))
+            {
+                entry.hasTransform = true;
+                entry.worldPos = glm::vec3(tf->worldMatrix[3]);
+            }
+            bound.push_back(entry);
+        }
+    }
+    if (bound.empty())
+        return true; // no bound sources: no audio session, Play proceeds
+    if (m_AudioBackend == nullptr || m_AudioGenerations == nullptr)
+    {
+        err.code = Error::InvalidRuntimeState;
+        err.path = "audio backend";
+        err.detail =
+            "Play refused: the runtime clone has bound audio sources but no "
+            "audio backend/generation provider is installed on the controller";
+        return false;
+    }
+    rt2::audio::AudioSessionId session;
+    session.value = s_AudioSessionCounter.fetch_add(1, std::memory_order_relaxed);
+    if (session.value == 0)
+        session.value = s_AudioSessionCounter.fetch_add(1, std::memory_order_relaxed);
+    auto world = std::make_unique<rt2::audio::AudioWorld>(
+        m_AudioBackend, m_AudioGenerations, session,
+        rt2::audio::AudioOwnerKind::Runtime, m_AudioWorldConfig);
+    // Synchronously resolve/decode EVERY persisted bound source — autoplay
+    // or not — against the host's frozen provider snapshot. Any
+    // missing/corrupt/unsupported clip, or a spatial source whose decoded
+    // generation is not mono, refuses Play atomically with zero session
+    // voices, handles, callbacks, and bridge calls.
+    //
+    // A5 fixup: every validated generation is retained in the session pin
+    // set as it is fetched. The production LRU evicts only generations
+    // with no outside holder, so holding A while fetching B turns a
+    // combined over-budget candidate into a loud pre-commit refusal
+    // instead of a silent eviction that commits and fails a voice later.
+    // Pins live exactly with the session (assigned on commit, cleared by
+    // session teardown); a refused candidate's local pins die with it.
+    std::vector<std::shared_ptr<const rt2::audio::DecodedAudioGeneration>> pins;
+    for (const BoundSource& entry : bound)
+    {
+        Result<std::string> keyResult =
+            BuildAudioClipKey(entry.component.clip, entry.uuid, entry.name);
+        if (!keyResult.IsOk())
+        {
+            err = keyResult.error;
+            return false;
+        }
+        const std::string key = std::move(keyResult.value);
+        Result<std::shared_ptr<const rt2::audio::DecodedAudioGeneration>> fetched =
+            m_AudioGenerations->FetchDecodedGeneration(key);
+        if (!fetched.IsOk())
+        {
+            err = fetched.error;
+            if (err.path.empty())
+                err.path = entry.uuid.ToString() + ":audioSource.clip";
+            err.detail = "Play refused: audio clip for entity " +
+                         entry.uuid.ToString() +
+                         (entry.name.empty() ? "" : " '" + entry.name + "'") +
+                         " failed to resolve/decode (" + key + "): " +
+                         fetched.error.detail;
+            return false;
+        }
+        if (!fetched.value || fetched.value->channels == 0)
+        {
+            err.code = Error::InvalidArgument;
+            err.path = entry.uuid.ToString() + ":audioSource.clip";
+            err.detail = "Play refused: audio clip for entity " +
+                         entry.uuid.ToString() + " (" + key +
+                         ") decoded to an empty generation";
+            return false;
+        }
+        if (entry.component.spatial &&
+            static_cast<int>(fetched.value->channels) != 1)
+        {
+            err.code = Error::InvalidArgument;
+            err.path = entry.uuid.ToString() + ":audioSource.clip";
+            err.detail = "Play refused: spatial audio source on entity " +
+                         entry.uuid.ToString() +
+                         " decoded to stereo (spatial sources must be mono)";
+            return false;
+        }
+        // Pin the validated generation before the next source is fetched:
+        // a later over-budget fetch then refuses loudly instead of
+        // evicting this source's proof underneath a committed Play.
+        pins.push_back(fetched.value);
+        if (entry.component.autoplay)
+        {
+            rt2::audio::AudioPlayRequest req;
+            req.source = entry.uuid;
+            req.component = entry.component;
+            req.sourcePosition[0] = entry.worldPos.x;
+            req.sourcePosition[1] = entry.worldPos.y;
+            req.sourcePosition[2] = entry.worldPos.z;
+            req.hasTransform = entry.hasTransform;
+            req.clipKey = key;
+            world->StageAutoplay(req);
+        }
+    }
+    m_AudioSession = session;
+    m_AudioPinnedGenerations = std::move(pins);
+    outWorld = std::move(world);
+    return true;
+}
+
+// ============================================================================
+// Audio A6 — Lua-driven validated audio commands
+// ============================================================================
+
+bool RuntimeSceneController::QueueAudioPlay(const UUID& source)
+{
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_play", true, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_play"))
+        return false;
+    rt2::audio::AudioPlayRequest req;
+    req.source = source;
+    req.component = resolved.component;
+    req.sourcePosition[0] = resolved.worldPos.x;
+    req.sourcePosition[1] = resolved.worldPos.y;
+    req.sourcePosition[2] = resolved.worldPos.z;
+    req.hasTransform = resolved.hasTransform;
+    req.clipKey = std::move(resolved.clipKey);
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueuePlay(req, sequence))
+    {
+        printf("[Audio] audio_play refused for %s (invalid authored source)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioPlayAt(const UUID& source,
+                                              const glm::vec3& position)
+{
+    // Finite/range gate before any resolution: a non-finite or
+    // out-of-float-range override must never reach the world pose.
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+        !std::isfinite(position.z) ||
+        std::fabs(position.x) > (double)FLT_MAX ||
+        std::fabs(position.y) > (double)FLT_MAX ||
+        std::fabs(position.z) > (double)FLT_MAX)
+    {
+        printf("[Audio] audio_play_at refused for %s "
+               "(non-finite or out-of-float-range position)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_play_at", true, resolved))
+        return false;
+    // A6 one-shot independence (READY Script API): audio_play_at is a
+    // one-shot positional override independently of the authored loop
+    // flag. The drain starts a fresh non-looping voice at the override
+    // and never refreshes a live loop for it; the authored loop flag is
+    // preserved, so a later audio_play still ensures the loop.
+    if (A6AudioQueueFull(*this, source, "audio_play_at"))
+        return false;
+    rt2::audio::AudioPlayRequest req;
+    req.source = source;
+    req.component = resolved.component;
+    req.sourcePosition[0] = position.x;
+    req.sourcePosition[1] = position.y;
+    req.sourcePosition[2] = position.z;
+    // The override supplies the play-time pose outright (a PlayAt on a
+    // Transform-less entity still carries a valid position).
+    req.hasTransform = true;
+    req.positionalOverride = true;
+    req.clipKey = std::move(resolved.clipKey);
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueuePlay(req, sequence))
+    {
+        printf("[Audio] audio_play_at refused for %s (invalid authored source)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioStop(const UUID& source)
+{
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_stop", false, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_stop"))
+        return false;
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueueStop(source, sequence))
+    {
+        printf("[Audio] audio_stop refused for %s (destroying target)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioPause(const UUID& source, bool paused)
+{
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_pause", false, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_pause"))
+        return false;
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueuePause(source, paused, sequence))
+    {
+        printf("[Audio] audio_pause refused for %s (destroying target)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioSetGain(const UUID& source, float gain)
+{
+    // Authored-range gate before resolution (the world re-checks without
+    // consuming a sequence, so this is diagnostic precision, not trust).
+    if (!std::isfinite(gain) || gain < 0.0f || gain > 4.0f)
+    {
+        printf("[Audio] audio_set_gain refused for %s "
+               "(gain must be finite and in [0, 4])\n",
+               source.ToString().c_str());
+        return false;
+    }
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_set_gain", false, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_set_gain"))
+        return false;
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueueSetGain(source, gain, sequence))
+    {
+        printf("[Audio] audio_set_gain refused for %s (destroying target)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioSetPitch(const UUID& source, float pitch)
+{
+    if (!std::isfinite(pitch) || pitch < 0.25f || pitch > 4.0f)
+    {
+        printf("[Audio] audio_set_pitch refused for %s "
+               "(pitch must be finite and in [0.25, 4])\n",
+               source.ToString().c_str());
+        return false;
+    }
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_set_pitch", false, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_set_pitch"))
+        return false;
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueueSetPitch(source, pitch, sequence))
+    {
+        printf("[Audio] audio_set_pitch refused for %s (destroying target)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+rt2::audio::AudioSourceStatus RuntimeSceneController::GetAudioStatus(
+    const UUID& source) const
+{
+    if (m_AudioWorld == nullptr)
+        return {};
+    return m_AudioWorld->GetSourceStatus(source);
+}
+
+void RuntimeSceneController::ClearQueuedAudioCommands()
+{
+    if (m_AudioWorld != nullptr)
+        m_AudioWorld->ClearQueuedCommands();
+}
+
+void RuntimeSceneController::CollectAudioPoses(
+    std::vector<rt2::audio::AudioSourcePose>& outPoses) const
+{
+    outPoses.clear();
+    if (!m_Runtime)
+        return;
+    const auto& reg = m_Runtime->ecs.registry;
+    auto audioView = reg.view<AudioSourceComponent>();
+    for (auto e : audioView)
+    {
+        const auto* idc = reg.try_get<EntityIdComponent>(e);
+        if (idc == nullptr)
+        {
+            printf("[Runtime] Audio pose skipped: entity is missing its EntityIdComponent\n");
+            continue;
+        }
+        rt2::audio::AudioSourcePose pose;
+        pose.source = idc->id;
+        if (const auto* tf = reg.try_get<Transform>(e))
+        {
+            // Final world-matrix translation: post-physics, post-drain,
+            // post-UpdateWorldTransforms. Never local TRS or pre-step state.
+            const glm::vec3 p = glm::vec3(tf->worldMatrix[3]);
+            pose.position[0] = p.x;
+            pose.position[1] = p.y;
+            pose.position[2] = p.z;
+            pose.hasTransform = true;
+        }
+        else
+        {
+            pose.hasTransform = false;
+        }
+        outPoses.push_back(pose);
+    }
+}
+
+void RuntimeSceneController::UpdateAudioSlot(float frameDt)
+{
+    if (!m_AudioWorld || !m_Runtime)
+        return;
+    std::vector<rt2::audio::AudioSourcePose> poses;
+    CollectAudioPoses(poses);
+    // Phase 1 (semantic) runs BEFORE any PCM is rendered: drain the FIFO
+    // (queued Stop/Play and first-frame autoplay), land final poses, and
+    // publish mixes. Rendering first would emit a silent first block for
+    // autoplay while advancing the new voice's cursor, and would delay a
+    // same-frame Stop or source/listener move by one frame.
+    m_AudioWorld->UpdateSemantic(m_AudioListenerPose,
+                                 poses.empty() ? nullptr : poses.data(),
+                                 poses.size());
+    // Ordinary Playing Updates convert clamped frame time to an integer
+    // PCM-frame count with a fractional accumulator. The count drives both
+    // the production no-device pump and the world's sample-cursor advance,
+    // so fake/hardware sessions stay deterministic without a PCM path.
+    const float dt = std::min(frameDt, kMaxFrameTime);
+    const double exact = static_cast<double>(dt) * kAudioNoDeviceSampleRate +
+                         m_AudioFrameFrac;
+    const uint32_t frames = static_cast<uint32_t>(std::floor(exact));
+    m_AudioFrameFrac = exact - static_cast<double>(frames);
+    // Phase 2 (PCM): production no-device fallback only. The fake and
+    // hardware sessions report no PCM here.
+    uint32_t advance = frames;
+    if (m_AudioBackend != nullptr && frames > 0 &&
+        m_AudioBackend->Status().productionNoDevice)
+    {
+        if (m_AudioScratch.size() < static_cast<size_t>(kAudioNoDeviceMaxChunk) * 2)
+            m_AudioScratch.resize(static_cast<size_t>(kAudioNoDeviceMaxChunk) * 2);
+        uint32_t remaining = frames;
+        uint32_t renderedTotal = 0;
+        bool failed = false;
+        while (remaining > 0)
+        {
+            const uint32_t chunk =
+                std::min(remaining, kAudioNoDeviceMaxChunk);
+            rt2::audio::AudioPcmWriteBuffer sink;
+            sink.data = m_AudioScratch.data();
+            sink.sampleCapacity = m_AudioScratch.size();
+            Result<uint32_t> rendered =
+                m_AudioBackend->RenderNoDeviceFrames(sink, chunk);
+            if (!rendered.IsOk())
+            {
+                printf("[Runtime] Audio no-device pump failed: %s (session continues)\n",
+                       rendered.error.Format().c_str());
+                failed = true;
+                break;
+            }
+            renderedTotal += rendered.value;
+            if (rendered.value < chunk)
+                break; // short read: successful prefix only
+            remaining -= chunk;
+        }
+        advance = renderedTotal;
+        if (!failed && frames > 0 && renderedTotal == 0)
+            printf("[Runtime] Audio no-device stall: requested %u frames, rendered none\n",
+                   frames);
+    }
+    // Phase 3 (reconcile, re-review P2): reap voices that naturally
+    // completed inside the rendered prefix BEFORE advancing survivors, so
+    // a finished one-shot settles to Completed with zero census in the
+    // same frame instead of lingering live/Playing into the next script
+    // update. Runs after every slot with a render attempt, including
+    // short prefixes; a hard render failure still polls (the backend
+    // reports nothing new, so it is a no-op there).
+    m_AudioWorld->ReconcilePostRender();
+    // Phase 4 (accounting): advance exactly the voices that rendered.
+    // Short-read behavior is preserved: survivors move by the successful
+    // reported prefix, and reclaimed voices never advance past content.
+    m_AudioWorld->AdvanceCursors(advance);
+}
+
+void RuntimeSceneController::StepAudioSlot()
+{
+    if (!m_AudioWorld || !m_Runtime)
+        return;
+    std::vector<rt2::audio::AudioSourcePose> poses;
+    CollectAudioPoses(poses);
+    // Step processes queued commands, source/listener state, and mix
+    // refresh while the session remains sample-frozen: zero frames, and no
+    // no-device PCM is pumped.
+    m_AudioWorld->Step(m_AudioListenerPose,
+                       poses.empty() ? nullptr : poses.data(), poses.size());
+}
+
+void RuntimeSceneController::TeardownAudioSession(const char* context)
+{
+    if (!m_AudioWorld)
+        return;
+    // Stop clears queued audio and session voices BEFORE the runtime clone
+    // is destroyed; the world census must read zero before the clone goes
+    // away even when the backend reports a failure loudly (teardown
+    // detaches regardless, so the census holds either way).
+    m_AudioWorld->ClearQueuedCommands();
+    Error audioErr;
+    if (!m_AudioWorld->Shutdown(audioErr))
+        printf("[Runtime] Audio session %s failed: %s (census still reset)\n",
+               context, audioErr.Format().c_str());
+    assert(m_AudioWorld->LiveVoiceCount() == 0 &&
+           "AudioWorld teardown must return the session voice census to zero");
+    assert(m_AudioWorld->QueuedCommandCount() == 0 &&
+           "AudioWorld teardown must return the queued-command census to zero");
+    m_AudioWorld.reset();
+    m_AudioSession = rt2::audio::AudioSessionId{};
+    // A5 fixup: release the candidate pins with the session. World,
+    // backend, and voice holders are already gone, so pinned generations
+    // become evictable exactly when the session ends — never mid-session.
+    m_AudioPinnedGenerations.clear();
+    m_AudioFrameFrac = 0.0;
+}
+
+// ============================================================================
 // Pause
 // ============================================================================
 
@@ -205,6 +880,15 @@ void RuntimeSceneController::Pause()
     // Clear the accumulator so stale wall-clock time cannot become queued
     // simulation on resume.
     m_Accumulator = 0.0f;
+    // Audio A5: Pause freezes the runtime mix through the single atomic
+    // backend boundary. A voice started while paused carries initialPaused.
+    if (m_AudioWorld)
+    {
+        Error audioErr;
+        if (!m_AudioWorld->SetSessionPaused(true, audioErr))
+            printf("[Runtime] Audio session pause failed: %s\n",
+                   audioErr.Format().c_str());
+    }
 }
 
 // ============================================================================
@@ -217,6 +901,15 @@ bool RuntimeSceneController::Resume()
         return false;
     m_State = SceneRunState::Playing;
     m_Accumulator = 0.0f;
+    // Audio A5: Resume continues the frozen session without restarting
+    // voices.
+    if (m_AudioWorld)
+    {
+        Error audioErr;
+        if (!m_AudioWorld->SetSessionPaused(false, audioErr))
+            printf("[Runtime] Audio session resume failed: %s\n",
+                   audioErr.Format().c_str());
+    }
     return true;
 }
 
@@ -316,6 +1009,10 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
         bridge.TransformSync(m_Runtime->gpuCache);
     }
 
+    // Audio A5 Step slot: post-GPU-sync, pre-render, sample-frozen. Uses
+    // the same host-injected listener pose as Update.
+    StepAudioSlot();
+
     // Request a render submission for the presentation pass.
     bridge.RequestRender();
 
@@ -340,6 +1037,13 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
     //    observable.
     if (m_LifecycleObserver && m_Runtime)
         m_LifecycleObserver->OnSceneStop(*m_Runtime);
+
+    // Audio A5: destroy the session AudioWorld BEFORE the runtime clone
+    // goes away (and before the physics world below): clear queued audio,
+    // stop session voices, release generations, and assert the
+    // voice/command census baseline. Backend/device/cache outlive both
+    // runtime worlds by host member order.
+    TeardownAudioSession("Stop");
 
     // 3. Destroy the PhysicsWorld BEFORE the runtime clone goes away:
     //    constraints, then ghosts/bodies, then shapes, then the world. The
@@ -512,6 +1216,13 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
         // TransformSync takes a const ref; no copy needed.
         bridge.TransformSync(m_Runtime->gpuCache);
     }
+
+    // Audio A5 Update slot: post-GPU-sync, pre-render. Preserves the
+    // canonical transforms -> GPU sync -> audio -> render contract
+    // (docs/game-loop.md:162-165): poses come from final world matrices,
+    // commands drain FIFO, on_create work precedes autoplay synthesis, and
+    // the mix refreshes before render is requested.
+    UpdateAudioSlot(dt);
 
     bridge.RequestRender();
 }
@@ -806,12 +1517,18 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
         }
         else if (auto* destroy = std::get_if<DestroyRuntimeSubtreeOperation>(&op))
         {
-            // Phase 6: give scripts their on_destroy BEFORE the entities go
-            // away, so the final callback can still read the entity it is
-            // tearing down. Post-order = children first, matching the
-            // destruction order. Skipped silently if the root no longer
-            // resolves (a prior op in this batch already removed it).
-            if (m_ScriptDispatch)
+            // Audio A5: ONE authoritative real post-order subtree per
+            // destroy position, recollected OUTSIDE the optional script
+            // branch. Audio, script callbacks, physics, and ECS teardown
+            // all observe this same membership — including descendants
+            // created earlier in this same frozen batch (invisible at
+            // precompute time: create A, create B parented to A, destroy
+            // A recollected here observes the real dying subtree [B, A])
+            // — and the path works with no ScriptSystem installed.
+            // Skipped silently if the root no longer resolves (a prior op
+            // in this batch already removed it); the mutator call below
+            // then runs against the same absent root as before.
+            std::vector<UUID> subtreeUuids;
             {
                 const auto root = doc.FindByUuid(destroy->uuid);
                 if (root != entt::null && doc.ecs.registry.valid(root))
@@ -819,33 +1536,38 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
                     std::vector<entt::entity> subtree;
                     SceneHierarchy::CollectSubtreePostOrder(
                         doc.ecs.registry, root, subtree);
-
-                    std::vector<UUID> uuids;
-                    uuids.reserve(subtree.size());
+                    subtreeUuids.reserve(subtree.size());
                     for (auto e : subtree)
                         if (const auto* idc =
                                 doc.ecs.registry.try_get<EntityIdComponent>(e))
-                            uuids.push_back(idc->id);
-
-                    // T5 final re-review P1: the precomputed frozen set
-                    // cannot see descendants created earlier in this same
-                    // one-pass batch (create A, create B parented to A,
-                    // destroy A): at precompute time neither exists in the
-                    // registry, yet the recollect above now observes the
-                    // real dying subtree [B, A]. Merge those actual
-                    // callback UUIDs into the frozen set BEFORE the
-                    // callbacks run, so QueueDestroy/create-under-B and
-                    // sink writes targeting the batch-created child
-                    // refuse loudly instead of poisoning the next queue.
-                    // The set stays frozen for the rest of the drain and
-                    // is cleared on drain exit; enqueue order is untouched.
-                    for (const auto& id : uuids)
-                        m_DestroyingUuids.insert(id);
-
-                    if (!uuids.empty())
-                        m_ScriptDispatch->OnEntitiesDestroying(uuids);
+                            subtreeUuids.push_back(idc->id);
                 }
             }
+
+            // T5 final re-review P1: merge those actual UUIDs into the
+            // frozen set BEFORE the callbacks run, so QueueDestroy/
+            // create-under-B and sink writes targeting the batch-created
+            // child refuse loudly instead of poisoning the next queue.
+            // The set stays frozen for the rest of the drain and is
+            // cleared on drain exit; enqueue order is untouched.
+            for (const auto& id : subtreeUuids)
+                m_DestroyingUuids.insert(id);
+
+            // Audio A5: drop queued audio and stop voices BEFORE
+            // callbacks and ECS removal. The AudioWorld destroying mark
+            // stays active through the callbacks below so re-entrant
+            // audio commands targeting either UUID refuse; the controller
+            // clears it at drain exit beside m_DestroyingUuids.
+            if (!subtreeUuids.empty() && m_AudioWorld)
+                m_AudioWorld->NotifySourcesDestroying(subtreeUuids.data(),
+                                                      subtreeUuids.size());
+
+            // Phase 6: give scripts their on_destroy BEFORE the entities go
+            // away, so the final callback can still read the entity it is
+            // tearing down. Post-order = children first, matching the
+            // destruction order.
+            if (m_ScriptDispatch && !subtreeUuids.empty())
+                m_ScriptDispatch->OnEntitiesDestroying(subtreeUuids);
 
             // T5 physics teardown participation at the OnEntitiesDestroying
             // seam: ECS entities and Bullet objects are still present here.
@@ -855,50 +1577,19 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
             // already rejected batches that would orphan a surviving
             // constraint, so every affected constraint owner dies in this
             // same subtree.
-            if (m_PhysicsWorld)
-            {
-                const auto root = doc.FindByUuid(destroy->uuid);
-                if (root != entt::null && doc.ecs.registry.valid(root))
-                {
-                    std::vector<entt::entity> subtree;
-                    SceneHierarchy::CollectSubtreePostOrder(
-                        doc.ecs.registry, root, subtree);
-                    std::vector<UUID> subtreeUuids;
-                    subtreeUuids.reserve(subtree.size());
-                    for (auto e : subtree)
-                        if (const auto* idc =
-                                doc.ecs.registry.try_get<EntityIdComponent>(e))
-                            subtreeUuids.push_back(idc->id);
-                    if (!subtreeUuids.empty())
-                        m_PhysicsWorld->RemoveSubtreePhysics(subtreeUuids);
-                    // T6: record the recollected dying subtree for the
-                    // snapshot destroy filter. Recollection (not the frozen
-                    // precompute) is what sees descendants created earlier
-                    // in this same one-pass batch, so a create-then-destroy
-                    // UUID's tick events are filtered even though the UUID
-                    // did not exist at drain start.
-                    destroyedUuids.insert(destroyedUuids.end(),
-                                          subtreeUuids.begin(),
-                                          subtreeUuids.end());
-                }
-            }
-            else
-            {
-                // T6: no physics world, but the ECS teardown below still
-                // destroys these UUIDs — record them for the snapshot
-                // filter from the same recollected subtree.
-                const auto root = doc.FindByUuid(destroy->uuid);
-                if (root != entt::null && doc.ecs.registry.valid(root))
-                {
-                    std::vector<entt::entity> subtree;
-                    SceneHierarchy::CollectSubtreePostOrder(
-                        doc.ecs.registry, root, subtree);
-                    for (auto e : subtree)
-                        if (const auto* idc =
-                                doc.ecs.registry.try_get<EntityIdComponent>(e))
-                            destroyedUuids.push_back(idc->id);
-                }
-            }
+            if (m_PhysicsWorld && !subtreeUuids.empty())
+                m_PhysicsWorld->RemoveSubtreePhysics(subtreeUuids);
+
+            // T6: record the recollected dying subtree for the snapshot
+            // destroy filter. Recollection (not the frozen precompute) is
+            // what sees descendants created earlier in this same one-pass
+            // batch, so a create-then-destroy UUID's tick events are
+            // filtered even though the UUID did not exist at drain start.
+            // Recorded whether or not a physics world is committed: the ECS
+            // teardown below destroys these UUIDs either way.
+            destroyedUuids.insert(destroyedUuids.end(),
+                                  subtreeUuids.begin(),
+                                  subtreeUuids.end());
 
             auto r = m_Mutator.DestroySubtree(doc, destroy->uuid);
             if (!r.IsOk())
@@ -906,6 +1597,8 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
                 assert(false && "RuntimeSceneMutator::DestroySubtree failed post-validation");
                 err = r.error;
                 m_DestroyingUuids.clear();
+                if (m_AudioWorld)
+                    m_AudioWorld->ClearDestroying();
                 return false;
             }
         }
@@ -915,6 +1608,11 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
     // cleared: it holds only callback-submitted next-safe-point work, which
     // the following frame's drain will validate and apply.
     m_DestroyingUuids.clear();
+    // Audio A5: the AudioWorld destroying mark lives exactly as long as the
+    // frozen set above — active through every OnEntitiesDestroying callback
+    // (re-entrant audio commands refuse), cleared when the drain returns.
+    if (m_AudioWorld)
+        m_AudioWorld->ClearDestroying();
 
     // Phase 4 (post-apply): the caller will run SceneGraph::UpdateWorldTransforms
     // next, then set prevWorldMatrix = worldMatrix for every created entity

@@ -126,6 +126,34 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- Audio A2: clip asset/provider persistence (CPU-only; filesystem
+         plus AssetResolver only — no miniaudio, device, or backend). -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\AudioClipAssetProvider.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- Audio A3: CPU world/voice policy + recording fake (CPU-only;
+         standard library plus audio headers — no miniaudio or device). -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\AudioWorld.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\FakeAudioBackend.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- Audio A7: edit-mode preview owner (CPU-only: standard library plus
+         audio headers plus core — no miniaudio, device, Vulkan, ImGui, or
+         Walnut, so the RT2Tests/RT2SliceRunner/RT2ImGuiProbe link boundary
+         is unchanged). -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\AudioPreviewController.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <!-- T4: shared CPU collision decode + host-owned immutable cache
          (CPU-only; tinygltf/tinyobj declarations only — implementations link
          from SceneLoader.cpp below). -->

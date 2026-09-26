@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;..\RT2AudioBackend\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -121,7 +121,7 @@ copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlssd.dll" "../bi
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;..\RT2AudioBackend\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -169,7 +169,7 @@ copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "../bi
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\bullet\src;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;..\RT2AudioBackend\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>None</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -219,6 +219,23 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\AssetResolver.h" />
     <ClInclude Include="src\AssetWatchPolicy.h" />
     <ClInclude Include="src\AsyncTextureLoader.h" />
+    <!-- Audio A2: clip asset/provider persistence (CPU-only). -->
+    <ClInclude Include="src\AudioClipAssetProvider.h" />
+    <ClInclude Include="src\AudioComponents.h" />
+    <!-- Audio A3: CPU world/voice policy (CPU-only; no miniaudio/device). -->
+    <ClInclude Include="src\AudioBackend.h" />
+    <ClInclude Include="src\AudioClipProvider.h" />
+    <ClInclude Include="src\AudioSpatialMath.h" />
+    <ClInclude Include="src\AudioWorld.h" />
+    <!-- Audio A7: edit-mode authoring/preview/status UI (CPU-only headers;
+         AudioInspectorState is header-only policy, AudioPreviewController
+         compiles once below and links anywhere the backend interface links). -->
+    <ClInclude Include="src\AudioInspectorState.h" />
+    <ClInclude Include="src\AudioPreviewController.h" />
+    <!-- Audio A7 review: compact status snapshot + line formatter (CPU-only,
+         shared by the Walnut status block and the RT2ImGuiProbe). -->
+    <ClInclude Include="src\AudioStatusSnapshot.h" />
+    <ClInclude Include="src\FakeAudioBackend.h" />
     <ClInclude Include="src\BackgroundWork.h" />
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
@@ -464,6 +481,30 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\AssetWatchPolicy.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- Audio A2: clip asset/provider persistence (CPU-only). -->
+    <ClCompile Include="src\AudioClipAssetProvider.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- Audio A3: CPU world/voice policy (CPU-only). -->
+    <ClCompile Include="src\AudioWorld.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\FakeAudioBackend.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- Audio A7: edit-mode preview owner (CPU-only: standard library plus
+         audio headers plus core — no miniaudio, device, Vulkan, ImGui). -->
+    <ClCompile Include="src\AudioPreviewController.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -1398,6 +1439,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
   <ItemGroup>
     <ProjectReference Include="..\Walnut\Walnut\Walnut.vcxproj">
       <Project>{C038E8D9-ACDA-12B0-9595-260481D69900}</Project>
+    </ProjectReference>
+    <!-- Audio A1: isolated miniaudio backend (top-level RT2AudioBackend;
+         GUID pinned via uuid in RT2AudioBackend/premake5.lua). -->
+    <ProjectReference Include="..\RT2AudioBackend\RT2AudioBackend.vcxproj">
+      <Project>{D7F38CC6-437F-FA8A-4C90-7D7FB89A568B}</Project>
     </ProjectReference>
     <!-- T1: pinned Bullet core libraries (same explicit order and GUIDs as
          RT2Tests; see note there). -->

@@ -54,6 +54,7 @@ defined in `Scene.h`.
 metadata for scene file round-tripping |
 | `NameComponent` | name (string) | Entity name for outliner display |
 | `VisibleComponent` | (empty) | Marker: entity should be rendered |
+| `AudioSourceComponent` | clip (`audioclip` AssetReference), bus, autoplay, loop, spatial, gain [0,4], pitch [0.25,4], minDistance, maxDistance, rolloff [0,8], priority | Authored audio source, at most one per entity (audio A0-A8; see below) |
 
 ### MeshRegistry
 
@@ -348,6 +349,45 @@ handled by `SceneSerializer`.
   possible. They are resolved relative to the `.rt2scene` file's directory at
   load time. Absolute machine-specific paths are NOT persisted unless the
   asset is on a different drive and cannot be relativized.
+
+### Schema version 9 (audio A0-A8)
+
+- **Version field**: `{"version": 9, ...}`. The native format reads v3
+  through v9 and migrates by absence (v3-v8 input carries no audio
+  payload, which loads as "no source"); v1/v2 fail with
+  `Error{SchemaVersion}`. (v8 added the four authored physics payloads;
+  v6/v7 added prefab-override and primitive-override markers. The
+  "version 3" sections above describe their period format, not current
+  state.)
+- **Audio payload**: an entity carries at most one optional `audioSource`
+  block: `clip` (`audioclip` AssetReference with portable path, empty
+  `sourceKey`, non-nil `assetId`), `bus` (`music`/`effects`/`ui` wire
+  string — `master` is a mixer parent and is rejected as a source bus),
+  `autoplay`, `loop`, `spatial`, `gain`, `pitch`, `minDistance`,
+  `maxDistance`, `rolloff`, `priority`. v9 performs strict dotted-field
+  validation: a present-but-malformed block is a loud transactional Parse
+  failure naming the entity UUID (e.g. `…:audioSource.gain`), never a
+  silent default. No decoder state is persisted.
+- **Validation rules** (Save and Load share them): WAV/FLAC/MP3 paths
+  only; UI-bus sources are always non-spatial; spatial sources require a
+  `Transform`; spatial clips must decode to mono (enforced at Play/Preview
+  commit, where the decoder has run). Violations name the UUID and dotted
+  field.
+- **Prefabs**: the exact wire key is `audioSource`. Presence and fields
+  are **non-overridable** on prefab members, matching physics — plain
+  member edits are refused unless made at the prefab source.
+- **Asset integration**: every `AudioSourceComponent::clip` is visited
+  unconditionally by the scene asset-reference collector, so Save
+  validation, migration, dependency protection (rename/delete), and
+  asset-ID repair all see audio references. Clips use the existing
+  `.rt2meta` sidecar identity flow; `.wav`/`.flac`/`.mp3` changes are
+  `DatabaseRefresh` watch events that invalidate only future resolves —
+  never an immutable generation already held by a voice.
+- **Acceptance scene**: `RT2App/assets/audio-acceptance.rt2scene`
+  (generated, unlicensed sine fixtures under `RT2App/assets/audio/`)
+  carries one looping spatial mono Effects emitter and one idle
+  non-spatial Music source. It round-trips through this codec and is
+  driven by the `AudioA8*` CPU suite.
 
 ### Save validation (v3)
 

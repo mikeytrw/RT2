@@ -183,7 +183,7 @@ void RemapCopiedScriptFields(
 // unit of classification is the FOREST of copied entities, not each selected
 // root in isolation.
 //
-// CopyAuthoredComponents copies all 17 persisted components verbatim
+// CopyAuthoredComponents copies all 18 persisted components verbatim
 // (SceneManager.cpp:89-93), so a copy of a prefab instance would share the
 // SOURCE's instanceId: duplicating an instance produces two entities (and two
 // member groups) claiming the same instance identity. W3 groups overrides by
@@ -2248,6 +2248,11 @@ SubtreeEntityRecord BuildSubtreeRecord(const entt::registry& reg, entt::entity e
 		r.translation = tf->translation;
 		r.rotation    = tf->rotation;
 		r.scale       = tf->scale;
+		r.hasTransform = true;
+	}
+	else
+	{
+		r.hasTransform = false;
 	}
 
 	if (const auto* vc = reg.try_get<VisibleComponent>(e))
@@ -2340,6 +2345,17 @@ SubtreeEntityRecord BuildSubtreeRecord(const entt::registry& reg, entt::entity e
 	{
 		r.hasPhysicsSlider = true;
 		r.physicsSlider    = *psl;
+	}
+
+	// Audio A2: authored source rides subtree snapshots (Undo/Redo),
+	// clipboard staging, and prefab records exactly like every other
+	// persisted component. CopyAuthoredComponents covers the registry-copy
+	// path via PersistedComponents::ForEach; this record path covers the
+	// snapshot/clipboard/prefab-file paths.
+	if (const auto* au = reg.try_get<AudioSourceComponent>(e))
+	{
+		r.hasAudioSource = true;
+		r.audioSource    = *au;
 	}
 
 	return r;
@@ -2445,6 +2461,13 @@ void ApplySubtreeRecord(const SubtreeEntityRecord& record, entt::registry& reg,
 		reg.emplace_or_replace<PhysicsSliderComponent>(e, record.physicsSlider);
 	else
 		reg.remove<PhysicsSliderComponent>(e);
+
+	// Audio A2: structural restore reinstates the recorded source verbatim —
+	// restore never remaps or invents clip references.
+	if (record.hasAudioSource)
+		reg.emplace_or_replace<AudioSourceComponent>(e, record.audioSource);
+	else
+		reg.remove<AudioSourceComponent>(e);
 }
 
 // Compare authored component state on an entity against a record. Returns
@@ -2664,6 +2687,14 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 	if (reg.all_of<PhysicsSliderComponent>(e) != record.hasPhysicsSlider) return false;
 	if (record.hasPhysicsSlider &&
 	    !(*reg.try_get<PhysicsSliderComponent>(e) == record.physicsSlider))
+		return false;
+
+	// Audio A2: exact-value compare. The source is pure authored data
+	// (operator== is the canonical comparison — no eps, no transient
+	// state), so presence and value must both match exactly.
+	if (reg.all_of<AudioSourceComponent>(e) != record.hasAudioSource) return false;
+	if (record.hasAudioSource &&
+	    !(*reg.try_get<AudioSourceComponent>(e) == record.audioSource))
 		return false;
 
 	if (reg.all_of<PrefabMemberComponent>(e) != record.hasPrefabMember) return false;
@@ -6392,6 +6423,70 @@ EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
 	result.syncImpact = rt2::core::SyncImpact::None;
 	result.affectedEntities.push_back(entity);
 	return result;
+}
+
+// Audio A7: authored audio-source state (see the SceneManager.h contract).
+// Prefab refusal precedes every validation write, exactly like the physics
+// Set*State APIs: audioSource is non-overridable.
+EditorMutationResult SceneManager::SetAudioSourceState(
+	const rt2::core::UUID& entity,
+	const std::optional<AudioSourceComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetAudioSourceState: entity not present");
+	// Prefab enforcement before any validation write, revision, or history:
+	// audio wires are non-overridable, so linked members refuse loudly.
+	if (m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
+	{
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			entity.ToString(),
+			"SetAudioSourceState: entity is a linked prefab member "
+			"(audioSource is non-overridable; edit the prefab source)");
+	}
+	if (value.has_value())
+	{
+		const bool hasTransform =
+			m_EcsScene.registry.all_of<Transform>(e);
+		std::string detail;
+		std::string field;
+		// Authoring context: nullopt decoded channels. The spatial-mono
+		// check belongs to the Play/Preview commit that owns decoded
+		// content, not to persistence.
+		if (!ValidateAudioSourceComponent(*value, hasTransform, std::nullopt,
+		                                  detail, &field))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetAudioSourceState: invalid audioSource." + field + ": " +
+				detail);
+		}
+		m_EcsScene.registry.emplace_or_replace<AudioSourceComponent>(e, *value);
+	}
+	else
+	{
+		if (m_EcsScene.registry.all_of<AudioSourceComponent>(e))
+			m_EcsScene.registry.remove<AudioSourceComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+std::optional<AudioSourceComponent> SceneManager::GetAudioSource(
+	const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	if (const auto* audio =
+	        m_EcsScene.registry.try_get<AudioSourceComponent>(e))
+		return *audio;
+	return std::nullopt;
 }
 
 EditorMutationResult SceneManager::SetCameraPoseState(const rt2::core::UUID& entity,

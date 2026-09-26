@@ -179,6 +179,13 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- Audio A7: authoring/preview/status UI probes (real ImGui events;
+         CPU behavior links through the shared RT2AppCpuSources closure). -->
+    <ClCompile Include="src\AudioAuthoringPreviewTests.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
   </ItemGroup>
   <!-- T3: pinned Bullet core libraries. Explicit link order BulletDynamics,
        BulletCollision, LinearMath; every consumer links all three (no

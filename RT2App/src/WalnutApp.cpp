@@ -25,6 +25,10 @@
 #include "PrefabPropagationLive.h"
 #include "RuntimeSceneController.h"
 #include "PhysicsCollisionAssetProvider.h"
+#include "AudioClipAssetProvider.h"
+#include "AudioPreviewController.h"
+#include "AudioStatusSnapshot.h"
+#include "ProductionAudioBackend.h"
 #include "ScriptSystem.h"
 #include "ScriptFieldRegistry.h"
 #include "ScriptFieldResolver.h"
@@ -468,6 +472,98 @@ public:
 			}
 			return id;
 		});
+		// Audio A2 first import: assign or validate the clip sidecar (no
+		// decode), then refresh the project database so the Content Browser
+		// lists the clip. Failures are loud: the dispatcher reports the
+		// returned Error instead of a successful import. Success additionally
+		// requires the refreshed database to expose the imported record —
+		// a refresh that silently dropped the clip is reported as a failure.
+		m_EditorUI.SetOnImportAudioClip(
+			[this](const std::string& path, rt2::core::Error& error) -> bool
+		{
+			if (!m_ProjectContext)
+			{
+				error.code = rt2::core::Error::InvalidRuntimeState;
+				error.path = path;
+				error.detail = "audio import requires an open project";
+				m_LastStatusMsg = "Audio import failed: no project is open";
+				return false;
+			}
+			const std::filesystem::path root =
+				m_ProjectContext->project.assetRoot.lexically_normal();
+			std::filesystem::path absolute = std::filesystem::u8path(path);
+			if (absolute.is_relative())
+				absolute = root / absolute;
+			absolute = absolute.lexically_normal();
+			{
+				std::error_code relError;
+				const std::filesystem::path rel =
+					std::filesystem::relative(absolute, root, relError);
+				if (relError || rel.empty() || *rel.begin() == "..")
+				{
+					error.code = rt2::core::Error::InvalidArgument;
+					error.path = path;
+					error.detail =
+						"audio clip is outside the active project asset root";
+					m_LastStatusMsg = "Audio import failed: file is outside the project";
+					return false;
+				}
+			}
+			rt2::core::OsUuidProvider uuids;
+			rt2::core::AudioClipFirstImportResult imported;
+			if (!rt2::core::ImportAudioClipAsset(absolute.u8string(), uuids,
+			                                     imported, error))
+			{
+				m_LastStatusMsg = "Audio import failed: " + error.Format();
+				printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+			if (!RefreshProjectAssets())
+			{
+				error.code = rt2::core::Error::Io;
+				error.path = path;
+				error.detail =
+					"audio clip imported but the Content Browser refresh failed";
+				m_LastStatusMsg = "Audio imported, but the Content Browser refresh failed";
+				printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+			std::error_code relError;
+			const std::filesystem::path rel =
+				std::filesystem::relative(absolute, root, relError);
+			if (relError || !m_ProjectContext->database ||
+				!rt2::core::AudioClipRecordMatches(
+					*m_ProjectContext->database, rel.generic_string(),
+					imported.assetId))
+			{
+				error.code = rt2::core::Error::InvalidRuntimeState;
+				error.path = path;
+				error.detail =
+					"audio clip imported but missing from the refreshed project database";
+				m_LastStatusMsg = "Audio imported, but the clip is missing from the browser";
+				printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+			m_LastStatusMsg = imported.minted
+				? "Audio clip imported"
+				: "Audio clip identity confirmed";
+			return true;
+		});
+		// Audio A7: inspector audition hooks. The inspector never touches
+		// the backend directly; Preview resolves the live authored source
+		// and starts (or replaces) the one preview voice, Stop is
+		// idempotent, and the query drives Preview/Stop button labels.
+		m_EditorUI.SetOnAudioPreviewStart(
+			[this](const rt2::core::UUID& source, bool spatialAudition,
+			       std::string& diagnostic) {
+				return StartAudioPreview(source, spatialAudition, diagnostic);
+			});
+		m_EditorUI.SetOnAudioPreviewStop([this]() {
+			StopAudioPreview("inspector Stop");
+		});
+		m_EditorUI.SetAudioPreviewQuery(
+			[this]() { return m_AudioPreview.HasPreview(); },
+			[this]() { return m_AudioPreview.PreviewSource(); });
 		m_EditorUI.SetOnImportWithOptions(
 			[this](const std::string& path,
 			       const ImportSettings& settings) -> SceneManager::EntityId
@@ -953,6 +1049,54 @@ public:
 			ImGui::Text("  TLAS build:  %.3f ms", m_RendererGPU.GetLastTlasBuildMs());
 			ImGui::Text("  Total AS:    %.3f ms", m_RendererGPU.GetLastAsTotalMs());
 			ImGui::Text("  BLAS count:   %u", m_RendererGPU.GetBlasCount());
+		}
+	}
+	// Audio A7: compact audio status (review P2: backend reason, census,
+	// gains, the one observable latest failure — preview, refused Play,
+	// failed Stop/drain, deferred runtime — and cache). The snapshot fill
+	// and every line come from the shared production formatter the probe
+	// drives; this block only renders.
+	{
+		ImGui::Separator();
+		ImGui::Text("Audio");
+		AudioStatusSnapshot audioSnapshot;
+		// Re-review finding 3: production collection the probe drives
+		// (decoded-cache counters stay plain values: the concrete
+		// backend type must never link into CPU probe targets).
+		const rt2::audio::AudioBackendStatus audioStatus =
+			m_AudioBackendReady ? m_AudioBackend.Status()
+			                    : rt2::audio::AudioBackendStatus{};
+		float audioSessionGains[4];
+		const float* audioGainsPtr = nullptr;
+		if (const rt2::audio::AudioWorld* audioWorld =
+				m_Runtime.TryGetAudioWorld())
+		{
+			audioSessionGains[0] = audioWorld->BusGain(AudioBus::Master);
+			audioSessionGains[1] = audioWorld->BusGain(AudioBus::Music);
+			audioSessionGains[2] = audioWorld->BusGain(AudioBus::Effects);
+			audioSessionGains[3] = audioWorld->BusGain(AudioBus::UI);
+			audioGainsPtr = audioSessionGains;
+		}
+		FillAudioStatusSnapshot(
+			audioSnapshot, m_AudioBackendReady,
+			m_AudioBackendReady ? &audioStatus : nullptr,
+			m_Runtime.AudioLiveVoiceCount(), m_AudioPreview,
+			audioGainsPtr, !m_LastAudioError.IsOk(),
+			m_LastAudioError.Format(), m_LastAudioAsset,
+			m_AudioBackendReady
+				? m_AudioBackend.DecodedCacheEntryCount() : 0,
+			m_AudioBackendReady
+				? m_AudioBackend.DecodedCacheResidentBytes() : 0,
+			m_AudioClipProvider.CacheEntryCount());
+		for (const AudioStatusLine& line :
+		     FormatAudioStatusLines(audioSnapshot))
+		{
+			if (line.muted)
+				ImGui::TextDisabled("%s", line.text.c_str());
+			else if (line.wrapped)
+				ImGui::TextWrapped("%s", line.text.c_str());
+			else
+				ImGui::TextUnformatted(line.text.c_str());
 		}
 	}
 	ImGui::End();
@@ -1894,6 +2038,36 @@ public:
 		ImGui::SameLine();
 		if (ImGui::Button("Refresh"))
 			RefreshProjectAssets();
+		ImGui::SameLine();
+		// Audio A2 first import, usable with no drag payload: a sidecar-less
+		// clip never appears as a browser drag source (records are
+		// sidecar-backed), so this picker initiates the import. Files under
+		// the asset root import in place; external files are copied in.
+		// Inspector clip authoring and Preview remain A7 scope.
+		if (ImGui::Button("Import Audio..."))
+		{
+			std::string picked = FileDialog::OpenFile(
+				L"Audio Clips (*.wav;*.flac;*.mp3)\0*.wav;*.flac;*.mp3\0WAV (*.wav)\0*.wav\0FLAC (*.flac)\0*.flac\0MP3 (*.mp3)\0*.mp3\0",
+				m_ProjectContext->project.assetRoot);
+			if (!picked.empty())
+			{
+				std::filesystem::path inProject;
+				rt2::core::Error resolveError;
+				if (!rt2::core::ResolveAudioClipImportSource(
+						std::filesystem::u8path(picked),
+						m_ProjectContext->project.assetRoot, inProject,
+						resolveError))
+				{
+					m_LastStatusMsg =
+						"Audio import failed: " + resolveError.Format();
+					printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+				}
+				else
+				{
+					m_EditorUI.ImportAssetPathFromDrop(inProject.u8string());
+				}
+			}
+		}
 		ImGui::Separator();
 
 		const auto records = rt2::core::SearchContentBrowserAssets(
@@ -1944,8 +2118,18 @@ public:
 			}
 			const bool selected = m_ContentBrowserPendingRecord &&
 				m_ContentBrowserPendingRecord->sourcePath == record.sourcePath;
+			// Audio A7: classify AudioClip records in the browser list, next
+			// to the existing [Prefab] marker. Rename/delete protection for
+			// referenced clips rides the generic FindContentBrowserDependants
+			// path (audio clip references are collected alongside every
+			// other scene asset reference), so the label is what is new.
+			const bool isAudioClip =
+				recordExtension == ".wav" || recordExtension == ".flac" ||
+				recordExtension == ".mp3";
 			const std::string displayPath = isPrefab
-				? "[Prefab] " + record.sourcePath : record.sourcePath;
+				? "[Prefab] " + record.sourcePath
+				: isAudioClip ? "[Audio] " + record.sourcePath
+				              : record.sourcePath;
 			ImGui::Selectable(displayPath.c_str(), selected,
 				ImGuiSelectableFlags_AllowDoubleClick);
 			if (ImGui::BeginDragDropSource())
@@ -2715,8 +2899,25 @@ public:
 		// Drive the runtime controller when Playing.
 		if (m_Runtime.GetState() == rt2::core::SceneRunState::Playing && m_RenderBridge)
 		{
+			// Audio A5: the actual rendered camera is the sole listener
+			// authority. Inject its pose before Update so the post-GPU-sync
+			// audio slot mixes from what the player sees.
+			InjectAudioListenerPose();
 			m_Runtime.Update(ts, *m_RenderBridge);
 		}
+
+		// Audio A7: edit-mode preview maintenance (Edit state only).
+		// Selection/document/Play transitions stop the preview through the
+		// one centralized stop; a live voice refreshes its spatial-audition
+		// mix, reaps natural completions, and pumps no-device PCM. Playing
+		// frames never run it: preview voices cannot exist outside Edit.
+		if (m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
+			UpdateAudioPreview(ts);
+
+		// A7 review P2: deferred runtime voice failures reach the one
+		// observable latest-failure path every frame a session world
+		// exists; with no world the reported set restarts.
+		UpdateAudioStatusFromRuntime();
 
 		// ---- Phase 1B: autosave (authoring only, never runtime) ----
 		// Only snapshot the authoring document; the runtime Play clone is
@@ -2833,6 +3034,34 @@ public:
 			const std::string report = m_Ngx->Snapshot().Format();
 			printf("[NGX] %s\n", report.c_str());
 			RT_LOG("[NGX] %s", report.c_str());
+		}
+		// Audio A5 fixup: if a Play session is active, Stop it while the
+		// bridge and backend are still alive (OnSceneStop, explicit audio
+		// teardown with zero voice/command census, physics destroy, clone
+		// reset, authoring re-sync) BEFORE shutting the backend down.
+		// Declaration order alone protects only implicit member
+		// destruction; this explicit Shutdown would otherwise clear all
+		// backend voices/handles while the controller still owns a live
+		// AudioWorld, whose destructor would then stop a session against
+		// an uninitialized backend.
+		if ((m_Runtime.GetState() == rt2::core::SceneRunState::Playing ||
+		     m_Runtime.GetState() == rt2::core::SceneRunState::Paused) &&
+		    m_RenderBridge)
+			EnterStop();
+		// Audio A7: stop any edit-mode preview before the backend closes.
+		// The preview controller is declared after the backend, so implicit
+		// member destruction would detach it safely — but this explicit
+		// Shutdown would otherwise clear its live voice out from under it.
+		StopAudioPreview("shutdown");
+		m_AudioPreview.ClearBindings();
+		// Audio A5: shut the production backend down explicitly. Member
+		// order already guarantees the session died first (the controller
+		// is declared after the backend), so no session voice can outlive
+		// the device; this is the loud host-side close.
+		if (m_AudioBackendReady)
+		{
+			m_AudioBackend.Shutdown();
+			m_AudioBackendReady = false;
 		}
 	}
 
@@ -4249,6 +4478,9 @@ private:
 
 	void ResetEditorForDocument()
 	{
+		// Audio A7: document reset/replacement stops any preview first, so
+		// no preview voice can reference a discarded document revision.
+		StopAudioPreview("document reset");
 		// Replacement is valid discard proof. SceneEditorUI drops its durable
 		// session/token first; Walnut's drag/sequence are cleared afterward.
 		m_EditorUI.ResetForDocument();
@@ -4259,6 +4491,9 @@ private:
 		rt2::core::SceneDocument&& document, uint64_t authoringRevision = 0,
 		bool preserveDirty = false)
 	{
+		// Audio A7: document replacement stops any preview first (same
+		// centralized transition as ResetEditorForDocument).
+		StopAudioPreview("document replacement");
 		m_GizmoCoordinator.ReplaceDocument(kind,
 			[this, &document, authoringRevision, preserveDirty]() {
 				if (preserveDirty)
@@ -4328,6 +4563,39 @@ private:
 	// borrows the provider for one Play session only.
 	rt2::core::AssetResolutionContext               m_PhysicsAssetContext;
 	std::unique_ptr<rt2::core::PhysicsCollisionAssetProvider> m_PhysicsProvider;
+	// Audio A5: host-owned production backend + clip-byte provider.
+	// Declared BEFORE the controller on purpose (same Sol B2 shape as the
+	// physics provider above): reverse member destruction then destroys
+	// the session (AudioWorld, owned by the controller) BEFORE the
+	// backend/provider, so the device outlives every runtime session by
+	// construction. The provider snapshot is refreshed immediately before
+	// Play; the controller borrows both pointers for one Play session
+	// only. The resolved-clip map backs the candidate key builder and the
+	// backend byte resolver for the frozen session (A5 stages no new keys
+	// mid-session; Lua-driven keys arrive in A6).
+	rt2::audio::backend::ProductionAudioBackend    m_AudioBackend;
+	rt2::core::AudioClipAssetProvider             m_AudioClipProvider;
+	rt2::core::AssetResolutionContext             m_AudioAssetContext;
+	std::map<std::string, rt2::core::ResolvedAudioClip> m_AudioResolvedClips;
+	bool m_AudioBackendReady = false;
+	// Audio A7: edit-mode preview owner. Declared AFTER the backend (it
+	// borrows the backend for one preview voice) and BEFORE the runtime
+	// controller (which owns Play-session AudioWorlds), so reverse member
+	// destruction tears down runtime first, preview second, backend last.
+	// The backend owns no pointer into this controller.
+	rt2::audio::AudioPreviewController m_AudioPreview;
+	// Latest typed audio failure plus the affected asset, for the compact
+	// status UI. Updated by preview failures, refused Play candidates,
+	// failed preview stops, failed preview drains, and deferred runtime
+	// voice failures (A7 review P2); cleared by the next successful
+	// preview start or Play.
+	rt2::core::Error m_LastAudioError;
+	std::string m_LastAudioAsset;
+	// Already-reported deferred runtime voice failures, per source UUID to
+	// result sequence: a committed Play can fail a voice long after the
+	// candidate was accepted, and each failure must surface exactly once
+	// (sticky until the next success or failure). Cleared with the world.
+	std::map<rt2::core::UUID, uint64_t> m_ReportedAudioFailures;
 	rt2::core::RuntimeSceneController m_Runtime;
 	Camera m_RuntimeCam;           // separate camera for Play mode
 	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
@@ -4977,6 +5245,10 @@ private:
 
 	void EnterPlay()
 	{
+		// Audio A7: edit-mode preview stops BEFORE the Play candidate is
+		// attempted, so no preview voice can leak into the Play session and
+		// a refused Play still leaves zero preview voices behind.
+		StopAudioPreview("enter Play");
 		EnsureRenderBridge();
 		EnsureScriptRuntimeWired();
 		m_ScriptAssetDiagnostics.clear();
@@ -4995,6 +5267,78 @@ private:
 		m_PhysicsProvider->SetContext(m_PhysicsAssetContext);
 		m_Runtime.SetCollisionProvider(m_PhysicsProvider.get());
 
+		// Audio A5: host-owned session audio. (Re)open the production
+		// backend once (hardware device first, diagnosed 48 kHz stereo
+		// no-device fallback inside the backend), freeze one provider
+		// snapshot from the current asset context, and wire the candidate
+		// key builder plus the backend byte resolver against that frozen
+		// snapshot. The controller borrows both for the Play session only;
+		// a project switch or refresh mid-Play never affects the running
+		// session (the next Play picks it up). A backend that refuses to
+		// initialize leaves the seams unset: bound sources then refuse
+		// Play loudly at the controller boundary instead of playing
+		// silently audio-free.
+		if (!m_AudioBackendReady)
+		{
+			rt2::audio::backend::ProductionBackendConfig audioConfig;
+			std::string audioError;
+			if (!m_AudioBackend.Initialize(audioConfig, audioError))
+				printf("[Audio] Backend unavailable, sessions run without audio: %s\n",
+				       audioError.c_str());
+			else
+				m_AudioBackendReady = true;
+		}
+		if (m_AudioBackendReady)
+		{
+			m_AudioAssetContext = CurrentAssetContext();
+			m_AudioClipProvider.SetContext(m_AudioAssetContext);
+			m_AudioResolvedClips.clear();
+			m_AudioBackend.SetClipByteResolver(
+				[this](const std::string& key)
+					-> rt2::core::Result<rt2::audio::AudioClipBytes> {
+					using BytesResult =
+						rt2::core::Result<rt2::audio::AudioClipBytes>;
+					const auto it = m_AudioResolvedClips.find(key);
+					if (it == m_AudioResolvedClips.end())
+						return BytesResult::Fail(
+							rt2::core::Error::MissingAsset, key,
+							"audio clip key was not staged by this session's "
+							"Play candidate");
+					rt2::audio::AudioClipBytes bytes;
+					bytes.clipKey = key;
+					bytes.bytes = it->second.bytes;
+					return BytesResult::Ok(std::move(bytes));
+				});
+			m_Runtime.SetAudioBackend(&m_AudioBackend);
+			m_Runtime.SetAudioClipProvider(&m_AudioBackend);
+			m_Runtime.SetAudioClipKeyBuilder(
+				[this](const AssetReference& ref,
+				       const rt2::core::UUID& entityUuid,
+				       const std::string& entityName)
+					-> rt2::core::Result<std::string> {
+					using KeyResult = rt2::core::Result<std::string>;
+					rt2::core::Result<rt2::core::ResolvedAudioClip> resolved =
+						m_AudioClipProvider.ResolveClip(ref, entityUuid,
+						                                entityName);
+					if (!resolved.IsOk())
+						return KeyResult::Fail(resolved.error.code,
+						                       resolved.error.path,
+						                       resolved.error.detail);
+					const std::string key =
+						rt2::audio::backend::ProductionAudioBackend::BuildClipKey(
+							resolved.value.effectiveId.ToString(),
+							resolved.value.canonicalPath.u8string(),
+							resolved.value.fingerprint, "f32le");
+					m_AudioResolvedClips[key] = resolved.value;
+					return KeyResult::Ok(key);
+				});
+		}
+		else
+		{
+			m_Runtime.SetAudioBackend(nullptr);
+			m_Runtime.SetAudioClipProvider(nullptr);
+		}
+
 		// Phase 4: inject the production UUID provider so the runtime document
 		// can generate fresh UUIDs for deferred-create operations. The
 		// provider is stateless and the UUID spaces are disjoint (the runtime
@@ -5006,10 +5350,24 @@ private:
 		rt2::core::Error err;
 		if (!m_Runtime.Play(m_SceneMgr.AuthoringDoc(), *m_RenderBridge, err))
 		{
+			// Audio A7: a refused Play candidate records its typed failure
+			// for the compact audio status UI (the preview path records
+			// there too; a later successful preview start or Play clears
+			// it). Non-audio refusals land here as well, labeled by their
+			// own typed code — never presented as success.
+			m_LastAudioError = err;
+			m_LastAudioAsset = err.path;
 			LogScriptAssetDiagnostics(0, "Play");
 			printf("[Play] Failed to enter Play: %s\n", err.Format().c_str());
 			return;
 		}
+		// A committed Play session clears the stale failure: the status UI
+		// must not blame the previous refusal on the running session. The
+		// reported-failure map restarts with the new world (per-source
+		// result sequences are world-local).
+		m_LastAudioError = rt2::core::Error{};
+		m_LastAudioAsset.clear();
+		m_ReportedAudioFailures.clear();
 		LogScriptAssetDiagnostics(0, "Play");
 
 		// Snapshot the editor camera and switch to the runtime camera.
@@ -5045,9 +5403,343 @@ private:
 		printf("[Play] Paused\n");
 	}
 
+	// Audio A5: builds the listener pose from the actual rendered camera
+	// (m_RuntimeCamActive ? m_RuntimeCam : m_Cam — the same selection the
+	// frame renders at OnUIRender) and hands it to the controller. Called
+	// before every Update and before the separate EnterStep path. There is
+	// deliberately no persisted listener component.
+	rt2::audio::AudioListenerPose CurrentAudioListenerPose() const
+	{
+		const Camera& activeCam = m_RuntimeCamActive ? m_RuntimeCam : m_Cam;
+		const glm::vec3 pos = activeCam.GetPosition();
+		const glm::vec3 fwd = activeCam.GetDirection();
+		glm::vec3 up{ 0.0f, 1.0f, 0.0f };
+		const float parallel = std::fabs(glm::dot(fwd, up));
+		if (!(parallel < 0.999f))
+			up = glm::vec3(1.0f, 0.0f, 0.0f);
+		rt2::audio::AudioListenerPose pose;
+		pose.position[0] = pos.x;
+		pose.position[1] = pos.y;
+		pose.position[2] = pos.z;
+		pose.forward[0] = fwd.x;
+		pose.forward[1] = fwd.y;
+		pose.forward[2] = fwd.z;
+		pose.up[0] = up.x;
+		pose.up[1] = up.y;
+		pose.up[2] = up.z;
+		return pose;
+	}
+	void InjectAudioListenerPose()
+	{
+		m_Runtime.SetAudioListenerPose(CurrentAudioListenerPose());
+	}
+
+	// ---- Audio A7: edit-mode preview host ----
+	//
+	// One centralized stop owns every preview transition: selection change
+	// (polled per frame in UpdateAudioPreview), document reset/replacement
+	// (ResetEditorForDocument/ReplaceEditorDocument), EnterPlay, project
+	// replacement, and app shutdown (OnDetach). Idempotent: safe when idle.
+	void StopAudioPreview(const char* reason)
+	{
+		if (!m_AudioPreview.HasPreview())
+			return;
+		// Capture the owner before detaching for the failure asset below.
+		const rt2::core::UUID previewed = m_AudioPreview.PreviewSource();
+		const std::string previewedName =
+			m_AudioPreview.PreviewSourceName();
+		rt2::core::Error error;
+		if (!m_AudioPreview.StopPreview(error))
+		{
+			// A7 review P2: a failed Stop is a loud typed failure on the
+			// one observable latest-failure path, not a printf-and-drop.
+			// Teardown still detached (backend teardown contract), so the
+			// census is correct while the failure stays visible.
+			m_LastAudioError = error;
+			m_LastAudioAsset = previewedName.empty()
+				? previewed.ToString() : previewedName;
+			printf("[Audio] Preview stop (%s) reported: %s\n",
+			       reason, error.Format().c_str());
+		}
+		else if (reason != nullptr)
+		{
+			printf("[Audio] Preview stopped (%s)\n", reason);
+		}
+	}
+
+	// Opens the production backend on demand (hardware first, diagnosed
+	// 48 kHz stereo no-device fallback inside the backend), freezes one
+	// provider snapshot from the current asset context, and binds the
+	// controller seams. Each later Preview obtains a fresh snapshot after
+	// any watcher refresh (the plan's Preview snapshot rule).
+	bool EnsureAudioPreviewSeams(rt2::core::Error& error)
+	{
+		error = rt2::core::Error{};
+		if (!m_AudioBackendReady)
+		{
+			rt2::audio::backend::ProductionBackendConfig audioConfig;
+			std::string audioError;
+			if (!m_AudioBackend.Initialize(audioConfig, audioError))
+			{
+				error.code = rt2::core::Error::InvalidRuntimeState;
+				error.path = "audio backend";
+				error.detail =
+					"Preview refused: the audio backend is unavailable (" +
+					audioError + ")";
+				return false;
+			}
+			m_AudioBackendReady = true;
+		}
+		m_AudioAssetContext = CurrentAssetContext();
+		m_AudioClipProvider.SetContext(m_AudioAssetContext);
+		m_AudioResolvedClips.clear();
+		m_AudioBackend.SetClipByteResolver(
+			[this](const std::string& key)
+				-> rt2::core::Result<rt2::audio::AudioClipBytes> {
+				using BytesResult =
+					rt2::core::Result<rt2::audio::AudioClipBytes>;
+				const auto it = m_AudioResolvedClips.find(key);
+				if (it == m_AudioResolvedClips.end())
+					return BytesResult::Fail(
+						rt2::core::Error::MissingAsset, key,
+						"audio clip key was not staged by this preview");
+				rt2::audio::AudioClipBytes bytes;
+				bytes.clipKey = key;
+				bytes.bytes = it->second.bytes;
+				return BytesResult::Ok(std::move(bytes));
+			});
+		m_AudioPreview.SetBackend(&m_AudioBackend);
+		m_AudioPreview.SetClipProvider(&m_AudioBackend);
+		m_AudioPreview.SetClipKeyBuilder(
+			[this](const AssetReference& ref,
+			       const rt2::core::UUID& entityUuid,
+			       const std::string& entityName)
+				-> rt2::core::Result<std::string> {
+				using KeyResult = rt2::core::Result<std::string>;
+				rt2::core::Result<rt2::core::ResolvedAudioClip> resolved =
+					m_AudioClipProvider.ResolveClip(ref, entityUuid,
+					                                entityName);
+				if (!resolved.IsOk())
+					return KeyResult::Fail(resolved.error.code,
+					                       resolved.error.path,
+					                       resolved.error.detail);
+				const std::string key =
+					rt2::audio::backend::ProductionAudioBackend::BuildClipKey(
+						resolved.value.effectiveId.ToString(),
+						resolved.value.canonicalPath.u8string(),
+						resolved.value.fingerprint, "f32le");
+				m_AudioResolvedClips[key] = resolved.value;
+				return KeyResult::Ok(key);
+			});
+		return true;
+	}
+
+	// Inspector Preview callback: auditions the live authored source of the
+	// selected entity (applied state, never the unapplied working copy).
+	// Returns true with an empty diagnostic only when the preview voice is
+	// live; any failure is loud, leaves zero preview voices, and records
+	// the typed error for the status UI.
+	bool StartAudioPreview(const rt2::core::UUID& source,
+	                       bool spatialAudition, std::string& diagnostic)
+	{
+		diagnostic.clear();
+		rt2::core::Error seamError;
+		if (!EnsureAudioPreviewSeams(seamError))
+		{
+			m_LastAudioError = seamError;
+			m_LastAudioAsset = "audio backend";
+			diagnostic = seamError.Format();
+			printf("[Audio] %s\n", diagnostic.c_str());
+			return false;
+		}
+		const entt::entity e = m_SceneMgr.FindEntityByUuid(source);
+		if (e == entt::null)
+		{
+			diagnostic = "Preview refused: the selected entity is gone";
+			return false;
+		}
+		const auto* authored = m_SceneMgr.GetECS().registry
+			.try_get<AudioSourceComponent>(e);
+		if (authored == nullptr)
+		{
+			diagnostic = "Preview refused: the selected entity has no audio source";
+			return false;
+		}
+		std::string entityName;
+		if (const auto* named = m_SceneMgr.GetECS().registry
+		        .try_get<NameComponent>(e))
+			entityName = named->name;
+		const bool hasTransform = m_SceneMgr.GetECS().registry
+			.all_of<Transform>(e);
+		float sourcePos[3] = { 0.0f, 0.0f, 0.0f };
+		if (const auto* tf = m_SceneMgr.GetECS().registry
+		        .try_get<Transform>(e))
+		{
+			const glm::vec3 p = glm::vec3(tf->worldMatrix[3]);
+			sourcePos[0] = p.x;
+			sourcePos[1] = p.y;
+			sourcePos[2] = p.z;
+		}
+		rt2::core::Error previewError;
+		if (!m_AudioPreview.StartPreview(
+		        source, entityName, *authored, hasTransform, sourcePos,
+		        CurrentAudioListenerPose(), spatialAudition, previewError))
+		{
+			m_LastAudioError = previewError;
+			m_LastAudioAsset = m_AudioPreview.LastAffectedAsset();
+			diagnostic = previewError.Format();
+			printf("[Audio] %s\n", diagnostic.c_str());
+			return false;
+		}
+		m_LastAudioError = rt2::core::Error{};
+		m_LastAudioAsset.clear();
+		printf("[Audio] Preview started for '%s'%s\n",
+		       entityName.empty() ? source.ToString().c_str() : entityName.c_str(),
+		       spatialAudition ? " (spatial audition)" : " (2D)");
+		return true;
+	}
+
+	// Per-frame editor maintenance (Edit state only): selection and
+	// play-state transitions stop the preview, then the live voice (if any)
+	// refreshes its spatial-audition mix, reaps natural completions, and
+	// pumps no-device PCM through the editor loop.
+	void UpdateAudioPreview(float frameDt)
+	{
+		if (!m_AudioPreview.HasPreview())
+			return;
+		// Re-review finding 1/3: the transition table is the shared
+		// DecidePreviewMaintenanceAction the probe drives, so every
+		// committed authoring change on ANY route (Apply, Undo, Redo,
+		// script, propagation) reconciles here with no stray voice.
+		// Document reset/replacement, Play, project close, and shutdown
+		// stop through the same StopAudioPreview from their own paths.
+		const bool inEdit =
+			m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+		const rt2::core::UUID primary =
+			m_EditorUI.Selection().Primary();
+		const bool primaryIsPreview =
+			!primary.IsNull() &&
+			(primary == m_AudioPreview.PreviewSource());
+		const entt::entity e = primaryIsPreview
+			? m_SceneMgr.FindEntityByUuid(primary) : entt::null;
+		const auto* authored = e == entt::null ? nullptr
+			: m_SceneMgr.GetECS().registry
+				.try_get<AudioSourceComponent>(e);
+		const bool clipMoved =
+			authored != nullptr &&
+			AudioPreviewClipIdentityMoved(m_AudioPreview.PreviewClip(),
+			                              authored->clip);
+		switch (DecidePreviewMaintenanceAction(
+			true, inEdit, primaryIsPreview, e != entt::null,
+			authored != nullptr, clipMoved))
+		{
+		case AudioPreviewMaintenanceAction::StopLeftEdit:
+			StopAudioPreview("left Edit");
+			return;
+		case AudioPreviewMaintenanceAction::StopSelectionChanged:
+			StopAudioPreview("selection changed");
+			return;
+		case AudioPreviewMaintenanceAction::StopEntityGone:
+			StopAudioPreview("previewed entity destroyed");
+			return;
+		case AudioPreviewMaintenanceAction::StopSourceRemoved:
+			StopAudioPreview("previewed source removed");
+			return;
+		case AudioPreviewMaintenanceAction::RestartClipMoved:
+		{
+			// The committed clip drifted under the audition (Undo/Redo
+			// of a clip edit, or any non-Apply route): restart
+			// explicitly so the old clip never keeps sounding. Start
+			// replaces the one voice; a refusal leaves zero voices
+			// with the typed failure recorded inside StartAudioPreview.
+			std::string restartDiagnostic;
+			StartAudioPreview(primary,
+			                  m_EditorUI.AudioPreviewSpatialAudition(),
+			                  restartDiagnostic);
+			return;
+		}
+		case AudioPreviewMaintenanceAction::None:
+			break;
+		}
+		float sourcePos[3] = { 0.0f, 0.0f, 0.0f };
+		if (const auto* tf = m_SceneMgr.GetECS().registry
+		        .try_get<Transform>(e))
+		{
+			const glm::vec3 p = glm::vec3(tf->worldMatrix[3]);
+			sourcePos[0] = p.x;
+			sourcePos[1] = p.y;
+			sourcePos[2] = p.z;
+		}
+		const bool hasTransform = m_SceneMgr.GetECS().registry
+			.all_of<Transform>(e);
+		// A7 review P2: the inspector checkbox state drives the live
+		// audition mode every frame (see AudioPreviewController::Update).
+		m_AudioPreview.Update(CurrentAudioListenerPose(), sourcePos,
+		                      hasTransform,
+		                      m_EditorUI.AudioPreviewSpatialAudition());
+		if (m_AudioPreview.HasPreview())
+			m_AudioPreview.PumpNoDeviceFrames(frameDt);
+		if (m_AudioPreview.LastError().IsOk() == false)
+		{
+			m_LastAudioError = m_AudioPreview.LastError();
+			m_LastAudioAsset = m_AudioPreview.LastAffectedAsset();
+		}
+	}
+
+	// A7 review P2: deferred runtime voice failures. A committed Play can
+	// fail to start a voice frames after the candidate was accepted (the
+	// world records the typed error per source in GetSourceStatus); without
+	// this poll the compact status would keep reporting "none". Each
+	// failure surfaces exactly once and stays sticky until the next success
+	// or failure.
+	void UpdateAudioStatusFromRuntime()
+	{
+		const rt2::audio::AudioWorld* world = m_Runtime.TryGetAudioWorld();
+		if (world == nullptr)
+		{
+			m_ReportedAudioFailures.clear();
+			return;
+		}
+		const rt2::core::SceneDocument* runtimeScene =
+			m_Runtime.TryGetRuntimeScene();
+		if (runtimeScene == nullptr)
+			return;
+		auto view = runtimeScene->ecs.registry
+			.view<AudioSourceComponent, EntityIdComponent>();
+		for (const auto entity : view)
+		{
+			const rt2::core::UUID uuid =
+				view.get<EntityIdComponent>(entity).id;
+			const rt2::audio::AudioSourceStatus status =
+				world->GetSourceStatus(uuid);
+			if (!status.hasResult || status.lastResultOk)
+				continue;
+			const auto reported = m_ReportedAudioFailures.find(uuid);
+			if (reported != m_ReportedAudioFailures.end() &&
+			    reported->second >= status.lastResultSequence)
+				continue;
+			m_ReportedAudioFailures[uuid] = status.lastResultSequence;
+			m_LastAudioError = status.lastError;
+			std::string entityName;
+			if (const auto* named = runtimeScene->ecs.registry
+			        .try_get<NameComponent>(entity))
+				entityName = named->name;
+			m_LastAudioAsset = status.lastError.path.empty()
+				? (entityName.empty() ? uuid.ToString()
+				                      : entityName)
+				: status.lastError.path;
+			printf("[Audio] Runtime voice failure for '%s': %s\n",
+			       m_LastAudioAsset.c_str(),
+			       status.lastError.Format().c_str());
+		}
+	}
+
 	void EnterStep()
 	{
 		if (!m_RenderBridge) return;
+		// Audio A5: same listener authority as Update (the separate
+		// EnterStep path injects the exact camera used by rendering).
+		InjectAudioListenerPose();
 		m_Runtime.Step(*m_RenderBridge);
 	}
 

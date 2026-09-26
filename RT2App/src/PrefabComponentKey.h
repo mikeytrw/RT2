@@ -66,6 +66,10 @@ inline constexpr std::string_view kPhysicsBody       = "physicsBody";
 inline constexpr std::string_view kPhysicsShape      = "physicsShape";
 inline constexpr std::string_view kPhysicsHinge      = "physicsHinge";
 inline constexpr std::string_view kPhysicsSlider     = "physicsSlider";
+// Audio A2: wire name matches the scene codec member name in
+// EntityRecordToJson (SceneSerializer.cpp), exactly like every entry above.
+// Never rename without changing the codec.
+inline constexpr std::string_view kAudioSource       = "audioSource";
 }
 
 // The frozen classification table. One entry per persisted component, in the
@@ -96,6 +100,12 @@ inline constexpr std::array<PrefabComponentKey, PersistedComponents::Count> kPre
     PrefabComponentKey(PrefabWireKeys::kPhysicsShape,     false), // PhysicsShapeComponent
     PrefabComponentKey(PrefabWireKeys::kPhysicsHinge,     false), // PhysicsHingeComponent
     PrefabComponentKey(PrefabWireKeys::kPhysicsSlider,    false), // PhysicsSliderComponent
+    // Audio A2: the audio source is scene-serializable but EXCLUDED from
+    // prefab propagation/override wires (overridable=false), matching
+    // physics: instantiation, duplicate, copy/paste, snapshot/recovery, and
+    // remap copy the component exactly, while plain member edits are refused
+    // unless made at the prefab source. The overridable total stays 9.
+    PrefabComponentKey(PrefabWireKeys::kAudioSource,      false), // AudioSourceComponent
 };
 
 // Required compile-time assertion 1: the table always covers every persisted
@@ -155,6 +165,8 @@ template<> struct PrefabComponentKeyFor<PhysicsHingeComponent>
     { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPhysicsHinge, false); };
 template<> struct PrefabComponentKeyFor<PhysicsSliderComponent>
     { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPhysicsSlider, false); };
+template<> struct PrefabComponentKeyFor<AudioSourceComponent>
+    { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kAudioSource, false); };
 
 // Overridable predicate. The by-name form keeps a non-overridable name from
 // ever being treated as one (the W3 boundary test asserts each excluded

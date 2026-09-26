@@ -17,7 +17,7 @@ namespace PersistedComponents
 template<typename T>
 struct Tag { using Type = T; };
 
-constexpr size_t Count = 17;
+constexpr size_t Count = 18;
 
 template<typename Visitor>
 void ForEach(Visitor&& visitor)
@@ -39,6 +39,7 @@ void ForEach(Visitor&& visitor)
     visitor(Tag<PhysicsShapeComponent>{});
     visitor(Tag<PhysicsHingeComponent>{});
     visitor(Tag<PhysicsSliderComponent>{});
+    visitor(Tag<AudioSourceComponent>{});
 }
 }
 

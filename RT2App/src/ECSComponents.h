@@ -4,6 +4,7 @@
 #define ECS_COMPONENTS_H
 
 #include "AssetReference.h"
+#include "AudioComponents.h"
 #include "CameraPresentation.h"
 #include "core/UUID.h"
 #include "PhysicsComponents.h"

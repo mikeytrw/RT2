@@ -163,8 +163,9 @@ TEST_CASE("Phase 8 W4 S1: primitive is the ninth overridable key")
 {
     // T2 physics persistence foundation: four non-overridable physics
     // components join the table (Count 13 -> 17); the overridable total
-    // stays 9.
-    CHECK(PersistedComponents::Count == 17);
+    // stays 9. Audio A2: one non-overridable audio source joins the table
+    // (Count 17 -> 18); the overridable total stays 9.
+    CHECK(PersistedComponents::Count == 18);
     CHECK(CountOverridableEntries() == 9);
     CHECK(PrefabComponentKeyFor<PrimitiveComponent>::value.overridable());
     CHECK(FindComponentByWire("primitive").has_value());

@@ -628,6 +628,44 @@ std::unique_ptr<IEditorCommand> MakeSetPhysicsSliderCommandIfEffective(
 	std::optional<PhysicsSliderComponent> beforeValue,
 	std::optional<PhysicsSliderComponent> afterValue);
 
+// Audio A7: one command covering audio-source add, remove, and value edits
+// via std::optional before/after (same shape as the T4 body/shape and T5
+// hinge/slider commands). Add = {nullopt, some}; Remove = {some, nullopt};
+// edit = {some, some}. Carries NO PrefabCommandTransaction: the audioSource
+// wire is non-overridable with no propagation adapter, so enforcement lives
+// in SceneManager::SetAudioSourceState, which refuses linked members before
+// mutation. Execute/Undo call the manager directly and propagate its loud
+// failure (a failed Execute records nothing).
+class SetAudioSourceCommand final : public IEditorCommand
+{
+public:
+	SetAudioSourceCommand(rt2::core::UUID target,
+	                      std::optional<AudioSourceComponent> beforeValue,
+	                      std::optional<AudioSourceComponent> afterValue);
+
+	const rt2::core::UUID& Target() const { return m_Target; }
+	const std::optional<AudioSourceComponent>& BeforeValue() const { return m_BeforeValue; }
+	const std::optional<AudioSourceComponent>& AfterValue() const { return m_AfterValue; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override;
+
+private:
+	rt2::core::UUID                          m_Target;
+	std::optional<AudioSourceComponent>      m_BeforeValue;
+	std::optional<AudioSourceComponent>      m_AfterValue;
+};
+
+// Audio A7: returns null when the edit is a canonical no-op (both nullopt,
+// or both present and exactly equal). An invalid after-state is NOT
+// suppressed: the command is returned so history surfaces the manager's
+// actionable failure without recording.
+std::unique_ptr<IEditorCommand> MakeSetAudioSourceCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<AudioSourceComponent> beforeValue,
+	std::optional<AudioSourceComponent> afterValue);
+
 // Discrete inspector-gesture policy for camera presentation widgets (tone-map
 // Combo selection, exposure reset button). Maps a widget value change to a
 // whole-camera discrete commit. Unlike drag widgets, these gestures never

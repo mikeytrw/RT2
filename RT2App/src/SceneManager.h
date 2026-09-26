@@ -945,6 +945,26 @@ struct PrefabMaterialDuplicateStage
 	// Phase 6B plan, D8; mirrors SetMotionState exactly).
 	EditorMutationResult SetScriptState(const rt2::core::UUID& entity,
 	                                    const std::optional<ScriptComponent>& value);
+	// Audio A7: add, remove, or replace an entity's AudioSourceComponent.
+	// nullopt removes. SyncImpact is None — source configuration needs no
+	// GPU sync until Play/Preview resolves clips (mirrors SetMotionState).
+	// Authoring validation runs ValidateAudioSourceComponent with nullopt
+	// decoded channels (the A4 mono check runs at Play/Preview commit, not
+	// here): unknown formats, wrong kind, nil asset identity on bound
+	// references, non-finite/range violations, Master-source and UI-spatial
+	// combinations, and spatial sources without a Transform refuse
+	// atomically with a diagnostic, never clamped silently.
+	//
+	// Prefab enforcement (matches physics): audioSource is non-overridable,
+	// so linked members refuse loudly BEFORE any mutation, revision bump, or
+	// history change. Prefab sources remain editable; ordinary entities
+	// succeed.
+	EditorMutationResult SetAudioSourceState(const rt2::core::UUID& entity,
+	                                         const std::optional<AudioSourceComponent>& value);
+	// Read-back for inspector before-state capture and tests. nullopt when
+	// the entity is missing or carries no audio source.
+	std::optional<AudioSourceComponent> GetAudioSource(
+		const rt2::core::UUID& entity) const;
 	EditorMutationResult SetCameraPoseState(const rt2::core::UUID& entity,
 	                                        const EditableTRS& local,
 	                                        const CameraComponent& props);

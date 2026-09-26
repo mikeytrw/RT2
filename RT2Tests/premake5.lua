@@ -69,11 +69,41 @@
     files { "src/PhysicsDebugVisualizationTests.cpp" }
     files { "../RT2App/src/PhysicsDebugLines.cpp", "../RT2App/src/PhysicsDebugCapture.cpp" }
 
+    -- Audio A0: contract/baseline checks (same rationale).
+    -- CPU-only pins + deferred 20-check ownership map; no miniaudio/device imports.
+    files { "src/AudioA0ContractBaselineTests.cpp" }
+
+    -- Audio A1: backend pin/format boundary checks (same rationale).
+    -- Includes only the miniaudio-free AudioBackendPin.h; the adapter and
+    -- miniaudio.c stay in top-level RT2AudioBackend and are never linked here.
+    files { "src/AudioA1BackendBoundaryTests.cpp" }
+
+    -- Audio A2: clip asset/provider persistence tests (same rationale).
+    -- CPU-only provider + immutable bytes; no miniaudio/device imports.
+    files { "src/AudioA2AssetsPersistenceTests.cpp" }
+
+    -- Audio A3: CPU world/voice policy tests (same rationale).
+    -- CPU-only world + recording fake; no miniaudio/device imports.
+    files { "src/AudioA3WorldPolicyTests.cpp" }
+
+    -- Audio A5: runtime lifecycle/listener tests (same rationale).
+    -- CPU-only controller + recording fake; no miniaudio/device imports.
+    files { "src/AudioA5RuntimeLifecycleTests.cpp" }
+
+    -- Audio A6: Lua audio-control tests (same rationale).
+    -- CPU-only ScriptSystem + controller + recording fake; no miniaudio/device imports.
+    files { "src/AudioA6LuaAudioControlsTests.cpp" }
+
+    -- Audio A8: acceptance scene + durable workflow tests (same rationale).
+    -- CPU-only controller/preview + recording fake over the checked-in
+    -- acceptance scene; no miniaudio/device imports.
+    files { "src/AudioA8AcceptanceTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
     -- Include source files from RT2App for testing
-    files { "../RT2App/src/core/PathTransaction.cpp", "../RT2App/src/SceneLoader.cpp", "../RT2App/src/TextureAssetPipeline.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneHierarchy.cpp", "../RT2App/src/SceneVisibility.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/EntityReferenceRemapper.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp", "../RT2App/src/SceneDocument.cpp", "../RT2App/src/SceneSerializer.cpp", "../RT2App/src/PrefabSerializer.cpp", "../RT2App/src/PrefabEditorActions.cpp", "../RT2App/src/PrefabEditorPresentation.cpp", "../RT2App/src/PrefabPropagationContracts.cpp", "../RT2App/src/PrefabPropagationDiscovery.cpp", "../RT2App/src/PrefabPropagationCommand.cpp", "../RT2App/src/PrefabPropagationService.cpp", "../RT2App/src/SceneAssetReferenceVisitor.cpp", "../RT2App/src/SceneAssetMigration.cpp", "../RT2App/src/ContentBrowserOperations.cpp", "../RT2App/src/ContentBrowserDispatch.cpp", "../RT2App/src/AssetResolver.cpp", "../RT2App/src/SceneAssetResolver.cpp", "../RT2App/src/RuntimeSceneController.cpp", "../RT2App/src/PhysicsWorld.cpp", "../RT2App/src/PhysicsCollisionGeometry.cpp", "../RT2App/src/PhysicsCollisionAssetProvider.cpp", "../RT2App/src/RuntimeSceneMutator.cpp", "../RT2App/src/InputStateMachine.cpp", "../RT2App/src/InputConfig.cpp", "../RT2App/src/InputBindingEditor.cpp", "../RT2App/src/EditorSettings.cpp", "../RT2App/src/Project.cpp", "../RT2App/src/ProjectAssetScanner.cpp", "../RT2App/src/ProjectContext.cpp", "../RT2App/src/SceneRecoveryService.cpp", "../RT2App/src/UnsavedChangesCoordinator.cpp", "../RT2App/src/EditorSelection.cpp", "../RT2App/src/EditorSceneState.cpp", "../RT2App/src/EditorCameraWorkflow.cpp", "../RT2App/src/EditorCommandHistory.cpp", "../RT2App/src/EditorCommands.cpp", "../RT2App/src/EditorStructuralCommands.cpp", "../RT2App/src/EditorPropertyCommands.cpp", "../RT2App/src/EditorSyncRouter.cpp", "../RT2App/src/ViewportCoordinates.cpp", "../RT2App/src/EditorViewportIcons.cpp", "../RT2App/src/TransformEditing.cpp", "../RT2App/src/ScriptAssetPath.cpp", "../RT2App/src/ScriptFieldReconcile.cpp", "../RT2App/src/ScriptFieldRegistry.cpp", "../RT2App/src/ScriptFieldResolver.cpp",         "../RT2App/src/ScriptSystem.cpp", "../RT2App/src/AssetIdentity.cpp", "../RT2App/src/AssetDatabase.cpp", "../RT2App/src/AssetWatchPolicy.cpp", "../RT2App/src/core/UUID.cpp", "../RT2App/src/core/Error.cpp" }
+    files { "../RT2App/src/core/PathTransaction.cpp", "../RT2App/src/SceneLoader.cpp", "../RT2App/src/TextureAssetPipeline.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneHierarchy.cpp", "../RT2App/src/SceneVisibility.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/EntityReferenceRemapper.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp", "../RT2App/src/SceneDocument.cpp", "../RT2App/src/SceneSerializer.cpp", "../RT2App/src/PrefabSerializer.cpp", "../RT2App/src/PrefabEditorActions.cpp", "../RT2App/src/PrefabEditorPresentation.cpp", "../RT2App/src/PrefabPropagationContracts.cpp", "../RT2App/src/PrefabPropagationDiscovery.cpp", "../RT2App/src/PrefabPropagationCommand.cpp", "../RT2App/src/PrefabPropagationService.cpp", "../RT2App/src/SceneAssetReferenceVisitor.cpp", "../RT2App/src/SceneAssetMigration.cpp", "../RT2App/src/ContentBrowserOperations.cpp", "../RT2App/src/ContentBrowserDispatch.cpp", "../RT2App/src/AssetResolver.cpp", "../RT2App/src/SceneAssetResolver.cpp", "../RT2App/src/RuntimeSceneController.cpp", "../RT2App/src/PhysicsWorld.cpp", "../RT2App/src/PhysicsCollisionGeometry.cpp", "../RT2App/src/PhysicsCollisionAssetProvider.cpp", "../RT2App/src/RuntimeSceneMutator.cpp", "../RT2App/src/InputStateMachine.cpp", "../RT2App/src/InputConfig.cpp", "../RT2App/src/InputBindingEditor.cpp", "../RT2App/src/EditorSettings.cpp", "../RT2App/src/Project.cpp", "../RT2App/src/ProjectAssetScanner.cpp", "../RT2App/src/ProjectContext.cpp", "../RT2App/src/SceneRecoveryService.cpp", "../RT2App/src/UnsavedChangesCoordinator.cpp", "../RT2App/src/EditorSelection.cpp", "../RT2App/src/EditorSceneState.cpp", "../RT2App/src/EditorCameraWorkflow.cpp", "../RT2App/src/EditorCommandHistory.cpp", "../RT2App/src/EditorCommands.cpp", "../RT2App/src/EditorStructuralCommands.cpp", "../RT2App/src/EditorPropertyCommands.cpp", "../RT2App/src/EditorSyncRouter.cpp", "../RT2App/src/ViewportCoordinates.cpp", "../RT2App/src/EditorViewportIcons.cpp", "../RT2App/src/TransformEditing.cpp", "../RT2App/src/ScriptAssetPath.cpp", "../RT2App/src/ScriptFieldReconcile.cpp", "../RT2App/src/ScriptFieldRegistry.cpp", "../RT2App/src/ScriptFieldResolver.cpp",         "../RT2App/src/ScriptSystem.cpp", "../RT2App/src/AssetIdentity.cpp", "../RT2App/src/AssetDatabase.cpp", "../RT2App/src/AssetWatchPolicy.cpp", "../RT2App/src/AudioClipAssetProvider.cpp", "../RT2App/src/AudioWorld.cpp", "../RT2App/src/FakeAudioBackend.cpp", "../RT2App/src/AudioPreviewController.cpp", "../RT2App/src/core/UUID.cpp", "../RT2App/src/core/Error.cpp" }
 
     files {
         "../RT2App/src/PrefabPropagationLive.cpp",
@@ -120,6 +150,7 @@
        "../Walnut/vendor/glm",
        "../Walnut/vendor/stb_image",
        "../RT2App/vendor",
+       "../RT2AudioBackend/src",      -- Audio A1: miniaudio-free pin header only
        "../RT2App/vendor/bullet/src",   -- T1: pinned Bullet core (src include root only)
        "../RT2App/vendor/tinygltf",
        "../RT2App/vendor/entt/src",

@@ -37,7 +37,7 @@ using json = nlohmann::json;
 
 namespace rt2::core {
 
-static_assert(PersistedComponents::Count == 17,
+static_assert(PersistedComponents::Count == 18,
               "Update EntityRecord serialization when authored component coverage changes");
 
 // ============================================================================
@@ -691,6 +691,20 @@ struct EntityRecord
 
     bool hasPhysicsSlider = false;
     PhysicsSliderComponent physicsSlider{};
+
+    // Audio A2 asset/persistence foundation (scene schema v9). Plain authored
+    // data only: clip reference, bus, autoplay, loop, spatial, gain, pitch,
+    // attenuation, priority. No decoder state, no device handles, no PCM.
+    // Absent on v3-v8 input (hasAudioSource stays false) which migrates to
+    // "no source".
+    bool hasAudioSource = false;
+    AudioSourceComponent audioSource{};
+
+    // Whether the owning entity carries a Transform. Tracked separately from
+    // the TRS payload so audio validation can refuse a spatial source with
+    // no Transform. File records always carry a transform block; in-memory
+    // records reflect the registry.
+    bool hasTransform = true;
 };
 
 std::vector<SerializedEntity> CollectEntitiesSorted(const entt::registry& reg)
@@ -731,6 +745,11 @@ EntityRecord BuildEntityRecord(const entt::registry& reg, entt::entity e, const 
         r.translation = tf->translation;
         r.rotation    = tf->rotation;
         r.scale       = tf->scale;
+        r.hasTransform = true;
+    }
+    else
+    {
+        r.hasTransform = false;
     }
 
     if (auto* vc = reg.try_get<VisibleComponent>(e))
@@ -825,6 +844,15 @@ EntityRecord BuildEntityRecord(const entt::registry& reg, entt::entity e, const 
     {
         r.hasPhysicsSlider = true;
         r.physicsSlider    = *psl;
+    }
+
+    // Audio A2: carry the authored source through the in-memory record path
+    // shared by Save and CloneInMemory (Play preserves audio the same way it
+    // preserves scripts and physics).
+    if (auto* au = reg.try_get<AudioSourceComponent>(e))
+    {
+        r.hasAudioSource = true;
+        r.audioSource    = *au;
     }
 
     return r;
@@ -1108,6 +1136,50 @@ std::optional<json> EntityRecordToJson(
         j["physicsSlider"] = std::move(s);
     }
 
+    // Audio A2 asset/persistence foundation (scene schema v9). Exact-value
+    // payload: floats round-trip exactly, bus as its wire string, clip as a
+    // durable AssetReference rebased exactly like importedSource above. No
+    // decoder state is written: there is none here. Authored fields are
+    // validated in the persistence context (no decoded channel count — that
+    // seam belongs to A4); a violation fails Save loudly with the entity
+    // UUID and dotted field path rather than writing a file Load refuses.
+    if (r.hasAudioSource)
+    {
+        std::string audioDetail;
+        std::string audioField;
+        if (!ValidateAudioSourceComponent(r.audioSource, r.hasTransform,
+                                          std::nullopt, audioDetail,
+                                          &audioField))
+        {
+            err.code = Error::InvalidArgument;
+            err.path = r.uuid.ToString() + ":audioSource." + audioField;
+            err.detail = "invalid AudioSourceComponent while writing entity " +
+                         r.uuid.ToString() + " audioSource." + audioField +
+                         " " + audioDetail;
+            return std::nullopt;
+        }
+
+        json a;
+        AssetReference clipRef = r.audioSource.clip;
+        const auto clipRebased =
+            RebasePath(clipRef.path, currentSceneDir, outputSceneDir);
+        AppendNonPortableDiagnostic(
+            r.audioSource.clip, clipRebased, r.uuid, r.name, diagnostics);
+        clipRef.path = clipRebased.storedPath;
+        a["clip"]        = AssetReferenceToJson(clipRef);
+        a["bus"]         = AudioBusName(r.audioSource.bus);
+        a["autoplay"]    = r.audioSource.autoplay;
+        a["loop"]        = r.audioSource.loop;
+        a["spatial"]     = r.audioSource.spatial;
+        a["gain"]        = r.audioSource.gain;
+        a["pitch"]       = r.audioSource.pitch;
+        a["minDistance"] = r.audioSource.minDistance;
+        a["maxDistance"] = r.audioSource.maxDistance;
+        a["rolloff"]     = r.audioSource.rolloff;
+        a["priority"]    = r.audioSource.priority;
+        j["audioSource"] = std::move(a);
+    }
+
     return j;
 }
 
@@ -1145,6 +1217,7 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
     if (j.contains("visible"))
         r.visible = j["visible"].get<bool>();
 
+    r.hasTransform = j.contains("transform");
     if (j.contains("transform"))
     {
         const auto& t = j["transform"];
@@ -1964,6 +2037,133 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             return r;
     }
 
+    // Audio A2 asset/persistence foundation (scene schema v9, strict form).
+    // The block is optional: v3-v8 input carries none and migrates to "no
+    // source". A PRESENT block must be an object, and every scalar/enum/asset
+    // field inside it is type- and range-checked before conversion.
+    // Present-but-malformed audio is a loud transactional Error::Parse naming
+    // the entity UUID with one complete dotted wire (e.g.
+    // "audioSource.gain", "audioSource.clip.assetId") — never a silent
+    // default, and never a JSON exception escaping the bool+Error
+    // transaction (additionally contained by the per-record try/catch in
+    // Load below). The block is parsed whenever present (the physics
+    // precedent): absence is the migration signal, not the file version, so
+    // recovery snapshots written below the current schema keep their audio.
+    // Authored cross-field rules (bus/spatial combinations,
+    // finite ranges, attenuation order, Transform presence, clip identity)
+    // are enforced through the shared ValidateAudioSourceComponent in the
+    // persistence context (no decoded channel count — that seam belongs to
+    // A4); the decoded-mono rule is NOT pretended here.
+    {
+        const json* au = nullptr;
+        if (!checkBlockObject("audioSource", au))
+            return r;
+        if (au != nullptr)
+        {
+            AudioSourceComponent parsed;
+            if (au->contains("clip"))
+            {
+                const auto& v = (*au)["clip"];
+                const std::string wire = "audioSource.clip";
+                if (!v.is_object())
+                {
+                    failPhysics(wire, "asset reference must be an object");
+                    return r;
+                }
+                auto checkClipString = [&](const char* f) {
+                    if (!v.contains(f))
+                        return true;
+                    if (!v[f].is_string())
+                    {
+                        failPhysics(wire + "." + f, "must be a string");
+                        return false;
+                    }
+                    return true;
+                };
+                if (!checkClipString("kind") || !checkClipString("path") ||
+                    !checkClipString("sourceKey") ||
+                    !checkClipString("assetId"))
+                    return r;
+                if (v.contains("importSettings"))
+                {
+                    const auto& settings = v["importSettings"];
+                    if (!settings.is_object())
+                    {
+                        failPhysics(wire + ".importSettings",
+                                    "must be an object");
+                        return r;
+                    }
+                    for (const char* flag :
+                         {"triangulate", "generateNormals", "mergeMegaMesh",
+                          "assumeDielectricWithoutMetalRough"})
+                    {
+                        if (settings.contains(flag) &&
+                            !settings[flag].is_boolean())
+                        {
+                            failPhysics(wire + ".importSettings." + flag,
+                                        "must be a boolean");
+                            return r;
+                        }
+                    }
+                }
+                Error assetError;
+                AssetReference decoded = JsonToAssetReference(
+                    v, schemaVersion, report, r.uuid, r.name, assetError);
+                if (!assetError.IsOk())
+                {
+                    err.code = assetError.code;
+                    err.path = r.uuid.ToString();
+                    err.detail = "entity " + r.uuid.ToString() + " " + wire +
+                                 " " + assetError.detail;
+                    return r;
+                }
+                parsed.clip = std::move(decoded);
+            }
+            if (au->contains("bus"))
+            {
+                if (!(*au)["bus"].is_string())
+                {
+                    failPhysics("audioSource.bus", "must be a string");
+                    return r;
+                }
+                AudioBus bus = AudioBus::Effects;
+                if (!AudioBusFromName((*au)["bus"].get<std::string>(), bus))
+                {
+                    failPhysics("audioSource.bus", "unknown bus: " +
+                                (*au)["bus"].get<std::string>());
+                    return r;
+                }
+                parsed.bus = bus;
+            }
+            uint64_t priority = parsed.priority;
+            if (!checkBool(*au, "audioSource", "autoplay", parsed.autoplay) ||
+                !checkBool(*au, "audioSource", "loop", parsed.loop) ||
+                !checkBool(*au, "audioSource", "spatial", parsed.spatial) ||
+                !checkFloat(*au, "audioSource", "gain", parsed.gain) ||
+                !checkFloat(*au, "audioSource", "pitch", parsed.pitch) ||
+                !checkFloat(*au, "audioSource", "minDistance",
+                            parsed.minDistance) ||
+                !checkFloat(*au, "audioSource", "maxDistance",
+                            parsed.maxDistance) ||
+                !checkFloat(*au, "audioSource", "rolloff", parsed.rolloff) ||
+                !checkUint(*au, "audioSource", "priority", 0xFFu, priority))
+                return r;
+            parsed.priority = static_cast<uint8_t>(priority);
+
+            std::string audioDetail;
+            std::string audioField;
+            if (!ValidateAudioSourceComponent(parsed, r.hasTransform,
+                                              std::nullopt, audioDetail,
+                                              &audioField))
+            {
+                failPhysics("audioSource." + audioField, audioDetail);
+                return r;
+            }
+            r.hasAudioSource = true;
+            r.audioSource = std::move(parsed);
+        }
+    }
+
     return r;
 }
 
@@ -2142,6 +2342,11 @@ bool BuildDocumentFromRecords(SceneDocument& doc,
 
         if (r.hasPhysicsSlider)
             doc.ecs.registry.emplace<PhysicsSliderComponent>(e, r.physicsSlider);
+
+        // Audio A2 (v9): authored data only, so load and CloneInMemory
+        // share this path by construction.
+        if (r.hasAudioSource)
+            doc.ecs.registry.emplace<AudioSourceComponent>(e, r.audioSource);
     }
 
     // --- Pass 2: resolve parent UUIDs to Hierarchy ---
@@ -2283,6 +2488,9 @@ EntityRecord ToSceneRecord(const SubtreeEntityRecord& s)
     r.physicsHinge     = s.physicsHinge;
     r.hasPhysicsSlider = s.hasPhysicsSlider;
     r.physicsSlider    = s.physicsSlider;
+    r.hasAudioSource = s.hasAudioSource;
+    r.audioSource    = s.audioSource;
+    r.hasTransform = s.hasTransform;
     return r;
 }
 
@@ -2321,6 +2529,9 @@ SubtreeEntityRecord ToSubtreeRecord(const EntityRecord& r)
     s.physicsHinge     = r.physicsHinge;
     s.hasPhysicsSlider = r.hasPhysicsSlider;
     s.physicsSlider    = r.physicsSlider;
+    s.hasAudioSource = r.hasAudioSource;
+    s.audioSource    = r.audioSource;
+    s.hasTransform = r.hasTransform;
     return s;
 }
 
