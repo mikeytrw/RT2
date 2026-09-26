@@ -214,6 +214,12 @@ public:
     // Number of live voices referencing `clipKey` (zero-reference LRU
     // observability for the probe).
     size_t ActiveVoicesForKey(const std::string& clipKey) const;
+    // Explicit purge (A8 acceptance census): evicts every decode-cache
+    // entry whose generation has no owner outside the cache (no live
+    // voices, no registered handles, no AudioWorld/provider holders) and
+    // returns the evicted count. Pinned entries survive; a later fetch
+    // re-decodes them. Main thread only, like every other cache mutation.
+    size_t EvictZeroReferenceGenerations();
 
 private:
     struct Impl;

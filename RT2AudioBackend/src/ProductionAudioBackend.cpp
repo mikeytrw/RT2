@@ -2097,4 +2097,25 @@ size_t ProductionAudioBackend::ActiveVoicesForKey(const std::string& clipKey) co
     return (it != m_impl->liveKeyVoices.end()) ? it->second : 0;
 }
 
+size_t ProductionAudioBackend::EvictZeroReferenceGenerations()
+{
+    if (m_impl == nullptr)
+        return 0;
+    size_t evicted = 0;
+    for (auto it = m_impl->decodeCache.begin();
+         it != m_impl->decodeCache.end();)
+    {
+        if (Impl::IsEvictable(it->second))
+        {
+            it = m_impl->decodeCache.erase(it);
+            ++evicted;
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    return evicted;
+}
+
 } // namespace rt2::audio::backend

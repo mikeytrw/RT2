@@ -46,6 +46,7 @@
 #include "GPUSceneData.h"
 #include "AudioBackend.h"
 #include "AudioClipProvider.h"
+#include "AudioClipAssetProvider.h"
 #include "AudioComponents.h"
 #include "AudioWorld.h"
 #include "FakeAudioBackend.h"
@@ -316,14 +317,19 @@ TEST_CASE("A8_AcceptanceScenePlayWalk")
     CHECK(fake.starts.front().start.loop == true);
     CHECK(fake.starts.front().start.bus == AudioBus::Effects);
 
-    // Emitter authored at +X with the listener at the origin facing -Z:
-    // hard-right equal-power mix, attenuated by distance 3 (min 1, max
-    // 30, rolloff 1 -> (1 - 2/29) ~= 0.931).
+    // Emitter authored near +X (3, 0, 0.5) with the listener at the
+    // origin facing -Z: strongly right-dominant equal-power mix at
+    // distance gain (1 - (|t|-1)/29) with |t| = sqrt(9.25). The half-unit
+    // z offset keeps the left gain comfortably positive: exactly on-axis
+    // geometry yields cos(pi/2) = -4.37e-8, which the production backend
+    // loudly refuses (gains must be >= 0; proven by probe S21, invisible
+    // to the path-scripted fake).
     BackendVoiceMix rightMix =
         A8RequireMix(*ctrl.TryGetAudioWorld(), A8LoopUuid());
     CHECK(rightMix.right > rightMix.left);
-    CHECK(rightMix.right == doctest::Approx(0.93103448f).epsilon(0.001));
-    CHECK(rightMix.left == doctest::Approx(0.0f).epsilon(0.01));
+    CHECK(rightMix.right == doctest::Approx(0.92955447f).epsilon(0.001));
+    CHECK(rightMix.left == doctest::Approx(0.00993377f).epsilon(0.01));
+    CHECK(rightMix.left > 0.0f);
 
     // Final-world-transform tracking (check 11 shape): moving the runtime
     // emitter across the listener flips the mix without re-authoring.
@@ -334,14 +340,15 @@ TEST_CASE("A8_AcceptanceScenePlayWalk")
         REQUIRE((e != entt::null));
         Transform* tf = runtime->ecs.registry.try_get<Transform>(e);
         REQUIRE(tf != nullptr);
-        tf->translation = glm::vec3(-3.0f, 0.0f, 0.0f);
+        tf->translation = glm::vec3(-3.0f, 0.0f, 0.5f);
         SceneGraph::MarkDirty(runtime->ecs.registry, e);
     }
     ctrl.Update(kA8Dt, bridge);
     BackendVoiceMix leftMix =
         A8RequireMix(*ctrl.TryGetAudioWorld(), A8LoopUuid());
     CHECK(leftMix.left > leftMix.right);
-    CHECK(leftMix.left == doctest::Approx(0.93103448f).epsilon(0.001));
+    CHECK(leftMix.left == doctest::Approx(0.92955447f).epsilon(0.001));
+    CHECK(leftMix.right == doctest::Approx(0.00993377f).epsilon(0.01));
 
     // Host-driven Music one-shot: non-spatial center mix at gain 0.8.
     REQUIRE(ctrl.QueueAudioPlay(A8MusicUuid()));
@@ -443,6 +450,99 @@ TEST_CASE("A8_AcceptanceSceneCorruptMusicRefusesPlay")
     CHECK(bridge.renderRequests == 0);
 }
 
+TEST_CASE("A8_AcceptanceSceneProductionProviderResolvesShippedClips")
+{
+    // P1 identity seam: the shipped scene's real clip references resolve
+    // through the PRODUCTION AudioClipAssetProvider against the real
+    // asset directory (no database: healthy path+sidecar case). The
+    // probe's S21 consumes these same bytes through the production
+    // decoder; this case proves the provider observed the real sidecars,
+    // bytes, and fingerprints — a missing file or a foreign sidecar
+    // refuses loudly here.
+    SceneDocument doc;
+    Error loadErr;
+    REQUIRE(A8LoadAcceptance(doc, loadErr));
+    const AudioSourceComponent* loop = A8FindSource(doc, A8LoopUuid());
+    const AudioSourceComponent* music = A8FindSource(doc, A8MusicUuid());
+    REQUIRE(loop != nullptr);
+    REQUIRE(music != nullptr);
+
+    AudioClipAssetProvider provider;
+    AssetResolutionContext ctx;
+    ctx.assetRoot = std::filesystem::absolute("RT2App/assets");
+    ctx.database = nullptr;
+    provider.SetContext(ctx);
+
+    auto resolveShipped = [&](const AudioSourceComponent& source,
+                              const UUID& uuid, const std::string& name,
+                              const UUID& clipId) {
+        auto result = provider.ResolveClip(source.clip, uuid, name);
+        INFO("production provider must resolve " << name);
+        REQUIRE(result.IsOk());
+        CHECK(result.value.effectiveId == clipId);
+        REQUIRE(result.value.bytes != nullptr);
+        CHECK_FALSE(result.value.bytes->empty());
+        CHECK(result.value.fingerprint != 0);
+        return result.value;
+    };
+    const ResolvedAudioClip loopResolved =
+        resolveShipped(*loop, A8LoopUuid(), "LoopEmitter", A8LoopClipId());
+    const ResolvedAudioClip musicResolved =
+        resolveShipped(*music, A8MusicUuid(), "MusicBed", A8MusicClipId());
+    CHECK(provider.CacheEntryCount() == 2);
+    // Immutable cache identity: re-resolving serves the same byte owner,
+    // so a later rewrite cannot mutate bytes already handed out.
+    const auto loopAgain = provider.ResolveClip(loop->clip, A8LoopUuid(),
+                                                "LoopEmitter");
+    REQUIRE(loopAgain.IsOk());
+    CHECK(loopAgain.value.bytes.get() == loopResolved.bytes.get());
+    CHECK(loopAgain.value.fingerprint == loopResolved.fingerprint);
+    CHECK(provider.CacheEntryCount() == 2);
+
+    // Missing file refuses with MissingAsset.
+    AudioSourceComponent missingSource = *loop;
+    missingSource.clip.path = "audio/no-such-clip.wav";
+    const auto missing = provider.ResolveClip(missingSource.clip, A8LoopUuid(),
+                                              "LoopEmitter");
+    CHECK_FALSE(missing.IsOk());
+    CHECK(missing.error.code == Error::MissingAsset);
+
+    // Foreign sidecar refuses: the loop's bytes under a scratch sidecar
+    // claiming the music identity must not resolve as the loop clip.
+    const std::filesystem::path dir = A8TempDir();
+    {
+        std::ifstream wavIn("RT2App/assets/" + std::string(kA8LoopClip),
+                            std::ios::binary);
+        REQUIRE(static_cast<bool>(wavIn));
+        std::ostringstream wavBytes;
+        wavBytes << wavIn.rdbuf();
+        const std::string bytes = wavBytes.str();
+        REQUIRE_FALSE(bytes.empty());
+        std::ofstream wavOut((dir / "conflict.wav").string(),
+                             std::ios::binary);
+        wavOut.write(bytes.data(),
+                     static_cast<std::streamsize>(bytes.size()));
+        wavOut.close();
+        std::ofstream metaOut((dir / "conflict.wav.rt2meta").string(),
+                              std::ios::binary);
+        metaOut << A8MusicClipId().ToString();
+        metaOut.close();
+        REQUIRE(static_cast<bool>(wavOut));
+    }
+    AudioClipAssetProvider conflictProvider;
+    AssetResolutionContext conflictCtx;
+    conflictCtx.assetRoot = dir;
+    conflictCtx.database = nullptr;
+    conflictProvider.SetContext(conflictCtx);
+    AudioSourceComponent conflictSource = *loop;
+    conflictSource.clip.path = "conflict.wav";
+    const auto conflict = conflictProvider.ResolveClip(
+        conflictSource.clip, A8LoopUuid(), "LoopEmitter");
+    INFO("foreign sidecar detail: " << conflict.error.detail);
+    CHECK_FALSE(conflict.IsOk());
+    std::filesystem::remove_all(dir);
+}
+
 TEST_CASE("A8_AcceptanceScenePreviewReplaceAndStop")
 {
     // Edit-mode preview on the shipped components: starting music
@@ -468,7 +568,7 @@ TEST_CASE("A8_AcceptanceScenePreviewReplaceAndStop")
         });
 
     const AudioListenerPose listener = A8Listener(0.0f, 0.0f, 0.0f);
-    const float loopPos[3] = { 3.0f, 0.0f, 0.0f };
+    const float loopPos[3] = { 3.0f, 0.0f, 0.5f };
     Error err;
     const bool loopPreview = preview.StartPreview(
         A8LoopUuid(), "LoopEmitter", *loop, true, loopPos, listener, false,

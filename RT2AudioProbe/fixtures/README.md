@@ -26,3 +26,9 @@ ffmpeg -y -v error -i tone660_stereo_s16.wav -c:a libmp3lame -b:a 128k -ar 48000
 
 To regenerate the WAV/corrupt fixtures: `python RT2AudioProbe/fixtures/generate_fixtures.py`
 from the repository root.
+
+Probe section S21 additionally reads the shipped acceptance scene and
+clips (`RT2App/assets/audio-acceptance.rt2scene`,
+`RT2App/assets/audio/*.wav`; see `RT2App/assets/audio/README.md`) from
+the repository root, plus `corrupt_truncated.wav` above for the
+corrupt-file refusal branch.

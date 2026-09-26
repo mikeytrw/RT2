@@ -8,7 +8,7 @@
       "uuid": "9c50b5ff-11e2-49a5-bb9c-67809be6f579",
       "name": "LoopEmitter",
       "transform": {
-        "translation": [3.0, 0.0, 0.0],
+        "translation": [3.0, 0.0, 0.5],
         "rotation": [0.0, 0.0, 0.0, 1.0],
         "scale": [1.0, 1.0, 1.0]
       },

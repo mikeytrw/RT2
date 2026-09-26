@@ -16531,3 +16531,112 @@ period records; nothing above was rewritten.
   files (beta2 `5.0.0-beta2` vs the tracked semantics) was reverted
   per the A0 precedent; only the A8 `ClCompile` entry plus the
   `premake5.lua` source entry were kept.
+
+### Audio A8 fixup - review closure P1/P2 (2026-09-26)
+
+Closes the two acceptance-proof gaps in the independent final review
+at `0fb2692` (review artifact:
+`audio-integration-final-review-0fb2692`). No runtime bug was shown;
+the gaps were proof coverage, and closing them found one real
+production-path wart plus two probe-oracle defects (all fixed below).
+Nothing in the A8 section above was rewritten.
+
+- **P1 — shipped bytes through the production path.** Probe section
+  S21 (`RT2AudioProbe/src/ProbeMain.cpp`) parses the checked-in
+  `RT2App/assets/audio-acceptance.rt2scene` (nlohmann `json.hpp`,
+  header-only) and drives everything from its bytes: clip
+  path/asset-ID/bus/autoplay/loop/spatial/gain/pitch/attenuation/
+  priority/pose. Each clip resolves through production
+  `AssetResolver::Resolve` (absolute asset root, no database: the
+  healthy path+sidecar case, zero diagnostics, effective ID equals
+  the scene asset ID), decodes from its real on-disk bytes through
+  `ProductionAudioBackend`, plays through `AudioWorld`
+  (autoplay spatial loop, host-played music), and renders exact
+  no-device PCM (hard-right loop energy > 100x left with right peak
+  > 0.3; center music energy ratio within [0.9, 1.12] over integer
+  44/66-cycle windows; natural completion settles to `Completed`;
+  same-frame Stop renders < 1% energy with an exact-zero tail).
+  S21b refuses real `corrupt_truncated.wav` bytes with typed errors,
+  no cache entry, no voice, and `Failed` status. S21d proves broken
+  path (`Missing`), foreign sidecar (`Conflict`, via scratch
+  directory, removed afterwards), and same-size byte-flip
+  (different fingerprint, different PCM) fail loudly. The RT2Tests
+  A8 case `A8_AcceptanceSceneProductionProviderResolvesShippedClips`
+  resolves the same shipped references through the production
+  `AudioClipAssetProvider` (immutable cache identity, missing-file
+  and foreign-sidecar refusal). The provider's raw-byte cache is the
+  only production seam exercised in RT2Tests rather than the probe:
+  its FNV lives in the physics TU, which the probe must never link
+  (premake comment records this). Removing/corrupting a WAV,
+  breaking a sidecar, or editing the scene's audio blocks now turns
+  S21 or the provider case red.
+- **P1 wart found and fixed.** The first S21 run refused the loop
+  voice: exactly-on-axis geometry yields cos(pi/2) = -4.37e-8 for
+  the silent channel, which production `StartVoice` loudly refuses
+  (gains must be finite and >= 0). The shipped emitter moved from
+  (3, 0, 0) to (3, 0, 0.5) — strongly right-dominant (left
+  ~0.00993, right ~0.92955) while comfortably positive; the
+  path-scripted fake suites could never observe this. CPU oracles
+  updated to the exact new values; `RT2App/assets/audio/README.md`
+  records the rationale.
+- **P2 — production twenty-cycle census and purge.** New
+  `ProductionAudioBackend::EvictZeroReferenceGenerations()` (header
+  + cpp, main-thread-only) evicts zero-owner decode-cache entries
+  and returns the count; pinned entries survive and later fetches
+  re-decode. S21c drives 20 StageAutoplay/QueuePlay/Stop cycles on
+  the shipped keys through `AudioWorld`, asserting per cycle
+  `LiveVoiceCount`/`ActiveVoicesForKey` zero plus stable cache
+  entries (2) and resident bytes (576,000); `Shutdown` then purge
+  restores 0 entries/0 bytes; a retained holder pins across purge
+  (leak discrimination) and release restores zero. The ticket's
+  "explicit purge" gate is now an implemented API with oracles,
+  not a report delegation.
+- **Probe defects fixed along the way.** The `ZeroCrossings`
+  oracle strides as interleaved stereo but was fed a mono-packed
+  vector (2x OOB read, flaky segfaults) — fixed to S2's
+  interleaved pattern. PCM oracles now require exact render totals
+  and size every read by what rendered. The music center oracle
+  measures the isolated voice (the loop is stopped first; its
+  right energy otherwise swamps the ratio) over integer-cycle
+  windows (peaks are phase-sensitive and cannot serve).
+- **Attribution narrowed honestly.** The shipped scene carries no
+  Lua script and the walk uses the host-level queue seam with a
+  manually supplied listener pose: `docs/scripting.md` now says
+  Lua admission is proven by the A6 suite + script gate on their
+  fixtures, rendered-camera injection by the A5 mechanism + host
+  wiring, and shipped-bytes production decode/render by S21. No
+  shipped-scene Lua or rendered-camera walk is claimed.
+- **Measured baseline (from the repository root, `--no-skip`).**
+  Release **1497 run / 1497 passed / 0 failed / 0 skipped;
+  164,171 assertions**; Debug **1497 / 1497 / 0 / 0; 164,171
+  assertions**. Delta over `0fb2692` (1496/164,145 each): **+1 case
+  / +26 assertions**, exactly the provider case. Focused audio
+  (`A0*,A1*,A2*,A3*,A5*,A6*,A8*`): 111/111, 2,611 assertions each
+  configuration. `RT2ImGuiProbe`: 30/30, 401 assertions each.
+  `RT2AudioProbe`: S1-S21d all PASS each configuration (Release
+  measured green in 3 consecutive runs; torn-pair stress `torn=0`).
+  `run_script_test.ps1`: PASS 60 frames / 1 entity; Debug script
+  scenario: PASS 60 frames. Slice gate: PASS 60 steps, Cube final
+  x=0.999999702; Debug slice: PASS 60 steps, authoring intact.
+  `run_audio_a1_gates.ps1 -Configuration Both`: exit 0 (12
+  generated projects, exactly-one-compilation census, link
+  boundary, PE imports, probes, whitespace clean). Full solution
+  builds Release + Debug with 0 errors (only pre-existing
+  `C4996`/`C4018`/`LNK4098` diagnostics). These figures supersede
+  the A8 rows above for current-state use; all older rows remain
+  period records.
+- **Checks 1-20.** Unchanged owners; P1 adds shipped-bytes proof
+  to 4 (corrupt file), 5 (no-device PCM on shipped content), 9
+  (exact shipped L/R), 11 (shipped final-pose tracking in S21 via
+  scene poses), 15 (preview mechanism unchanged); P2 adds
+  production repeated census to 6. The 20-cycle fake census in
+  `AudioA8*` remains as the controller-level gate beside the S21c
+  production gate.
+- **Hygiene.** `graphify update .` rebuilt the graph with focused
+  query checks passing (report churn reverted per convention);
+  `git diff --check` clean; `vertical-slice.rt2scene` restored
+  after every mutating suite; probe bisect markers and scratch
+  logs removed; premake regen churn on tracked `.vcxproj` files
+  reverted again (only the resolver-TU/include entries plus the
+  matching `premake5.lua` source entries were kept). No merge or
+  push; branch stays bound for re-review.

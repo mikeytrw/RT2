@@ -18,3 +18,10 @@ Each clip carries a `.rt2meta` sidecar holding its asset UUID, matching
 the sidecar-driven project identity used by every other source asset.
 The scene `../audio-acceptance.rt2scene` (schema v9) stores the same
 UUIDs in its `audioSource.clip.assetId` fields.
+
+The loop emitter sits at (3, 0, 0.5), deliberately just off the exact
+listener axis: exactly-on-axis geometry yields cos(pi/2) = -4.37e-8 for
+the silent channel, which the production backend loudly refuses (voice
+start gains must be finite and >= 0). The half-unit offset keeps the
+mix strongly right-dominant while staying comfortably positive. Found
+by probe S21; the path-scripted fake suites cannot observe it.

@@ -41,14 +41,25 @@
 //   S20 A5 semantic/render/accounting phase order through AudioWorld:
 //       first-frame autoplay renders audible PCM, same-frame Stop renders
 //       silence, cursors advance by exactly what rendered
+//   S21 A8 shipped acceptance scene through the production path: the
+//       checked-in scene file drives production Resolve (path+sidecar),
+//       real-file decode, AudioWorld autoplay/play, exact no-device PCM,
+//       natural completion, corrupt-file refusal, failure modes for
+//       broken path/sidecar/bytes, and a 20-cycle production
+//       session/cache/generation census with explicit purge baseline.
 //
 // Fixtures live in RT2AudioProbe/fixtures (generated; see README.md). The
 // probe reads them into immutable byte vectors and decodes from memory:
-// no path the content can change underneath is ever trusted.
+// no path the content can change underneath is ever trusted. S21
+// additionally reads the shipped acceptance scene and clips under
+// RT2App/assets (generated copies; see RT2App/assets/audio/README.md)
+// from the repository root.
 
 #include "AudioBackendPin.h"
 #include "ProductionAudioBackend.h"
 #include "AudioWorld.h"
+#include "AssetResolver.h"
+#include "json.hpp"
 
 #include <algorithm>
 #include <array>
@@ -57,6 +68,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <string>
@@ -2034,6 +2046,815 @@ int main()
         shortBackend.Shutdown();
     }
     Pass("S20b short one-shot settles same-frame, survivor advances");
+
+    // ---- S21: shipped acceptance scene through the production path ----
+    //
+    // P1/P2 closure for A8: every value below (clip paths, asset IDs,
+    // buses, autoplay/loop/spatial/gain, poses) is parsed from the
+    // checked-in RT2App/assets/audio-acceptance.rt2scene. The clips resolve
+    // through production AssetResolver::Resolve (real path+sidecar
+    // verification, no database), decode from their real on-disk bytes
+    // through ProductionAudioBackend, play through AudioWorld, and render
+    // exact no-device PCM. Removing/corrupting a WAV, breaking a sidecar,
+    // or editing the scene's audio blocks turns this section red; the
+    // path-scripted fake suites cannot observe any of those mutations.
+    {
+        bool sceneFileOk = false;
+        const std::vector<char> sceneBytes =
+            ReadFile("RT2App/assets/audio-acceptance.rt2scene", sceneFileOk);
+        if (!sceneFileOk)
+            return Fail("S21 cannot read shipped acceptance scene (run from repository root)");
+        nlohmann::json scene;
+        try
+        {
+            scene = nlohmann::json::parse(sceneBytes.begin(), sceneBytes.end());
+        }
+        catch (...)
+        {
+            return Fail("S21 shipped scene is not valid JSON");
+        }
+        uint32_t sceneVersion = 0;
+        try
+        {
+            sceneVersion = scene.at("version").get<uint32_t>();
+            const nlohmann::json& entities = scene.at("entities");
+            if (!entities.is_array() || entities.size() != 2)
+                return Fail("S21 shipped scene must carry exactly 2 entities");
+        }
+        catch (...)
+        {
+            return Fail("S21 shipped scene has no version/entities array");
+        }
+        if (sceneVersion != 9)
+            return Fail("S21 shipped scene is not schema v9");
+
+        struct ShippedSource
+        {
+            std::string name;
+            rt2::core::UUID uuid;
+            rt2::core::UUID clipId;
+            std::string clipPath;
+            AudioBus bus = AudioBus::Effects;
+            bool autoplay = false;
+            bool loop = false;
+            bool spatial = false;
+            float gain = 1.0f;
+            float pitch = 1.0f;
+            float minDistance = 1.0f;
+            float maxDistance = 30.0f;
+            float rolloff = 1.0f;
+            uint8_t priority = 128;
+            float translation[3] = { 0.0f, 0.0f, 0.0f };
+        };
+        auto parseSource = [&](const char* wantName, ShippedSource& out) -> bool {
+            try
+            {
+                for (const auto& e : scene.at("entities"))
+                {
+                    if (e.at("name").get<std::string>() != wantName)
+                        continue;
+                    out.name = wantName;
+                    out.uuid = rt2::core::UUID::Parse(
+                        e.at("uuid").get<std::string>());
+                    const auto& a = e.at("audioSource");
+                    const auto& clip = a.at("clip");
+                    if (clip.at("kind").get<std::string>() != "audioclip")
+                        return false;
+                    out.clipPath = clip.at("path").get<std::string>();
+                    out.clipId = rt2::core::UUID::Parse(
+                        clip.at("assetId").get<std::string>());
+                    if (!AudioBusFromName(a.at("bus").get<std::string>(), out.bus))
+                        return false;
+                    out.autoplay = a.at("autoplay").get<bool>();
+                    out.loop = a.at("loop").get<bool>();
+                    out.spatial = a.at("spatial").get<bool>();
+                    out.gain = a.at("gain").get<float>();
+                    out.pitch = a.at("pitch").get<float>();
+                    out.minDistance = a.at("minDistance").get<float>();
+                    out.maxDistance = a.at("maxDistance").get<float>();
+                    out.rolloff = a.at("rolloff").get<float>();
+                    out.priority =
+                        static_cast<uint8_t>(a.at("priority").get<int>());
+                    const auto& t = e.at("transform").at("translation");
+                    out.translation[0] = t.at(0).get<float>();
+                    out.translation[1] = t.at(1).get<float>();
+                    out.translation[2] = t.at(2).get<float>();
+                    return true;
+                }
+            }
+            catch (...)
+            {
+            }
+            return false;
+        };
+        ShippedSource loopSrc;
+        ShippedSource musicSrc;
+        if (!parseSource("LoopEmitter", loopSrc))
+            return Fail("S21 shipped scene has no parseable LoopEmitter audioSource");
+        if (!parseSource("MusicBed", musicSrc))
+            return Fail("S21 shipped scene has no parseable MusicBed audioSource");
+        // Shape the walk asserts on comes from the file, not constants:
+        // exactly one looping spatial autoplay source and one idle
+        // non-spatial source on distinct clips with distinct identities.
+        if (!(loopSrc.autoplay && loopSrc.loop && loopSrc.spatial))
+            return Fail("S21 LoopEmitter is not an autoplay spatial loop");
+        if (musicSrc.autoplay || musicSrc.loop || musicSrc.spatial)
+            return Fail("S21 MusicBed is not an idle non-spatial one-shot");
+        if (musicSrc.bus != AudioBus::Music)
+            return Fail("S21 MusicBed is not on the Music bus");
+        if (loopSrc.clipPath == musicSrc.clipPath ||
+            loopSrc.clipId.IsNull() || musicSrc.clipId.IsNull() ||
+            loopSrc.clipId == musicSrc.clipId || loopSrc.uuid == musicSrc.uuid)
+            return Fail("S21 shipped sources lack distinct clip identity");
+
+        // Production resolution context: absolute asset root, no database.
+        // Per the resolver contract this is the healthy path+sidecar case:
+        // the real sidecar must agree with the scene asset ID and no
+        // diagnostic may be emitted.
+        rt2::core::AssetResolutionContext prodCtx;
+        prodCtx.assetRoot = std::filesystem::absolute("RT2App/assets");
+        prodCtx.database = nullptr;
+        struct ResolvedClip
+        {
+            std::string key;
+            std::vector<char> bytes;
+            std::string canonical;
+        };
+        auto resolveShipped = [&](const ShippedSource& src,
+                                  ResolvedClip& out) -> bool {
+            AssetReference ref;
+            ref.kind = AssetKind::AudioClip;
+            ref.path = src.clipPath;
+            ref.sourceKey = "";
+            ref.assetId = src.clipId;
+            std::vector<rt2::core::AssetDiagnostic> diags;
+            rt2::core::AssetResolutionResult res =
+                rt2::core::Resolve(ref, prodCtx, src.uuid, src.name, diags);
+            if (!res.success)
+                return false;
+            if (!diags.empty())
+                return false;
+            if (res.effectiveId != src.clipId)
+                return false;
+            bool bytesOk = false;
+            out.bytes = ReadFile(res.resolvedPath.string(), bytesOk);
+            if (!bytesOk || out.bytes.empty())
+                return false;
+            out.canonical = res.resolvedPath.lexically_normal().generic_string();
+            const uint64_t fp = ProductionAudioBackend::FingerprintBytes(
+                out.bytes.data(), out.bytes.size());
+            out.key = ProductionAudioBackend::BuildClipKey(
+                res.effectiveId.ToString(), out.canonical, fp, "f32le");
+            return true;
+        };
+        ResolvedClip loopClip;
+        ResolvedClip musicClip;
+        if (!resolveShipped(loopSrc, loopClip))
+            return Fail("S21 production Resolve failed for the shipped loop clip");
+        if (!resolveShipped(musicSrc, musicClip))
+            return Fail("S21 production Resolve failed for the shipped music clip");
+
+        ProductionBackendConfig s21Config;
+        s21Config.forceNoDevice = true;
+        ProductionAudioBackend s21backend;
+        std::string s21Error;
+        if (!s21backend.Initialize(s21Config, s21Error))
+            return Fail("S21 backend init failed");
+        std::unordered_map<std::string, AudioClipBytes> s21bytes;
+        s21bytes[loopClip.key] = AudioClipBytes{
+            loopClip.key,
+            std::make_shared<const std::vector<char>>(loopClip.bytes)
+        };
+        s21bytes[musicClip.key] = AudioClipBytes{
+            musicClip.key,
+            std::make_shared<const std::vector<char>>(musicClip.bytes)
+        };
+        s21backend.SetClipByteResolver(
+            [&s21bytes](const std::string& key)
+                -> rt2::core::Result<AudioClipBytes> {
+                auto it = s21bytes.find(key);
+                if (it == s21bytes.end())
+                    return rt2::core::Result<AudioClipBytes>::Fail(
+                        rt2::core::Error::MissingAsset, key,
+                        "S21 has no bytes for this key");
+                return rt2::core::Result<AudioClipBytes>::Ok(it->second);
+            });
+
+        // Real-file decode oracle: mono loop and stereo music generations
+        // with the exact fixture geometry (48 kHz, 1 s, 440 Hz / 440+660).
+        // Scoped so no oracle holder pins the generations past this point:
+        // the world below holds its own references and the purge oracle
+        // must observe exactly those.
+        {
+            std::shared_ptr<const DecodedAudioGeneration> loopGen;
+            std::shared_ptr<const DecodedAudioGeneration> musicGen;
+        {
+            auto fetched = s21backend.FetchDecodedGeneration(loopClip.key);
+            if (!fetched.IsOk())
+                return Fail("S21 shipped loop bytes refused by production decode");
+            loopGen = fetched.value;
+            auto fetchedMusic = s21backend.FetchDecodedGeneration(musicClip.key);
+            if (!fetchedMusic.IsOk())
+                return Fail("S21 shipped music bytes refused by production decode");
+            musicGen = fetchedMusic.value;
+        }
+        if (loopGen->channels != 1 || loopGen->sampleRate != 48000 ||
+            loopGen->frameCount != 48000)
+            return Fail("S21 shipped loop generation has wrong geometry");
+        if (musicGen->channels != 2 || musicGen->sampleRate != 48000 ||
+            musicGen->frameCount != 48000)
+            return Fail("S21 shipped music generation has wrong geometry");
+        {
+            // Interleaved stereo view for the oracle (ZeroCrossings
+            // strides f*2 like S2): 440 Hz -> ~880 crossings/s.
+            std::vector<float> stereo(loopGen->frameCount * 2);
+            for (uint32_t f = 0; f < loopGen->frameCount; ++f)
+            {
+                stereo[f * 2 + 0] = loopGen->pcmInterleaved[f];
+                stereo[f * 2 + 1] = loopGen->pcmInterleaved[f];
+            }
+            if (ZeroCrossings(stereo.data(), loopGen->frameCount, 0) < 800)
+                return Fail("S21 shipped loop PCM has no 440 Hz content");
+        }
+        } // oracle holders released: only the world may pin generations now
+
+        // Authored-to-audible walk through AudioWorld: autoplay spatial
+        // loop renders hard-right PCM, same-frame Stop renders silence,
+        // then host-played music renders center and its full second
+        // completes and settles. Each PCM oracle measures one isolated
+        // voice.
+        const AudioSessionId s21Session{ 21 };
+        AudioWorld s21world(&s21backend, &s21backend, s21Session,
+                            AudioOwnerKind::Runtime, AudioWorldConfig{});
+        auto makeShippedRequest = [&](const ShippedSource& src,
+                                      const std::string& key) {
+            AudioPlayRequest req;
+            req.source = src.uuid;
+            req.component.bus = src.bus;
+            req.component.clip.kind = AssetKind::AudioClip;
+            req.component.clip.path = src.clipPath;
+            req.component.clip.assetId = src.clipId;
+            req.component.autoplay = src.autoplay;
+            req.component.loop = src.loop;
+            req.component.spatial = src.spatial;
+            req.component.gain = src.gain;
+            req.component.pitch = src.pitch;
+            req.component.minDistance = src.minDistance;
+            req.component.maxDistance = src.maxDistance;
+            req.component.rolloff = src.rolloff;
+            req.component.priority = src.priority;
+            req.sourcePosition[0] = src.translation[0];
+            req.sourcePosition[1] = src.translation[1];
+            req.sourcePosition[2] = src.translation[2];
+            req.hasTransform = true;
+            req.clipKey = key;
+            return req;
+        };
+        s21world.StageAutoplay(makeShippedRequest(loopSrc, loopClip.key));
+        AudioListenerPose s21Listener; // origin, -Z forward, +Y up
+        AudioSourcePose loopPose;
+        loopPose.source = loopSrc.uuid;
+        loopPose.position[0] = loopSrc.translation[0];
+        loopPose.position[1] = loopSrc.translation[1];
+        loopPose.position[2] = loopSrc.translation[2];
+        loopPose.hasTransform = true;
+        AudioSourcePose musicPose;
+        musicPose.source = musicSrc.uuid;
+        musicPose.position[0] = musicSrc.translation[0];
+        musicPose.position[1] = musicSrc.translation[1];
+        musicPose.position[2] = musicSrc.translation[2];
+        musicPose.hasTransform = true;
+        const AudioSourcePose s21Poses[2] = { loopPose, musicPose };
+        s21world.UpdateSemantic(s21Listener, s21Poses, 2);
+        if (s21world.LiveVoiceCount() != 1)
+            return Fail("S21 shipped autoplay loop produced no voice");
+        // Hard-right equal-power mix at distance gain ~0.93: the right
+        // channel carries the loop tone, the left stays near silent.
+        // Render totals are required exact: every read below is sized by
+        // what rendered, so a short read fails loudly instead of
+        // over-reading the output buffer.
+        std::vector<float> loopBlock;
+        bool loopRenderOk = false;
+        const uint32_t loopRendered =
+            RenderAll(s21backend, loopBlock, 4800, loopRenderOk);
+        if (!loopRenderOk || loopRendered != 4800)
+            return Fail("S21 loop block render failed");
+        s21world.AdvanceCursors(loopRendered);
+        {
+            const float rightPeak = MaxAbsChannel(loopBlock.data(), loopRendered, 1);
+            const float leftPeak = MaxAbsChannel(loopBlock.data(), loopRendered, 0);
+            double rightEnergy = 0.0;
+            double leftEnergy = 0.0;
+            for (uint32_t f = 0; f < loopRendered; ++f)
+            {
+                rightEnergy += (double)loopBlock[f * 2 + 1] *
+                               (double)loopBlock[f * 2 + 1];
+                leftEnergy += (double)loopBlock[f * 2 + 0] *
+                              (double)loopBlock[f * 2 + 0];
+            }
+            if (rightPeak < 0.3f || leftPeak > 0.05f ||
+                !(rightEnergy > 100.0 * leftEnergy))
+                return Fail("S21 shipped loop PCM is not hard-right");
+        }
+        // Host plays the idle music bed after the loop stopped: each PCM
+        // oracle below measures one isolated voice, so the loop's right
+        // energy cannot swamp the music's center ratio. Non-spatial center
+        // mix at gain 0.8, then the full second completes and settles.
+        uint64_t loopStopSeq = 0;
+        if (!s21world.QueueStop(loopSrc.uuid, loopStopSeq))
+            return Fail("S21 loop stop queue refused");
+        s21world.UpdateSemantic(s21Listener, s21Poses, 2);
+        if (s21world.LiveVoiceCount() != 0)
+            return Fail("S21 loop stop did not take effect in its own frame");
+        {
+            std::vector<float> afterStop(800 * kNoDeviceChannels, -1234.5f);
+            AudioPcmWriteBuffer stopBuf{ afterStop.data(), afterStop.size() };
+            auto stopRender = s21backend.RenderNoDeviceFrames(stopBuf, 800);
+            if (!stopRender.IsOk() || stopRender.value != 800)
+                return Fail("S21 post-stop render failed");
+            double firstEnergy = 0.0;
+            for (float s : loopBlock)
+                firstEnergy += (double)s * (double)s;
+            double stopEnergy = 0.0;
+            for (float s : afterStop)
+                stopEnergy += (double)s * (double)s;
+            if (!(stopEnergy < 0.01 * firstEnergy))
+                return Fail("S21 post-stop block carries loop energy");
+            if (MaxAbs(afterStop.data() + 2, afterStop.size() - 2) != 0.0f)
+                return Fail("S21 post-stop tail is not exactly silent");
+        }
+        uint64_t musicSeq = 0;
+        if (!s21world.QueuePlay(makeShippedRequest(musicSrc, musicClip.key),
+                                musicSeq))
+            return Fail("S21 shipped music QueuePlay refused");
+        s21world.UpdateSemantic(s21Listener, s21Poses, 2);
+        if (s21world.LiveVoiceCount() != 1)
+            return Fail("S21 shipped music did not start alone");
+        {
+            std::vector<float> musicHead;
+            bool headOk = false;
+            const uint32_t headRendered =
+                RenderAll(s21backend, musicHead, 4800, headOk);
+            if (!headOk || headRendered != 4800)
+                return Fail("S21 music head render failed");
+            s21world.AdvanceCursors(headRendered);
+            const float lPeak = MaxAbsChannel(musicHead.data(), headRendered, 0);
+            const float rPeak = MaxAbsChannel(musicHead.data(), headRendered, 1);
+            if (lPeak < 0.2f || rPeak < 0.2f)
+                return Fail("S21 shipped music head is not center-audible");
+            double lEnergy = 0.0;
+            double rEnergy = 0.0;
+            for (uint32_t f = 0; f < headRendered; ++f)
+            {
+                lEnergy += (double)musicHead[f * 2 + 0] *
+                           (double)musicHead[f * 2 + 0];
+                rEnergy += (double)musicHead[f * 2 + 1] *
+                           (double)musicHead[f * 2 + 1];
+            }
+            if (!(lEnergy > 0.9 * rEnergy) || !(lEnergy < 1.12 * rEnergy))
+                return Fail("S21 shipped music head is not center-panned");
+        }
+        {
+            std::vector<float> musicTail;
+            bool tailOk = false;
+            const uint32_t tailRendered = RenderAll(
+                s21backend, musicTail, 48000 - 4800, tailOk);
+            if (!tailOk || tailRendered != 48000 - 4800)
+                return Fail("S21 music full-length render failed");
+            s21world.AdvanceCursors(tailRendered);
+            s21world.ReconcilePostRender();
+            s21world.UpdateSemantic(s21Listener, s21Poses, 2);
+            if (!s21world.LiveVoicesForSource(musicSrc.uuid).empty())
+                return Fail("S21 finished music still live after reconcile");
+            if (s21world.GetSourceStatus(musicSrc.uuid).aggregate !=
+                AudioSourceAggregate::Completed)
+                return Fail("S21 finished music status is not Completed");
+            if (s21world.LiveVoiceCount() != 0)
+                return Fail("S21 world not empty after music completion");
+        }
+        rt2::core::Error s21ShutdownError;
+        if (!s21world.Shutdown(s21ShutdownError))
+            return Fail("S21 world shutdown failed");
+        if (s21backend.LiveVoiceCount() != 0)
+            return Fail("S21 backend voices live after world shutdown");
+        if (s21backend.ActiveVoicesForKey(loopClip.key) != 0 ||
+            s21backend.ActiveVoicesForKey(musicClip.key) != 0)
+            return Fail("S21 backend key census live after world shutdown");
+        // Decoded generations outlive the world for reuse (2 entries,
+        // exact resident bytes); the explicit purge restores the
+        // documented zero baseline and the next fetch re-decodes.
+        if (s21backend.DecodedCacheEntryCount() != 2 ||
+            s21backend.DecodedCacheResidentBytes() !=
+                (48000 * 4 + 48000 * 2 * 4))
+            return Fail("S21 retained cache census wrong after shutdown");
+        if (s21backend.EvictZeroReferenceGenerations() != 2)
+            return Fail("S21 explicit purge did not evict both idle entries");
+        if (s21backend.DecodedCacheEntryCount() != 0 ||
+            s21backend.DecodedCacheResidentBytes() != 0)
+            return Fail("S21 cache baseline not restored by purge");
+        {
+            auto refetch = s21backend.FetchDecodedGeneration(loopClip.key);
+            if (!refetch.IsOk() ||
+                s21backend.DecodedCacheEntryCount() != 1)
+                return Fail("S21 fetch after purge did not re-decode");
+        } // refetch holder released: the re-decoded entry is idle again
+        if (s21backend.EvictZeroReferenceGenerations() != 1 ||
+            s21backend.DecodedCacheEntryCount() != 0)
+            return Fail("S21 second purge did not restore baseline");
+        s21backend.Shutdown();
+    }
+    Pass("S21 shipped acceptance scene through production resolve/decode/render");
+
+    // ---- S21b: corrupt file refuses the non-autoplay branch ----
+    //
+    // Real corrupt bytes (checked-in corrupt_truncated.wav) through the
+    // production decoder: typed refusal, no cache entry, and an
+    // AudioWorld play against the corrupt key starts no voice while the
+    // backend census stays at zero. This is the file-backed form of the
+    // check-4 candidate refusal the fake suites assert with scripted
+    // errors.
+    {
+        bool corruptOk = false;
+        const std::vector<char> corruptBytes = ReadFile(
+            "RT2AudioProbe/fixtures/corrupt_truncated.wav", corruptOk);
+        if (!corruptOk || corruptBytes.empty())
+            return Fail("S21b cannot read corrupt fixture");
+        ProductionBackendConfig corruptConfig;
+        corruptConfig.forceNoDevice = true;
+        ProductionAudioBackend corruptBackend;
+        std::string corruptError;
+        if (!corruptBackend.Initialize(corruptConfig, corruptError))
+            return Fail("S21b backend init failed");
+        const uint64_t corruptFp = ProductionAudioBackend::FingerprintBytes(
+            corruptBytes.data(), corruptBytes.size());
+        const std::string kCorrupt = ProductionAudioBackend::BuildClipKey(
+            "asset:corrupt", "clips/corrupt.wav", corruptFp, "f32le");
+        corruptBackend.SetClipByteResolver(
+            [&corruptBytes, &kCorrupt](
+                const std::string& key) -> rt2::core::Result<AudioClipBytes> {
+                if (key != kCorrupt)
+                    return rt2::core::Result<AudioClipBytes>::Fail(
+                        rt2::core::Error::MissingAsset, key,
+                        "S21b has no bytes for this key");
+                return rt2::core::Result<AudioClipBytes>::Ok(
+                    AudioClipBytes{ kCorrupt,
+                                    std::make_shared<const std::vector<char>>(
+                                        corruptBytes) });
+            });
+        AudioClipBytes direct{ kCorrupt,
+                               std::make_shared<const std::vector<char>>(
+                                   corruptBytes) };
+        if (corruptBackend.DecodeClip(direct).IsOk())
+            return Fail("S21b corrupt file decoded without error");
+        if (corruptBackend.FetchDecodedGeneration(kCorrupt).IsOk())
+            return Fail("S21b corrupt file fetched without error");
+        if (corruptBackend.DecodedCacheEntryCount() != 0 ||
+            corruptBackend.LiveVoiceCount() != 0)
+            return Fail("S21b corrupt file polluted backend census");
+        const AudioSessionId corruptSession{ 22 };
+        AudioWorld corruptWorld(&corruptBackend, &corruptBackend,
+                                corruptSession, AudioOwnerKind::Runtime,
+                                AudioWorldConfig{});
+        std::array<uint8_t, 16> corruptId{};
+        corruptId[15] = 21;
+        AudioPlayRequest corruptReq;
+        corruptReq.source = rt2::core::UUID(corruptId);
+        corruptReq.component.bus = AudioBus::Music;
+        corruptReq.component.autoplay = false;
+        corruptReq.component.loop = false;
+        corruptReq.component.spatial = false;
+        corruptReq.component.gain = 0.8f;
+        corruptReq.component.pitch = 1.0f;
+        corruptReq.component.minDistance = 1.0f;
+        corruptReq.component.maxDistance = 30.0f;
+        corruptReq.component.rolloff = 1.0f;
+        corruptReq.component.priority = 128;
+        corruptReq.hasTransform = false;
+        corruptReq.clipKey = kCorrupt;
+        uint64_t corruptSeq = 0;
+        if (corruptWorld.QueuePlay(corruptReq, corruptSeq))
+        {
+            AudioListenerPose corruptListener;
+            corruptWorld.UpdateSemantic(corruptListener, nullptr, 0);
+        }
+        if (corruptWorld.LiveVoiceCount() != 0 ||
+            corruptBackend.LiveVoiceCount() != 0)
+            return Fail("S21b corrupt play started a voice");
+        if (corruptWorld.GetSourceStatus(corruptReq.source).aggregate !=
+            AudioSourceAggregate::Failed)
+            return Fail("S21b corrupt play status is not Failed");
+        rt2::core::Error corruptShutdownError;
+        if (!corruptWorld.Shutdown(corruptShutdownError))
+            return Fail("S21b world shutdown failed");
+        corruptBackend.Shutdown();
+    }
+    Pass("S21b corrupt file refuses the non-autoplay branch");
+
+    // ---- S21c: twenty Play/Stop cycles on the production census ----
+    //
+    // P2 closure: every cycle drives the shipped loop+music keys through
+    // AudioWorld on a production backend and asserts the production
+    // session/voice counts plus the decoded-cache generation census
+    // (entry count, resident bytes, per-key active refs). The explicit
+    // purge restores the documented zero baseline; a retained holder
+    // pins its entry across the purge (leak discrimination), and the
+    // next fetch re-decodes afterwards.
+    {
+        bool loopFileOk = false;
+        const std::vector<char> loopFileBytes = ReadFile(
+            "RT2App/assets/audio/acceptance_loop_mono_s16.wav", loopFileOk);
+        bool musicFileOk = false;
+        const std::vector<char> musicFileBytes = ReadFile(
+            "RT2App/assets/audio/acceptance_music_stereo_s16.wav",
+            musicFileOk);
+        if (!loopFileOk || !musicFileOk)
+            return Fail("S21c cannot read shipped clips from repo root");
+        const std::string kLoopCyc = ProductionAudioBackend::BuildClipKey(
+            "asset:loop", "audio/acceptance_loop_mono_s16.wav",
+            ProductionAudioBackend::FingerprintBytes(
+                loopFileBytes.data(), loopFileBytes.size()),
+            "f32le");
+        const std::string kMusicCyc = ProductionAudioBackend::BuildClipKey(
+            "asset:music", "audio/acceptance_music_stereo_s16.wav",
+            ProductionAudioBackend::FingerprintBytes(
+                musicFileBytes.data(), musicFileBytes.size()),
+            "f32le");
+        ProductionBackendConfig cycConfig;
+        cycConfig.forceNoDevice = true;
+        ProductionAudioBackend cycBackend;
+        std::string cycError;
+        if (!cycBackend.Initialize(cycConfig, cycError))
+            return Fail("S21c backend init failed");
+        cycBackend.SetClipByteResolver(
+            [&loopFileBytes, &musicFileBytes, &kLoopCyc, &kMusicCyc](
+                const std::string& key) -> rt2::core::Result<AudioClipBytes> {
+                if (key == kLoopCyc)
+                    return rt2::core::Result<AudioClipBytes>::Ok(
+                        AudioClipBytes{ kLoopCyc,
+                                        std::make_shared<const std::vector<char>>(
+                                            loopFileBytes) });
+                if (key == kMusicCyc)
+                    return rt2::core::Result<AudioClipBytes>::Ok(
+                        AudioClipBytes{ kMusicCyc,
+                                        std::make_shared<const std::vector<char>>(
+                                            musicFileBytes) });
+                return rt2::core::Result<AudioClipBytes>::Fail(
+                    rt2::core::Error::MissingAsset, key,
+                    "S21c has no bytes for this key");
+            });
+        const AudioSessionId cycSession{ 23 };
+        AudioWorld cycWorld(&cycBackend, &cycBackend, cycSession,
+                            AudioOwnerKind::Runtime, AudioWorldConfig{});
+        std::array<uint8_t, 16> loopCycId{};
+        loopCycId[15] = 22;
+        std::array<uint8_t, 16> musicCycId{};
+        musicCycId[15] = 23;
+        const rt2::core::UUID loopCycSrc(loopCycId);
+        const rt2::core::UUID musicCycSrc(musicCycId);
+        auto cycRequest = [&](const rt2::core::UUID& src,
+                              const std::string& key, bool loop) {
+            AudioPlayRequest req;
+            req.source = src;
+            req.component.bus =
+                loop ? AudioBus::Effects : AudioBus::Music;
+            req.component.autoplay = loop;
+            req.component.loop = loop;
+            req.component.spatial = false;
+            req.component.gain = 1.0f;
+            req.component.pitch = 1.0f;
+            req.component.minDistance = 1.0f;
+            req.component.maxDistance = 30.0f;
+            req.component.rolloff = 1.0f;
+            req.component.priority = 128;
+            req.hasTransform = false;
+            req.clipKey = key;
+            return req;
+        };
+        size_t pinnedBytes = 0;
+        for (int cycle = 0; cycle < 20; ++cycle)
+        {
+            cycWorld.StageAutoplay(cycRequest(loopCycSrc, kLoopCyc, true));
+            uint64_t playSeq = 0;
+            if (!cycWorld.QueuePlay(
+                    cycRequest(musicCycSrc, kMusicCyc, false), playSeq))
+                return FailDetail(std::string("S21c music QueuePlay refused at cycle ") +
+                                  std::to_string(cycle));
+            AudioListenerPose cycListener;
+            cycWorld.UpdateSemantic(cycListener, nullptr, 0);
+            if (cycWorld.LiveVoiceCount() != 2 ||
+                cycBackend.LiveVoiceCount() != 2)
+                return FailDetail(std::string("S21c cycle did not start both voices at ") +
+                                  std::to_string(cycle));
+            std::vector<float> cycBlock;
+            bool cycOk = false;
+            const uint32_t cycRendered =
+                RenderAll(cycBackend, cycBlock, 480, cycOk);
+            if (!cycOk || cycRendered != 480)
+                return FailDetail(std::string("S21c cycle render failed at ") +
+                                  std::to_string(cycle));
+            cycWorld.AdvanceCursors(cycRendered);
+            uint64_t stopSeq = 0;
+            if (!cycWorld.QueueStop(loopCycSrc, stopSeq) ||
+                !cycWorld.QueueStop(musicCycSrc, stopSeq))
+                return FailDetail(std::string("S21c cycle stop refused at ") +
+                                  std::to_string(cycle));
+            cycWorld.UpdateSemantic(cycListener, nullptr, 0);
+            // Production session/voice/generation census at baseline.
+            if (cycWorld.LiveVoiceCount() != 0 ||
+                cycBackend.LiveVoiceCount() != 0 ||
+                cycBackend.ActiveVoicesForKey(kLoopCyc) != 0 ||
+                cycBackend.ActiveVoicesForKey(kMusicCyc) != 0)
+                return FailDetail(std::string("S21c cycle census not at baseline at ") +
+                                  std::to_string(cycle));
+            // Both decoded generations retained for reuse: exact stable
+            // census. A retained-generation leak would grow entries or
+            // bytes from here on.
+            if (cycBackend.DecodedCacheEntryCount() != 2)
+                return FailDetail(std::string("S21c cache entries drifted at cycle ") +
+                                  std::to_string(cycle));
+            if (cycle == 0)
+                pinnedBytes = cycBackend.DecodedCacheResidentBytes();
+            else if (cycBackend.DecodedCacheResidentBytes() != pinnedBytes)
+                return FailDetail(std::string("S21c cache bytes drifted at cycle ") +
+                                  std::to_string(cycle));
+        }
+        if (pinnedBytes != (48000 * 4 + 48000 * 2 * 4))
+            return Fail("S21c retained cache bytes do not match the two shipped clips");
+        rt2::core::Error cycShutdownError;
+        if (!cycWorld.Shutdown(cycShutdownError))
+            return Fail("S21c world shutdown failed");
+        if (cycBackend.LiveVoiceCount() != 0)
+            return Fail("S21c backend voices live after shutdown");
+        // Explicit purge restores the documented zero baseline.
+        if (cycBackend.EvictZeroReferenceGenerations() != 2)
+            return Fail("S21c purge did not evict both idle generations");
+        if (cycBackend.DecodedCacheEntryCount() != 0 ||
+            cycBackend.DecodedCacheResidentBytes() != 0)
+            return Fail("S21c cache baseline not restored by purge");
+        // A retained holder pins its entry across the purge (leak
+        // discrimination); releasing it lets the next purge restore zero.
+        {
+            auto held = cycBackend.FetchDecodedGeneration(kLoopCyc);
+            if (!held.IsOk())
+                return Fail("S21c fetch after purge failed");
+            if (cycBackend.EvictZeroReferenceGenerations() != 0 ||
+                cycBackend.DecodedCacheEntryCount() != 1)
+                return Fail("S21c purge evicted a pinned generation");
+        }
+        if (cycBackend.EvictZeroReferenceGenerations() != 1 ||
+            cycBackend.DecodedCacheEntryCount() != 0 ||
+            cycBackend.DecodedCacheResidentBytes() != 0)
+            return Fail("S21c final purge did not restore baseline");
+        cycBackend.Shutdown();
+    }
+    Pass("S21c twenty Play/Stop cycles hold the production census");
+
+    // ---- S21d: broken path/sidecar/bytes fail loudly ----
+    //
+    // Production Resolve on a missing clip path (Missing), on a sidecar
+    // claiming a foreign identity (Conflict), plus a same-size byte flip
+    // that decodes to audibly different PCM (content sensitivity: the
+    // fingerprint observes what mtime/size cannot).
+    {
+        rt2::core::AssetResolutionContext badCtx;
+        badCtx.assetRoot = std::filesystem::absolute("RT2App/assets");
+        badCtx.database = nullptr;
+        std::array<uint8_t, 16> missingId{};
+        missingId[15] = 24;
+        AssetReference missingRef;
+        missingRef.kind = AssetKind::AudioClip;
+        missingRef.path = "audio/no-such-clip.wav";
+        missingRef.sourceKey = "";
+        missingRef.assetId = rt2::core::UUID(missingId);
+        std::vector<rt2::core::AssetDiagnostic> missingDiags;
+        if (rt2::core::Resolve(missingRef, badCtx, rt2::core::UUID(missingId),
+                               "Missing", missingDiags)
+                .success)
+            return Fail("S21d missing clip path resolved");
+        bool sawMissing = false;
+        for (const auto& d : missingDiags)
+            sawMissing = sawMissing ||
+                         d.severity == rt2::core::AssetDiagnostic::Missing;
+        if (!sawMissing)
+            return Fail("S21d missing clip path has no Missing diagnostic");
+
+        // Sidecar conflict in a scratch directory (removed afterwards).
+        std::error_code tempEc;
+        const std::filesystem::path conflictDir =
+            std::filesystem::temp_directory_path(tempEc) / "rt2_probe_s21";
+        if (tempEc)
+            return Fail("S21d has no temp directory");
+        std::filesystem::remove_all(conflictDir, tempEc);
+        std::filesystem::create_directories(conflictDir, tempEc);
+        bool conflictWrote = false;
+        {
+            bool loopBytesOk = false;
+            const std::vector<char> loopBytesForConflict = ReadFile(
+                "RT2App/assets/audio/acceptance_loop_mono_s16.wav",
+                loopBytesOk);
+            if (loopBytesOk)
+            {
+                std::ofstream wavOut(
+                    (conflictDir / "conflict.wav").string(), std::ios::binary);
+                std::ofstream metaOut(
+                    (conflictDir / "conflict.wav.rt2meta").string(),
+                    std::ios::binary);
+                // Foreign identity: the music bed's asset ID on the loop's
+                // bytes. Production resolution must refuse to substitute.
+                wavOut.write(loopBytesForConflict.data(),
+                             static_cast<std::streamsize>(
+                                 loopBytesForConflict.size()));
+                metaOut << "1d7d49f3-3346-46b6-a9bb-02d0c9ee8e38";
+                conflictWrote =
+                    static_cast<bool>(wavOut) && static_cast<bool>(metaOut);
+            }
+        }
+        if (!conflictWrote)
+            return Fail("S21d could not stage the conflict fixture");
+        rt2::core::AssetResolutionContext conflictCtx;
+        conflictCtx.assetRoot = conflictDir;
+        conflictCtx.database = nullptr;
+        AssetReference conflictRef;
+        conflictRef.kind = AssetKind::AudioClip;
+        conflictRef.path = "conflict.wav";
+        conflictRef.sourceKey = "";
+        conflictRef.assetId =
+            rt2::core::UUID::Parse("b3e7c60f-9925-43ba-b750-f35673d25026");
+        std::vector<rt2::core::AssetDiagnostic> conflictDiags;
+        if (rt2::core::Resolve(conflictRef, conflictCtx,
+                               rt2::core::UUID(missingId), "Conflict",
+                               conflictDiags)
+                .success)
+        {
+            std::filesystem::remove_all(conflictDir, tempEc);
+            return Fail("S21d sidecar conflict resolved");
+        }
+        bool sawConflict = false;
+        for (const auto& d : conflictDiags)
+            sawConflict = sawConflict ||
+                          d.severity == rt2::core::AssetDiagnostic::Conflict;
+        std::filesystem::remove_all(conflictDir, tempEc);
+        if (std::filesystem::exists(conflictDir))
+            return Fail("S21d scratch directory was not removed");
+        if (!sawConflict)
+            return Fail("S21d sidecar conflict has no Conflict diagnostic");
+
+        // Same-size byte flip: still decodes, but to different PCM with a
+        // different fingerprint.
+        bool flipBytesOk = false;
+        std::vector<char> flipBytes = ReadFile(
+            "RT2App/assets/audio/acceptance_loop_mono_s16.wav", flipBytesOk);
+        if (!flipBytesOk || flipBytes.size() < 2000)
+            return Fail("S21d cannot read shipped loop bytes");
+        flipBytes[1000] = static_cast<char>(flipBytes[1000] ^ 0xFF);
+        ProductionBackendConfig flipConfig;
+        flipConfig.forceNoDevice = true;
+        ProductionAudioBackend flipBackend;
+        std::string flipError;
+        if (!flipBackend.Initialize(flipConfig, flipError))
+            return Fail("S21d backend init failed");
+        const uint64_t flipFp = ProductionAudioBackend::FingerprintBytes(
+            flipBytes.data(), flipBytes.size());
+        const std::string kFlip = ProductionAudioBackend::BuildClipKey(
+            "asset:flip", "audio/flip.wav", flipFp, "f32le");
+        bool origOk = false;
+        const std::vector<char> origBytes = ReadFile(
+            "RT2App/assets/audio/acceptance_loop_mono_s16.wav", origOk);
+        if (!origOk)
+            return Fail("S21d cannot re-read shipped loop bytes");
+        const uint64_t origFp = ProductionAudioBackend::FingerprintBytes(
+            origBytes.data(), origBytes.size());
+        if (flipFp == origFp)
+            return Fail("S21d fingerprint blind to a same-size byte flip");
+        const std::string kOrig = ProductionAudioBackend::BuildClipKey(
+            "asset:orig", "audio/orig.wav", origFp, "f32le");
+        flipBackend.SetClipByteResolver(
+            [&flipBytes, &kFlip, &origBytes, &kOrig](
+                const std::string& key) -> rt2::core::Result<AudioClipBytes> {
+                if (key == kFlip)
+                    return rt2::core::Result<AudioClipBytes>::Ok(
+                        AudioClipBytes{ kFlip,
+                                        std::make_shared<const std::vector<char>>(
+                                            flipBytes) });
+                if (key == kOrig)
+                    return rt2::core::Result<AudioClipBytes>::Ok(
+                        AudioClipBytes{ kOrig,
+                                        std::make_shared<const std::vector<char>>(
+                                            origBytes) });
+                return rt2::core::Result<AudioClipBytes>::Fail(
+                    rt2::core::Error::MissingAsset, key,
+                    "S21d has no bytes for this key");
+            });
+        auto flipGen = flipBackend.FetchDecodedGeneration(kFlip);
+        if (!flipGen.IsOk())
+            return Fail("S21d flipped bytes refused decode (want PCM drift, not refusal)");
+        auto origGen = flipBackend.FetchDecodedGeneration(kOrig);
+        if (!origGen.IsOk() ||
+            origGen.value->pcmInterleaved == flipGen.value->pcmInterleaved)
+            return Fail("S21d flipped bytes decode to identical PCM");
+        flipBackend.Shutdown();
+    }
+    Pass("S21d broken path/sidecar/bytes fail loudly");
 
     backend.Shutdown();
     if (backend.Status().productionNoDevice)

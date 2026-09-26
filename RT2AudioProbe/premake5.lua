@@ -28,12 +28,31 @@ project "RT2AudioProbe"
         "../RT2App/src/core/Error.cpp",
     }
 
+    -- A8 fixup (P1): S21 resolves the shipped acceptance scene's real
+    -- clip references through the production AssetResolver (path+sidecar
+    -- verification, no database). These three TUs are std-only plus
+    -- core/neutral headers; they carry no miniaudio/device types and add
+    -- no backend TU (A1 gate). AudioClipAssetProvider.cpp itself stays
+    -- out: its FNV lives in the physics TU, which this probe must never
+    -- link; the provider's raw-byte cache on these same shipped files is
+    -- proven by the RT2Tests A8 case instead.
+    files {
+        "../RT2App/src/AssetResolver.cpp",
+        "../RT2App/src/AssetIdentity.cpp",
+        "../RT2App/src/AssetDatabase.cpp",
+    }
+
     includedirs {
       "../RT2AudioBackend/src",
       -- A4: the production backend header implements the CPU-only
       -- IAudioBackend / IAudioClipProvider interfaces from RT2App/src
       -- (header-only; this target compiles no RT2App translation unit).
       "../RT2App/src",
+      -- A8 fixup (P1): header-only nlohmann json.hpp for parsing the
+      -- shipped scene file; entt/glm for the neutral asset headers above.
+      "../RT2App/vendor/tinygltf",
+      "../RT2App/vendor/entt/src",
+      "../Walnut/vendor/glm",
    }
 
    links {

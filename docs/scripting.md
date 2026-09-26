@@ -244,10 +244,15 @@ so no command outlives the environment that issued it.
 
 Acceptance for these controls is the `AudioA6*` CPU suite (malformed /
 queue-full / FIFO / re-entrancy / reload / overlap-status cases in
-Release and Debug), the `run_script_test.ps1` regression gate, and the
-`AudioA8*` acceptance walk, which drives the same FIFO through the
-host-level queue seam on the checked-in acceptance scene
-(`RT2App/assets/audio-acceptance.rt2scene`).
+Release and Debug) and the `run_script_test.ps1` regression gate, which
+exercise Lua admission on their own script fixtures — the shipped
+acceptance scene (`RT2App/assets/audio-acceptance.rt2scene`) carries no
+Lua script, so no shipped-scene Lua invocation is claimed. The
+`AudioA8*` acceptance walk drives the same FIFO through the host-level
+queue seam on the checked-in scene, and the shipped bytes' production
+decode/render path (including the rendered-camera listener injection
+contract, proven mechanistically by the A5 suite and the host wiring)
+is proven by probe S21.
 
 Plus the safe standard library: `base` (minus the denied names below),
 `math`, `string`, `table`, `utf8`.
