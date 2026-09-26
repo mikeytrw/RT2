@@ -98,7 +98,9 @@ inspector. The shipped `assets/script-scenario.lua` had this bug.
 both traps above.** `set_position`, `set_name`, `set_visible`,
 `set_light`, `set_camera`, `set_material_index`, `set_velocity`,
 `apply_impulse`, `set_hinge_drive`, `release_hinge`, `set_slider_target`,
-`release_slider` and `reset_body_pose` return `false` rather than raising
+`release_slider`, `reset_body_pose`, `audio_play`, `audio_play_at`,
+`audio_stop`, `audio_pause`, `audio_set_gain` and `audio_set_pitch` return
+`false` rather than raising
 when the write is refused — a missing component, an out-of-range material
 index, a malformed vec3 table, a physics body of the wrong kind (or none
 at all), a target inside the safe-point destroy set, or a runtime that is
@@ -117,7 +119,7 @@ end
 
 | Global | Contents |
 |---|---|
-| `entity` | `get_uuid`, `get_name`, `set_name`, `get_position`, `set_position`, `get_visible`, `set_visible`, `get_light`, `set_light`, `get_camera`, `set_camera`, `set_material_index`, `get_velocity`, `set_velocity`, `get_angular_velocity`, `apply_impulse`, `reset_body_pose`, `set_hinge_drive`, `release_hinge`, `set_slider_target`, `release_slider` |
+| `entity` | `get_uuid`, `get_name`, `set_name`, `get_position`, `set_position`, `get_visible`, `set_visible`, `get_light`, `set_light`, `get_camera`, `set_camera`, `set_material_index`, `get_velocity`, `set_velocity`, `get_angular_velocity`, `apply_impulse`, `reset_body_pose`, `set_hinge_drive`, `release_hinge`, `set_slider_target`, `release_slider`, `audio_play`, `audio_play_at`, `audio_stop`, `audio_pause`, `audio_set_gain`, `audio_set_pitch`, `audio_status` |
 | `world` | `spawn`, `destroy`, `find_by_name`, `find_by_uuid`, `physics_events` |
 | `self` | This entity's field values, from `ScriptComponent::fieldValues` |
 | `log` | `info`, `warn`, `error` |
@@ -176,6 +178,69 @@ Authority notes that have bitten before:
 - Runtime spawn cannot mint physics bodies, and Lua has no raycasts,
   queries, or arbitrary-constraint construction — those are out of scope
   by design, not missing bindings.
+
+### Audio controls (audio A6)
+
+Scripts steer the entity's authored audio source without ever touching
+the backend. The six mutating controls enqueue a validated command that
+drains at the presentation frame's post-transform audio slot:
+
+```lua
+function on_update(entity, dt, input, world)
+    entity:audio_play()                    -- retrigger one-shot / ensure loop playing
+    entity:audio_play_at({x, y, z})        -- one-shot positional override
+    entity:audio_stop()                    -- all voices owned by this source
+    entity:audio_pause(true)               -- freeze (false resumes)
+    entity:audio_set_gain(0.8)             -- authored range [0, 4]
+    entity:audio_set_pitch(1.05)           -- authored range [0.25, 4]
+    local s = entity:audio_status()
+end
+```
+
+`true` means **validated and accepted into the bounded 256-command
+queue**, not "audible". A command queued from `on_update` executes in
+that same frame's audio slot; the drain freezes the queue FIFO and
+re-entrant submissions wait for the next frame. `audio_play_at` carries
+a one-shot positional override on its voice through final-pose landing
+and mix refresh (overlapping one-shots keep distinct positions); on a
+looping source it starts an independent non-looping one-shot without
+refreshing or disturbing the live loop. Synchronous `false` —
+never a raise, never a quarantine — is limited to malformed arguments
+(nil, wrong type, NaN, infinity, float overflow, out-of-range
+gain/pitch), a missing/invalid authored source (unknown entity, no
+`AudioSourceComponent`, unbound clip for Play/PlayAt), a non-mutable
+session (Edit/Stop), a destroying UUID, or a full queue.
+
+Later failures cannot change that historical return. Voice-cap steals,
+backend start faults, and device errors surface as the sequence-scoped
+result read back through `audio_status()` plus diagnostics:
+
+```lua
+-- s.aggregate is "idle", "queued", "playing", "paused", "completed" or "failed";
+-- s.live_voice_count / s.paused_voice_count count this source's voices;
+-- s.newest_accepted_sequence and s.newest_queued track admission;
+-- s.last_result_sequence, s.has_result, s.last_result_ok,
+-- s.error_code and s.error_detail carry the newest command's outcome.
+```
+
+Every accepted command takes the source's next monotonic sequence; each
+voice stores its creating play sequence, so an older overlapping
+voice's completion can never replace a newer command's result. While
+the newest command awaits drain the aggregate reads `Queued`;
+otherwise it reads `Playing`/`Paused` from live voices, `Completed` or
+`Failed` from the newest terminal play once nothing live or queued
+remains, or `Idle` before playback and after explicit Stop. If a newer
+play fails while an older voice is still audible, the aggregate stays
+`Playing` and the failure is still visible in `last_result`.
+
+Two things the API deliberately withholds: it never accepts a raw clip
+path (playback keys the entity's authored source through the same
+provider key the Play candidate validated), and it never exposes world
+or backend voice handles (there is nothing to stale-handle: a
+destroyed source's queued commands drop and its voices stop before ECS
+removal). A successful reload replacement, quarantine, Stop, and
+ScriptSystem teardown all clear queued-but-unapplied audio commands,
+so no command outlives the environment that issued it.
 
 Plus the safe standard library: `base` (minus the denied names below),
 `math`, `string`, `table`, `utf8`.

@@ -55,7 +55,118 @@ std::atomic<uint64_t> s_AudioSessionCounter{ 1 };
 constexpr double kAudioNoDeviceSampleRate = 48000.0;
 constexpr uint32_t kAudioNoDeviceMaxChunk = 4096;
 
+// Audio A6: shared resolution for Lua-driven audio commands. Validates
+// session mutability (silent), the frozen destroy set (loud), a committed
+// audio session (silent: Edit, Stop, or a session with no bound sources),
+// a live runtime entity carrying an authored AudioSourceComponent (loud),
+// and — for Play/PlayAt — a bound clip plus its opaque provider key
+// (loud). Fills the play-time pose from the current world matrix (the same
+// final-world authority A5 poses use; the drain re-derives the mix from
+// final poses anyway). Consumes nothing on any refusal path.
+struct A6ResolvedAudioSource
+{
+    AudioSourceComponent component;
+    glm::vec3 worldPos{ 0.0f, 0.0f, 0.0f };
+    bool hasTransform = false;
+    std::string name;
+    std::string clipKey;
+};
+
+bool A6ResolveAudioSource(const RuntimeSceneController& ctrl,
+                           const UUID& source, const char* opName,
+                           bool requireBoundClip,
+                           A6ResolvedAudioSource& out)
+{
+    if (!ctrl.IsRuntimeMutable())
+        return false;
+    if (ctrl.IsUuidInDestroyDrain(source))
+    {
+        printf("[Audio] %s refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               opName, source.ToString().c_str());
+        return false;
+    }
+    if (ctrl.TryGetAudioWorld() == nullptr)
+        return false;
+    const SceneDocument* doc = ctrl.TryGetRuntimeScene();
+    if (doc == nullptr)
+        return false;
+    const auto e = doc->FindByUuid(source);
+    auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
+    if (e == entt::null || !reg.valid(e))
+    {
+        printf("[Audio] %s refused: unknown UUID %s (no live entity)\n",
+               opName, source.ToString().c_str());
+        return false;
+    }
+    const auto* audio = reg.try_get<AudioSourceComponent>(e);
+    if (audio == nullptr)
+    {
+        printf("[Audio] %s refused for %s "
+               "(no authored AudioSourceComponent)\n",
+               opName, source.ToString().c_str());
+        return false;
+    }
+    out.component = *audio;
+    if (const auto* named = reg.try_get<NameComponent>(e))
+        out.name = named->name;
+    if (const auto* tf = reg.try_get<Transform>(e))
+    {
+        out.worldPos = glm::vec3(tf->worldMatrix[3]);
+        out.hasTransform = true;
+    }
+    if (requireBoundClip && out.component.clip.path.empty())
+    {
+        printf("[Audio] %s refused for %s "
+               "(unbound clip: no audio clip authored)\n",
+               opName, source.ToString().c_str());
+        return false;
+    }
+    // A6: only Play/PlayAt resolve the opaque provider key. Stop, Pause,
+    // SetGain, and SetPitch operate on live voices and source state that
+    // need no clip key — so a clip file (or asset record) that disappears
+    // after a successful Play can never trap a live voice beyond Lua's
+    // reach. Key-builder failure therefore refuses only Play/PlayAt.
+    if (requireBoundClip)
+    {
+        Result<std::string> key =
+            ctrl.BuildAudioClipKey(out.component.clip, source, out.name);
+        if (!key.IsOk())
+        {
+            printf("[Audio] %s refused for %s (clip key build failed: %s)\n",
+                   opName, source.ToString().c_str(),
+                   key.error.Format().c_str());
+            return false;
+        }
+        out.clipKey = std::move(key.value);
+    }
+    return true;
+}
+
+// Precise queue-full refusal text (single-threaded main thread: the count
+// check is exact, so a full queue is never misattributed to the source).
+bool A6AudioQueueFull(const RuntimeSceneController& ctrl, const UUID& source,
+                       const char* opName)
+{
+    const bool full = ctrl.AudioQueuedCommandCount() >=
+        rt2::audio::kAudioCommandQueueCapacity;
+    if (full)
+        printf("[Audio] %s refused for %s (command queue full: %u)\n",
+               opName, source.ToString().c_str(),
+               rt2::audio::kAudioCommandQueueCapacity);
+    return full;
+}
+
 } // namespace
+
+Result<std::string> RuntimeSceneController::BuildAudioClipKey(
+    const AssetReference& clip, const UUID& entityUuid,
+    const std::string& entityName) const
+{
+    if (m_AudioClipKeyBuilder)
+        return m_AudioClipKeyBuilder(clip, entityUuid, entityName);
+    return Result<std::string>::Ok("audioclip:" + clip.path);
+}
 
 // ============================================================================
 // Play
@@ -370,22 +481,14 @@ bool RuntimeSceneController::StageAudioCandidate(
     std::vector<std::shared_ptr<const rt2::audio::DecodedAudioGeneration>> pins;
     for (const BoundSource& entry : bound)
     {
-        std::string key;
-        if (m_AudioClipKeyBuilder)
+        Result<std::string> keyResult =
+            BuildAudioClipKey(entry.component.clip, entry.uuid, entry.name);
+        if (!keyResult.IsOk())
         {
-            Result<std::string> built = m_AudioClipKeyBuilder(
-                entry.component.clip, entry.uuid, entry.name);
-            if (!built.IsOk())
-            {
-                err = built.error;
-                return false;
-            }
-            key = std::move(built.value);
+            err = keyResult.error;
+            return false;
         }
-        else
-        {
-            key = "audioclip:" + entry.component.clip.path;
-        }
+        const std::string key = std::move(keyResult.value);
         Result<std::shared_ptr<const rt2::audio::DecodedAudioGeneration>> fetched =
             m_AudioGenerations->FetchDecodedGeneration(key);
         if (!fetched.IsOk())
@@ -440,6 +543,180 @@ bool RuntimeSceneController::StageAudioCandidate(
     m_AudioPinnedGenerations = std::move(pins);
     outWorld = std::move(world);
     return true;
+}
+
+// ============================================================================
+// Audio A6 — Lua-driven validated audio commands
+// ============================================================================
+
+bool RuntimeSceneController::QueueAudioPlay(const UUID& source)
+{
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_play", true, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_play"))
+        return false;
+    rt2::audio::AudioPlayRequest req;
+    req.source = source;
+    req.component = resolved.component;
+    req.sourcePosition[0] = resolved.worldPos.x;
+    req.sourcePosition[1] = resolved.worldPos.y;
+    req.sourcePosition[2] = resolved.worldPos.z;
+    req.hasTransform = resolved.hasTransform;
+    req.clipKey = std::move(resolved.clipKey);
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueuePlay(req, sequence))
+    {
+        printf("[Audio] audio_play refused for %s (invalid authored source)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioPlayAt(const UUID& source,
+                                              const glm::vec3& position)
+{
+    // Finite/range gate before any resolution: a non-finite or
+    // out-of-float-range override must never reach the world pose.
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+        !std::isfinite(position.z) ||
+        std::fabs(position.x) > (double)FLT_MAX ||
+        std::fabs(position.y) > (double)FLT_MAX ||
+        std::fabs(position.z) > (double)FLT_MAX)
+    {
+        printf("[Audio] audio_play_at refused for %s "
+               "(non-finite or out-of-float-range position)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_play_at", true, resolved))
+        return false;
+    // A6 one-shot independence (READY Script API): audio_play_at is a
+    // one-shot positional override independently of the authored loop
+    // flag. The drain starts a fresh non-looping voice at the override
+    // and never refreshes a live loop for it; the authored loop flag is
+    // preserved, so a later audio_play still ensures the loop.
+    if (A6AudioQueueFull(*this, source, "audio_play_at"))
+        return false;
+    rt2::audio::AudioPlayRequest req;
+    req.source = source;
+    req.component = resolved.component;
+    req.sourcePosition[0] = position.x;
+    req.sourcePosition[1] = position.y;
+    req.sourcePosition[2] = position.z;
+    // The override supplies the play-time pose outright (a PlayAt on a
+    // Transform-less entity still carries a valid position).
+    req.hasTransform = true;
+    req.positionalOverride = true;
+    req.clipKey = std::move(resolved.clipKey);
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueuePlay(req, sequence))
+    {
+        printf("[Audio] audio_play_at refused for %s (invalid authored source)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioStop(const UUID& source)
+{
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_stop", false, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_stop"))
+        return false;
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueueStop(source, sequence))
+    {
+        printf("[Audio] audio_stop refused for %s (destroying target)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioPause(const UUID& source, bool paused)
+{
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_pause", false, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_pause"))
+        return false;
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueuePause(source, paused, sequence))
+    {
+        printf("[Audio] audio_pause refused for %s (destroying target)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioSetGain(const UUID& source, float gain)
+{
+    // Authored-range gate before resolution (the world re-checks without
+    // consuming a sequence, so this is diagnostic precision, not trust).
+    if (!std::isfinite(gain) || gain < 0.0f || gain > 4.0f)
+    {
+        printf("[Audio] audio_set_gain refused for %s "
+               "(gain must be finite and in [0, 4])\n",
+               source.ToString().c_str());
+        return false;
+    }
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_set_gain", false, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_set_gain"))
+        return false;
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueueSetGain(source, gain, sequence))
+    {
+        printf("[Audio] audio_set_gain refused for %s (destroying target)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool RuntimeSceneController::QueueAudioSetPitch(const UUID& source, float pitch)
+{
+    if (!std::isfinite(pitch) || pitch < 0.25f || pitch > 4.0f)
+    {
+        printf("[Audio] audio_set_pitch refused for %s "
+               "(pitch must be finite and in [0.25, 4])\n",
+               source.ToString().c_str());
+        return false;
+    }
+    A6ResolvedAudioSource resolved;
+    if (!A6ResolveAudioSource(*this, source, "audio_set_pitch", false, resolved))
+        return false;
+    if (A6AudioQueueFull(*this, source, "audio_set_pitch"))
+        return false;
+    uint64_t sequence = 0;
+    if (!m_AudioWorld->QueueSetPitch(source, pitch, sequence))
+    {
+        printf("[Audio] audio_set_pitch refused for %s (destroying target)\n",
+               source.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+rt2::audio::AudioSourceStatus RuntimeSceneController::GetAudioStatus(
+    const UUID& source) const
+{
+    if (m_AudioWorld == nullptr)
+        return {};
+    return m_AudioWorld->GetSourceStatus(source);
+}
+
+void RuntimeSceneController::ClearQueuedAudioCommands()
+{
+    if (m_AudioWorld != nullptr)
+        m_AudioWorld->ClearQueuedCommands();
 }
 
 void RuntimeSceneController::CollectAudioPoses(

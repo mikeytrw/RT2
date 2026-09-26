@@ -551,6 +551,46 @@ public:
         return m_AudioWorld ? m_AudioWorld->StagedAutoplayCount() : 0;
     }
 
+    // ---- Audio A6: Lua-driven validated audio commands --------------------
+    //
+    // Every method validates before enqueueing and returns false (mutating
+    // nothing, enqueueing nothing, consuming no sequence) when the session
+    // is not mutable (silent, like the sink setters), the target lies in
+    // the frozen destroy set (loud warn), no audio session is committed
+    // (Edit, Stop, or a session with no bound sources — silent false), the
+    // UUID does not resolve to a live authored AudioSourceComponent (loud),
+    // the arguments are non-finite/out-of-range (loud), or the 256-command
+    // queue is full (loud, counted). Play/PlayAt additionally require a
+    // bound clip (loud); Stop/Pause/SetGain/SetPitch accept an unbound
+    // component as an idempotent no-op (Stop on a clipless source still
+    // records its sequence-scoped result). Loud printf + false follows
+    // docs/scripting.md:97-111; the IsRuntimeMutable gate stays silent.
+    bool QueueAudioPlay(const UUID& source);
+    bool QueueAudioPlayAt(const UUID& source, const glm::vec3& position);
+    bool QueueAudioStop(const UUID& source);
+    bool QueueAudioPause(const UUID& source, bool paused);
+    bool QueueAudioSetGain(const UUID& source, float gain);
+    bool QueueAudioSetPitch(const UUID& source, float pitch);
+
+    // Aggregate + sequence-scoped source status (read-only: Idle when no
+    // session is committed or the source is unknown).
+    rt2::audio::AudioSourceStatus GetAudioStatus(const UUID& source) const;
+
+    // Drop all queued-but-unapplied audio commands (successful reload
+    // replacement, quarantine, and ScriptSystem teardown call this: no
+    // stale command outlives its issuing environment; Stop clears via
+    // session teardown directly). Silent: the caller already diagnosed the
+    // reason.
+    void ClearQueuedAudioCommands();
+
+    // Derives the opaque provider key for one authored clip through the
+    // injected builder (or the deterministic "audioclip:<path>" default
+    // when no builder is installed). Shared by the Play candidate and the
+    // A6 Lua Play path so both key the same generation.
+    Result<std::string> BuildAudioClipKey(const AssetReference& clip,
+                                          const UUID& entityUuid,
+                                          const std::string& entityName) const;
+
     // Phase-1 batch validation as a standalone predicate (T5 destroy-policy
     // seam): duplicate-UUID, parent-resolution, destroy-target, AND the
     // constrained-body rule — a destroy batch that would orphan a surviving

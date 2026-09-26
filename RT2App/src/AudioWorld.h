@@ -82,6 +82,10 @@ struct AudioPlayRequest
     float sourcePosition[3] = { 0.0f, 0.0f, 0.0f };
     bool hasTransform = true;
     std::string clipKey; // empty = unbound source (refused loudly)
+    // A6: one-shot positional override (audio_play_at). Play leaves this
+    // false and the play-time pose is the source pose; PlayAt sets it so
+    // the override survives final-pose landing and per-voice mix refresh.
+    bool positionalOverride = false;
     // NOTE: no channel-count claim. The decoded channel count is owned by
     // the generation the injected IAudioClipProvider returns and is
     // enforced at drain time; a caller can never talk the world into
@@ -276,6 +280,12 @@ private:
         float position[3] = { 0.0f, 0.0f, 0.0f };
         bool hasTransform = true;
         std::string clipKey;
+        // A6: true when the play-time pose is a one-shot positional
+        // override (audio_play_at) rather than the source pose. The drain
+        // maps it onto the voice so final-pose landing (source-level) and
+        // mix refresh (per-voice) cannot clobber it — overlapping one-shots
+        // keep distinct positions.
+        bool positionalOverride = false;
         // Pause/SetGain/SetPitch payload.
         bool pauseValue = false;
         float scalarValue = 0.0f;
@@ -297,6 +307,11 @@ private:
         int decodedChannels = 1;
         BackendVoiceMix lastMix;
         double cursorFrames = 0.0;
+        // A6: one-shot positional override for this voice (audio_play_at).
+        // Mix refresh spatializes from here while set, so the source-level
+        // final pose never drags an override voice back to the entity.
+        bool hasPositionalOverride = false;
+        float overridePosition[3] = { 0.0f, 0.0f, 0.0f };
     };
 
     struct SourceState

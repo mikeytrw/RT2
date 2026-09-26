@@ -334,6 +334,15 @@ public:
     void ClearQueuedPhysicsCommands() override;
     size_t QueuedPhysicsCommandCount() const override;
     void SetPhysicsEventsVisible(bool visible) override;
+    bool AudioPlay(const UUID& uuid) override;
+    bool AudioPlayAt(const UUID& uuid, const glm::vec3& position) override;
+    bool AudioStop(const UUID& uuid) override;
+    bool AudioPause(const UUID& uuid, bool paused) override;
+    bool AudioSetGain(const UUID& uuid, float gain) override;
+    bool AudioSetPitch(const UUID& uuid, float pitch) override;
+    rt2::audio::AudioSourceStatus GetAudioStatus(const UUID& uuid) const override;
+    void ClearQueuedAudioCommands() override;
+    size_t QueuedAudioCommandCount() const override;
     bool IsAlive(const UUID& uuid) const override;
     UUID FindByName(const std::string& name) const override;
     SceneRunState GetRunState() const override;
