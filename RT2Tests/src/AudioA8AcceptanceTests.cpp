@@ -171,16 +171,62 @@ std::string A8ReadSidecar(const std::string& clipPath)
     return out;
 }
 
+std::filesystem::path A8TempRoot()
+{
+    // Normalized once. temp_directory_path may carry a trailing
+    // separator that lexically_normal keeps on this STL, which would
+    // make a recomputed root compare unequal to a parent_path taken
+    // from a joined path — so trailing separators are stripped
+    // explicitly (never below a drive root).
+    static const std::filesystem::path root = [] {
+        std::error_code ec;
+        std::string raw = std::filesystem::temp_directory_path(ec).string();
+        while (raw.size() > 3 && (raw.back() == '\\' || raw.back() == '/'))
+            raw.pop_back();
+        if (ec || raw.empty())
+            return std::filesystem::path{};
+        return std::filesystem::path(raw).lexically_normal();
+    }();
+    return root;
+}
+
 std::filesystem::path A8TempDir()
 {
+    // Uniquely owned scratch directory: exclusive creation (a name
+    // collision is retried with the next suffix, never removed), so a
+    // concurrent run or user directory at the same name is neither
+    // shared nor destroyed. Empty path when no name succeeds.
     static uint64_t counter = 0;
-    ++counter;
-    std::ostringstream name;
-    name << "rt2_a8_acceptance_" << counter;
-    const std::filesystem::path dir =
-        std::filesystem::temp_directory_path() / name.str();
-    std::filesystem::create_directories(dir);
-    return dir;
+    const std::filesystem::path root = A8TempRoot();
+    if (root.empty())
+        return std::filesystem::path{};
+    for (int attempt = 0; attempt < 100; ++attempt)
+    {
+        ++counter;
+        std::ostringstream name;
+        name << "rt2_a8_acceptance_" << counter << "_" << attempt;
+        const std::filesystem::path dir = root / name.str();
+        std::error_code createEc;
+        if (std::filesystem::create_directory(dir, createEc) && !createEc)
+            return dir;
+    }
+    return std::filesystem::path{};
+}
+
+bool A8RemoveOwnedDir(const std::filesystem::path& dir)
+{
+    // Deletes only a directory this helper could have created: same temp
+    // parent and the owned prefix. Anything else refuses.
+    const std::filesystem::path root = A8TempRoot();
+    if (root.empty() ||
+        dir.parent_path().lexically_normal() != root)
+        return false;
+    const std::string leaf = dir.filename().string();
+    if (leaf.rfind("rt2_a8_acceptance_", 0) != 0)
+        return false;
+    std::error_code removeEc;
+    std::filesystem::remove_all(dir, removeEc);
+    return !removeEc && !std::filesystem::exists(dir);
 }
 
 void A8ScriptAcceptanceClips(RecordingFakeAudioBackend& fake)
@@ -260,6 +306,7 @@ TEST_CASE("A8_AcceptanceSceneRoundTrip")
     CHECK(A8ReadSidecar(kA8MusicClip) == A8MusicClipId().ToString());
 
     const std::filesystem::path dir = A8TempDir();
+    REQUIRE_MESSAGE(!dir.empty(), "owned scratch directory creation failed");
     const std::filesystem::path tmp = dir / "audio-acceptance-rt.rt2scene";
     std::vector<AssetDiagnostic> diagnostics;
     Error saveErr;
@@ -283,7 +330,7 @@ TEST_CASE("A8_AcceptanceSceneRoundTrip")
     REQUIRE(music2 != nullptr);
     CHECK(*loop2 == *loop);
     CHECK(*music2 == *music);
-    std::filesystem::remove_all(dir);
+    CHECK(A8RemoveOwnedDir(dir));
 }
 
 TEST_CASE("A8_AcceptanceScenePlayWalk")
@@ -317,19 +364,19 @@ TEST_CASE("A8_AcceptanceScenePlayWalk")
     CHECK(fake.starts.front().start.loop == true);
     CHECK(fake.starts.front().start.bus == AudioBus::Effects);
 
-    // Emitter authored near +X (3, 0, 0.5) with the listener at the
-    // origin facing -Z: strongly right-dominant equal-power mix at
-    // distance gain (1 - (|t|-1)/29) with |t| = sqrt(9.25). The half-unit
-    // z offset keeps the left gain comfortably positive: exactly on-axis
-    // geometry yields cos(pi/2) = -4.37e-8, which the production backend
-    // loudly refuses (gains must be >= 0; proven by probe S21, invisible
-    // to the path-scripted fake).
+    // Emitter authored exactly to the listener's right (+X, distance 3)
+    // with the listener at the origin facing -Z: hard-right
+    // equal-power mix at distance gain (1 - 2/29) ~= 0.931. The pan law
+    // clamps float trig endpoints to [0, 1], so the silent channel is
+    // exactly zero here (cos(pi/2) would otherwise round to -4.37e-8,
+    // which production StartVoice refuses; A8 fixup P1, proven live in
+    // probe S21).
     BackendVoiceMix rightMix =
         A8RequireMix(*ctrl.TryGetAudioWorld(), A8LoopUuid());
     CHECK(rightMix.right > rightMix.left);
-    CHECK(rightMix.right == doctest::Approx(0.92955447f).epsilon(0.001));
-    CHECK(rightMix.left == doctest::Approx(0.00993377f).epsilon(0.01));
-    CHECK(rightMix.left > 0.0f);
+    CHECK(rightMix.right == doctest::Approx(0.93103448f).epsilon(0.001));
+    CHECK(rightMix.left == doctest::Approx(0.0f).epsilon(0.01));
+    CHECK(rightMix.left == 0.0f);
 
     // Final-world-transform tracking (check 11 shape): moving the runtime
     // emitter across the listener flips the mix without re-authoring.
@@ -340,15 +387,15 @@ TEST_CASE("A8_AcceptanceScenePlayWalk")
         REQUIRE((e != entt::null));
         Transform* tf = runtime->ecs.registry.try_get<Transform>(e);
         REQUIRE(tf != nullptr);
-        tf->translation = glm::vec3(-3.0f, 0.0f, 0.5f);
+        tf->translation = glm::vec3(-3.0f, 0.0f, 0.0f);
         SceneGraph::MarkDirty(runtime->ecs.registry, e);
     }
     ctrl.Update(kA8Dt, bridge);
     BackendVoiceMix leftMix =
         A8RequireMix(*ctrl.TryGetAudioWorld(), A8LoopUuid());
     CHECK(leftMix.left > leftMix.right);
-    CHECK(leftMix.left == doctest::Approx(0.92955447f).epsilon(0.001));
-    CHECK(leftMix.right == doctest::Approx(0.00993377f).epsilon(0.01));
+    CHECK(leftMix.left == doctest::Approx(0.93103448f).epsilon(0.001));
+    CHECK(leftMix.right == 0.0f);
 
     // Host-driven Music one-shot: non-spatial center mix at gain 0.8.
     REQUIRE(ctrl.QueueAudioPlay(A8MusicUuid()));
@@ -510,6 +557,7 @@ TEST_CASE("A8_AcceptanceSceneProductionProviderResolvesShippedClips")
     // Foreign sidecar refuses: the loop's bytes under a scratch sidecar
     // claiming the music identity must not resolve as the loop clip.
     const std::filesystem::path dir = A8TempDir();
+    REQUIRE_MESSAGE(!dir.empty(), "owned scratch directory creation failed");
     {
         std::ifstream wavIn("RT2App/assets/" + std::string(kA8LoopClip),
                             std::ios::binary);
@@ -540,7 +588,7 @@ TEST_CASE("A8_AcceptanceSceneProductionProviderResolvesShippedClips")
         conflictSource.clip, A8LoopUuid(), "LoopEmitter");
     INFO("foreign sidecar detail: " << conflict.error.detail);
     CHECK_FALSE(conflict.IsOk());
-    std::filesystem::remove_all(dir);
+    CHECK(A8RemoveOwnedDir(dir));
 }
 
 TEST_CASE("A8_AcceptanceScenePreviewReplaceAndStop")
@@ -568,7 +616,7 @@ TEST_CASE("A8_AcceptanceScenePreviewReplaceAndStop")
         });
 
     const AudioListenerPose listener = A8Listener(0.0f, 0.0f, 0.0f);
-    const float loopPos[3] = { 3.0f, 0.0f, 0.5f };
+    const float loopPos[3] = { 3.0f, 0.0f, 0.0f };
     Error err;
     const bool loopPreview = preview.StartPreview(
         A8LoopUuid(), "LoopEmitter", *loop, true, loopPos, listener, false,

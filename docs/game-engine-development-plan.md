@@ -16640,3 +16640,78 @@ Nothing in the A8 section above was rewritten.
   reverted again (only the resolver-TU/include entries plus the
   matching `premake5.lua` source entries were kept). No merge or
   push; branch stays bound for re-review.
+
+### Audio A8 fixup-2 - re-review closure P1/P2 (2026-09-26)
+
+Closes the three exact repairs in the narrow fixup re-review at
+`61db2bc` (appended to
+`audio-integration-final-review-0fb2692`). Nothing in the A8 or
+fixup sections above was rewritten.
+
+- **P1 — production pan-endpoint clamp, exact-right restored.**
+  `ComputeSpatialMix` (`RT2App/src/AudioSpatialMath.h`) now clamps
+  the finite equal-power pan gains to [0, 1] after trig: float
+  cos(pi/2) rounds to about -4.37e-8 at exactly hard-right, which
+  production `StartVoice`/`SetVoiceMix` loudly refuse. Source gain
+  and distance attenuation stay validated-but-unclamped; cos/sin of
+  the finite angle are always finite, so only the range needs
+  repair. The shipped emitter is restored to exactly (3, 0, 0) —
+  the off-axis scene is gone, not the fix. Discrimination: the A3
+  `A3_SpatialHardLeftCenterRight_ExactGains` case now asserts exact
+  `0.0f` silent channels (reverting the clamp turns these red
+  while the approximate checks stay green), and the A8 CPU walk
+  asserts the exact-right mix plus exact-zero silent channels.
+  S21 proves the live path in production no-device: autoplay
+  starts at the singularity, the playing loop follows poses
+  across it (exact hard-left and back, same voice never drops,
+  settled-tail exactness), then music renders center alone and
+  completes. The off-axis rationale is struck from
+  `RT2App/assets/audio/README.md`, replaced by the clamp record.
+- **Settling observation (bounded, documented in S21).** The first
+  engine period after a live `SetVoiceMix` can still deliver
+  old-mix frames (measured switch ~323 frames in: peaks fit a
+  clean old-then-new transition, and the next block is pure-new),
+  so move oracles assert exactness on the settled tail while the
+  full block proves audibility through the transition. The bound
+  fails loudly if the window ever exceeds it. No controller
+  timing was changed (A5 owns the slot; S20's energy bands
+  already tolerate this).
+- **P2 — twenty distinct production sessions.** S21c now
+  constructs and destroys a production `AudioWorld` with a fresh
+  session ID per cycle on one shared backend (20 cycles), asserting
+  per cycle two live voices, two active world generation refs,
+  backend voice/key zero after stops, world refs zero after
+  `Shutdown`, and stable cache entries (2) and bytes (576,000);
+  final purge restores 0/0 with the retained-holder pin check and
+  re-fetch reuse intact.
+- **P2 — owned temp directories.** S21d and the RT2Tests
+  `A8TempDir` helper create uniquely named directories
+  exclusively (collision retried, never removed) and delete only
+  the verified exact path (same temp parent, owned prefix).
+  Along the way this exposed that this STL's
+  `lexically_normal` keeps `temp_directory_path`'s trailing
+  separator, so roots are stripped explicitly (never below a
+  drive root) — proven by the helper's own failing-then-green
+  assertions.
+- **Measured baseline (from the repository root, `--no-skip`).**
+  Release **1497 run / 1497 passed / 0 failed / 0 skipped;
+  164,177 assertions**; Debug **1497 / 1497 / 0 / 0; 164,177
+  assertions**. Delta over `61db2bc` (1497/164,171 each): **+0
+  cases / +6 assertions** (A3 clamp exactness, temp-dir creation
+  guards, owned-removal checks). Focused audio: 111/111, 2,617
+  assertions each configuration. `RT2ImGuiProbe`: 30/30, 401
+  assertions each. `RT2AudioProbe`: S1-S21d all PASS each
+  configuration (Release measured green in 3 consecutive runs).
+  `run_script_test.ps1`: PASS 60 frames / 1 entity; Debug script
+  scenario: PASS 60 frames. Slice gate: PASS 60 steps, Cube final
+  x=0.999999702; Debug slice: PASS 60 steps, authoring intact.
+  `run_audio_a1_gates.ps1 -Configuration Both`: exit 0. Full
+  solution builds Release + Debug with 0 errors (only pre-existing
+  `C4996`/`C4018`/`LNK4098` diagnostics). These figures supersede
+  the fixup rows above for current-state use; all older rows
+  remain period records.
+- **Hygiene.** `graphify update .` rebuilt the graph with focused
+  query checks passing (report churn reverted per convention);
+  `git diff --check` clean; `vertical-slice.rt2scene` restored
+  after every mutating suite; probe diagnostics and scratch logs
+  removed. No merge or push; branch stays bound for re-review.

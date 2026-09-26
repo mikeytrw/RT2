@@ -192,9 +192,22 @@ inline core::Result<BackendVoiceMix> ComputeSpatialMix(
     }
 
     const float angle = (p + 1.0f) * (kAudioPi / 4.0f);
+    // Float trig at the pan endpoints can round a mathematical 0 or 1 to
+    // just outside [0, 1] (cos(pi/2) == -4.37e-8 at exactly hard-right),
+    // and the production backend loudly refuses negative gains, so an
+    // exactly cardinal source would fail to start. Clamp the pan law to
+    // its mathematical [0, 1] range; source gain and distance attenuation
+    // stay validated-but-unclamped. cos/sin of the finite angle above are
+    // always finite, so only the range needs repair, never finiteness.
+    float panLeft = std::cos(angle);
+    float panRight = std::sin(angle);
+    if (panLeft < 0.0f) panLeft = 0.0f;
+    else if (panLeft > 1.0f) panLeft = 1.0f;
+    if (panRight < 0.0f) panRight = 0.0f;
+    else if (panRight > 1.0f) panRight = 1.0f;
     BackendVoiceMix mix;
-    mix.left = in.component.gain * distanceGain * std::cos(angle);
-    mix.right = in.component.gain * distanceGain * std::sin(angle);
+    mix.left = in.component.gain * distanceGain * panLeft;
+    mix.right = in.component.gain * distanceGain * panRight;
     mix.pitch = in.component.pitch;
     return core::Result<BackendVoiceMix>::Ok(mix);
 }

@@ -2328,11 +2328,12 @@ int main()
         s21world.UpdateSemantic(s21Listener, s21Poses, 2);
         if (s21world.LiveVoiceCount() != 1)
             return Fail("S21 shipped autoplay loop produced no voice");
-        // Hard-right equal-power mix at distance gain ~0.93: the right
-        // channel carries the loop tone, the left stays near silent.
-        // Render totals are required exact: every read below is sized by
-        // what rendered, so a short read fails loudly instead of
-        // over-reading the output buffer.
+        // Exactly hard-right equal-power mix at distance gain ~0.931:
+        // the right channel carries the loop tone while the left is
+        // exactly silent (pan-law clamp; unclamped cos(pi/2) rounds to
+        // -4.37e-8 and production StartVoice refuses it). Render totals
+        // are required exact: every read below is sized by what rendered,
+        // so a short read fails loudly instead of over-reading.
         std::vector<float> loopBlock;
         bool loopRenderOk = false;
         const uint32_t loopRendered =
@@ -2343,18 +2344,60 @@ int main()
         {
             const float rightPeak = MaxAbsChannel(loopBlock.data(), loopRendered, 1);
             const float leftPeak = MaxAbsChannel(loopBlock.data(), loopRendered, 0);
-            double rightEnergy = 0.0;
-            double leftEnergy = 0.0;
-            for (uint32_t f = 0; f < loopRendered; ++f)
-            {
-                rightEnergy += (double)loopBlock[f * 2 + 1] *
-                               (double)loopBlock[f * 2 + 1];
-                leftEnergy += (double)loopBlock[f * 2 + 0] *
-                              (double)loopBlock[f * 2 + 0];
-            }
-            if (rightPeak < 0.3f || leftPeak > 0.05f ||
-                !(rightEnergy > 100.0 * leftEnergy))
-                return Fail("S21 shipped loop PCM is not hard-right");
+            if (rightPeak < 0.3f || leftPeak != 0.0f)
+                return Fail("S21 shipped loop PCM is not exactly hard-right");
+        }
+        // Live mix update across the singularity: the playing loop
+        // follows final poses through exact-right without refusal or
+        // stale panning (the pre-fixup SetVoiceMix refusal path). Each
+        // move renders hard-panned PCM with an exactly silent channel
+        // on the settled tail; moving back restores hard-right on the
+        // same voice, which never drops.
+        AudioSourcePose leftPose = loopPose;
+        leftPose.position[0] = -3.0f;
+        leftPose.position[1] = 0.0f;
+        leftPose.position[2] = 0.0f;
+        const AudioSourcePose leftPoses[2] = { leftPose, musicPose };
+        s21world.UpdateSemantic(s21Listener, leftPoses, 2);
+        if (s21world.LiveVoicesForSource(loopSrc.uuid).size() != 1)
+            return Fail("S21 live move across the singularity lost the loop");
+        {
+            // Settling observation (documented, bounded): the first engine
+            // period after a live SetVoiceMix can still deliver old-mix
+            // frames (measured switch ~323 frames in), so exactness is
+            // asserted on the settled tail while the full block proves
+            // the voice stays audible through the transition.
+            std::vector<float> leftBlock;
+            bool leftOk = false;
+            const uint32_t leftRendered =
+                RenderAll(s21backend, leftBlock, 1600, leftOk);
+            if (!leftOk || leftRendered != 1600)
+                return Fail("S21 moved-loop render failed");
+            s21world.AdvanceCursors(leftRendered);
+            if (MaxAbsChannel(leftBlock.data(), leftRendered, 0) < 0.3f)
+                return Fail("S21 moved loop went silent through the move");
+            const float* leftTail = leftBlock.data() + 800 * 2;
+            if (MaxAbsChannel(leftTail, 800, 0) < 0.3f ||
+                MaxAbsChannel(leftTail, 800, 1) != 0.0f)
+                return Fail("S21 moved loop PCM is not exactly hard-left");
+        }
+        s21world.UpdateSemantic(s21Listener, s21Poses, 2);
+        if (s21world.LiveVoicesForSource(loopSrc.uuid).size() != 1)
+            return Fail("S21 move back across the singularity lost the loop");
+        {
+            std::vector<float> backBlock;
+            bool backOk = false;
+            const uint32_t backRendered =
+                RenderAll(s21backend, backBlock, 1600, backOk);
+            if (!backOk || backRendered != 1600)
+                return Fail("S21 moved-back render failed");
+            s21world.AdvanceCursors(backRendered);
+            if (MaxAbsChannel(backBlock.data(), backRendered, 1) < 0.3f)
+                return Fail("S21 moved-back loop went silent");
+            const float* backTail = backBlock.data() + 800 * 2;
+            if (MaxAbsChannel(backTail, 800, 1) < 0.3f ||
+                MaxAbsChannel(backTail, 800, 0) != 0.0f)
+                return Fail("S21 moved-back PCM is not exactly hard-right");
         }
         // Host plays the idle music bed after the loop stopped: each PCM
         // oracle below measures one isolated voice, so the loop's right
@@ -2550,15 +2593,18 @@ int main()
     }
     Pass("S21b corrupt file refuses the non-autoplay branch");
 
-    // ---- S21c: twenty Play/Stop cycles on the production census ----
+    // ---- S21c: twenty Play/Stop sessions on the production census ----
     //
-    // P2 closure: every cycle drives the shipped loop+music keys through
-    // AudioWorld on a production backend and asserts the production
-    // session/voice counts plus the decoded-cache generation census
-    // (entry count, resident bytes, per-key active refs). The explicit
-    // purge restores the documented zero baseline; a retained holder
-    // pins its entry across the purge (leak discrimination), and the
-    // next fetch re-decodes afterwards.
+    // P2 repeated-session gate: every cycle constructs and destroys a
+    // production AudioWorld with a fresh session ID on one shared
+    // backend (the backend outlives sessions in production) and asserts
+    // the voice/key/cache census plus the world's active generation
+    // refs after the stops and again after shutdown. Voice-only cycles
+    // inside a single world cannot catch resources retained across
+    // world/session destruction. The explicit purge restores the
+    // documented zero baseline; a retained holder pins its entry
+    // across the purge (leak discrimination), and the next fetch
+    // re-decodes afterwards.
     {
         bool loopFileOk = false;
         const std::vector<char> loopFileBytes = ReadFile(
@@ -2602,9 +2648,6 @@ int main()
                     rt2::core::Error::MissingAsset, key,
                     "S21c has no bytes for this key");
             });
-        const AudioSessionId cycSession{ 23 };
-        AudioWorld cycWorld(&cycBackend, &cycBackend, cycSession,
-                            AudioOwnerKind::Runtime, AudioWorldConfig{});
         std::array<uint8_t, 16> loopCycId{};
         loopCycId[15] = 22;
         std::array<uint8_t, 16> musicCycId{};
@@ -2633,6 +2676,13 @@ int main()
         size_t pinnedBytes = 0;
         for (int cycle = 0; cycle < 20; ++cycle)
         {
+            // Fresh world and session per cycle; the scoped world is
+            // destroyed (after explicit Shutdown) before the next cycle,
+            // so cross-cycle retention is observable in the backend.
+            AudioWorld cycWorld(
+                &cycBackend, &cycBackend,
+                AudioSessionId{ static_cast<uint64_t>(100 + cycle) },
+                AudioOwnerKind::Runtime, AudioWorldConfig{});
             cycWorld.StageAutoplay(cycRequest(loopCycSrc, kLoopCyc, true));
             uint64_t playSeq = 0;
             if (!cycWorld.QueuePlay(
@@ -2644,6 +2694,11 @@ int main()
             if (cycWorld.LiveVoiceCount() != 2 ||
                 cycBackend.LiveVoiceCount() != 2)
                 return FailDetail(std::string("S21c cycle did not start both voices at ") +
+                                  std::to_string(cycle));
+            // Both fetched generations are actively referenced by this
+            // session's world.
+            if (cycWorld.CachedClipGenerationCount() != 2)
+                return FailDetail(std::string("S21c world generation refs wrong at cycle ") +
                                   std::to_string(cycle));
             std::vector<float> cycBlock;
             bool cycOk = false;
@@ -2666,6 +2721,18 @@ int main()
                 cycBackend.ActiveVoicesForKey(kMusicCyc) != 0)
                 return FailDetail(std::string("S21c cycle census not at baseline at ") +
                                   std::to_string(cycle));
+            rt2::core::Error cycShutdownError;
+            if (!cycWorld.Shutdown(cycShutdownError))
+                return FailDetail(std::string("S21c world shutdown failed at cycle ") +
+                                  std::to_string(cycle));
+            // Shutdown releases the session's cached generations; the
+            // backend retains the idle decoded entries for reuse.
+            if (cycWorld.CachedClipGenerationCount() != 0)
+                return FailDetail(std::string("S21c world refs live after shutdown at ") +
+                                  std::to_string(cycle));
+            if (cycBackend.LiveVoiceCount() != 0)
+                return FailDetail(std::string("S21c backend voices live after shutdown at ") +
+                                  std::to_string(cycle));
             // Both decoded generations retained for reuse: exact stable
             // census. A retained-generation leak would grow entries or
             // bytes from here on.
@@ -2680,11 +2747,10 @@ int main()
         }
         if (pinnedBytes != (48000 * 4 + 48000 * 2 * 4))
             return Fail("S21c retained cache bytes do not match the two shipped clips");
-        rt2::core::Error cycShutdownError;
-        if (!cycWorld.Shutdown(cycShutdownError))
-            return Fail("S21c world shutdown failed");
+        // All twenty worlds shut down and destroyed above: the backend
+        // holds no session voices, only the two idle decoded entries.
         if (cycBackend.LiveVoiceCount() != 0)
-            return Fail("S21c backend voices live after shutdown");
+            return Fail("S21c backend voices live after twenty shutdowns");
         // Explicit purge restores the documented zero baseline.
         if (cycBackend.EvictZeroReferenceGenerations() != 2)
             return Fail("S21c purge did not evict both idle generations");
@@ -2707,7 +2773,7 @@ int main()
             return Fail("S21c final purge did not restore baseline");
         cycBackend.Shutdown();
     }
-    Pass("S21c twenty Play/Stop cycles hold the production census");
+    Pass("S21c twenty Play/Stop sessions hold the production census");
 
     // ---- S21d: broken path/sidecar/bytes fail loudly ----
     //
@@ -2738,14 +2804,57 @@ int main()
         if (!sawMissing)
             return Fail("S21d missing clip path has no Missing diagnostic");
 
-        // Sidecar conflict in a scratch directory (removed afterwards).
+        // Sidecar conflict in a uniquely owned scratch directory. The
+        // directory is created exclusively: a name collision is retried
+        // with the next suffix, never removed. Cleanup deletes only the
+        // exact created path (verified parent and owned prefix), so a
+        // fixed shared temp path can never destroy another process's or
+        // user's directory.
         std::error_code tempEc;
-        const std::filesystem::path conflictDir =
-            std::filesystem::temp_directory_path(tempEc) / "rt2_probe_s21";
-        if (tempEc)
+        // Stripped explicitly: temp_directory_path may carry a trailing
+        // separator that lexically_normal keeps on this STL, which would
+        // make the ownership check below compare unequal against a
+        // parent_path taken from a joined path (never strip a drive
+        // root).
+        std::string tempRaw =
+            std::filesystem::temp_directory_path(tempEc).string();
+        while (tempRaw.size() > 3 &&
+               (tempRaw.back() == '\\' || tempRaw.back() == '/'))
+            tempRaw.pop_back();
+        const std::filesystem::path tempRoot =
+            std::filesystem::path(tempRaw).lexically_normal();
+        if (tempEc || tempRoot.empty())
             return Fail("S21d has no temp directory");
-        std::filesystem::remove_all(conflictDir, tempEc);
-        std::filesystem::create_directories(conflictDir, tempEc);
+        const std::string ownerTag = "rt2_probe_s21_" +
+            std::to_string(static_cast<unsigned long long>(
+                std::hash<std::thread::id>{}(std::this_thread::get_id())));
+        std::filesystem::path conflictDir;
+        bool haveDir = false;
+        for (int attempt = 0; attempt < 100 && !haveDir; ++attempt)
+        {
+            std::error_code createEc;
+            const std::filesystem::path candidate =
+                tempRoot / (ownerTag + "_" + std::to_string(attempt));
+            if (std::filesystem::create_directory(candidate, createEc) &&
+                !createEc)
+            {
+                conflictDir = candidate;
+                haveDir = true;
+            }
+        }
+        if (!haveDir)
+            return Fail("S21d could not create an owned scratch directory");
+        auto removeOwnedDir = [&]() -> bool {
+            if (conflictDir.parent_path().lexically_normal() != tempRoot)
+                return false;
+            if (conflictDir.filename().string().rfind(ownerTag + "_", 0) != 0)
+                return false;
+            std::error_code removeEc;
+            std::filesystem::remove_all(conflictDir, removeEc);
+            if (removeEc)
+                return false;
+            return !std::filesystem::exists(conflictDir);
+        };
         bool conflictWrote = false;
         {
             bool loopBytesOk = false;
@@ -2786,16 +2895,15 @@ int main()
                                conflictDiags)
                 .success)
         {
-            std::filesystem::remove_all(conflictDir, tempEc);
+            removeOwnedDir();
             return Fail("S21d sidecar conflict resolved");
         }
         bool sawConflict = false;
         for (const auto& d : conflictDiags)
             sawConflict = sawConflict ||
                           d.severity == rt2::core::AssetDiagnostic::Conflict;
-        std::filesystem::remove_all(conflictDir, tempEc);
-        if (std::filesystem::exists(conflictDir))
-            return Fail("S21d scratch directory was not removed");
+        if (!removeOwnedDir())
+            return Fail("S21d owned scratch directory was not removed");
         if (!sawConflict)
             return Fail("S21d sidecar conflict has no Conflict diagnostic");
 

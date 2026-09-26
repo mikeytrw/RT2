@@ -211,6 +211,14 @@ TEST_CASE("A3_SpatialHardLeftCenterRight_ExactGains")
     CHECK(right.left == doctest::Approx(0.0f).epsilon(1e-5));
     CHECK(right.right == doctest::Approx(1.0f).epsilon(1e-5));
 
+    // Endpoint clamp (A8 fixup P1): float cos(pi/2) rounds to about
+    // -4.37e-8, which the production backend refuses as a negative gain.
+    // The pan law clamps to [0, 1], so exact cardinal silence is exactly
+    // zero. Reverting the clamp turns these red while the approximate
+    // checks above stay green (the fake backend never validates gains).
+    CHECK(right.left == 0.0f);
+    CHECK(left.right == 0.0f);
+
     // Zero distance selects center rather than dividing by zero.
     const BackendVoiceMix zero = RequireVoiceMix(world, zeroSource);
     CHECK(zero.left == doctest::Approx(kCenter).epsilon(1e-5));
