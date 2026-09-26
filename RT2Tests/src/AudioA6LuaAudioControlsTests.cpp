@@ -1093,3 +1093,77 @@ TEST_CASE("A6_PlayAtOnLoopSource_IndependentOneShot")
     CHECK(h.fake.starts.size() == 2);
     h.Stop(b.doc);
 }
+
+TEST_CASE("A6_OnCreatePlayAt_PreservesStagedAutoplayLoop")
+{
+    // Final re-review finding: an on_create PlayAt on an authored
+    // autoplay+loop source starts its independent one-shot WITHOUT
+    // consuming staged autoplay — after the first drain both the loop
+    // (center, looping start) and the one-shot (hard-right override,
+    // non-looping start) sound. Erasing staging for override commands
+    // leaves only the one-shot and turns this red.
+    A6Harness h;
+    A6DocBuilder b(h);
+    const entt::entity e = b.Create("AutoplayLoop");
+    b.AttachBoundSource(e, "audio/autoloop.wav", true, true, true);
+    const UUID uuid = b.UuidOf(e);
+    h.fake.ScriptGeneration(A6Key("audio/autoloop.wav"), A6MonoGeneration());
+    AudioListenerPose listener;
+    listener.position[0] = 0.0f;
+    listener.position[1] = 0.0f;
+    listener.position[2] = 0.0f;
+    listener.forward[0] = 0.0f;
+    listener.forward[1] = 0.0f;
+    listener.forward[2] = -1.0f;
+    listener.up[0] = 0.0f;
+    listener.up[1] = 1.0f;
+    listener.up[2] = 1.0f;
+    h.ctrl.SetAudioListenerPose(listener);
+    A6WriteScript("a6_autoplay_playat.lua", R"lua(
+function on_create(entity, world)
+    if not entity:audio_play_at({10.0, 0.0, 0.0}) then
+        entity:set_name("playat-refused")
+    end
+end
+function on_update(entity, dt, input, world) end
+)lua");
+    b.AttachScript(e, "a6_autoplay_playat.lua");
+    REQUIRE(h.Play(b.doc));
+    CHECK(h.scriptSys.LiveInstanceCount() == 1);
+
+    // First drain: the on_create one-shot (seq 1) executes, staging
+    // survives it, and synthesis starts the authored loop (seq 2).
+    h.Update();
+    CHECK(A6RuntimeName(h, uuid) == "AutoplayLoop");
+    REQUIRE(A6LiveVoices(h, uuid) == 2);
+    REQUIRE(h.fake.starts.size() == 2);
+    CHECK(h.fake.starts[0].start.loop == false);
+    CHECK(h.fake.starts[1].start.loop == true);
+
+    AudioWorld* world = h.ctrl.TryGetAudioWorld();
+    REQUIRE(world != nullptr);
+    bool sawOneShot = false;
+    bool sawLoop = false;
+    for (const AudioWorldVoiceHandle& voice : world->LiveVoicesForSource(uuid))
+    {
+        uint64_t seq = 0;
+        REQUIRE(world->GetVoicePlaySequence(voice, seq));
+        BackendVoiceMix mix;
+        REQUIRE(world->GetVoiceMix(voice, mix));
+        if (seq == 1)
+        {
+            CHECK(std::fabs(mix.left) < 1e-5f);
+            CHECK(mix.right == doctest::Approx(20.0f / 29.0f).epsilon(1e-5));
+            sawOneShot = true;
+        }
+        else if (seq == 2)
+        {
+            CHECK(mix.left == doctest::Approx(0.70710678f).epsilon(1e-5));
+            CHECK(mix.right == doctest::Approx(0.70710678f).epsilon(1e-5));
+            sawLoop = true;
+        }
+    }
+    CHECK(sawOneShot);
+    CHECK(sawLoop);
+    h.Stop(b.doc);
+}

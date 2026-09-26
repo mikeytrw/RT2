@@ -510,8 +510,14 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
 {
     // A5: an explicitly executed Play consumes pending autoplay staging for
     // its source, executed or refused. The explicit command's result stands;
-    // synthesis must not add a duplicate voice afterwards.
-    m_StagedAutoplay.erase(cmd.source);
+    // synthesis must not add a duplicate voice afterwards. A6 one-shot
+    // independence: a positional override (audio_play_at) is not the
+    // source's authored playback, so it leaves staging intact — an
+    // on_create PlayAt cannot cancel an authored autoplay loop it never
+    // meant to replace. Only Stop/Pause (at execute time) and an ordinary
+    // Play suppress pending autoplay.
+    if (!cmd.positionalOverride)
+        m_StagedAutoplay.erase(cmd.source);
     SourceState& state = StateFor(cmd.source);
     // FIFO scalar merge (gain/pitch-then-Play): a queued SetGain/SetPitch
     // established the runtime scalars in state.component, while the Play
