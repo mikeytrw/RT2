@@ -3,6 +3,9 @@
 #ifndef RT2_AUDIO_STATUS_SNAPSHOT_H
 #define RT2_AUDIO_STATUS_SNAPSHOT_H
 
+#include "AudioBackend.h"
+#include "AudioPreviewController.h"
+
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -58,6 +61,52 @@ struct AudioStatusSnapshot
     size_t decodedBytes = 0;
     size_t providerEntries = 0;
 };
+
+// Production snapshot collection (re-review finding 3): the exact fill
+// WalnutApp executes for its status block, so the probe drives the
+// production collection with a real backend/world/controller instead of a
+// hand-built snapshot. `backendStatus` is null exactly when !backendReady;
+// `liveSessionGainsOrNull` points at 4 M/Mus/Fx/UI gains exactly when a
+// session world exists. Decoded-cache counters ride as plain values: they
+// live on the production backend type, which CPU probe targets must never
+// link (A1 boundary), so the host passes them through.
+inline void FillAudioStatusSnapshot(
+    AudioStatusSnapshot& snapshot, bool backendReady,
+    const rt2::audio::AudioBackendStatus* backendStatus,
+    size_t runtimeVoices,
+    const rt2::audio::AudioPreviewController& preview,
+    const float* liveSessionGainsOrNull, bool hasFailure,
+    const std::string& failureText, const std::string& failureAsset,
+    size_t decodedEntries, size_t decodedBytes, size_t providerEntries)
+{
+    snapshot = AudioStatusSnapshot{};
+    snapshot.backendReady = backendReady;
+    if (backendReady && backendStatus != nullptr)
+    {
+        snapshot.productionNoDevice = backendStatus->productionNoDevice;
+        snapshot.backendDetail = backendStatus->detail;
+        snapshot.cacheReady = true;
+        snapshot.decodedEntries = decodedEntries;
+        snapshot.decodedBytes = decodedBytes;
+        snapshot.providerEntries = providerEntries;
+    }
+    snapshot.runtimeVoices = runtimeVoices;
+    snapshot.previewVoices = preview.PreviewVoiceCount();
+    snapshot.previewActive = preview.HasPreview();
+    snapshot.previewSourceName = preview.PreviewSourceName();
+    snapshot.previewSpatial = preview.PreviewSpatialAudition();
+    if (liveSessionGainsOrNull != nullptr)
+    {
+        snapshot.gainsLive = true;
+        snapshot.gains[0] = liveSessionGainsOrNull[0];
+        snapshot.gains[1] = liveSessionGainsOrNull[1];
+        snapshot.gains[2] = liveSessionGainsOrNull[2];
+        snapshot.gains[3] = liveSessionGainsOrNull[3];
+    }
+    snapshot.hasFailure = hasFailure;
+    snapshot.failureText = failureText;
+    snapshot.failureAsset = failureAsset;
+}
 
 inline std::vector<AudioStatusLine> FormatAudioStatusLines(
     const AudioStatusSnapshot& snapshot)

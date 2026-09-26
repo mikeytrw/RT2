@@ -322,8 +322,8 @@ void AudioPreviewController::Update(const AudioListenerPose& listener,
                 in, m_Source.ToString() + ":audioSource.preview");
             if (!spatial.IsOk())
             {
-                m_LastDiagnostic = "preview audition mode retained (" +
-                                   spatial.error.detail + ")";
+                NoteMixFailure(spatial.error,
+                               "preview audition mode retained");
                 return;
             }
             target = spatial.value;
@@ -331,8 +331,8 @@ void AudioPreviewController::Update(const AudioListenerPose& listener,
         core::Error publishError;
         if (!m_Backend->SetVoiceMix(m_VoiceToken, target, publishError))
         {
-            m_LastDiagnostic = "preview audition mode publish failed (" +
-                               publishError.detail + ")";
+            NoteMixFailure(publishError,
+                           "preview audition mode publish failed");
             return;
         }
         m_SpatialAudition = spatialAudition;
@@ -356,16 +356,14 @@ void AudioPreviewController::Update(const AudioListenerPose& listener,
     if (!mix.IsOk())
     {
         // Retain the last valid mix (spatial contract); the preview keeps
-        // playing and the diagnostic names the problem.
-        m_LastDiagnostic = "preview spatial mix retained (" +
-                           mix.error.detail + ")";
+        // playing while the failure reaches the host status.
+        NoteMixFailure(mix.error, "preview spatial mix retained");
         return;
     }
     core::Error mixError;
     if (!m_Backend->SetVoiceMix(m_VoiceToken, mix.value, mixError))
     {
-        m_LastDiagnostic = "preview spatial mix publish failed (" +
-                           mixError.detail + ")";
+        NoteMixFailure(mixError, "preview spatial mix publish failed");
         return;
     }
     m_LastMix = mix.value;
@@ -427,6 +425,14 @@ void AudioPreviewController::RecordFailure(const core::Error& error,
     m_LastError = error;
     m_LastAffectedAsset = asset;
     ++m_FailureCount;
+}
+
+void AudioPreviewController::NoteMixFailure(const core::Error& error,
+                                            const char* context)
+{
+    m_LastDiagnostic = std::string(context) + " (" + error.detail + ")";
+    if (m_LastError.IsOk())
+        RecordFailure(error, m_ClipKey);
 }
 
 void AudioPreviewController::ClearVoiceState()

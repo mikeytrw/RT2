@@ -1060,44 +1060,34 @@ public:
 		ImGui::Separator();
 		ImGui::Text("Audio");
 		AudioStatusSnapshot audioSnapshot;
-		audioSnapshot.backendReady = m_AudioBackendReady;
-		if (m_AudioBackendReady)
-		{
-			const rt2::audio::AudioBackendStatus audioStatus =
-				m_AudioBackend.Status();
-			audioSnapshot.productionNoDevice =
-				audioStatus.productionNoDevice;
-			audioSnapshot.backendDetail = audioStatus.detail;
-			audioSnapshot.cacheReady = true;
-			audioSnapshot.decodedEntries =
-				m_AudioBackend.DecodedCacheEntryCount();
-			audioSnapshot.decodedBytes =
-				m_AudioBackend.DecodedCacheResidentBytes();
-			audioSnapshot.providerEntries =
-				m_AudioClipProvider.CacheEntryCount();
-		}
-		audioSnapshot.runtimeVoices = m_Runtime.AudioLiveVoiceCount();
-		audioSnapshot.previewVoices = m_AudioPreview.PreviewVoiceCount();
-		audioSnapshot.previewActive = m_AudioPreview.HasPreview();
-		audioSnapshot.previewSourceName =
-			m_AudioPreview.PreviewSourceName();
-		audioSnapshot.previewSpatial =
-			m_AudioPreview.PreviewSpatialAudition();
+		// Re-review finding 3: production collection the probe drives
+		// (decoded-cache counters stay plain values: the concrete
+		// backend type must never link into CPU probe targets).
+		const rt2::audio::AudioBackendStatus audioStatus =
+			m_AudioBackendReady ? m_AudioBackend.Status()
+			                    : rt2::audio::AudioBackendStatus{};
+		float audioSessionGains[4];
+		const float* audioGainsPtr = nullptr;
 		if (const rt2::audio::AudioWorld* audioWorld =
 				m_Runtime.TryGetAudioWorld())
 		{
-			audioSnapshot.gainsLive = true;
-			audioSnapshot.gains[0] =
-				audioWorld->BusGain(AudioBus::Master);
-			audioSnapshot.gains[1] =
-				audioWorld->BusGain(AudioBus::Music);
-			audioSnapshot.gains[2] =
-				audioWorld->BusGain(AudioBus::Effects);
-			audioSnapshot.gains[3] = audioWorld->BusGain(AudioBus::UI);
+			audioSessionGains[0] = audioWorld->BusGain(AudioBus::Master);
+			audioSessionGains[1] = audioWorld->BusGain(AudioBus::Music);
+			audioSessionGains[2] = audioWorld->BusGain(AudioBus::Effects);
+			audioSessionGains[3] = audioWorld->BusGain(AudioBus::UI);
+			audioGainsPtr = audioSessionGains;
 		}
-		audioSnapshot.hasFailure = !m_LastAudioError.IsOk();
-		audioSnapshot.failureText = m_LastAudioError.Format();
-		audioSnapshot.failureAsset = m_LastAudioAsset;
+		FillAudioStatusSnapshot(
+			audioSnapshot, m_AudioBackendReady,
+			m_AudioBackendReady ? &audioStatus : nullptr,
+			m_Runtime.AudioLiveVoiceCount(), m_AudioPreview,
+			audioGainsPtr, !m_LastAudioError.IsOk(),
+			m_LastAudioError.Format(), m_LastAudioAsset,
+			m_AudioBackendReady
+				? m_AudioBackend.DecodedCacheEntryCount() : 0,
+			m_AudioBackendReady
+				? m_AudioBackend.DecodedCacheResidentBytes() : 0,
+			m_AudioClipProvider.CacheEntryCount());
 		for (const AudioStatusLine& line :
 		     FormatAudioStatusLines(audioSnapshot))
 		{
@@ -5617,35 +5607,59 @@ private:
 	{
 		if (!m_AudioPreview.HasPreview())
 			return;
-		// Selection change owns one centralized transition: a previewed
-		// source that is no longer the primary selection stops. Document
-		// reset/replacement, Play, project close, and shutdown stop through
-		// the same StopAudioPreview from their own paths.
+		// Re-review finding 1/3: the transition table is the shared
+		// DecidePreviewMaintenanceAction the probe drives, so every
+		// committed authoring change on ANY route (Apply, Undo, Redo,
+		// script, propagation) reconciles here with no stray voice.
+		// Document reset/replacement, Play, project close, and shutdown
+		// stop through the same StopAudioPreview from their own paths.
 		const bool inEdit =
 			m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
 		const rt2::core::UUID primary =
 			m_EditorUI.Selection().Primary();
-		if (!inEdit || primary.IsNull() ||
-		    !(primary == m_AudioPreview.PreviewSource()))
+		const bool primaryIsPreview =
+			!primary.IsNull() &&
+			(primary == m_AudioPreview.PreviewSource());
+		const entt::entity e = primaryIsPreview
+			? m_SceneMgr.FindEntityByUuid(primary) : entt::null;
+		const auto* authored = e == entt::null ? nullptr
+			: m_SceneMgr.GetECS().registry
+				.try_get<AudioSourceComponent>(e);
+		const bool clipMoved =
+			authored != nullptr &&
+			AudioPreviewClipIdentityMoved(m_AudioPreview.PreviewClip(),
+			                              authored->clip);
+		switch (DecidePreviewMaintenanceAction(
+			true, inEdit, primaryIsPreview, e != entt::null,
+			authored != nullptr, clipMoved))
 		{
-			StopAudioPreview(!inEdit ? "left Edit" : "selection changed");
+		case AudioPreviewMaintenanceAction::StopLeftEdit:
+			StopAudioPreview("left Edit");
 			return;
-		}
-		const entt::entity e = m_SceneMgr.FindEntityByUuid(primary);
-		if (e == entt::null)
-		{
+		case AudioPreviewMaintenanceAction::StopSelectionChanged:
+			StopAudioPreview("selection changed");
+			return;
+		case AudioPreviewMaintenanceAction::StopEntityGone:
 			StopAudioPreview("previewed entity destroyed");
 			return;
-		}
-		// A7 review P1: a previewed source removed (inspector Remove,
-		// Undo of its Add, or any out-of-band removal) stops the voice
-		// here too, so no removal path can leave sound running behind a
-		// disabled Stop.
-		if (m_SceneMgr.GetECS().registry
-		        .try_get<AudioSourceComponent>(e) == nullptr)
-		{
+		case AudioPreviewMaintenanceAction::StopSourceRemoved:
 			StopAudioPreview("previewed source removed");
 			return;
+		case AudioPreviewMaintenanceAction::RestartClipMoved:
+		{
+			// The committed clip drifted under the audition (Undo/Redo
+			// of a clip edit, or any non-Apply route): restart
+			// explicitly so the old clip never keeps sounding. Start
+			// replaces the one voice; a refusal leaves zero voices
+			// with the typed failure recorded inside StartAudioPreview.
+			std::string restartDiagnostic;
+			StartAudioPreview(primary,
+			                  m_EditorUI.AudioPreviewSpatialAudition(),
+			                  restartDiagnostic);
+			return;
+		}
+		case AudioPreviewMaintenanceAction::None:
+			break;
 		}
 		float sourcePos[3] = { 0.0f, 0.0f, 0.0f };
 		if (const auto* tf = m_SceneMgr.GetECS().registry

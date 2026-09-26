@@ -39,6 +39,32 @@
 //   - Preview/Stop own exactly one replaceable voice; replacement detaches
 //     the old voice, failures leave zero voices with a typed error, and
 //     natural completion ends the preview.
+//   - Re-review: Undo/Redo clip drift reconciles through the production
+//     DecidePreviewMaintenanceAction dispatch executed end to end below
+//     (SceneManager + history + controller + restart); failed mixes reach
+//     LastError with retry; status lines go through the production
+//     FillAudioStatusSnapshot with real backend/world/controller objects.
+//     SceneEditorUI/WalnutApp cannot link here (ImGui/Walnut boundary), so
+//     the ImGui button chrome and host member plumbing are verified by the
+//     documented interactive acceptance below, not by automation.
+//
+// INTERACTIVE ACCEPTANCE (Walnut session, against these exact transitions):
+//   1. Select a source, Preview: voice sounds, Stop enabled, status shows
+//      preview 1/total 1 with source name and mode.
+//   2. Apply a different clip while previewing: audition swaps to the new
+//      clip with no overlap; status failure stays none.
+//   3. Undo the clip Apply: audition swaps back to the old clip; Redo:
+//      swaps forward again. At most one voice throughout.
+//   4. Remove the previewed source: voice stops at once with
+//      "previewed source was removed" status; Stop stays enabled until the
+//      voice is gone.
+//   5. Toggle Preview Spatial mid-audition both ways: sound and status
+//      label switch together; with no device the toggle still switches.
+//   6. Preview a missing/corrupt clip: typed failure names the asset in
+//      the inspector and the status panel; zero voices.
+//   7. Commit Play with a bound source, then break its clip on disk and
+//      re-Play or force a backend failure: the deferred typed failure
+//      appears in the status panel with the affected source.
 // ============================================================================
 
 namespace
@@ -859,11 +885,12 @@ TEST_CASE("A7 probe: stop and drain failures reach the status snapshot")
     CHECK(controller.PreviewVoiceCount() == 0);
     CHECK(fake.LiveTokenCount() == 0);
 
+    // Production collection with the real backend/controller objects.
     AudioStatusSnapshot stopSnapshot;
-    stopSnapshot.backendReady = true;
-    stopSnapshot.hasFailure = true;
-    stopSnapshot.failureText = error.Format();
-    stopSnapshot.failureAsset = uuid.ToString();
+    const rt2::audio::AudioBackendStatus stopBackend = fake.Status();
+    FillAudioStatusSnapshot(stopSnapshot, true, &stopBackend, 0,
+                            controller, nullptr, true, error.Format(),
+                            uuid.ToString(), 0, 0, 0);
     const std::string stopLine = FindLineStarting(
         FormatAudioStatusLines(stopSnapshot), "  Last failure: ");
     CHECK_FALSE(stopLine.empty());
@@ -887,10 +914,11 @@ TEST_CASE("A7 probe: stop and drain failures reach the status snapshot")
     CHECK_FALSE(draining.LastDiagnostic().empty());
 
     AudioStatusSnapshot drainSnapshot;
-    drainSnapshot.backendReady = true;
-    drainSnapshot.hasFailure = true;
-    drainSnapshot.failureText = draining.LastError().Format();
-    drainSnapshot.failureAsset = draining.LastAffectedAsset();
+    const rt2::audio::AudioBackendStatus drainBackend = fake.Status();
+    FillAudioStatusSnapshot(drainSnapshot, true, &drainBackend, 0,
+                            draining, nullptr, true,
+                            draining.LastError().Format(),
+                            draining.LastAffectedAsset(), 0, 0, 0);
     CHECK_FALSE(FindLineStarting(
         FormatAudioStatusLines(drainSnapshot), "  Last failure: ").empty());
 }
@@ -938,14 +966,20 @@ TEST_CASE("A7 probe: deferred runtime voice failure reaches the status lines")
     CHECK(world.LiveVoiceCount() == 0);
 
     // The exact error the host would promote renders through the
-    // production formatter instead of "none".
+    // production collection + formatter instead of "none", with live
+    // session gains read off the real world.
     AudioStatusSnapshot snapshot;
-    snapshot.backendReady = true;
-    snapshot.runtimeVoices = world.LiveVoiceCount();
-    snapshot.gainsLive = true;
-    snapshot.hasFailure = true;
-    snapshot.failureText = status.lastError.Format();
-    snapshot.failureAsset = uuid.ToString();
+    const rt2::audio::AudioBackendStatus runtimeBackend = fake.Status();
+    rt2::audio::AudioPreviewController idlePreview;
+    float sessionGains[4];
+    sessionGains[0] = world.BusGain(AudioBus::Master);
+    sessionGains[1] = world.BusGain(AudioBus::Music);
+    sessionGains[2] = world.BusGain(AudioBus::Effects);
+    sessionGains[3] = world.BusGain(AudioBus::UI);
+    FillAudioStatusSnapshot(snapshot, true, &runtimeBackend,
+                            world.LiveVoiceCount(), idlePreview,
+                            sessionGains, true, status.lastError.Format(),
+                            uuid.ToString(), 0, 0, 0);
     const auto lines = FormatAudioStatusLines(snapshot);
     const std::string failureLine =
         FindLineStarting(lines, "  Last failure: ");
@@ -997,4 +1031,214 @@ TEST_CASE("A7 probe: status formatter covers idle and full states exactly")
           "  Preview: 'Sfx' (spatial audition)");
     CHECK(FindLineStarting(fullLines, "  Cache: ") ==
           "  Cache: 3 entries / 128 bytes (decoded); provider 5 entries");
+}
+
+TEST_CASE("A7 probe: host maintenance dispatch table in priority order")
+{
+    using Action = AudioPreviewMaintenanceAction;
+    // No preview: everything is None regardless of later inputs.
+    CHECK(DecidePreviewMaintenanceAction(false, false, false, false, false,
+                                         false) == Action::None);
+    CHECK(DecidePreviewMaintenanceAction(false, true, true, true, true,
+                                         true) == Action::None);
+    // Priority: Edit state beats selection, entity, source, and clip.
+    CHECK(DecidePreviewMaintenanceAction(true, false, false, false, false,
+                                         false) == Action::StopLeftEdit);
+    CHECK(DecidePreviewMaintenanceAction(true, false, true, true, true,
+                                         true) == Action::StopLeftEdit);
+    // Selection beats entity/source/clip.
+    CHECK(DecidePreviewMaintenanceAction(true, true, false, false, false,
+                                         false) ==
+          Action::StopSelectionChanged);
+    CHECK(DecidePreviewMaintenanceAction(true, true, false, true, true,
+                                         true) ==
+          Action::StopSelectionChanged);
+    // Destroyed entity beats source/clip.
+    CHECK(DecidePreviewMaintenanceAction(true, true, true, false, false,
+                                         false) == Action::StopEntityGone);
+    CHECK(DecidePreviewMaintenanceAction(true, true, true, false, true,
+                                         true) == Action::StopEntityGone);
+    // Removed source beats clip drift.
+    CHECK(DecidePreviewMaintenanceAction(true, true, true, true, false,
+                                         false) == Action::StopSourceRemoved);
+    CHECK(DecidePreviewMaintenanceAction(true, true, true, true, false,
+                                         true) == Action::StopSourceRemoved);
+    // Clip drift restarts; steady state does nothing.
+    CHECK(DecidePreviewMaintenanceAction(true, true, true, true, true,
+                                         true) == Action::RestartClipMoved);
+    CHECK(DecidePreviewMaintenanceAction(true, true, true, true, true,
+                                         false) == Action::None);
+}
+
+TEST_CASE("A7 probe: Undo/Redo clip drift restarts the one preview voice")
+{
+    // Production route, end to end: SceneManager + history hold the
+    // authored truth, the controller holds the audition, and the shared
+    // host dispatch decides each transition. This is the exact code
+    // WalnutApp::UpdateAudioPreview executes, minus the ImGui chrome.
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+
+    auto boundClip = [&](const char* path) {
+        AudioSourceComponent component = TwoDSource();
+        component.clip.kind = AssetKind::AudioClip;
+        component.clip.path = path;
+        component.clip.assetId = f.ids.CreateV4();
+        return component;
+    };
+    const AudioSourceComponent clipA = boundClip("sfx/a.wav");
+    const AudioSourceComponent clipB = boundClip("sfx/b.wav");
+    REQUIRE(f.history.Execute(MakeSetAudioSourceCommandIfEffective(
+        uuid, std::nullopt, clipA), f.manager).success);
+
+    rt2::audio::RecordingFakeAudioBackend fake;
+    rt2::audio::AudioPreviewController controller;
+    controller.SetBackend(&fake);
+    controller.SetClipProvider(&fake);
+    controller.SetClipKeyBuilder(
+        [](const AssetReference& clip, const rt2::core::UUID&,
+           const std::string&)
+            -> rt2::core::Result<std::string> {
+            return rt2::core::Result<std::string>::Ok(clip.path);
+        });
+
+    auto startLivePreview = [&](rt2::core::Error& error) {
+        const float pos[3] = { 0.0f, 0.0f, 0.0f };
+        const auto live = f.manager.GetAudioSource(uuid);
+        REQUIRE(live.has_value());
+        return controller.StartPreview(uuid, "Sfx", *live, false, pos,
+                                       CenterListener(), false, error);
+    };
+    // Host-equivalent maintenance step for this entity: resolve the live
+    // clip, dispatch, and execute the restart arm on the controller.
+    auto hostMaintenanceStep = [&]() {
+        const auto live = f.manager.GetAudioSource(uuid);
+        const bool clipMoved =
+            live.has_value() && AudioPreviewClipIdentityMoved(
+                                    controller.PreviewClip(), live->clip);
+        const AudioPreviewMaintenanceAction action =
+            DecidePreviewMaintenanceAction(
+                controller.HasPreview(), true, true, true,
+                live.has_value(), clipMoved);
+        if (action == AudioPreviewMaintenanceAction::RestartClipMoved)
+        {
+            rt2::core::Error error;
+            CHECK(startLivePreview(error));
+        }
+        return action;
+    };
+
+    rt2::core::Error error;
+    REQUIRE(startLivePreview(error));
+    REQUIRE(controller.PreviewClip().path == "sfx/a.wav");
+
+    // Apply clip B through history (inspector Apply equivalent): the live
+    // clip moves, the dispatch restarts, the audition follows with exactly
+    // one voice and no runtime involvement.
+    REQUIRE(f.history.Execute(MakeSetAudioSourceCommandIfEffective(
+        uuid, clipA, clipB), f.manager).success);
+    CHECK(hostMaintenanceStep() ==
+          AudioPreviewMaintenanceAction::RestartClipMoved);
+    CHECK(controller.PreviewClip().path == "sfx/b.wav");
+    CHECK(controller.PreviewVoiceCount() == 1);
+    CHECK(fake.LiveTokenCount() == 1);
+
+    // Undo: the source is A again while B keeps sounding until the host
+    // step reconciles — the discriminator for re-review finding 1.
+    REQUIRE(f.history.Undo(f.manager).success);
+    REQUIRE(f.manager.GetAudioSource(uuid)->clip.path == "sfx/a.wav");
+    REQUIRE(controller.PreviewClip().path == "sfx/b.wav");
+    CHECK(hostMaintenanceStep() ==
+          AudioPreviewMaintenanceAction::RestartClipMoved);
+    CHECK(controller.PreviewClip().path == "sfx/a.wav");
+    CHECK(controller.PreviewVoiceCount() == 1);
+    CHECK(fake.LiveTokenCount() == 1);
+
+    // Redo swaps forward again through the same transition.
+    REQUIRE(f.history.Redo(f.manager).success);
+    CHECK(hostMaintenanceStep() ==
+          AudioPreviewMaintenanceAction::RestartClipMoved);
+    CHECK(controller.PreviewClip().path == "sfx/b.wav");
+    CHECK(controller.PreviewVoiceCount() == 1);
+    CHECK(fake.LiveTokenCount() == 1);
+
+    // Undo of the Add removes the source: the dispatch stops, never
+    // restarts, and the census returns to zero.
+    REQUIRE(f.history.Undo(f.manager).success); // back to A
+    REQUIRE(f.history.Undo(f.manager).success); // removes the source
+    REQUIRE_FALSE(f.manager.GetAudioSource(uuid).has_value());
+    CHECK(DecidePreviewMaintenanceAction(
+              controller.HasPreview(), true, true, true, false, false) ==
+          AudioPreviewMaintenanceAction::StopSourceRemoved);
+    REQUIRE(controller.StopPreview(error));
+    CHECK(fake.LiveTokenCount() == 0);
+}
+
+TEST_CASE("A7 probe: failed spatial toggle retains mode, then retry commits")
+{
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+    AudioSourceComponent bound = TwoDSource();
+    BindClip(bound, f.ids);
+
+    rt2::audio::RecordingFakeAudioBackend fake;
+    rt2::audio::AudioPreviewController controller;
+    BindPreviewToFake(controller, fake);
+    rt2::core::Error error;
+    REQUIRE(StartBoundPreview(controller, uuid, bound, error));
+    REQUIRE_FALSE(controller.PreviewSpatialAudition());
+
+    // The publish fails: the mode is retained (sound and label stay 2D)
+    // while the TYPED failure reaches LastError for the host status —
+    // previously only a diagnostic the status never consumed.
+    fake.FailNextMix(rt2::core::Error{
+        rt2::core::Error::InvalidRuntimeState, "preview-voice",
+        "mix publish refused by the backend"});
+    const float pos[3] = { 0.0f, 0.0f, 0.0f };
+    controller.Update(CenterListener(), pos, false, true);
+    CHECK_FALSE(controller.PreviewSpatialAudition());
+    CHECK_FALSE(controller.LastError().IsOk());
+    CHECK(controller.LastError().code ==
+          rt2::core::Error::InvalidRuntimeState);
+    CHECK(controller.FailureCount() == 1);
+    CHECK_FALSE(controller.LastDiagnostic().empty());
+
+    // The one-shot script is consumed: the next frame retries the still
+    // requested mode and commits it. LastError stays sticky by contract
+    // (cleared on the next successful start), so the status still shows
+    // the toggle failure that actually happened.
+    controller.Update(CenterListener(), pos, false, true);
+    CHECK(controller.PreviewSpatialAudition());
+    CHECK_FALSE(controller.LastError().IsOk());
+    CHECK(controller.FailureCount() == 1);
+}
+
+TEST_CASE("A7 probe: failed steady spatial refresh reaches LastError")
+{
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+    AudioSourceComponent spatial = TwoDSource();
+    spatial.spatial = true;
+    BindClip(spatial, f.ids);
+
+    rt2::audio::RecordingFakeAudioBackend fake;
+    rt2::audio::AudioPreviewController controller;
+    BindPreviewToFake(controller, fake);
+    const float pos[3] = { 10.0f, 0.0f, 0.0f };
+    rt2::core::Error error;
+    REQUIRE(controller.StartPreview(uuid, "Sfx", spatial, true, pos,
+                                    CenterListener(), true, error));
+    REQUIRE(controller.PreviewSpatialAudition());
+
+    // The steady refresh publish fails: the voice keeps playing on the
+    // last valid mix while the typed failure reaches the host status.
+    fake.FailNextMix(rt2::core::Error{
+        rt2::core::Error::InvalidRuntimeState, "preview-voice",
+        "refresh publish refused by the backend"});
+    controller.Update(CenterListener(), pos, true, true);
+    CHECK(controller.PreviewSpatialAudition());
+    CHECK(controller.PreviewVoiceCount() == 1);
+    CHECK_FALSE(controller.LastError().IsOk());
+    CHECK(controller.LastError().code ==
+          rt2::core::Error::InvalidRuntimeState);
 }

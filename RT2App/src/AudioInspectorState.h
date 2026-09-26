@@ -202,23 +202,68 @@ inline AudioAuthoringPreviewAction DecidePreviewActionOnRemove(
                           : AudioAuthoringPreviewAction::None;
 }
 
+// Clip identity for preview reconciliation: the authored reference names
+// a different clip when kind, path, or durable asset ID moved. Shared by
+// the Apply restart decision and the host per-frame Undo/Redo drift check
+// (re-review finding 1) so every route compares identically.
+inline bool AudioPreviewClipIdentityMoved(const AssetReference& beforeClip,
+                                          const AssetReference& afterClip)
+{
+    return beforeClip.kind != afterClip.kind ||
+           beforeClip.path != afterClip.path ||
+           beforeClip.assetId != afterClip.assetId;
+}
+
 // A successful Apply restarts the audition only when this entity owns the
-// preview AND the committed clip identity moved (kind, path, or asset ID).
-// Field-only edits (gain, pitch, distances) leave the running voice alone;
-// a clip replacement always reflects applied state (the ticket's
-// "replaces only the preview voice" acceptance).
+// preview AND the committed clip identity moved. Field-only edits (gain,
+// pitch, distances) leave the running voice alone; a clip replacement
+// always reflects applied state (the ticket's "replaces only the preview
+// voice" acceptance).
 inline AudioAuthoringPreviewAction DecidePreviewActionOnApply(
     bool previewingThis, const AssetReference& beforeClip,
     const AssetReference& afterClip)
 {
     if (!previewingThis)
         return AudioAuthoringPreviewAction::None;
-    const bool identityMoved =
-        beforeClip.kind != afterClip.kind ||
-        beforeClip.path != afterClip.path ||
-        beforeClip.assetId != afterClip.assetId;
-    return identityMoved ? AudioAuthoringPreviewAction::Restart
-                         : AudioAuthoringPreviewAction::None;
+    return AudioPreviewClipIdentityMoved(beforeClip, afterClip)
+               ? AudioAuthoringPreviewAction::Restart
+               : AudioAuthoringPreviewAction::None;
+}
+
+// Full per-frame host maintenance dispatch (re-review finding 1/3): the
+// exact transition table WalnutApp::UpdateAudioPreview executes, so the
+// probe drives the production dispatch rather than a surrogate. Priority
+// order is load-bearing — selection/document liveness first, then source
+// presence, then clip drift — and every committed authoring change on ANY
+// route (Apply, Undo, Redo, script, propagation) reconciles here, not just
+// the Apply button branch.
+enum class AudioPreviewMaintenanceAction : uint8_t
+{
+    None = 0,
+    StopLeftEdit,        // host left Edit: stop
+    StopSelectionChanged, // previewed source is no longer selected: stop
+    StopEntityGone,      // previewed entity destroyed: stop
+    StopSourceRemoved,   // source component gone (Remove/Undo/out-of-band): stop
+    RestartClipMoved,    // committed clip identity drifted (Undo/Redo/Apply): restart
+};
+
+inline AudioPreviewMaintenanceAction DecidePreviewMaintenanceAction(
+    bool hasPreview, bool inEdit, bool primaryIsPreviewSource,
+    bool entityExists, bool hasSource, bool clipMoved)
+{
+    if (!hasPreview)
+        return AudioPreviewMaintenanceAction::None;
+    if (!inEdit)
+        return AudioPreviewMaintenanceAction::StopLeftEdit;
+    if (!primaryIsPreviewSource)
+        return AudioPreviewMaintenanceAction::StopSelectionChanged;
+    if (!entityExists)
+        return AudioPreviewMaintenanceAction::StopEntityGone;
+    if (!hasSource)
+        return AudioPreviewMaintenanceAction::StopSourceRemoved;
+    if (clipMoved)
+        return AudioPreviewMaintenanceAction::RestartClipMoved;
+    return AudioPreviewMaintenanceAction::None;
 }
 
 // Typed clip-path text parser shared by the inspector field (CPU-only,
