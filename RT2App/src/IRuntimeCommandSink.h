@@ -223,7 +223,10 @@ public:
     // AudioPlay retriggers a one-shot (overlap allowed up to the voice cap)
     // or ensures a loop is playing (idempotent per source). AudioPlayAt is
     // the same one-shot with a positional override (finite,
-    // float-magnitude position; the override supplies the play-time pose).
+    // float-magnitude position; the override supplies the play-time pose
+    // and rides the voice through final-pose landing and mix refresh, so
+    // overlapping one-shots keep distinct positions). PlayAt refuses
+    // looping sources: a one-shot override must not pin or fight a loop.
     // AudioStop stops every voice owned by the source. AudioPause freezes
     // or resumes the source's live voices. AudioSetGain/AudioSetPitch take
     // authored-range values ([0, 4] / [0.25, 4]) and apply to live voices

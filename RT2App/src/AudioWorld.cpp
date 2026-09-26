@@ -152,6 +152,7 @@ bool AudioWorld::QueuePlay(const AudioPlayRequest& request, uint64_t& outSequenc
     cmd.position[2] = request.sourcePosition[2];
     cmd.hasTransform = request.hasTransform;
     cmd.clipKey = request.clipKey;
+    cmd.positionalOverride = request.positionalOverride;
     m_Queue.push_back(std::move(cmd));
     outSequence = sequence;
     return true;
@@ -177,10 +178,13 @@ bool AudioWorld::QueueStop(const core::UUID& source, uint64_t& outSequence)
     cmd.kind = CommandKind::Stop;
     cmd.source = source;
     cmd.sequence = sequence;
-    // A5: a queued Stop suppresses pending autoplay even before a voice
-    // exists. Recorded only on the accepted path: a refused (queue-full)
-    // command mutates nothing.
-    SuppressAutoplay(source);
+    // A6: suppression is recorded only when the Stop EXECUTES
+    // (ExecuteStop), not here. The frozen FIFO drains before staged
+    // autoplay is synthesized in the same UpdateSemantic, so an accepted
+    // on_create Stop still precedes first-frame autoplay — while a Stop
+    // dropped by reload/quarantine/teardown clearing leaves no mark behind
+    // to silence authored autoplay it never stopped. A refused (queue-full)
+    // command mutates nothing either way.
     m_Queue.push_back(std::move(cmd));
     outSequence = sequence;
     return true;
@@ -207,9 +211,8 @@ bool AudioWorld::QueuePause(const core::UUID& source, bool paused, uint64_t& out
     cmd.source = source;
     cmd.sequence = sequence;
     cmd.pauseValue = paused;
-    // A5: a queued Pause suppresses pending autoplay even before a voice
-    // exists (same accepted-path-only rule as Stop).
-    SuppressAutoplay(source);
+    // A6: suppression is recorded only when the Pause EXECUTES
+    // (ExecutePause), for the same cleared-command reason as Stop above.
     m_Queue.push_back(std::move(cmd));
     outSequence = sequence;
     return true;
@@ -330,10 +333,23 @@ bool AudioWorld::ComputeVoiceMix(const VoiceSlot& slot, const SourceState& state
 {
     AudioSpatialInput input;
     input.component = state.component;
-    input.sourcePosition[0] = state.lastPosition[0];
-    input.sourcePosition[1] = state.lastPosition[1];
-    input.sourcePosition[2] = state.lastPosition[2];
-    input.hasTransform = state.lastHasTransform;
+    if (slot.hasPositionalOverride)
+    {
+        // A6 one-shot override: the voice spatializes from its override
+        // pose (which is always a valid play-time position), never from
+        // the entity's final pose.
+        input.sourcePosition[0] = slot.overridePosition[0];
+        input.sourcePosition[1] = slot.overridePosition[1];
+        input.sourcePosition[2] = slot.overridePosition[2];
+        input.hasTransform = true;
+    }
+    else
+    {
+        input.sourcePosition[0] = state.lastPosition[0];
+        input.sourcePosition[1] = state.lastPosition[1];
+        input.sourcePosition[2] = state.lastPosition[2];
+        input.hasTransform = state.lastHasTransform;
+    }
     input.decodedChannels = slot.decodedChannels;
     input.listener = listener;
     core::Result<BackendVoiceMix> result =
@@ -497,7 +513,20 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     // synthesis must not add a duplicate voice afterwards.
     m_StagedAutoplay.erase(cmd.source);
     SourceState& state = StateFor(cmd.source);
-    state.component = cmd.component;
+    // FIFO scalar merge (gain/pitch-then-Play): a queued SetGain/SetPitch
+    // established the runtime scalars in state.component, while the Play
+    // command carries the authored snapshot for every other field.
+    // Overwriting gain/pitch here would silently discard gain/pitch-then-
+    // Play and reset a prior runtime scalar on every retrigger. Clip, bus,
+    // loop, spatial, and attenuation stay authored: scalar commands never
+    // rewrite them (same rule as staged-autoplay synthesis below).
+    AudioSourceComponent effective = cmd.component;
+    if (state.hasComponent)
+    {
+        effective.gain = state.component.gain;
+        effective.pitch = state.component.pitch;
+    }
+    state.component = effective;
     state.hasComponent = true;
     state.lastPosition[0] = cmd.position[0];
     state.lastPosition[1] = cmd.position[1];
@@ -586,9 +615,10 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     }
 
     // Initial mix from the play-time pose; the same frame's mix refresh
-    // re-derives it from final world poses when provided.
+    // re-derives it from final world poses when provided. Uses the merged
+    // component above (sticky gain/pitch), never the raw authored command.
     AudioSpatialInput input;
-    input.component = cmd.component;
+    input.component = state.component;
     input.sourcePosition[0] = cmd.position[0];
     input.sourcePosition[1] = cmd.position[1];
     input.sourcePosition[2] = cmd.position[2];
@@ -683,6 +713,14 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     slot.startOrder = m_StartOrderCounter++;
     slot.priority = cmd.component.priority;
     slot.loop = cmd.component.loop;
+    // A6: a one-shot positional override rides the voice, not the source:
+    // final-pose landing and mix refresh below must not pull it back to
+    // the entity (and overlapping one-shots keep distinct positions). A
+    // plain Play always clears it — including on a recycled slot.
+    slot.hasPositionalOverride = cmd.positionalOverride;
+    slot.overridePosition[0] = cmd.position[0];
+    slot.overridePosition[1] = cmd.position[1];
+    slot.overridePosition[2] = cmd.position[2];
     // Session-level freezing is governed by m_SessionPaused (and the
     // backend's initialPaused flag); the voice-level flag tracks only
     // explicit per-source pauses. A voice created while paused therefore

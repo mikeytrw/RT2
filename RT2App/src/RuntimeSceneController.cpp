@@ -122,7 +122,12 @@ bool A6ResolveAudioSource(const RuntimeSceneController& ctrl,
                opName, source.ToString().c_str());
         return false;
     }
-    if (!out.component.clip.path.empty())
+    // A6: only Play/PlayAt resolve the opaque provider key. Stop, Pause,
+    // SetGain, and SetPitch operate on live voices and source state that
+    // need no clip key — so a clip file (or asset record) that disappears
+    // after a successful Play can never trap a live voice beyond Lua's
+    // reach. Key-builder failure therefore refuses only Play/PlayAt.
+    if (requireBoundClip)
     {
         Result<std::string> key =
             ctrl.BuildAudioClipKey(out.component.clip, source, out.name);
@@ -588,6 +593,18 @@ bool RuntimeSceneController::QueueAudioPlayAt(const UUID& source,
     A6ResolvedAudioSource resolved;
     if (!A6ResolveAudioSource(*this, source, "audio_play_at", true, resolved))
         return false;
+    // A6 settlement: audio_play_at is a one-shot positional override. On a
+    // looping source it would either pin the loop at the override (the
+    // per-voice override rides mix refresh) or fight the loop refresh, so
+    // it refuses loudly — loops use audio_play.
+    if (resolved.component.loop)
+    {
+        printf("[Audio] audio_play_at refused for %s "
+               "(looping source: one-shot override does not apply to loops; "
+               "use audio_play)\n",
+               source.ToString().c_str());
+        return false;
+    }
     if (A6AudioQueueFull(*this, source, "audio_play_at"))
         return false;
     rt2::audio::AudioPlayRequest req;
@@ -599,6 +616,7 @@ bool RuntimeSceneController::QueueAudioPlayAt(const UUID& source,
     // The override supplies the play-time pose outright (a PlayAt on a
     // Transform-less entity still carries a valid position).
     req.hasTransform = true;
+    req.positionalOverride = true;
     req.clipKey = std::move(resolved.clipKey);
     uint64_t sequence = 0;
     if (!m_AudioWorld->QueuePlay(req, sequence))

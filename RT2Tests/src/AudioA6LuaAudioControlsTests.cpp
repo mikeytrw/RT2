@@ -783,3 +783,238 @@ TEST_CASE("A6_DestroyingTargetRefuses_SurvivorDrainsSameFrame")
     CHECK(h.sink.GetAudioStatus(dyingUuid).aggregate == AudioSourceAggregate::Idle);
     h.Stop(b.doc);
 }
+
+TEST_CASE("A6_GainPitchThenPlay_InitialMixAndRetrigger")
+{
+    // Review F1: queued SetGain/SetPitch merge into the following Play's
+    // start mix in FIFO order (and into every later retrigger), instead
+    // of the Play restoring authored scalars. Overwriting state.component
+    // from the authored command yields unity gain/pitch here and turns
+    // every CHECK red.
+    A6Harness h;
+    A6DocBuilder b(h);
+    const entt::entity e = b.Create("Scalar");
+    b.AttachBoundSource(e, "audio/scalar.wav");
+    const UUID uuid = b.UuidOf(e);
+    h.fake.ScriptGeneration(A6Key("audio/scalar.wav"), A6MonoGeneration());
+    REQUIRE(h.Play(b.doc));
+
+    CHECK(h.sink.AudioSetGain(uuid, 0.2f));
+    CHECK(h.sink.AudioSetPitch(uuid, 1.5f));
+    CHECK(h.sink.AudioPlay(uuid));
+    h.Update();
+    REQUIRE(h.fake.starts.size() == 1);
+    // Non-spatial center: gain * cos(pi/4) per channel, explicit pitch.
+    CHECK(h.fake.starts[0].start.initialLeft ==
+          doctest::Approx(0.2f * 0.70710678f));
+    CHECK(h.fake.starts[0].start.initialRight ==
+          doctest::Approx(0.2f * 0.70710678f));
+    CHECK(h.fake.starts[0].start.pitch == doctest::Approx(1.5f));
+
+    // A later retrigger keeps the retained scalars, not authored unity.
+    CHECK(h.sink.AudioPlay(uuid));
+    h.Update();
+    REQUIRE(h.fake.starts.size() == 2);
+    CHECK(h.fake.starts[1].start.initialLeft ==
+          doctest::Approx(0.2f * 0.70710678f));
+    CHECK(h.fake.starts[1].start.pitch == doctest::Approx(1.5f));
+
+    // A fresh SetGain overrides again; bus/loop stay authored.
+    CHECK(h.sink.AudioSetGain(uuid, 0.4f));
+    CHECK(h.sink.AudioPlay(uuid));
+    h.Update();
+    REQUIRE(h.fake.starts.size() == 3);
+    CHECK(h.fake.starts[2].start.initialLeft ==
+          doctest::Approx(0.4f * 0.70710678f));
+    CHECK(h.fake.starts[2].start.pitch == doctest::Approx(1.5f));
+    CHECK(h.fake.starts[2].start.loop == false);
+    h.Stop(b.doc);
+}
+
+TEST_CASE("A6_PlayAtSpatialOverride_SurvivesRefresh_OverlapDistinct")
+{
+    // Review F2: a PlayAt override rides its voice through final-pose
+    // landing and per-voice mix refresh (the entity sits at the origin,
+    // which would read center if the override were lost), overlapping
+    // one-shots keep distinct positions, and PlayAt on a looping source
+    // refuses instead of pinning or fighting the loop.
+    A6Harness h;
+    A6DocBuilder b(h);
+    const entt::entity e = b.Create("Panned");
+    b.AttachBoundSource(e, "audio/pan.wav", false, false, true);
+    const UUID uuid = b.UuidOf(e);
+    const entt::entity loopEnt = b.Create("Looper");
+    b.AttachBoundSource(loopEnt, "audio/loop.wav", false, true, false);
+    const UUID loopUuid = b.UuidOf(loopEnt);
+    h.fake.ScriptGeneration(A6Key("audio/pan.wav"), A6MonoGeneration());
+    h.fake.ScriptGeneration(A6Key("audio/loop.wav"), A6MonoGeneration());
+    AudioListenerPose listener;
+    listener.position[0] = 0.0f;
+    listener.position[1] = 0.0f;
+    listener.position[2] = 0.0f;
+    listener.forward[0] = 0.0f;
+    listener.forward[1] = 0.0f;
+    listener.forward[2] = -1.0f;
+    listener.up[0] = 0.0f;
+    listener.up[1] = 1.0f;
+    listener.up[2] = 1.0f;
+    h.ctrl.SetAudioListenerPose(listener);
+    REQUIRE(h.Play(b.doc));
+
+    // PlayAt on a looping source refuses without consuming a sequence.
+    CHECK_FALSE(h.sink.AudioPlayAt(loopUuid, glm::vec3{5.0f, 0.0f, 0.0f}));
+    CHECK(h.sink.GetAudioStatus(loopUuid).newestAcceptedSequence == 0);
+
+    // Opposite-side overrides: hard-panned by equal-power law at
+    // distance 10 (min 1, max 30, rolloff 1 -> gain 20/29).
+    CHECK(h.sink.AudioPlayAt(uuid, glm::vec3{10.0f, 0.0f, 0.0f}));
+    CHECK(h.sink.AudioPlayAt(uuid, glm::vec3{-10.0f, 0.0f, 0.0f}));
+    h.Update();
+    REQUIRE(A6LiveVoices(h, uuid) == 2);
+    AudioWorld* world = h.ctrl.TryGetAudioWorld();
+    REQUIRE(world != nullptr);
+    bool sawRight = false;
+    bool sawLeft = false;
+    for (const AudioWorldVoiceHandle& voice : world->LiveVoicesForSource(uuid))
+    {
+        uint64_t seq = 0;
+        REQUIRE(world->GetVoicePlaySequence(voice, seq));
+        BackendVoiceMix mix;
+        REQUIRE(world->GetVoiceMix(voice, mix));
+        if (seq == 1)
+        {
+            CHECK(std::fabs(mix.left) < 1e-5f);
+            CHECK(mix.right == doctest::Approx(20.0f / 29.0f).epsilon(1e-5));
+            sawRight = true;
+        }
+        else if (seq == 2)
+        {
+            CHECK(mix.left == doctest::Approx(20.0f / 29.0f).epsilon(1e-5));
+            CHECK(std::fabs(mix.right) < 1e-5f);
+            sawLeft = true;
+        }
+    }
+    CHECK(sawRight);
+    CHECK(sawLeft);
+
+    // A second frame refreshes mixes from final poses: the entity is at
+    // the origin (center 0.7071), so unchanged hard-panned mixes prove
+    // the per-voice override survived the refresh.
+    h.Update();
+    REQUIRE(A6LiveVoices(h, uuid) == 2);
+    for (const AudioWorldVoiceHandle& voice : world->LiveVoicesForSource(uuid))
+    {
+        uint64_t seq = 0;
+        REQUIRE(world->GetVoicePlaySequence(voice, seq));
+        BackendVoiceMix mix;
+        REQUIRE(world->GetVoiceMix(voice, mix));
+        if (seq == 1)
+        {
+            CHECK(std::fabs(mix.left) < 1e-5f);
+            CHECK(mix.right == doctest::Approx(20.0f / 29.0f).epsilon(1e-5));
+        }
+        else if (seq == 2)
+        {
+            CHECK(mix.left == doctest::Approx(20.0f / 29.0f).epsilon(1e-5));
+            CHECK(std::fabs(mix.right) < 1e-5f);
+        }
+    }
+    h.Stop(b.doc);
+}
+
+TEST_CASE("A6_ClearedStopDoesNotSuppressAutoplay_Quarantine")
+{
+    // Review F3 (quarantine half): an autoplay source whose on_create
+    // queues Stop and then errors is quarantined before the first audio
+    // slot; the dropped Stop must not suppress authored autoplay.
+    // Queue-time suppression leaves zero voices and turns this red.
+    A6Harness h;
+    A6DocBuilder b(h);
+    const entt::entity e = b.Create("AutoplayQ");
+    b.AttachBoundSource(e, "audio/autoq.wav", true);
+    const UUID uuid = b.UuidOf(e);
+    h.fake.ScriptGeneration(A6Key("audio/autoq.wav"), A6MonoGeneration());
+    A6WriteScript("a6_autoplay_quarantine.lua", R"lua(
+function on_create(entity, world)
+    entity:audio_stop()
+    error("boom-create")
+end
+function on_update(entity, dt, input, world) end
+)lua");
+    b.AttachScript(e, "a6_autoplay_quarantine.lua");
+    REQUIRE(h.Play(b.doc));
+    CHECK(h.scriptSys.QuarantinedInstanceCount() == 1);
+    h.Update();
+    CHECK(A6LiveVoices(h, uuid) == 1);
+    h.Stop(b.doc);
+}
+
+TEST_CASE("A6_ClearedStopDoesNotSuppressAutoplay_Reload")
+{
+    // Review F3 (reload half): an autoplay source whose on_create queues
+    // Stop, cleared by a successful reload before the first audio slot,
+    // still autoplays. Queue-time suppression leaves zero voices here.
+    A6Harness h;
+    A6DocBuilder b(h);
+    const entt::entity e = b.Create("AutoplayR");
+    b.AttachBoundSource(e, "audio/autor.wav", true);
+    const UUID uuid = b.UuidOf(e);
+    h.fake.ScriptGeneration(A6Key("audio/autor.wav"), A6MonoGeneration());
+    const std::filesystem::path scriptPath =
+        A6WriteScript("a6_autoplay_reload.lua", R"lua(
+function on_create(entity, world)
+    entity:audio_stop()
+end
+function on_update(entity, dt, input, world) end
+)lua");
+    b.AttachScript(e, "a6_autoplay_reload.lua");
+    REQUIRE(h.Play(b.doc));
+    REQUIRE(h.ctrl.AudioQueuedCommandCount() == 1);
+    h.scriptSys.ReloadScript(scriptPath);
+    CHECK(h.ctrl.AudioQueuedCommandCount() == 0);
+    h.Update();
+    CHECK(A6LiveVoices(h, uuid) == 1);
+    h.Stop(b.doc);
+}
+
+TEST_CASE("A6_KeyBuilderFailureAfterPlay_StopStillReachesVoice")
+{
+    // Review F4: only Play/PlayAt resolve the clip key. A builder that
+    // succeeds through Play and then fails (clip removed or asset record
+    // unresolved mid-session) refuses later Plays but must not trap live
+    // voices beyond Stop's reach. Building keys for Stop would refuse it
+    // and leave the voice live.
+    A6Harness h;
+    A6DocBuilder b(h);
+    const entt::entity e = b.Create("Keyed");
+    b.AttachBoundSource(e, "audio/key.wav");
+    const UUID uuid = b.UuidOf(e);
+    h.fake.ScriptGeneration(A6Key("audio/key.wav"), A6MonoGeneration());
+    int keyBuilds = 0;
+    h.ctrl.SetAudioClipKeyBuilder(
+        [&](const AssetReference& clip, const UUID&, const std::string&)
+            -> Result<std::string> {
+            ++keyBuilds;
+            if (keyBuilds <= 2)
+                return Result<std::string>::Ok(A6Key(clip.path));
+            return Result<std::string>::Fail(Error::InvalidArgument,
+                "audio clip",
+                "A6 fixture: clip record unresolved after Play");
+        });
+    REQUIRE(h.Play(b.doc));
+    CHECK(keyBuilds == 1);
+
+    CHECK(h.sink.AudioPlay(uuid)); // second build: still healthy
+    h.Update();
+    REQUIRE(A6LiveVoices(h, uuid) == 1);
+
+    CHECK_FALSE(h.sink.AudioPlay(uuid)); // third build fails: refused
+    CHECK(h.sink.GetAudioStatus(uuid).newestAcceptedSequence == 1);
+    CHECK(keyBuilds == 3);
+
+    CHECK(h.sink.AudioStop(uuid)); // no key needed: accepted
+    CHECK(keyBuilds == 3);
+    h.Update();
+    CHECK(A6LiveVoices(h, uuid) == 0);
+    h.Stop(b.doc);
+}
