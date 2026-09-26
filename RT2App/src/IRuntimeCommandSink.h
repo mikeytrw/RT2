@@ -7,6 +7,7 @@
 #include "SceneRunState.h"         // SceneRunState
 #include "TransformEditing.h"      // EditableTRS
 #include "PhysicsEvents.h"         // PhysicsEvent (CPU-only, no Bullet)
+#include "AudioWorld.h"            // AudioSourceStatus (CPU-only, no miniaudio)
 #include "core/Error.h"
 #include "core/UUID.h"
 #include "ECSComponents.h"         // ScriptComponent
@@ -204,13 +205,60 @@ public:
     // forwards to the controller flag read by GetPhysicsEvents.
     virtual void SetPhysicsEventsVisible(bool visible) = 0;
 
+    // ---- entity.* audio controls (audio A6) -------------------------------
+    //
+    // Validated deferred commands over the entity's authored
+    // AudioSourceComponent. Every mutating call returns true iff the command
+    // was validated and accepted into AudioWorld's bounded 256-command FIFO
+    // — never "audible execution succeeded". Synchronous false is limited
+    // to malformed arguments, a missing/invalid authored source (unknown
+    // UUID, no AudioSourceComponent, or unbound clip for Play/PlayAt),
+    // a non-mutable session (Edit/Stop, silent), a destroying UUID (loud),
+    // or a full queue (loud). Voice-cap, backend-start, and later device
+    // failures surface as the sequence-scoped result read back through
+    // GetAudioStatus plus diagnostics; they never retroactively alter the
+    // Lua return value. No raw clip path is accepted and no world/backend
+    // handle ever crosses this boundary.
+    //
+    // AudioPlay retriggers a one-shot (overlap allowed up to the voice cap)
+    // or ensures a loop is playing (idempotent per source). AudioPlayAt is
+    // the same one-shot with a positional override (finite,
+    // float-magnitude position; the override supplies the play-time pose).
+    // AudioStop stops every voice owned by the source. AudioPause freezes
+    // or resumes the source's live voices. AudioSetGain/AudioSetPitch take
+    // authored-range values ([0, 4] / [0.25, 4]) and apply to live voices
+    // and to the source snapshot used by later plays (FIFO order, no
+    // duplicate voice).
+    virtual bool AudioPlay(const UUID& source) = 0;
+    virtual bool AudioPlayAt(const UUID& source, const glm::vec3& position) = 0;
+    virtual bool AudioStop(const UUID& source) = 0;
+    virtual bool AudioPause(const UUID& source, bool paused) = 0;
+    virtual bool AudioSetGain(const UUID& source, float gain) = 0;
+    virtual bool AudioSetPitch(const UUID& source, float pitch) = 0;
+
+    // Aggregate source status plus the monotonic sequence-scoped last
+    // result (AudioSourceStatus in AudioWorld.h). Read-only: never refuses,
+    // even for unknown or destroying UUIDs (those read Idle). Valid after
+    // Stop only while the session world is committed; Edit reads Idle.
+    virtual rt2::audio::AudioSourceStatus GetAudioStatus(const UUID& source) const = 0;
+
+    // Drop all queued-but-unapplied audio commands. Called by
+    // ScriptSystem on successful reload replacement, quarantine, and
+    // teardown (no stale command outlives its issuing environment); the
+    // controller's Stop clears its own queue directly via session teardown.
+    // Silent.
+    virtual void ClearQueuedAudioCommands() = 0;
+    // Test seam: audio commands waiting for the next presentation-frame
+    // drain. Zero in Edit, after Stop, after a drain with no new script
+    // writes, and after any reload/quarantine/teardown clear.
+    virtual size_t QueuedAudioCommandCount() const = 0;
+
     // ---- lookup ----------------------------------------------------------
 
     // Find by UUID. Returns true if the UUID resolves in the runtime
     // document (the handle is live). Returns false for pending spawns (not
     // yet applied) and destroyed entities.
     virtual bool IsAlive(const UUID& uuid) const = 0;
-
     // Find by name. Returns the first matching UUID in UUID-sorted order,
     // or UUID::Nil() if none. Name lookup is O(n) over the registry.
     virtual UUID FindByName(const std::string& name) const = 0;

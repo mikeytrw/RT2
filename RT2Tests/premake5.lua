@@ -90,6 +90,10 @@
     -- CPU-only controller + recording fake; no miniaudio/device imports.
     files { "src/AudioA5RuntimeLifecycleTests.cpp" }
 
+    -- Audio A6: Lua audio-control tests (same rationale).
+    -- CPU-only ScriptSystem + controller + recording fake; no miniaudio/device imports.
+    files { "src/AudioA6LuaAudioControlsTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

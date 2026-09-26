@@ -164,6 +164,15 @@ void ScriptSystem::OnSceneStop(const SceneDocument& runtime)
     m_PendingReloads.clear();
     m_Timers.clear();
     m_NextTimerHandle = 1;
+    // Audio A6 teardown: on_destroy callbacks above may have queued audio
+    // commands, but the session is ending — no command outlives the
+    // environment that issued it. (Controller Stop tears the session world
+    // down right after this, which clears defensively a second time. There
+    // is no mid-session document-replacement path: the runtime clone is
+    // destroyed only here-at-Stop and on failed-Play rollback, both of
+    // which clear.)
+    if (m_Sink)
+        m_Sink->ClearQueuedAudioCommands();
     m_RuntimeDoc = nullptr;
     m_Input = nullptr;
     m_Sink = nullptr;
@@ -467,9 +476,14 @@ void ScriptSystem::ReloadScript(const std::filesystem::path& path)
     // The swap replaces the code that issued them; applying stale velocity /
     // impulse / reset work under new logic would be action at a distance.
     // (Quarantine clears the same way; Stop clears the controller queue
-    // directly.)
+    // directly.) Audio A6: queued audio commands clear on the same
+    // successful-replacement path — a reloaded script's voice/gain/pitch
+    // intent is re-issued by the new code, never inherited from the old.
     if (anyReloaded && m_Sink)
+    {
         m_Sink->ClearQueuedPhysicsCommands();
+        m_Sink->ClearQueuedAudioCommands();
+    }
     SortAssetDiagnosticsFrom(diagnosticBase);
 }
 
@@ -1442,6 +1456,93 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             if (!parseDriveNumber(impulseArg, impulse)) return false;
             return s->ReleaseSlider(instUuid, impulse);
         };
+
+        // ---- entity.* audio controls (audio A6) ------------------------
+        //
+        // Validated deferred commands over the entity's authored audio
+        // source. `true` means accepted into the bounded 256-command queue
+        // (audibility is decided later at the presentation-frame drain);
+        // `false` means refused without mutation, quarantine, or audio
+        // state change. Every path below returns false rather than raising,
+        // per the setter contract (docs/scripting.md:97-111). Like every
+        // other binding these take the ignored colon `self` slot first.
+        entity["audio_play"] = [self, instUuid](sol::object) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            return s ? s->AudioPlay(instUuid) : false;
+        };
+        entity["audio_play_at"] = [self, instUuid, parseVec3](
+                sol::object, sol::object posArg) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            glm::vec3 p;
+            if (!parseVec3(posArg, p)) return false;
+            return s->AudioPlayAt(instUuid, p);
+        };
+        entity["audio_stop"] = [self, instUuid](sol::object) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            return s ? s->AudioStop(instUuid) : false;
+        };
+        entity["audio_pause"] = [self, instUuid](
+                sol::object, sol::object pauseArg) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            if (!pauseArg.valid() ||
+                pauseArg.get_type() != sol::type::boolean)
+                return false;
+            return s->AudioPause(instUuid, pauseArg.as<bool>());
+        };
+        entity["audio_set_gain"] = [self, instUuid, parseDriveNumber](
+                sol::object, sol::object gainArg) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            float gain = 0.0f;
+            if (!parseDriveNumber(gainArg, gain)) return false;
+            return s->AudioSetGain(instUuid, gain);
+        };
+        entity["audio_set_pitch"] = [self, instUuid, parseDriveNumber](
+                sol::object, sol::object pitchArg) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
+            float pitch = 0.0f;
+            if (!parseDriveNumber(pitchArg, pitch)) return false;
+            return s->AudioSetPitch(instUuid, pitch);
+        };
+        // audio_status reads the aggregate plus the monotonic
+        // sequence-scoped last result. Always a table (never nil) while
+        // the session is live — an unknown source reads Idle — so scripts
+        // can poll without nil-guarding; nil only when the session is
+        // gone, like every other entity getter without a sink.
+        entity["audio_status"] = [self, instUuid, L](sol::object) -> sol::object {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return sol::nil;
+            const rt2::audio::AudioSourceStatus status =
+                s->GetAudioStatus(instUuid);
+            sol::state_view sv(L);
+            sol::table t = sv.create_table();
+            const char* aggregate = "idle";
+            switch (status.aggregate)
+            {
+            case rt2::audio::AudioSourceAggregate::Idle:      aggregate = "idle"; break;
+            case rt2::audio::AudioSourceAggregate::Queued:    aggregate = "queued"; break;
+            case rt2::audio::AudioSourceAggregate::Playing:   aggregate = "playing"; break;
+            case rt2::audio::AudioSourceAggregate::Paused:    aggregate = "paused"; break;
+            case rt2::audio::AudioSourceAggregate::Completed: aggregate = "completed"; break;
+            case rt2::audio::AudioSourceAggregate::Failed:    aggregate = "failed"; break;
+            }
+            t["aggregate"] = aggregate;
+            t["live_voice_count"] = status.liveVoiceCount;
+            t["paused_voice_count"] = status.pausedVoiceCount;
+            t["newest_accepted_sequence"] = status.newestAcceptedSequence;
+            t["newest_queued"] = status.newestQueued;
+            t["last_result_sequence"] = status.lastResultSequence;
+            t["has_result"] = status.hasResult;
+            t["last_result_ok"] = status.lastResultOk;
+            t["error_code"] = status.hasResult
+                ? Error::CodeName(status.lastError.code) : "none";
+            t["error_detail"] = status.hasResult
+                ? status.lastError.detail : std::string{};
+            return t;
+        };
     }
     else
     {
@@ -1650,9 +1751,14 @@ void ScriptSystem::Quarantine(ScriptInstance& inst,
     // issued since the last tick — but that work was issued by (or alongside)
     // a now-dead environment, and applying it would let a failed script keep
     // moving bodies. Fail-safe: drop the whole pending queue. This is loud
-    // (the quarantine printf above) and deterministic.
+    // (the quarantine printf above) and deterministic. Audio A6: queued
+    // audio commands drop on the same path — a failed script's unplayed
+    // voices, stops, and mix changes never outlive it.
     if (m_Sink)
+    {
         m_Sink->ClearQueuedPhysicsCommands();
+        m_Sink->ClearQueuedAudioCommands();
+    }
 }
 
 std::vector<std::pair<UUID, entt::entity>>
@@ -2171,6 +2277,119 @@ std::vector<PhysicsEvent> RuntimeCommandSink::GetPhysicsEvents() const
 void RuntimeCommandSink::ClearQueuedPhysicsCommands()
 {
     m_Controller.ClearQueuedPhysicsCommands();
+}
+
+// ============================================================================
+// RuntimeCommandSink — audio A6 controls
+// ============================================================================
+// Writes enqueue a validated controller command (IsRuntimeMutable silent
+// gate + frozen-destroy-set loud refusal first, mirroring the physics
+// setters; deeper validation — source existence, bound clip, finite/range,
+// queue capacity — lives in the controller QueueAudio* methods so the
+// refusal text names the audio op). Reads observe the committed session
+// world directly (ungated: read-only status stays allowed even for
+// destroying UUIDs, which read Idle once their voices are stopped).
+// No clip path and no world/backend handle ever enters Lua.
+
+bool RuntimeCommandSink::AudioPlay(const UUID& uuid)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Audio] audio_play refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueAudioPlay(uuid);
+}
+
+bool RuntimeCommandSink::AudioPlayAt(const UUID& uuid,
+                                     const glm::vec3& position)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Audio] audio_play_at refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueAudioPlayAt(uuid, position);
+}
+
+bool RuntimeCommandSink::AudioStop(const UUID& uuid)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Audio] audio_stop refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueAudioStop(uuid);
+}
+
+bool RuntimeCommandSink::AudioPause(const UUID& uuid, bool paused)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Audio] audio_pause refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueAudioPause(uuid, paused);
+}
+
+bool RuntimeCommandSink::AudioSetGain(const UUID& uuid, float gain)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Audio] audio_set_gain refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueAudioSetGain(uuid, gain);
+}
+
+bool RuntimeCommandSink::AudioSetPitch(const UUID& uuid, float pitch)
+{
+    if (!m_Controller.IsRuntimeMutable())
+        return false;
+    if (m_Controller.IsUuidInDestroyDrain(uuid))
+    {
+        printf("[Audio] audio_set_pitch refused for %s "
+               "(entity is being destroyed in this safe-point drain)\n",
+               uuid.ToString().c_str());
+        return false;
+    }
+    return m_Controller.QueueAudioSetPitch(uuid, pitch);
+}
+
+rt2::audio::AudioSourceStatus RuntimeCommandSink::GetAudioStatus(
+    const UUID& uuid) const
+{
+    return m_Controller.GetAudioStatus(uuid);
+}
+
+void RuntimeCommandSink::ClearQueuedAudioCommands()
+{
+    m_Controller.ClearQueuedAudioCommands();
+}
+
+size_t RuntimeCommandSink::QueuedAudioCommandCount() const
+{
+    return m_Controller.AudioQueuedCommandCount();
 }
 
 void RuntimeCommandSink::SetPhysicsEventsVisible(bool visible)
