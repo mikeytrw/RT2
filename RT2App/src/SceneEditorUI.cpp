@@ -2664,6 +2664,18 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 		m_AudioPreviewSpatial = false;
 	}
 
+	// Preview ownership is resolved once per frame, ahead of the
+	// authoring sections: Apply/Remove reconcile against it through the
+	// shared Decide* policy (probe-tested), and the audition controls use
+	// it for their disabled gate so Stop stays reachable whenever this
+	// entity owns the preview voice.
+	const bool audioPreviewLive =
+		m_AudioPreviewIsLive ? m_AudioPreviewIsLive() : false;
+	const rt2::core::UUID audioPreviewSrc =
+		m_AudioPreviewSource ? m_AudioPreviewSource() : rt2::core::UUID{};
+	const bool audioThisPreviewing =
+		audioPreviewLive && audioPreviewSrc == targetUuid;
+
 	ImGui::Separator();
 	ImGui::Text("Audio Source");
 
@@ -2856,17 +2868,43 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 					if (!result.success)
 						m_AudioDiagnostic = result.error.Format();
 				}
-				if (applied)
+			if (applied)
+			{
+				std::optional<AudioSourceComponent> fresh;
+				if (const auto* a = reg.try_get<AudioSourceComponent>(entity.id))
+					fresh = *a;
+				m_AudioWork.Applied(fresh);
+				m_AudioClipPathText.clear();
+				m_AudioClipPathTextActive = false;
+				m_AudioClipPathError.clear();
+				m_AudioDiagnostic.clear();
+				// A7 review P1: a committed clip replacement while this
+				// entity owns the preview restarts the audition explicitly
+				// (ticket: changing a previewed clip replaces only the
+				// preview voice), so the old clip never keeps playing under
+				// a Stop-labeled button. A refused restart still leaves
+				// zero preview voices with a loud typed diagnostic.
+				if (before.has_value() && fresh.has_value() &&
+				    DecidePreviewActionOnApply(audioThisPreviewing,
+				                               before->clip,
+				                               fresh->clip) ==
+				        AudioAuthoringPreviewAction::Restart)
 				{
-					std::optional<AudioSourceComponent> fresh;
-					if (const auto* a = reg.try_get<AudioSourceComponent>(entity.id))
-						fresh = *a;
-					m_AudioWork.Applied(fresh);
-					m_AudioClipPathText.clear();
-					m_AudioClipPathTextActive = false;
-					m_AudioClipPathError.clear();
-					m_AudioDiagnostic.clear();
+					if (m_OnAudioPreviewStart)
+					{
+						std::string restartDiagnostic;
+						if (!m_OnAudioPreviewStart(targetUuid,
+						                           m_AudioPreviewSpatial,
+						                           restartDiagnostic))
+							m_AudioDiagnostic = restartDiagnostic;
+					}
+					else
+					{
+						m_AudioDiagnostic =
+							"Preview unavailable: no preview backend is bound";
+					}
 				}
+			}
 			}
 			ImGui::EndDisabled();
 			ImGui::SameLine();
@@ -2900,6 +2938,18 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 					m_AudioClipPathTextActive = false;
 					m_AudioClipPathError.clear();
 					m_AudioDiagnostic.clear();
+					// A7 review P1: removing the previewed source stops
+					// its voice explicitly with status. Without this the
+					// next frame disables Stop (no live component) while
+					// the old voice keeps sounding.
+					if (DecidePreviewActionOnRemove(audioThisPreviewing) ==
+					    AudioAuthoringPreviewAction::Stop)
+					{
+						if (m_OnAudioPreviewStop)
+							m_OnAudioPreviewStop();
+						m_AudioDiagnostic =
+							"Preview stopped: the previewed source was removed";
+					}
 				}
 				else
 				{
@@ -2911,13 +2961,13 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 	ImGui::EndDisabled();
 
 	// ---- Edit-mode audition (never mutates authoring; no prefab bar) ----
-	ImGui::BeginDisabled(!m_Editable || !live.has_value());
+	// A7 review P1: the gate is the shared AudioPreviewControlsDisabled
+	// policy (probe-tested) — Stop stays reachable whenever this entity
+	// owns the preview voice, even with no live component after Remove.
+	ImGui::BeginDisabled(AudioPreviewControlsDisabled(
+		m_Editable, live.has_value(), audioThisPreviewing));
 	{
-		const bool previewLive =
-			m_AudioPreviewIsLive ? m_AudioPreviewIsLive() : false;
-		const rt2::core::UUID previewSrc =
-			m_AudioPreviewSource ? m_AudioPreviewSource() : rt2::core::UUID{};
-		const bool thisPreviewing = previewLive && previewSrc == targetUuid;
+		const bool thisPreviewing = audioThisPreviewing;
 		if (ImGui::Checkbox("Preview Spatial", &m_AudioPreviewSpatial))
 		{
 			// The host rereads this flag every frame for the live mix; no

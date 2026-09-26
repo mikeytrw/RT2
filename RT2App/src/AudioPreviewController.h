@@ -86,13 +86,24 @@ public:
     // (loud result) and forgets the borrowed seams.
     bool Shutdown(core::Error& outError);
 
-    // Per-frame editor tick: reaps naturally completed/failed preview
+    // Per-frame editor tick. `spatialAudition` is the inspector checkbox
+    // state read fresh every frame (A7 review P2): a change against the
+    // mode captured at StartPreview republishes the mix for the new mode
+    // (spatial math or center), so the toggle audibly switches a running
+    // preview instead of stranding it in the old mode. The switch commits
+    // only after the new mix publishes: a compute/publish failure retains
+    // the last valid mix AND the old mode (with a diagnostic) and retries
+    // next frame. Otherwise reaps naturally completed/failed preview
     // voices (a finished one-shot ends the preview instead of lingering
     // live) and refreshes the spatial audition mix from the current
     // source/listener poses. Mix failures retain the last valid mix and
-    // record a diagnostic; they never stop the preview. Never throws.
+    // record a diagnostic; they never stop the preview. A failed
+    // completion drain records the typed error (bounded: only when no
+    // failure is already sticky) plus a diagnostic, so a silent backend
+    // drain failure still reaches the status UI. Never throws.
     void Update(const AudioListenerPose& listener,
-                const float sourcePosition[3], bool hasTransform);
+                const float sourcePosition[3], bool hasTransform,
+                bool spatialAudition);
 
     // No-device pump for the editor frame loop. Renders the elapsed frame
     // time through the production no-device engine into a preallocated

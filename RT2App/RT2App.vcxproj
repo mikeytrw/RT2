@@ -232,6 +232,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
          compiles once below and links anywhere the backend interface links). -->
     <ClInclude Include="src\AudioInspectorState.h" />
     <ClInclude Include="src\AudioPreviewController.h" />
+    <!-- Audio A7 review: compact status snapshot + line formatter (CPU-only,
+         shared by the Walnut status block and the RT2ImGuiProbe). -->
+    <ClInclude Include="src\AudioStatusSnapshot.h" />
     <ClInclude Include="src\FakeAudioBackend.h" />
     <ClInclude Include="src\BackgroundWork.h" />
     <ClInclude Include="src\CLIArgs.h" />

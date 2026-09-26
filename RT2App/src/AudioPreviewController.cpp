@@ -243,7 +243,7 @@ bool AudioPreviewController::Shutdown(core::Error& outError)
 
 void AudioPreviewController::Update(const AudioListenerPose& listener,
                                     const float sourcePosition[3],
-                                    bool hasTransform)
+                                    bool hasTransform, bool spatialAudition)
 {
     if (!m_VoiceValid || m_Backend == nullptr)
         return;
@@ -257,7 +257,18 @@ void AudioPreviewController::Update(const AudioListenerPose& listener,
     // the session ID keeps runtime completions out.
     core::Result<std::vector<BackendVoiceCompletion>> drained =
         m_Backend->DrainCompletions(m_Session);
-    if (drained.IsOk())
+    if (!drained.IsOk())
+    {
+        // A failed drain is not silent: the typed error reaches the status
+        // UI (bounded — only when no failure is already sticky, so a
+        // persistently failing backend cannot grow the failure count every
+        // frame) and a diagnostic names it every frame it persists.
+        m_LastDiagnostic = "preview completion drain failed (" +
+                           drained.error.detail + ")";
+        if (m_LastError.IsOk())
+            RecordFailure(drained.error, m_ClipKey);
+    }
+    else
     {
         for (const BackendVoiceCompletion& completion : drained.value)
         {
@@ -286,6 +297,48 @@ void AudioPreviewController::Update(const AudioListenerPose& listener,
 
     if (!m_VoiceValid)
         return;
+    // A7 review P2: the inspector checkbox is live state, not a start-time
+    // constant. A change republishes the mix for the new mode (spatial math
+    // toward the source, or the center mix for 2D) and only then commits
+    // the mode, so the status label and the sound switch together. A
+    // compute/publish failure retains the last valid mix AND the old mode
+    // with a diagnostic, and retries on the next frame.
+    if (spatialAudition != m_SpatialAudition)
+    {
+        BackendVoiceMix target = CenterMix(m_Component);
+        if (spatialAudition && m_Component.spatial)
+        {
+            AudioSpatialInput in;
+            in.component = m_Component;
+            in.sourcePosition[0] = m_SourcePosition[0];
+            in.sourcePosition[1] = m_SourcePosition[1];
+            in.sourcePosition[2] = m_SourcePosition[2];
+            in.hasTransform = m_HasTransform;
+            in.decodedChannels = m_Generation
+                ? static_cast<int>(m_Generation->channels)
+                : 1;
+            in.listener = listener;
+            core::Result<BackendVoiceMix> spatial = ComputeSpatialMix(
+                in, m_Source.ToString() + ":audioSource.preview");
+            if (!spatial.IsOk())
+            {
+                m_LastDiagnostic = "preview audition mode retained (" +
+                                   spatial.error.detail + ")";
+                return;
+            }
+            target = spatial.value;
+        }
+        core::Error publishError;
+        if (!m_Backend->SetVoiceMix(m_VoiceToken, target, publishError))
+        {
+            m_LastDiagnostic = "preview audition mode publish failed (" +
+                               publishError.detail + ")";
+            return;
+        }
+        m_SpatialAudition = spatialAudition;
+        m_LastMix = target;
+        return;
+    }
     if (!(m_SpatialAudition && m_Component.spatial))
         return;
     AudioSpatialInput in;

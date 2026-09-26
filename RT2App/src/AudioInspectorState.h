@@ -172,6 +172,55 @@ inline bool AudioInspectorApplyBlocked(bool conflict, bool textActive,
     return conflict || AudioClipTextBlocksApply(textActive, error);
 }
 
+// Preview reconciliation policy shared by the inspector and the probe
+// (CPU-only, probe-tested with real ImGui widget events; SceneEditorUI
+// executes exactly these decisions, so the probe covers the production
+// wiring rather than a surrogate).
+enum class AudioAuthoringPreviewAction : uint8_t
+{
+    None = 0,
+    Stop,    // the previewed source is gone: stop explicitly with status
+    Restart, // the previewed clip identity changed: restart the audition
+};
+
+// Preview controls (including Stop) disable only when there is no live
+// source AND this entity owns no preview. A removed-while-previewing
+// source therefore keeps Stop reachable: the voice can never be left
+// sounding with no way to stop it from its own row.
+inline bool AudioPreviewControlsDisabled(bool editable, bool hasLiveSource,
+                                         bool previewingThis)
+{
+    return !editable || (!hasLiveSource && !previewingThis);
+}
+
+// A successful source removal stops the preview only when the removed
+// entity owns it; other entities' auditions are untouched.
+inline AudioAuthoringPreviewAction DecidePreviewActionOnRemove(
+    bool previewingThis)
+{
+    return previewingThis ? AudioAuthoringPreviewAction::Stop
+                          : AudioAuthoringPreviewAction::None;
+}
+
+// A successful Apply restarts the audition only when this entity owns the
+// preview AND the committed clip identity moved (kind, path, or asset ID).
+// Field-only edits (gain, pitch, distances) leave the running voice alone;
+// a clip replacement always reflects applied state (the ticket's
+// "replaces only the preview voice" acceptance).
+inline AudioAuthoringPreviewAction DecidePreviewActionOnApply(
+    bool previewingThis, const AssetReference& beforeClip,
+    const AssetReference& afterClip)
+{
+    if (!previewingThis)
+        return AudioAuthoringPreviewAction::None;
+    const bool identityMoved =
+        beforeClip.kind != afterClip.kind ||
+        beforeClip.path != afterClip.path ||
+        beforeClip.assetId != afterClip.assetId;
+    return identityMoved ? AudioAuthoringPreviewAction::Restart
+                         : AudioAuthoringPreviewAction::None;
+}
+
 // Typed clip-path text parser shared by the inspector field (CPU-only,
 // probe-tested; the ImGui layer only retains text and renders the error).
 //

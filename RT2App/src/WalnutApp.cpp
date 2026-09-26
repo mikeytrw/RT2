@@ -27,6 +27,7 @@
 #include "PhysicsCollisionAssetProvider.h"
 #include "AudioClipAssetProvider.h"
 #include "AudioPreviewController.h"
+#include "AudioStatusSnapshot.h"
 #include "ProductionAudioBackend.h"
 #include "ScriptSystem.h"
 #include "ScriptFieldRegistry.h"
@@ -1050,82 +1051,62 @@ public:
 			ImGui::Text("  BLAS count:   %u", m_RendererGPU.GetBlasCount());
 		}
 	}
-	// Audio A7: compact audio status. Backend mode/reason, voice census
-	// (runtime Play-session voices plus the one edit-mode preview voice),
-	// bus gains, latest typed failure, and decoded-cache usage. Every value
-	// is read live; nothing here mutates session state.
+	// Audio A7: compact audio status (review P2: backend reason, census,
+	// gains, the one observable latest failure — preview, refused Play,
+	// failed Stop/drain, deferred runtime — and cache). The snapshot fill
+	// and every line come from the shared production formatter the probe
+	// drives; this block only renders.
 	{
 		ImGui::Separator();
 		ImGui::Text("Audio");
-		if (!m_AudioBackendReady)
-		{
-			ImGui::TextDisabled("  Backend: not initialized");
-		}
-		else
+		AudioStatusSnapshot audioSnapshot;
+		audioSnapshot.backendReady = m_AudioBackendReady;
+		if (m_AudioBackendReady)
 		{
 			const rt2::audio::AudioBackendStatus audioStatus =
 				m_AudioBackend.Status();
-			ImGui::Text("  Backend: %s",
-				audioStatus.productionNoDevice
-					? "no-device (diagnosed)" : "hardware");
-			if (!audioStatus.detail.empty())
-				ImGui::TextWrapped("  Reason: %s",
-					audioStatus.detail.c_str());
+			audioSnapshot.productionNoDevice =
+				audioStatus.productionNoDevice;
+			audioSnapshot.backendDetail = audioStatus.detail;
+			audioSnapshot.cacheReady = true;
+			audioSnapshot.decodedEntries =
+				m_AudioBackend.DecodedCacheEntryCount();
+			audioSnapshot.decodedBytes =
+				m_AudioBackend.DecodedCacheResidentBytes();
+			audioSnapshot.providerEntries =
+				m_AudioClipProvider.CacheEntryCount();
 		}
-		const size_t audioRuntimeVoices = m_Runtime.AudioLiveVoiceCount();
-		const size_t audioPreviewVoices = m_AudioPreview.PreviewVoiceCount();
-		ImGui::Text("  Voices: runtime %u / preview %u / total %u",
-			static_cast<unsigned>(audioRuntimeVoices),
-			static_cast<unsigned>(audioPreviewVoices),
-			static_cast<unsigned>(
-				audioRuntimeVoices + audioPreviewVoices));
-		if (m_AudioPreview.HasPreview())
-		{
-			ImGui::Text("  Preview: '%s'%s",
-				m_AudioPreview.PreviewSourceName().c_str(),
-				m_AudioPreview.PreviewSpatialAudition()
-					? " (spatial audition)" : " (2D)");
-		}
+		audioSnapshot.runtimeVoices = m_Runtime.AudioLiveVoiceCount();
+		audioSnapshot.previewVoices = m_AudioPreview.PreviewVoiceCount();
+		audioSnapshot.previewActive = m_AudioPreview.HasPreview();
+		audioSnapshot.previewSourceName =
+			m_AudioPreview.PreviewSourceName();
+		audioSnapshot.previewSpatial =
+			m_AudioPreview.PreviewSpatialAudition();
 		if (const rt2::audio::AudioWorld* audioWorld =
 				m_Runtime.TryGetAudioWorld())
 		{
-			ImGui::Text("  Gains: M %.2f / Mus %.2f / Fx %.2f / UI %.2f",
-				(double)audioWorld->BusGain(AudioBus::Master),
-				(double)audioWorld->BusGain(AudioBus::Music),
-				(double)audioWorld->BusGain(AudioBus::Effects),
-				(double)audioWorld->BusGain(AudioBus::UI));
+			audioSnapshot.gainsLive = true;
+			audioSnapshot.gains[0] =
+				audioWorld->BusGain(AudioBus::Master);
+			audioSnapshot.gains[1] =
+				audioWorld->BusGain(AudioBus::Music);
+			audioSnapshot.gains[2] =
+				audioWorld->BusGain(AudioBus::Effects);
+			audioSnapshot.gains[3] = audioWorld->BusGain(AudioBus::UI);
 		}
-		else
+		audioSnapshot.hasFailure = !m_LastAudioError.IsOk();
+		audioSnapshot.failureText = m_LastAudioError.Format();
+		audioSnapshot.failureAsset = m_LastAudioAsset;
+		for (const AudioStatusLine& line :
+		     FormatAudioStatusLines(audioSnapshot))
 		{
-			ImGui::TextDisabled(
-				"  Gains: M 1.00 / Mus 1.00 / Fx 1.00 / UI 1.00 "
-				"(defaults, no Play session)");
-		}
-		if (m_LastAudioError.IsOk())
-		{
-			ImGui::Text("  Last failure: none");
-		}
-		else if (m_LastAudioAsset.empty())
-		{
-			ImGui::TextWrapped("  Last failure: %s",
-				m_LastAudioError.Format().c_str());
-		}
-		else
-		{
-			ImGui::TextWrapped("  Last failure: %s [%s]",
-				m_LastAudioError.Format().c_str(),
-				m_LastAudioAsset.c_str());
-		}
-		if (m_AudioBackendReady)
-		{
-			ImGui::Text("  Cache: %u entries / %u bytes (decoded); "
-				"provider %u entries",
-				static_cast<unsigned>(
-					m_AudioBackend.DecodedCacheEntryCount()),
-				static_cast<unsigned>(
-					m_AudioBackend.DecodedCacheResidentBytes()),
-				static_cast<unsigned>(
-					m_AudioClipProvider.CacheEntryCount()));
+			if (line.muted)
+				ImGui::TextDisabled("%s", line.text.c_str());
+			else if (line.wrapped)
+				ImGui::TextWrapped("%s", line.text.c_str());
+			else
+				ImGui::TextUnformatted(line.text.c_str());
 		}
 	}
 	ImGui::End();
@@ -2943,6 +2924,11 @@ public:
 		if (m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
 			UpdateAudioPreview(ts);
 
+		// A7 review P2: deferred runtime voice failures reach the one
+		// observable latest-failure path every frame a session world
+		// exists; with no world the reported set restarts.
+		UpdateAudioStatusFromRuntime();
+
 		// ---- Phase 1B: autosave (authoring only, never runtime) ----
 		// Only snapshot the authoring document; the runtime Play clone is
 		// never captured. Skips work entirely on clean frames or when the
@@ -4609,10 +4595,17 @@ private:
 	// The backend owns no pointer into this controller.
 	rt2::audio::AudioPreviewController m_AudioPreview;
 	// Latest typed audio failure plus the affected asset, for the compact
-	// status UI. Updated by preview failures and refused Play candidates;
-	// cleared by the next successful preview start or Play.
+	// status UI. Updated by preview failures, refused Play candidates,
+	// failed preview stops, failed preview drains, and deferred runtime
+	// voice failures (A7 review P2); cleared by the next successful
+	// preview start or Play.
 	rt2::core::Error m_LastAudioError;
 	std::string m_LastAudioAsset;
+	// Already-reported deferred runtime voice failures, per source UUID to
+	// result sequence: a committed Play can fail a voice long after the
+	// candidate was accepted, and each failure must surface exactly once
+	// (sticky until the next success or failure). Cleared with the world.
+	std::map<rt2::core::UUID, uint64_t> m_ReportedAudioFailures;
 	rt2::core::RuntimeSceneController m_Runtime;
 	Camera m_RuntimeCam;           // separate camera for Play mode
 	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
@@ -5379,9 +5372,12 @@ private:
 			return;
 		}
 		// A committed Play session clears the stale failure: the status UI
-		// must not blame the previous refusal on the running session.
+		// must not blame the previous refusal on the running session. The
+		// reported-failure map restarts with the new world (per-source
+		// result sequences are world-local).
 		m_LastAudioError = rt2::core::Error{};
 		m_LastAudioAsset.clear();
+		m_ReportedAudioFailures.clear();
 		LogScriptAssetDiagnostics(0, "Play");
 
 		// Snapshot the editor camera and switch to the runtime camera.
@@ -5458,9 +5454,20 @@ private:
 	{
 		if (!m_AudioPreview.HasPreview())
 			return;
+		// Capture the owner before detaching for the failure asset below.
+		const rt2::core::UUID previewed = m_AudioPreview.PreviewSource();
+		const std::string previewedName =
+			m_AudioPreview.PreviewSourceName();
 		rt2::core::Error error;
 		if (!m_AudioPreview.StopPreview(error))
 		{
+			// A7 review P2: a failed Stop is a loud typed failure on the
+			// one observable latest-failure path, not a printf-and-drop.
+			// Teardown still detached (backend teardown contract), so the
+			// census is correct while the failure stays visible.
+			m_LastAudioError = error;
+			m_LastAudioAsset = previewedName.empty()
+				? previewed.ToString() : previewedName;
 			printf("[Audio] Preview stop (%s) reported: %s\n",
 			       reason, error.Format().c_str());
 		}
@@ -5630,6 +5637,16 @@ private:
 			StopAudioPreview("previewed entity destroyed");
 			return;
 		}
+		// A7 review P1: a previewed source removed (inspector Remove,
+		// Undo of its Add, or any out-of-band removal) stops the voice
+		// here too, so no removal path can leave sound running behind a
+		// disabled Stop.
+		if (m_SceneMgr.GetECS().registry
+		        .try_get<AudioSourceComponent>(e) == nullptr)
+		{
+			StopAudioPreview("previewed source removed");
+			return;
+		}
 		float sourcePos[3] = { 0.0f, 0.0f, 0.0f };
 		if (const auto* tf = m_SceneMgr.GetECS().registry
 		        .try_get<Transform>(e))
@@ -5641,14 +5658,65 @@ private:
 		}
 		const bool hasTransform = m_SceneMgr.GetECS().registry
 			.all_of<Transform>(e);
+		// A7 review P2: the inspector checkbox state drives the live
+		// audition mode every frame (see AudioPreviewController::Update).
 		m_AudioPreview.Update(CurrentAudioListenerPose(), sourcePos,
-		                      hasTransform);
+		                      hasTransform,
+		                      m_EditorUI.AudioPreviewSpatialAudition());
 		if (m_AudioPreview.HasPreview())
 			m_AudioPreview.PumpNoDeviceFrames(frameDt);
 		if (m_AudioPreview.LastError().IsOk() == false)
 		{
 			m_LastAudioError = m_AudioPreview.LastError();
 			m_LastAudioAsset = m_AudioPreview.LastAffectedAsset();
+		}
+	}
+
+	// A7 review P2: deferred runtime voice failures. A committed Play can
+	// fail to start a voice frames after the candidate was accepted (the
+	// world records the typed error per source in GetSourceStatus); without
+	// this poll the compact status would keep reporting "none". Each
+	// failure surfaces exactly once and stays sticky until the next success
+	// or failure.
+	void UpdateAudioStatusFromRuntime()
+	{
+		const rt2::audio::AudioWorld* world = m_Runtime.TryGetAudioWorld();
+		if (world == nullptr)
+		{
+			m_ReportedAudioFailures.clear();
+			return;
+		}
+		const rt2::core::SceneDocument* runtimeScene =
+			m_Runtime.TryGetRuntimeScene();
+		if (runtimeScene == nullptr)
+			return;
+		auto view = runtimeScene->ecs.registry
+			.view<AudioSourceComponent, EntityIdComponent>();
+		for (const auto entity : view)
+		{
+			const rt2::core::UUID uuid =
+				view.get<EntityIdComponent>(entity).id;
+			const rt2::audio::AudioSourceStatus status =
+				world->GetSourceStatus(uuid);
+			if (!status.hasResult || status.lastResultOk)
+				continue;
+			const auto reported = m_ReportedAudioFailures.find(uuid);
+			if (reported != m_ReportedAudioFailures.end() &&
+			    reported->second >= status.lastResultSequence)
+				continue;
+			m_ReportedAudioFailures[uuid] = status.lastResultSequence;
+			m_LastAudioError = status.lastError;
+			std::string entityName;
+			if (const auto* named = runtimeScene->ecs.registry
+			        .try_get<NameComponent>(entity))
+				entityName = named->name;
+			m_LastAudioAsset = status.lastError.path.empty()
+				? (entityName.empty() ? uuid.ToString()
+				                      : entityName)
+				: status.lastError.path;
+			printf("[Audio] Runtime voice failure for '%s': %s\n",
+			       m_LastAudioAsset.c_str(),
+			       status.lastError.Format().c_str());
 		}
 	}
 

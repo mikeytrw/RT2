@@ -2,6 +2,9 @@
 
 #include "AudioInspectorState.h"
 #include "AudioPreviewController.h"
+#include "AudioSpatialMath.h"
+#include "AudioStatusSnapshot.h"
+#include "AudioWorld.h"
 #include "EditorCommandHistory.h"
 #include "EditorPropertyCommands.h"
 #include "FakeAudioBackend.h"
@@ -10,8 +13,11 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 
+#include <cmath>
+#include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 // ============================================================================
 // A7: audio authoring, preview, and status UI probes.
@@ -586,7 +592,7 @@ TEST_CASE("A7 probe: natural completion ends the preview")
     fake.CompleteToken(token, rt2::audio::BackendCompletionReason::Completed);
 
     const float pos[3] = { 0.0f, 0.0f, 0.0f };
-    controller.Update(CenterListener(), pos, false);
+    controller.Update(CenterListener(), pos, false, false);
     CHECK_FALSE(controller.HasPreview());
     CHECK(controller.PreviewVoiceCount() == 0);
     CHECK(controller.NaturalCompletionCount() == 1);
@@ -632,4 +638,363 @@ TEST_CASE("A7 probe: real Preview/Stop buttons drive the controller")
     CHECK(fake.LiveTokenCount() == 0);
     rt2::core::Error error;
     CHECK(controller.StopPreview(error));
+}
+
+// ============================================================================
+// A7 review repair probes: the four findings below failed against surrogate
+// widgets. These cases drive the shared production decision/format code the
+// inspector and status block execute (Decide*, AudioPreviewControlsDisabled,
+// controller mode switch, FormatAudioStatusLines) with real ImGui widget
+// events and backend gain inspection.
+// ============================================================================
+
+namespace
+{
+
+// Real checkbox click harness mirroring ClickButtonThroughImGui: flips a
+// caller-owned bool through an actual ImGui::Checkbox activation.
+bool ClickCheckboxThroughImGui(const char* label, bool& value)
+{
+    bool clicked = false;
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.LogFilename = nullptr;
+    io.DisplaySize = ImVec2(800, 600);
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char* pixels = nullptr;
+    int w = 0, h = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
+
+    ImVec2 center(0, 0);
+    auto frame = [&](ImVec2 mouse, bool down) {
+        io.MousePos = mouse;
+        io.MouseDown[0] = down;
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(ImVec2(500, 400));
+        ImGui::Begin("A7CheckboxProbe", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoResize);
+        if (ImGui::Checkbox(label, &value))
+            clicked = true;
+        if (center.x == 0 && center.y == 0)
+        {
+            const auto lo = ImGui::GetItemRectMin();
+            const auto hi = ImGui::GetItemRectMax();
+            center = ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+        }
+        ImGui::End();
+        ImGui::Render();
+    };
+
+    const ImVec2 away(-10, -10);
+    frame(away, false);
+    frame(away, false);
+    REQUIRE_MESSAGE(!(center.x == 0 && center.y == 0),
+                    "probe checkbox never laid out");
+    frame(center, false);
+    frame(center, true);
+    frame(center, false);
+    frame(away, false);
+    ImGui::DestroyContext();
+    return clicked;
+}
+
+bool MixIsCenter(const rt2::audio::BackendVoiceMix& mix, float gain)
+{
+    const float expected = gain * rt2::audio::kAudioCenterPanGain;
+    return std::fabs(mix.left - expected) <= 1e-4f &&
+           std::fabs(mix.right - expected) <= 1e-4f;
+}
+
+std::string FindLineStarting(
+    const std::vector<AudioStatusLine>& lines, const std::string& prefix)
+{
+    for (const auto& line : lines)
+        if (line.text.compare(0, prefix.size(), prefix) == 0)
+            return line.text;
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("A7 probe: production remove/apply reconciliation and control gate")
+{
+    // The inspector executes exactly these decisions; other entities'
+    // auditions are never touched by this entity's edits.
+    CHECK(DecidePreviewActionOnRemove(true) ==
+          AudioAuthoringPreviewAction::Stop);
+    CHECK(DecidePreviewActionOnRemove(false) ==
+          AudioAuthoringPreviewAction::None);
+
+    AssetReference before;
+    before.kind = AssetKind::AudioClip;
+    before.path = "sfx/old.wav";
+    before.assetId = rt2::core::DeterministicUuidProvider{}.CreateV4();
+    AssetReference same = before;
+    AssetReference replaced = before;
+    replaced.path = "sfx/new.wav";
+    replaced.assetId = rt2::core::DeterministicUuidProvider{}.CreateV4();
+    CHECK(DecidePreviewActionOnApply(true, before, replaced) ==
+          AudioAuthoringPreviewAction::Restart);
+    CHECK(DecidePreviewActionOnApply(true, before, same) ==
+          AudioAuthoringPreviewAction::None);
+    CHECK(DecidePreviewActionOnApply(false, before, replaced) ==
+          AudioAuthoringPreviewAction::None);
+
+    // The disabled gate keeps Stop reachable whenever this entity owns the
+    // preview voice — including the removed-source state (no live source).
+    CHECK_FALSE(AudioPreviewControlsDisabled(true, true, false));
+    CHECK_FALSE(AudioPreviewControlsDisabled(true, false, true));
+    CHECK(AudioPreviewControlsDisabled(true, false, false));
+    CHECK(AudioPreviewControlsDisabled(false, true, true));
+
+    // Real BeginDisabled scope around the Stop shape in the removed state:
+    // the item is enabled so the voice can always be stopped from its row.
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 600.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char* texPixels = nullptr;
+    int texW = 0, texH = 0;
+    io.Fonts->GetTexDataAsRGBA32(&texPixels, &texW, &texH);
+    ImGui::NewFrame();
+    ImGui::Begin("A7StopGate");
+    ImGui::BeginDisabled(
+        AudioPreviewControlsDisabled(true, false, true));
+    ImGui::Button("Stop Preview");
+    const bool stopEnabledWhilePreviewing =
+        (GImGui->LastItemData.InFlags & ImGuiItemFlags_Disabled) == 0;
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(
+        AudioPreviewControlsDisabled(true, false, false));
+    ImGui::Button("Stop Preview");
+    const bool stopDisabledWhileIdle =
+        (GImGui->LastItemData.InFlags & ImGuiItemFlags_Disabled) != 0;
+    ImGui::EndDisabled();
+    ImGui::End();
+    ImGui::Render();
+    ImGui::DestroyContext();
+    CHECK(stopEnabledWhilePreviewing);
+    CHECK(stopDisabledWhileIdle);
+}
+
+TEST_CASE("A7 probe: spatial checkbox switches the running audition both ways")
+{
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+
+    // Off-axis source so the spatial mix is observably not the center mix.
+    AudioSourceComponent spatial = TwoDSource();
+    spatial.spatial = true;
+    spatial.gain = 1.0f;
+    BindClip(spatial, f.ids);
+
+    rt2::audio::RecordingFakeAudioBackend fake;
+    rt2::audio::AudioPreviewController controller;
+    BindPreviewToFake(controller, fake);
+
+    // Start spatial with a transform and an off-axis position.
+    const float pos[3] = { 10.0f, 0.0f, 0.0f };
+    rt2::core::Error error;
+    REQUIRE(controller.StartPreview(uuid, "Sfx", spatial,
+                                    /*hasTransform=*/true, pos,
+                                    CenterListener(),
+                                    /*spatialAudition=*/true, error));
+    REQUIRE(controller.PreviewSpatialAudition());
+    CHECK(fake.mixes.empty());
+
+    // Real checkbox event flips the box off; feeding the live box state
+    // into Update (as the host does every frame) republishes the center
+    // mix exactly and commits the 2D mode.
+    bool box = true;
+    REQUIRE(ClickCheckboxThroughImGui("Preview Spatial", box));
+    CHECK_FALSE(box);
+    controller.Update(CenterListener(), pos, true, box);
+    REQUIRE_FALSE(controller.PreviewSpatialAudition());
+    REQUIRE(fake.mixes.size() == 1);
+    CHECK(MixIsCenter(fake.mixes.back().second, 1.0f));
+
+    // Steady 2D state republishes nothing: the switch is one publication.
+    controller.Update(CenterListener(), pos, true, box);
+    CHECK(fake.mixes.size() == 1);
+
+    // And back on: the spatial mix republishes (observably not center for
+    // this off-axis source) and the mode commits.
+    REQUIRE(ClickCheckboxThroughImGui("Preview Spatial", box));
+    CHECK(box);
+    controller.Update(CenterListener(), pos, true, box);
+    REQUIRE(controller.PreviewSpatialAudition());
+    REQUIRE(fake.mixes.size() == 2);
+    const rt2::audio::BackendVoiceMix& spatialMix =
+        fake.mixes.back().second;
+    const float center = 1.0f * rt2::audio::kAudioCenterPanGain;
+    CHECK((std::fabs(spatialMix.left - center) > 1e-4f ||
+           std::fabs(spatialMix.right - center) > 1e-4f ||
+           (spatialMix.left != spatialMix.right)));
+}
+
+TEST_CASE("A7 probe: stop and drain failures reach the status snapshot")
+{
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+    AudioSourceComponent bound = TwoDSource();
+    BindClip(bound, f.ids);
+
+    rt2::audio::RecordingFakeAudioBackend fake;
+    rt2::audio::AudioPreviewController controller;
+    BindPreviewToFake(controller, fake);
+    rt2::core::Error error;
+    REQUIRE(StartBoundPreview(controller, uuid, bound, error));
+
+    // A failed Stop detaches anyway (census to zero) but stays loud: the
+    // host records it on the latest-failure path, rendered here through
+    // the production formatter.
+    fake.FailNextStop(rt2::core::Error{
+        rt2::core::Error::InvalidRuntimeState, "preview-voice",
+        "stop refused by the backend"});
+    CHECK_FALSE(controller.StopPreview(error));
+    CHECK(error.code == rt2::core::Error::InvalidRuntimeState);
+    CHECK(controller.PreviewVoiceCount() == 0);
+    CHECK(fake.LiveTokenCount() == 0);
+
+    AudioStatusSnapshot stopSnapshot;
+    stopSnapshot.backendReady = true;
+    stopSnapshot.hasFailure = true;
+    stopSnapshot.failureText = error.Format();
+    stopSnapshot.failureAsset = uuid.ToString();
+    const std::string stopLine = FindLineStarting(
+        FormatAudioStatusLines(stopSnapshot), "  Last failure: ");
+    CHECK_FALSE(stopLine.empty());
+    CHECK(stopLine.find("invalid_runtime_state") != std::string::npos);
+    CHECK(stopLine.find(uuid.ToString()) != std::string::npos);
+
+    // A failed completion drain records the typed error (bounded) with a
+    // diagnostic instead of staying invisible.
+    rt2::audio::AudioPreviewController draining;
+    BindPreviewToFake(draining, fake);
+    REQUIRE(StartBoundPreview(draining, uuid, bound, error));
+    fake.FailNextDrain(rt2::core::Error{
+        rt2::core::Error::InvalidRuntimeState, "preview-session",
+        "drain refused by the backend"});
+    const float pos[3] = { 0.0f, 0.0f, 0.0f };
+    draining.Update(CenterListener(), pos, false, false);
+    CHECK_FALSE(draining.LastError().IsOk());
+    CHECK(draining.LastError().code ==
+          rt2::core::Error::InvalidRuntimeState);
+    CHECK(draining.FailureCount() == 1);
+    CHECK_FALSE(draining.LastDiagnostic().empty());
+
+    AudioStatusSnapshot drainSnapshot;
+    drainSnapshot.backendReady = true;
+    drainSnapshot.hasFailure = true;
+    drainSnapshot.failureText = draining.LastError().Format();
+    drainSnapshot.failureAsset = draining.LastAffectedAsset();
+    CHECK_FALSE(FindLineStarting(
+        FormatAudioStatusLines(drainSnapshot), "  Last failure: ").empty());
+}
+
+TEST_CASE("A7 probe: deferred runtime voice failure reaches the status lines")
+{
+    // Production path: a committed Play fails the voice after acceptance
+    // (scripted backend refusal); the world records the typed per-source
+    // error the host polls into the status snapshot.
+    rt2::audio::RecordingFakeAudioBackend fake;
+    rt2::audio::AudioWorld world(&fake, &fake,
+                                 rt2::audio::AudioSessionId{ 1234 },
+                                 rt2::audio::AudioOwnerKind::Runtime);
+
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+    AudioSourceComponent bound = TwoDSource();
+    BindClip(bound, f.ids);
+
+    rt2::audio::AudioPlayRequest request;
+    request.source = uuid;
+    request.component = bound;
+    request.sourcePosition[0] = 0.0f;
+    request.sourcePosition[1] = 0.0f;
+    request.sourcePosition[2] = 0.0f;
+    request.hasTransform = true;
+    request.clipKey = "deferred-k";
+    uint64_t sequence = 0;
+    REQUIRE(world.QueuePlay(request, sequence));
+
+    fake.FailNextStart(rt2::core::Error{
+        rt2::core::Error::InvalidRuntimeState, "deferred-k",
+        "voice start refused after commit"});
+    rt2::audio::AudioSourcePose pose;
+    pose.source = uuid;
+    pose.hasTransform = true;
+    world.Update(CenterListener(), &pose, 1, 0);
+
+    const rt2::audio::AudioSourceStatus status =
+        world.GetSourceStatus(uuid);
+    REQUIRE(status.hasResult);
+    CHECK_FALSE(status.lastResultOk);
+    CHECK(status.lastError.code ==
+          rt2::core::Error::InvalidRuntimeState);
+    CHECK(world.LiveVoiceCount() == 0);
+
+    // The exact error the host would promote renders through the
+    // production formatter instead of "none".
+    AudioStatusSnapshot snapshot;
+    snapshot.backendReady = true;
+    snapshot.runtimeVoices = world.LiveVoiceCount();
+    snapshot.gainsLive = true;
+    snapshot.hasFailure = true;
+    snapshot.failureText = status.lastError.Format();
+    snapshot.failureAsset = uuid.ToString();
+    const auto lines = FormatAudioStatusLines(snapshot);
+    const std::string failureLine =
+        FindLineStarting(lines, "  Last failure: ");
+    CHECK_FALSE(failureLine.empty());
+    CHECK(failureLine.find("invalid_runtime_state") != std::string::npos);
+    CHECK(FindLineStarting(lines, "  Voices: ") ==
+          "  Voices: runtime 0 / preview 0 / total 0");
+    CHECK(FindLineStarting(lines, "  Gains: ") ==
+          "  Gains: M 1.00 / Mus 1.00 / Fx 1.00 / UI 1.00");
+}
+
+TEST_CASE("A7 probe: status formatter covers idle and full states exactly")
+{
+    // Idle editor: uninitialized backend, defaults, no failure, no cache.
+    const auto idleLines = FormatAudioStatusLines(AudioStatusSnapshot{});
+    CHECK(FindLineStarting(idleLines, "  Backend: ") ==
+          "  Backend: not initialized");
+    CHECK(FindLineStarting(idleLines, "  Voices: ") ==
+          "  Voices: runtime 0 / preview 0 / total 0");
+    CHECK(FindLineStarting(idleLines, "  Gains: ") ==
+          "  Gains: M 1.00 / Mus 1.00 / Fx 1.00 / UI 1.00 "
+          "(defaults, no Play session)");
+    CHECK(FindLineStarting(idleLines, "  Last failure: ") ==
+          "  Last failure: none");
+    CHECK(FindLineStarting(idleLines, "  Cache: ").empty());
+    CHECK(FindLineStarting(idleLines, "  Preview: ").empty());
+
+    AudioStatusSnapshot full;
+    full.backendReady = true;
+    full.productionNoDevice = true;
+    full.backendDetail = "no output device; 48 kHz stereo fallback";
+    full.runtimeVoices = 2;
+    full.previewVoices = 1;
+    full.previewActive = true;
+    full.previewSourceName = "Sfx";
+    full.previewSpatial = true;
+    full.cacheReady = true;
+    full.decodedEntries = 3;
+    full.decodedBytes = 128;
+    full.providerEntries = 5;
+    const auto fullLines = FormatAudioStatusLines(full);
+    CHECK(FindLineStarting(fullLines, "  Backend: ") ==
+          "  Backend: no-device (diagnosed)");
+    CHECK(FindLineStarting(fullLines, "  Reason: ") ==
+          "  Reason: no output device; 48 kHz stereo fallback");
+    CHECK(FindLineStarting(fullLines, "  Voices: ") ==
+          "  Voices: runtime 2 / preview 1 / total 3");
+    CHECK(FindLineStarting(fullLines, "  Preview: ") ==
+          "  Preview: 'Sfx' (spatial audition)");
+    CHECK(FindLineStarting(fullLines, "  Cache: ") ==
+          "  Cache: 3 entries / 128 bytes (decoded); provider 5 entries");
 }
