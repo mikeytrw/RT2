@@ -123,7 +123,7 @@ IRuntimeScriptDispatch::OnUpdate
 [animation evaluation — absent, Phase 10]
 update world transforms (SceneGraph)
 issue one batched transform-only GPU sync
-[audio update — absent, Phase 11]
+audio update (AudioWorld — implemented, audio A0-A8)
 render
 drain debounced .lua file changes (editor only — see scripting.md)
 ```
@@ -147,6 +147,44 @@ during the pass does not fire until the next frame.
 Constants: `kFixedDt = 1/60`, `kMaxFrameTime = 0.25s`, `kMaxSubsteps = 5`.
 If the substep cap is reached, residual accumulator time is dropped to
 prevent cascading catch-up.
+
+### Audio update (implemented, audio A0-A8)
+
+The audio slot runs after world transforms and the batched GPU sync and
+before render, preserving the canonical
+`transforms -> GPU sync -> audio -> render` order
+(`RuntimeSceneController.cpp:1220-1227`). Each Playing frame:
+
+1. Drain the bounded 256-command audio FIFO (Lua and host controls
+   accepted earlier that frame, plus first-frame `on_create` work, which
+   precedes autoplay synthesis — an `audio_stop()` in `on_create`
+   suppresses the pending autoplay).
+2. Collect source poses from final world-matrix translations (never local
+   TRS or pre-step state) and the listener pose injected from the actual
+   rendered camera — the same camera the frame renders with. Runtime
+   camera motion therefore changes the mix even when the authored camera
+   entity is stationary, and there is no persisted listener component.
+3. Compute deterministic RT2 spatial math (attenuation + equal-power
+   stereo pan to explicit left/right gains) and publish mixes.
+4. Advance the no-device PCM pump (production fallback only): clamped
+   frame time converts to an integer frame count with a fractional
+   accumulator; hardware and fake sessions report no PCM here.
+
+**Play** is candidate/commit: every persisted source clip (autoplay or
+not) is synchronously resolved and decoded into immutable generations
+before commit, so a missing/corrupt/unsupported clip refuses Play
+atomically with zero voices and no lifecycle callbacks. **Pause**
+freezes the runtime mix sample-exact (voices started while paused begin
+frozen); **Resume** continues without restart. **Step** processes queued
+commands, GPU sync, and source/listener state while the session stays
+sample-frozen — zero no-device frames are pumped. **Stop** clears queued
+audio, stops/destroys the session `AudioWorld` voices (census back to
+baseline), then destroys physics and the runtime clone. Destroying an
+entity stops exactly its voices before ECS removal. Missing audio
+hardware reopens the production engine in two-channel/48 kHz no-device
+mode with a persistent diagnostic; the editor still starts. Edit-mode
+inspector Preview/Stop voices are separate from Play-session voices
+(see scene-management.md).
 
 ### Full contract (Phase 4+)
 
@@ -194,7 +232,9 @@ not run the accumulator or consume wall-clock time. Specifically:
    authored; it does not swap the code mid-freeze — Phase 6C.
 6. Update world transforms (SceneGraph).
 7. Issue one batched GPU sync (coalesced: structural > material > transform).
-8. Request one render submission.
+8. Audio: drain queued commands and refresh source/listener state while the
+   session stays sample-frozen (zero no-device frames pumped).
+9. Request one render submission.
 
 The accumulator is NOT advanced. Variable scripts (when present) run once
 with `kFixedDt`, not an arbitrary frame duration, so a stepped frame is

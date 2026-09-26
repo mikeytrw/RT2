@@ -94,6 +94,11 @@
     -- CPU-only ScriptSystem + controller + recording fake; no miniaudio/device imports.
     files { "src/AudioA6LuaAudioControlsTests.cpp" }
 
+    -- Audio A8: acceptance scene + durable workflow tests (same rationale).
+    -- CPU-only controller/preview + recording fake over the checked-in
+    -- acceptance scene; no miniaudio/device imports.
+    files { "src/AudioA8AcceptanceTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

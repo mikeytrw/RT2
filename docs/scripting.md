@@ -242,6 +242,13 @@ removal). A successful reload replacement, quarantine, Stop, and
 ScriptSystem teardown all clear queued-but-unapplied audio commands,
 so no command outlives the environment that issued it.
 
+Acceptance for these controls is the `AudioA6*` CPU suite (malformed /
+queue-full / FIFO / re-entrancy / reload / overlap-status cases in
+Release and Debug), the `run_script_test.ps1` regression gate, and the
+`AudioA8*` acceptance walk, which drives the same FIFO through the
+host-level queue seam on the checked-in acceptance scene
+(`RT2App/assets/audio-acceptance.rt2scene`).
+
 Plus the safe standard library: `base` (minus the denied names below),
 `math`, `string`, `table`, `utf8`.
 

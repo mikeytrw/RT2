@@ -1,0 +1,73 @@
+{
+  "version": 9,
+  "metadata": {
+    "name": "audio-acceptance"
+  },
+  "entities": [
+    {
+      "uuid": "9c50b5ff-11e2-49a5-bb9c-67809be6f579",
+      "name": "LoopEmitter",
+      "transform": {
+        "translation": [3.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "visible": true,
+      "audioSource": {
+        "clip": {
+          "kind": "audioclip",
+          "path": "audio/acceptance_loop_mono_s16.wav",
+          "sourceKey": "",
+          "assetId": "b3e7c60f-9925-43ba-b750-f35673d25026"
+        },
+        "bus": "effects",
+        "autoplay": true,
+        "loop": true,
+        "spatial": true,
+        "gain": 1.0,
+        "pitch": 1.0,
+        "minDistance": 1.0,
+        "maxDistance": 30.0,
+        "rolloff": 1.0,
+        "priority": 128
+      }
+    },
+    {
+      "uuid": "bcfa826e-939b-45ed-9b77-e75729800972",
+      "name": "MusicBed",
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "visible": true,
+      "audioSource": {
+        "clip": {
+          "kind": "audioclip",
+          "path": "audio/acceptance_music_stereo_s16.wav",
+          "sourceKey": "",
+          "assetId": "1d7d49f3-3346-46b6-a9bb-02d0c9ee8e38"
+        },
+        "bus": "music",
+        "autoplay": false,
+        "loop": false,
+        "spatial": false,
+        "gain": 0.8,
+        "pitch": 1.0,
+        "minDistance": 1.0,
+        "maxDistance": 30.0,
+        "rolloff": 1.0,
+        "priority": 128
+      }
+    }
+  ],
+  "materials": [],
+  "textures": [],
+  "camera": {
+    "fov": 60.0,
+    "nearPlane": 0.1,
+    "farPlane": 1000.0,
+    "position": [0.0, 1.0, 10.0],
+    "forward": [0.0, 0.0, -1.0]
+  }
+}

@@ -18,3 +18,6 @@
 /RT2AudioProbe/fixtures/*.flac binary
 /RT2AudioProbe/fixtures/*.mp3 binary
 /RT2AudioProbe/fixtures/*.bin binary
+# Audio A8: acceptance clips are byte-identical copies of generated probe
+# fixtures. Binary end to end so content fingerprints stay stable.
+/RT2App/assets/audio/*.wav binary

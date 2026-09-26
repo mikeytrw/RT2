@@ -16430,3 +16430,104 @@ note is the A0 record):
   every prior test group. The `.sln`/`.filters` used to build were
   regenerated locally from this tree's premake files (gitignored); the
   beta-4 regen churn on the three tracked `.vcxproj` files was reverted.
+
+### Audio A8 - acceptance and documentation (2026-09-26)
+
+A8 proves the complete authored-to-audible workflow on a checked-in
+scene and records the measured result here. Implemented on bound branch
+`audio-integration-a8-acceptance` from merge `d01c763` (A7 clean
+`6e5c5df` + A6 clean `8de2211`). Earlier phase sections above are
+period records; nothing above was rewritten.
+
+- **Acceptance scene.** `RT2App/assets/audio-acceptance.rt2scene`
+  (schema v9): entity `LoopEmitter`
+  (`9c50b5ff-11e2-49a5-bb9c-67809be6f579`) — looping spatial mono
+  Effects source with autoplay at +X; entity `MusicBed`
+  (`bcfa826e-939b-45ed-9b77-e75729800972`) — idle non-spatial Music
+  source at gain 0.8. Clips under `RT2App/assets/audio/` are
+  byte-identical copies of two generated `RT2AudioProbe/fixtures`
+  outputs (`tone440_mono_s16.wav`, `tone660_stereo_s16.wav`):
+  generated sine, no third-party content, no licensing manifest.
+  SHA-256 `2E94EDEC…6922BD` (loop) and `F0522E15…29AF379F5`
+  (music), matching the probe fixtures exactly. Each clip carries a
+  `.rt2meta` sidecar whose UUID equals the scene's
+  `audioSource.clip.assetId`; `.gitattributes` marks
+  `RT2App/assets/audio/*.wav` binary.
+- **New suite.** `RT2Tests/src/AudioA8AcceptanceTests.cpp` (5 cases,
+  wired through tracked `RT2Tests/premake5.lua` +
+  `RT2Tests/RT2Tests.vcxproj` like every prior audio group):
+  shipped-file round-trip with exact `AudioSourceComponent` equality
+  (via `SaveTo` against the shipped logical path) and sidecar-ID
+  agreement; Play walk (autoplay loop starts hard-right at distance
+  gain ~0.931, follows the final world transform across the listener,
+  host Music play/stop at center gain, destroy stops exactly the
+  emitter's voices, Stop census reset); 20x Play/Stop census with
+  session/voice/backend counts at baseline every cycle; corrupt
+  non-autoplay music refusal with zero voices/handles/callbacks/bridge
+  traffic; preview replace (music replaces loop, never stacks) and
+  Stop to zero. Two defects found while writing it (both test-side):
+  doctest `REQUIRE_MESSAGE` with an inline `+` concatenation and bare
+  `entt::entity != entt::null` do not compile — fixed with the
+  `INFO <<` + `REQUIRE` and double-paren patterns the A5/A6 suites
+  already use; and `Save` rebases clip paths against the output
+  directory, so the round-trip uses the `SaveTo` logical-path form.
+- **Measured baseline (from the repository root, `--no-skip`).**
+  Release **1496 run / 1496 passed / 0 failed / 0 skipped; 164,145
+  assertions**; Debug **1496 / 1496 / 0 / 0; 164,145 assertions**.
+  Delta over the A6 closure (1491/163,905 each): **+5 cases / +240
+  assertions**, exactly the A8 suite. Focused audio
+  (`A0*,A1*,A2*,A3*,A5*,A6*,A8*`): 110/110, 2,585 assertions each
+  configuration. `RT2ImGuiProbe`: 30/30, 401 assertions each
+  configuration. `RT2AudioProbe`: all S1-S20 oracles green in fixed
+  float32 stereo 48 kHz no-device mode each configuration (decode,
+  completion, pause, budget, torn-pair stress `torn=0`, phase order).
+  `run_script_test.ps1`: PASS 60 frames / 1 entity; Debug script
+  scenario via the Debug slice runner: PASS 60 frames. Slice gate:
+  PASS 60 steps, Cube final x=0.999999702; Debug slice: PASS 60
+  steps, authoring intact. `run_audio_a1_gates.ps1 -Configuration
+  Both`: exit 0 (pin/byte identity, exactly-one-compilation census
+  over all 12 generated projects, link boundary with positive
+  control, PE import scans, probe runs, whitespace clean over
+  unstaged/staged/committed ranges). Full solution builds Release +
+  Debug with 0 errors (only pre-existing `C4996`/`C4018`/`LNK4098`
+  diagnostics). These figures supersede every earlier baseline row
+  for current-state use; older rows remain period records.
+- **Required checks 1-20 (evidence on this branch).** 1,2: A2 suite
+  (persisted coverage 18, unconditional visitor); 3,5,19: A4 probe
+  (fingerprint overlap, no-device PCM pump, packed-atomic stress);
+  4,6,10,11,12,14,18: A5 suite + A8 walk/corrupt cases on the
+  shipped scene; 7,8,9,20: A3 suite + A6 overlap status + A8 mix
+  oracles; 13: A6 suite; 15: A7 ImGui probe + A8 preview case;
+  16,17: A1 gates. Twenty Play/Stop cycles restore
+  session/voice/backend counts; the decoded-cached budget proof
+  remains the A4 probe S18/S18b oracles (the CPU fake carries no
+  production cache).
+- **Docs.** `docs/game-loop.md` replaces the obsolete "audio absent"
+  line with the implemented `transforms -> GPU sync -> audio ->
+  render` slot (`RuntimeSceneController.cpp:1220-1227`), Play
+  candidate atomicity, Pause/Resume/Step (sample-frozen, zero
+  no-device frames), Stop/destroy order, and no-device fallback.
+  `docs/scene-management.md` gains the `AudioSourceComponent` row
+  and a schema-v9 audio section (strict validation, `audioSource`
+  prefab key with non-overridable policy, unconditional visitor,
+  sidecar identity, `DatabaseRefresh` watch). `docs/scripting.md`
+  gains the acceptance pointer for the Lua controls. No new
+  defect-prone term was found, so the glossary is unchanged.
+- **Provenance and limits.** A6 is CLEAN per the independent review
+  at `8de2211`; A7 is CLEAN per the independent Sol reviewer's
+  message at `6e5c5df` (30/30 ImGui probes, 401 assertions each,
+  re-run here in both configurations) — the
+  `audio-integration-a7-code-review` artifact is absent from the
+  epic directory, so A7 cleanliness is cited as reviewer-message
+  provenance, not an extant artifact. No interactive hardware
+  session was run in this headless environment: device-absent
+  behavior is proven by the probe S1b injected-failure fallback
+  plus the production no-device oracles, not by a physical device.
+  No pinball game audio and no unrelated UI redesign were added.
+  `graphify update .` rebuilt the graph (65,260 nodes, 145,674
+  edges); focused query/path checks pass. `git diff --check` is
+  clean; `RT2App/assets/vertical-slice.rt2scene` was restored after
+  every mutating suite. Premake regen churn on tracked `.vcxproj`
+  files (beta2 `5.0.0-beta2` vs the tracked semantics) was reverted
+  per the A0 precedent; only the A8 `ClCompile` entry plus the
+  `premake5.lua` source entry were kept.
