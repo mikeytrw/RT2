@@ -718,6 +718,14 @@ void SceneEditorUI::DiscardAllPropertySessions()
 	m_MotionVelocitySession.Discard();
 	m_ScriptFieldSession.Discard();
 	m_PhysicsWork.Clear();
+	// Audio A7: same-UUID replacement documents must not inherit working
+	// copies, retained malformed text, or stale diagnostics.
+	m_AudioWork.Clear();
+	m_AudioClipPathText.clear();
+	m_AudioClipPathTextActive = false;
+	m_AudioClipPathError.clear();
+	m_AudioDiagnostic.clear();
+	m_AudioPreviewSpatial = false;
 	// The previews are gone, so no recovery remains pending (ResetForDocument /
 	// confirmed document replacement is a valid discard path).
 	for (auto& state : m_PreviewRecoveryByKind)
@@ -1758,6 +1766,9 @@ void SceneEditorUI::RenderInspector()
 	// Bullet T4 minimal physics authoring (discrete working-copy editors).
 	RenderPhysicsEditor(entity);
 
+	// Audio A7 source authoring (discrete working-copy editor + audition).
+	RenderAudioEditor(entity);
+
 	// Script component editor (Phase 6B/W5)
 	if (m_SceneMgr->HasScript(entity))
 		RenderScriptEditor(entity);
@@ -2543,6 +2554,403 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		}
 	}
 
+	ImGui::EndDisabled();
+}
+
+void SceneEditorUI::AssignAudioClipFromAbsolute(const std::string& absolutePath)
+{
+	if (!m_AudioWork.work.has_value())
+	{
+		m_AudioDiagnostic = "Audio clip assignment requires a selected audio source";
+		return;
+	}
+	if (!IsAudioClipPath(absolutePath))
+	{
+		m_AudioDiagnostic =
+			"Audio clip assignment requires a .wav, .flac, or .mp3 file";
+		return;
+	}
+	const auto root = m_SceneMgr->AssetContext().assetRoot;
+	std::filesystem::path absolute = std::filesystem::u8path(absolutePath);
+	std::error_code ec;
+	std::filesystem::path relative;
+	if (!root.empty())
+	{
+		const auto canonicalRoot =
+			std::filesystem::weakly_canonical(root, ec);
+		const auto canonicalPicked =
+			std::filesystem::weakly_canonical(absolute, ec);
+		const auto candidate = canonicalPicked.lexically_relative(canonicalRoot);
+		if (ec || candidate.empty() || candidate.is_absolute() ||
+			(!candidate.empty() && *candidate.begin() == ".."))
+		{
+			m_AudioDiagnostic = "Selected clip is outside the active assetRoot";
+			return;
+		}
+		relative = candidate;
+	}
+	else
+	{
+		relative = absolute;
+	}
+	const std::string absoluteGeneric =
+		std::filesystem::weakly_canonical(absolute, ec).generic_u8string();
+	if (ec)
+	{
+		m_AudioDiagnostic = "Selected clip path is not resolvable";
+		return;
+	}
+	// Confirm (or mint) the clip's durable sidecar identity through the
+	// host import path, exactly like a Content Browser drop. A refused
+	// import leaves the working copy untouched.
+	if (m_OnImportAudioClip)
+	{
+		rt2::core::Error importError;
+		if (!m_OnImportAudioClip(absoluteGeneric, importError))
+		{
+			m_AudioDiagnostic =
+				"Audio clip import failed: " + importError.Format();
+			return;
+		}
+	}
+	auto& work = *m_AudioWork.work;
+	work.clip.path = relative.generic_u8string();
+	work.clip.kind = AssetKind::AudioClip;
+	work.clip.sourceKey.clear();
+	work.clip.assetId = rt2::core::UUID{};
+	if (const rt2::core::AssetDatabase* database =
+	        m_SceneMgr->AssetContext().database)
+	{
+		if (const rt2::core::AssetRecord* record =
+		        database->FindByPath(work.clip.path))
+			work.clip.assetId = record->assetId;
+	}
+	m_AudioWork.dirty = true;
+	m_AudioClipPathText.clear();
+	m_AudioClipPathTextActive = false;
+	m_AudioClipPathError.clear();
+	if (work.clip.assetId.IsNull())
+		m_AudioDiagnostic =
+			"Clip staged without asset identity; Apply will refuse until the "
+			"clip is imported in the Content Browser";
+	else
+		m_AudioDiagnostic.clear();
+}
+
+void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
+{
+	auto& reg = const_cast<entt::registry&>(m_SceneMgr->GetECS().registry);
+	if (!reg.valid(entity.id))
+		return;
+	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
+
+	std::optional<AudioSourceComponent> live;
+	if (const auto* a = reg.try_get<AudioSourceComponent>(entity.id))
+		live = *a;
+
+	// Working-copy lifecycle (AudioInspectorWork): reseed on selection
+	// change, resync clean copies after Undo/Redo, and flag dirty/live
+	// conflicts instead of overwriting restored state. Exact before-states
+	// are still read fresh at Apply. Retained malformed clip text is
+	// per-target, so a selection change drops it alongside the reseed.
+	const rt2::core::UUID audioPrevTarget = m_AudioWork.target;
+	m_AudioWork.Sync(targetUuid, live);
+	if (m_AudioWork.target != audioPrevTarget)
+	{
+		m_AudioClipPathText.clear();
+		m_AudioClipPathTextActive = false;
+		m_AudioClipPathError.clear();
+		m_AudioDiagnostic.clear();
+		m_AudioPreviewSpatial = false;
+	}
+
+	ImGui::Separator();
+	ImGui::Text("Audio Source");
+
+	// Prefab enforcement is authoritative in SetAudioSourceState (linked
+	// members refuse before mutation); the UI additionally disables editing
+	// so the refusal is not a surprise. UI disabling alone is never
+	// sufficient. Audition (Preview/Stop) stays available: it never mutates
+	// authoring.
+	const bool isPrefabMember = reg.all_of<PrefabMemberComponent>(entity.id);
+	if (isPrefabMember)
+		ImGui::TextDisabled("Linked prefab member: audio is non-overridable");
+	ImGui::BeginDisabled(!m_Editable || isPrefabMember);
+
+	if (!m_AudioWork.work.has_value())
+	{
+		if (ImGui::Button("Add Audio Source"))
+		{
+			AudioSourceComponent after{};
+			// A transform-less entity cannot hold the spatial default:
+			// author it 2D so Add succeeds, and let Spatial opt-in refuse
+			// loudly at Apply when no Transform exists.
+			after.spatial = reg.all_of<Transform>(entity.id);
+			auto cmd = MakeSetAudioSourceCommandIfEffective(
+				targetUuid, std::nullopt, after);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+				if (result.success)
+				{
+					std::optional<AudioSourceComponent> fresh;
+					if (const auto* a = reg.try_get<AudioSourceComponent>(entity.id))
+						fresh = *a;
+					m_AudioWork.Applied(fresh);
+					m_AudioDiagnostic.clear();
+				}
+				else
+				{
+					m_AudioDiagnostic = result.error.Format();
+				}
+			}
+		}
+	}
+	else
+	{
+		auto& work = *m_AudioWork.work;
+
+		// ---- Clip reference: path text + Browse + drop ----
+		ImGui::Text("Clip (wav/flac/mp3):");
+		const std::string& pathSeed =
+			m_AudioClipPathTextActive ? m_AudioClipPathText : work.clip.path;
+		char pathBuf[256];
+		snprintf(pathBuf, sizeof(pathBuf), "%s", pathSeed.c_str());
+		ImGui::SetNextItemWidth(220.0f);
+		const bool pathReturned = ImGui::InputText("##AudioClipPath", pathBuf,
+			sizeof(pathBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+		const bool pathEdited = ImGui::IsItemDeactivatedAfterEdit();
+		if (pathReturned || pathEdited)
+		{
+			std::string parseError;
+			if (!TryParseAudioClipPathText(pathBuf, parseError))
+			{
+				// Retain the malformed text: the working copy is untouched
+				// and Apply stays blocked until valid text or Revert.
+				m_AudioClipPathText = pathBuf;
+				m_AudioClipPathTextActive = true;
+				m_AudioClipPathError = parseError;
+			}
+			else if (AudioInspectorWork::NoteAudioClipPathChanged(
+			             work.clip, pathBuf))
+			{
+				// A new path drops the previous file's asset ID (ID-first
+				// resolution would otherwise name the old file); Browse
+				// and drop repair identity below, and strict Apply refuses
+				// a bound-but-identityless reference loudly.
+				m_AudioClipPathText.clear();
+				m_AudioClipPathTextActive = false;
+				m_AudioClipPathError.clear();
+				m_AudioWork.dirty = true;
+			}
+			else
+			{
+				m_AudioClipPathText.clear();
+				m_AudioClipPathTextActive = false;
+				m_AudioClipPathError.clear();
+			}
+		}
+		if (m_AudioClipPathTextActive && !m_AudioClipPathError.empty())
+			ImGui::TextWrapped("Clip error: %s", m_AudioClipPathError.c_str());
+		ImGui::SameLine();
+		if (ImGui::Button("Browse..."))
+		{
+			m_AudioDiagnostic.clear();
+			const auto initialDirectory = m_DialogInitialDirectory
+				? m_DialogInitialDirectory() : std::filesystem::path{};
+			const std::string picked = FileDialog::OpenFile(
+				L"Audio Clips (*.wav;*.flac;*.mp3)\0*.wav;*.flac;*.mp3\0WAV (*.wav)\0*.wav\0FLAC (*.flac)\0*.flac\0MP3 (*.mp3)\0*.mp3\0All Files (*.*)\0*.*\0",
+				initialDirectory);
+			if (!picked.empty())
+				AssignAudioClipFromAbsolute(picked);
+		}
+		// Content Browser drop: an audio asset payload lands on the clip.
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* payload =
+			        ImGui::AcceptDragDropPayload("RT2_ASSET_PATH"))
+			{
+				const std::string dropped(
+					static_cast<const char*>(payload->Data),
+					payload->DataSize);
+				if (IsAudioClipPath(dropped))
+				{
+					m_AudioDiagnostic.clear();
+					// The browser payload is an absolute path (assetRoot /
+					// sourcePath), same as the file-dialog pick below.
+					AssignAudioClipFromAbsolute(dropped);
+				}
+				else
+				{
+					m_AudioDiagnostic =
+						"Audio drop requires a .wav, .flac, or .mp3 asset";
+				}
+			}
+			ImGui::EndDragDropTarget();
+		}
+		if (!work.clip.path.empty())
+		{
+			if (work.clip.assetId.IsNull())
+				ImGui::TextDisabled("Clip identity: missing (Browse or drop the clip to repair)");
+			else
+				ImGui::TextDisabled("Clip identity: %s", work.clip.assetId.ToString().c_str());
+		}
+
+		// ---- Source fields ----
+		int busIndex = work.bus == AudioBus::Music ? 0
+			: work.bus == AudioBus::UI ? 2 : 1;
+		ImGui::SetNextItemWidth(140.0f);
+		if (ImGui::Combo("Bus", &busIndex, "Music\0Effects\0UI\0"))
+		{
+			work.bus = busIndex == 0 ? AudioBus::Music
+				: busIndex == 2 ? AudioBus::UI : AudioBus::Effects;
+			m_AudioWork.dirty = true;
+		}
+		if (ImGui::Checkbox("Autoplay", &work.autoplay))
+			m_AudioWork.dirty = true;
+		if (ImGui::Checkbox("Loop", &work.loop))
+			m_AudioWork.dirty = true;
+		if (ImGui::Checkbox("Spatial", &work.spatial))
+			m_AudioWork.dirty = true;
+		if (ImGui::DragFloat("Gain", &work.gain, 0.01f, 0.0f, 4.0f, "%.3f"))
+			m_AudioWork.dirty = true;
+		if (ImGui::DragFloat("Pitch", &work.pitch, 0.005f, 0.25f, 4.0f, "%.3f"))
+			m_AudioWork.dirty = true;
+		if (ImGui::DragFloat("Min distance", &work.minDistance, 0.05f, 0.001f, 1000.0f, "%.3f"))
+			m_AudioWork.dirty = true;
+		if (ImGui::DragFloat("Max distance", &work.maxDistance, 0.1f, 0.001f, 10000.0f, "%.3f"))
+			m_AudioWork.dirty = true;
+		if (ImGui::DragFloat("Rolloff", &work.rolloff, 0.01f, 0.0f, 8.0f, "%.3f"))
+			m_AudioWork.dirty = true;
+		int priority = static_cast<int>(work.priority);
+		if (ImGui::DragInt("Priority", &priority, 1, 0, 255))
+		{
+			work.priority = static_cast<uint8_t>(priority < 0 ? 0 : priority > 255 ? 255 : priority);
+			m_AudioWork.dirty = true;
+		}
+
+		if (m_AudioWork.dirty)
+		{
+			if (m_AudioWork.conflict)
+				ImGui::TextDisabled("Live state changed underneath (Undo/Redo): Revert to continue");
+			const bool blocked = AudioInspectorApplyBlocked(
+				m_AudioWork.conflict, m_AudioClipPathTextActive,
+				m_AudioClipPathError);
+			ImGui::BeginDisabled(blocked);
+			if (ImGui::Button("Apply Audio"))
+			{
+				std::optional<AudioSourceComponent> before;
+				if (const auto* a = reg.try_get<AudioSourceComponent>(entity.id))
+					before = *a;
+				auto cmd = MakeSetAudioSourceCommandIfEffective(
+					targetUuid, before, m_AudioWork.work);
+				bool applied = !cmd;
+				if (cmd)
+				{
+					const auto result = ExecuteCommandThroughHistory(
+						m_CommandHistory, *m_SceneMgr, std::move(cmd));
+					ApplyMutation(result);
+					applied = result.success;
+					if (!result.success)
+						m_AudioDiagnostic = result.error.Format();
+				}
+				if (applied)
+				{
+					std::optional<AudioSourceComponent> fresh;
+					if (const auto* a = reg.try_get<AudioSourceComponent>(entity.id))
+						fresh = *a;
+					m_AudioWork.Applied(fresh);
+					m_AudioClipPathText.clear();
+					m_AudioClipPathTextActive = false;
+					m_AudioClipPathError.clear();
+					m_AudioDiagnostic.clear();
+				}
+			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Revert Audio"))
+			{
+				m_AudioWork.Revert(live);
+				m_AudioClipPathText.clear();
+				m_AudioClipPathTextActive = false;
+				m_AudioClipPathError.clear();
+				m_AudioDiagnostic.clear();
+			}
+		}
+		if (!m_AudioDiagnostic.empty())
+			ImGui::TextWrapped("Audio: %s", m_AudioDiagnostic.c_str());
+		if (live.has_value() && ImGui::Button("Remove Audio Source"))
+		{
+			std::optional<AudioSourceComponent> before;
+			if (const auto* a = reg.try_get<AudioSourceComponent>(entity.id))
+				before = *a;
+			auto cmd = MakeSetAudioSourceCommandIfEffective(
+				targetUuid, before, std::nullopt);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(
+					m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+				if (result.success)
+				{
+					m_AudioWork.Applied(std::nullopt);
+					m_AudioClipPathText.clear();
+					m_AudioClipPathTextActive = false;
+					m_AudioClipPathError.clear();
+					m_AudioDiagnostic.clear();
+				}
+				else
+				{
+					m_AudioDiagnostic = result.error.Format();
+				}
+			}
+		}
+	}
+	ImGui::EndDisabled();
+
+	// ---- Edit-mode audition (never mutates authoring; no prefab bar) ----
+	ImGui::BeginDisabled(!m_Editable || !live.has_value());
+	{
+		const bool previewLive =
+			m_AudioPreviewIsLive ? m_AudioPreviewIsLive() : false;
+		const rt2::core::UUID previewSrc =
+			m_AudioPreviewSource ? m_AudioPreviewSource() : rt2::core::UUID{};
+		const bool thisPreviewing = previewLive && previewSrc == targetUuid;
+		if (ImGui::Checkbox("Preview Spatial", &m_AudioPreviewSpatial))
+		{
+			// The host rereads this flag every frame for the live mix; no
+			// command, no history, no authored change.
+		}
+		if (thisPreviewing)
+		{
+			if (ImGui::Button("Stop Preview") && m_OnAudioPreviewStop)
+				m_OnAudioPreviewStop();
+		}
+		else
+		{
+			if (ImGui::Button("Preview"))
+			{
+				if (m_OnAudioPreviewStart)
+				{
+					std::string previewDiagnostic;
+					if (!m_OnAudioPreviewStart(targetUuid,
+					                           m_AudioPreviewSpatial,
+					                           previewDiagnostic))
+						m_AudioDiagnostic = previewDiagnostic;
+					else
+						m_AudioDiagnostic.clear();
+				}
+				else
+				{
+					m_AudioDiagnostic = "Preview unavailable: no preview backend is bound";
+				}
+			}
+		}
+		if (m_AudioWork.dirty)
+			ImGui::TextDisabled("Preview auditions the applied source; Apply first to hear edits");
+	}
 	ImGui::EndDisabled();
 }
 

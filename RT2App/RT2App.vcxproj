@@ -227,6 +227,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\AudioClipProvider.h" />
     <ClInclude Include="src\AudioSpatialMath.h" />
     <ClInclude Include="src\AudioWorld.h" />
+    <!-- Audio A7: edit-mode authoring/preview/status UI (CPU-only headers;
+         AudioInspectorState is header-only policy, AudioPreviewController
+         compiles once below and links anywhere the backend interface links). -->
+    <ClInclude Include="src\AudioInspectorState.h" />
+    <ClInclude Include="src\AudioPreviewController.h" />
     <ClInclude Include="src\FakeAudioBackend.h" />
     <ClInclude Include="src\BackgroundWork.h" />
     <ClInclude Include="src\CLIArgs.h" />
@@ -490,6 +495,13 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\FakeAudioBackend.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- Audio A7: edit-mode preview owner (CPU-only: standard library plus
+         audio headers plus core — no miniaudio, device, Vulkan, ImGui). -->
+    <ClCompile Include="src\AudioPreviewController.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

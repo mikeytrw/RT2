@@ -6425,6 +6425,70 @@ EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
 	return result;
 }
 
+// Audio A7: authored audio-source state (see the SceneManager.h contract).
+// Prefab refusal precedes every validation write, exactly like the physics
+// Set*State APIs: audioSource is non-overridable.
+EditorMutationResult SceneManager::SetAudioSourceState(
+	const rt2::core::UUID& entity,
+	const std::optional<AudioSourceComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetAudioSourceState: entity not present");
+	// Prefab enforcement before any validation write, revision, or history:
+	// audio wires are non-overridable, so linked members refuse loudly.
+	if (m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
+	{
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			entity.ToString(),
+			"SetAudioSourceState: entity is a linked prefab member "
+			"(audioSource is non-overridable; edit the prefab source)");
+	}
+	if (value.has_value())
+	{
+		const bool hasTransform =
+			m_EcsScene.registry.all_of<Transform>(e);
+		std::string detail;
+		std::string field;
+		// Authoring context: nullopt decoded channels. The spatial-mono
+		// check belongs to the Play/Preview commit that owns decoded
+		// content, not to persistence.
+		if (!ValidateAudioSourceComponent(*value, hasTransform, std::nullopt,
+		                                  detail, &field))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, entity.ToString(),
+				"SetAudioSourceState: invalid audioSource." + field + ": " +
+				detail);
+		}
+		m_EcsScene.registry.emplace_or_replace<AudioSourceComponent>(e, *value);
+	}
+	else
+	{
+		if (m_EcsScene.registry.all_of<AudioSourceComponent>(e))
+			m_EcsScene.registry.remove<AudioSourceComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+std::optional<AudioSourceComponent> SceneManager::GetAudioSource(
+	const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	if (const auto* audio =
+	        m_EcsScene.registry.try_get<AudioSourceComponent>(e))
+		return *audio;
+	return std::nullopt;
+}
+
 EditorMutationResult SceneManager::SetCameraPoseState(const rt2::core::UUID& entity,
                                                       const EditableTRS& local,
                                                       const CameraComponent& props)

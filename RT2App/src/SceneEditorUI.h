@@ -11,6 +11,7 @@
 #include "PropertyEditSession.h"
 #include "CompositePreviewSession.h"
 #include "PhysicsInspectorState.h"
+#include "AudioInspectorState.h"
 #include "PreviewSessionClose.h"
 #include "TransformEditing.h"
 #include "PrefabEditorPresentation.h"
@@ -88,6 +89,25 @@ public:
 	// write/parse failure returns false with a loud Error.
 	void SetOnImportAudioClip(std::function<bool(const std::string&, rt2::core::Error&)> cb)
 	{ m_OnImportAudioClip = std::move(cb); }
+
+	// Audio A7 preview host hooks (WalnutApp injects these; the inspector
+	// never touches the backend directly). Start returns true with an empty
+	// diagnostic only when the preview voice is live; Stop is idempotent.
+	// IsPreviewLive/PreviewSourceUuid describe the controller for button
+	// labels; PreviewSpatialAudition carries the inspector checkbox so the
+	// host can refresh the audition mix every frame.
+	void SetOnAudioPreviewStart(
+		std::function<bool(const rt2::core::UUID&, bool, std::string&)> cb)
+	{ m_OnAudioPreviewStart = std::move(cb); }
+	void SetOnAudioPreviewStop(std::function<void()> cb)
+	{ m_OnAudioPreviewStop = std::move(cb); }
+	void SetAudioPreviewQuery(
+		std::function<bool()> isLive,
+		std::function<rt2::core::UUID()> sourceUuid)
+	{ m_AudioPreviewIsLive = std::move(isLive);
+	  m_AudioPreviewSource = std::move(sourceUuid); }
+	bool AudioPreviewSpatialAudition() const
+	{ return m_AudioPreviewSpatial; }
 
 	void SetDialogInitialDirectoryProvider(
 		std::function<std::filesystem::path()> provider)
@@ -247,6 +267,14 @@ private:
 	// commit immediately. No live-preview sessions, no scene-view
 	// manipulators, no joint visual editor.
 	void RenderPhysicsEditor(SceneManager::EntityId entity);
+	// Audio A7 source authoring (Edit state, discrete commands). Same
+	// working-copy shape as physics: widgets edit the copy below, Apply
+	// commits exactly one SetAudioSourceCommand (before = live at Apply
+	// time, after = working copy), Revert drops the copy, Add/Remove commit
+	// immediately. Clip path edits clear the stale asset ID; Browse/drop
+	// repairs identity through the host import callback. Preview/Stop
+	// buttons drive the host preview controller; they never mutate authoring.
+	void RenderAudioEditor(SceneManager::EntityId entity);
 	void DrawImportOptionsModal();
 
 	void NotifySceneChanged();
@@ -471,6 +499,39 @@ private:
 	std::string m_SliderOtherBodyText;
 	bool m_SliderOtherBodyTextActive = false;
 	std::string m_SliderOtherBodyError;
+
+	// Audio A7 discrete source working state (Edit-state Inspector only).
+	// Policy (resync/conflict/reset/assetId) lives in AudioInspectorWork
+	// and is probe-tested; this member only carries it across frames.
+	AudioInspectorWork m_AudioWork;
+	// Retained malformed clip-path text. While active, the InputText seeds
+	// from the retained text (not the model value) and the typed parse
+	// error renders beneath it; the working copy is untouched until the
+	// text parses or the user reverts. Cleared on target change, successful
+	// parse-to-empty-or-valid, Apply, and Revert. Mirrors the T5 otherBody
+	// text policy.
+	std::string m_AudioClipPathText;
+	bool m_AudioClipPathTextActive = false;
+	std::string m_AudioClipPathError;
+	// Last Apply/Preview diagnostic for the audio section (loud failure
+	// text; success clears it).
+	std::string m_AudioDiagnostic;
+	// Preview Spatial audition checkbox (inspector-local; the host reads it
+	// every frame through AudioPreviewSpatialAudition).
+	bool m_AudioPreviewSpatial = false;
+	// Resolves an absolute audio file pick (Browse dialog or browser drop)
+	// to a project-relative clip reference on the working copy: ensures the
+	// pick lives under the active assetRoot, confirms sidecar identity
+	// through the host import callback, and adopts the database asset ID.
+	// Loud diagnostics land in m_AudioDiagnostic; the working copy is the
+	// only mutation, so nothing reaches history until Apply.
+	void AssignAudioClipFromAbsolute(const std::string& absolutePath);
+	// Host preview hooks (see SetOnAudioPreviewStart/SetOnAudioPreviewStop/
+	// SetAudioPreviewQuery). Null in CPU/probe contexts without a backend.
+	std::function<bool(const rt2::core::UUID&, bool, std::string&)> m_OnAudioPreviewStart;
+	std::function<void()> m_OnAudioPreviewStop;
+	std::function<bool()> m_AudioPreviewIsLive;
+	std::function<rt2::core::UUID()> m_AudioPreviewSource;
 
 	// Pending-recovery surfacing (S6-C fixup P1 finding 2 / final closure P1
 	// finding 2): a live-preview session whose close failed against a still-live

@@ -781,6 +781,56 @@ std::unique_ptr<IEditorCommand> MakeSetPhysicsSliderCommandIfEffective(
 		std::move(beforeValue), std::move(afterValue));
 }
 
+// ---- Audio A7 source commands ----
+
+SetAudioSourceCommand::SetAudioSourceCommand(
+	rt2::core::UUID target,
+	std::optional<AudioSourceComponent> beforeValue,
+	std::optional<AudioSourceComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+{
+}
+
+EditorMutationResult SetAudioSourceCommand::Execute(SceneManager& scene)
+{
+	return scene.SetAudioSourceState(m_Target, m_AfterValue);
+}
+
+EditorMutationResult SetAudioSourceCommand::Undo(SceneManager& scene)
+{
+	return scene.SetAudioSourceState(m_Target, m_BeforeValue);
+}
+
+std::string SetAudioSourceCommand::Description() const
+{
+	if (!m_BeforeValue.has_value() && m_AfterValue.has_value())
+		return "Add Audio Source";
+	if (m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Remove Audio Source";
+	if (!m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Audio Source (no change)";
+	return "Edit Audio Source";
+}
+
+std::unique_ptr<IEditorCommand> MakeSetAudioSourceCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<AudioSourceComponent> beforeValue,
+	std::optional<AudioSourceComponent> afterValue)
+{
+	const bool beforeHas = beforeValue.has_value();
+	const bool afterHas = afterValue.has_value();
+	if (!beforeHas && !afterHas) return nullptr;
+	if (beforeHas && afterHas && *beforeValue == *afterValue)
+		return nullptr;
+	// An invalid after-state is NOT suppressed: the command is returned so
+	// EditorCommandHistory::Execute surfaces the manager's actionable
+	// failure without recording (SetPhysics/SetScript after-state policy).
+	return std::make_unique<SetAudioSourceCommand>(target,
+		std::move(beforeValue), std::move(afterValue));
+}
+
 std::unique_ptr<IEditorCommand> MakeSetCameraPresentationCommandIfEffective(
 	rt2::core::UUID target,
 	const CameraComponent& live,

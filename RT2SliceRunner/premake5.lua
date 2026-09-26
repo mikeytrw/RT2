@@ -52,6 +52,8 @@ project "RT2SliceRunner"
         "../RT2App/src/AudioClipAssetProvider.cpp",
         "../RT2App/src/AudioWorld.cpp",
         "../RT2App/src/FakeAudioBackend.cpp",
+        -- Audio A7: edit-mode preview owner (CPU-only; same closure rule).
+        "../RT2App/src/AudioPreviewController.cpp",
         "../RT2App/src/PrefabSerializer.cpp",
         "../RT2App/src/PrefabEditorActions.cpp",
         "../RT2App/src/PrefabEditorPresentation.cpp",

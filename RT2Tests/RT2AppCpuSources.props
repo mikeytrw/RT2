@@ -145,6 +145,15 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- Audio A7: edit-mode preview owner (CPU-only: standard library plus
+         audio headers plus core — no miniaudio, device, Vulkan, ImGui, or
+         Walnut, so the RT2Tests/RT2SliceRunner/RT2ImGuiProbe link boundary
+         is unchanged). -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\RT2App\src\AudioPreviewController.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <!-- T4: shared CPU collision decode + host-owned immutable cache
          (CPU-only; tinygltf/tinyobj declarations only — implementations link
          from SceneLoader.cpp below). -->
