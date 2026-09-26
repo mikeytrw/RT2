@@ -225,8 +225,9 @@ public:
     // the same one-shot with a positional override (finite,
     // float-magnitude position; the override supplies the play-time pose
     // and rides the voice through final-pose landing and mix refresh, so
-    // overlapping one-shots keep distinct positions). PlayAt refuses
-    // looping sources: a one-shot override must not pin or fight a loop.
+    // overlapping one-shots keep distinct positions). On a looping source
+    // PlayAt starts an independent non-looping one-shot: it never
+    // refreshes a live loop and the authored loop flag is preserved.
     // AudioStop stops every voice owned by the source. AudioPause freezes
     // or resumes the source's live voices. AudioSetGain/AudioSetPitch take
     // authored-range values ([0, 4] / [0.25, 4]) and apply to live voices

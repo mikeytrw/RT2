@@ -110,8 +110,11 @@ struct A6Harness
 {
     DeterministicUuidProvider uuidProv;
     A6NullBridge bridge;
-    RuntimeSceneController ctrl;
+    // Declared before ctrl so a test case that aborts before Stop still
+    // tears down the live session (AudioWorld destructor) while the
+    // backend is alive — never backend-first (the A5 finding-2 class).
     RecordingFakeAudioBackend fake;
+    RuntimeSceneController ctrl;
     AssetResolutionContext assetContext;
     std::vector<AssetDiagnostic> assetDiagnostics;
     ScriptSystem scriptSys;
@@ -843,11 +846,7 @@ TEST_CASE("A6_PlayAtSpatialOverride_SurvivesRefresh_OverlapDistinct")
     const entt::entity e = b.Create("Panned");
     b.AttachBoundSource(e, "audio/pan.wav", false, false, true);
     const UUID uuid = b.UuidOf(e);
-    const entt::entity loopEnt = b.Create("Looper");
-    b.AttachBoundSource(loopEnt, "audio/loop.wav", false, true, false);
-    const UUID loopUuid = b.UuidOf(loopEnt);
     h.fake.ScriptGeneration(A6Key("audio/pan.wav"), A6MonoGeneration());
-    h.fake.ScriptGeneration(A6Key("audio/loop.wav"), A6MonoGeneration());
     AudioListenerPose listener;
     listener.position[0] = 0.0f;
     listener.position[1] = 0.0f;
@@ -860,10 +859,6 @@ TEST_CASE("A6_PlayAtSpatialOverride_SurvivesRefresh_OverlapDistinct")
     listener.up[2] = 1.0f;
     h.ctrl.SetAudioListenerPose(listener);
     REQUIRE(h.Play(b.doc));
-
-    // PlayAt on a looping source refuses without consuming a sequence.
-    CHECK_FALSE(h.sink.AudioPlayAt(loopUuid, glm::vec3{5.0f, 0.0f, 0.0f}));
-    CHECK(h.sink.GetAudioStatus(loopUuid).newestAcceptedSequence == 0);
 
     // Opposite-side overrides: hard-panned by equal-power law at
     // distance 10 (min 1, max 30, rolloff 1 -> gain 20/29).
@@ -1016,5 +1011,85 @@ TEST_CASE("A6_KeyBuilderFailureAfterPlay_StopStillReachesVoice")
     CHECK(keyBuilds == 3);
     h.Update();
     CHECK(A6LiveVoices(h, uuid) == 0);
+    h.Stop(b.doc);
+}
+
+TEST_CASE("A6_PlayAtOnLoopSource_IndependentOneShot")
+{
+    // Re-review finding: PlayAt on a looping source starts an independent
+    // non-looping one-shot at the override — it never refreshes the live
+    // loop, never drags it to the override, and preserves the authored
+    // loop flag so a later plain Play still refreshes instead of
+    // duplicating. Refusing the PlayAt (or absorbing it into the loop)
+    // turns this red.
+    A6Harness h;
+    A6DocBuilder b(h);
+    const entt::entity e = b.Create("LoopWithOneShot");
+    b.AttachBoundSource(e, "audio/loopshot.wav", false, true, true);
+    const UUID uuid = b.UuidOf(e);
+    h.fake.ScriptGeneration(A6Key("audio/loopshot.wav"), A6MonoGeneration());
+    AudioListenerPose listener;
+    listener.position[0] = 0.0f;
+    listener.position[1] = 0.0f;
+    listener.position[2] = 0.0f;
+    listener.forward[0] = 0.0f;
+    listener.forward[1] = 0.0f;
+    listener.forward[2] = -1.0f;
+    listener.up[0] = 0.0f;
+    listener.up[1] = 1.0f;
+    listener.up[2] = 1.0f;
+    h.ctrl.SetAudioListenerPose(listener);
+    REQUIRE(h.Play(b.doc));
+
+    // The authored loop starts through plain Play.
+    CHECK(h.sink.AudioPlay(uuid)); // seq 1: loop voice
+    h.Update();
+    REQUIRE(A6LiveVoices(h, uuid) == 1);
+    REQUIRE(h.fake.starts.size() == 1);
+    CHECK(h.fake.starts[0].start.loop == true);
+
+    // PlayAt fires an independent one-shot at the override, not a loop
+    // refresh: two voices, and the backend started a non-looping voice.
+    CHECK(h.sink.AudioPlayAt(uuid, glm::vec3{10.0f, 0.0f, 0.0f})); // seq 2
+    h.Update();
+    REQUIRE(A6LiveVoices(h, uuid) == 2);
+    REQUIRE(h.fake.starts.size() == 2);
+    CHECK(h.fake.starts[1].start.loop == false);
+
+    // The one-shot (seq 2) is hard-right at the override; the loop
+    // (seq 1) still spatializes from the entity at the origin (center),
+    // proving the loop was neither refreshed to nor dragged along.
+    AudioWorld* world = h.ctrl.TryGetAudioWorld();
+    REQUIRE(world != nullptr);
+    bool sawLoop = false;
+    bool sawOneShot = false;
+    for (const AudioWorldVoiceHandle& voice : world->LiveVoicesForSource(uuid))
+    {
+        uint64_t seq = 0;
+        REQUIRE(world->GetVoicePlaySequence(voice, seq));
+        BackendVoiceMix mix;
+        REQUIRE(world->GetVoiceMix(voice, mix));
+        if (seq == 1)
+        {
+            CHECK(mix.left == doctest::Approx(0.70710678f).epsilon(1e-5));
+            CHECK(mix.right == doctest::Approx(0.70710678f).epsilon(1e-5));
+            sawLoop = true;
+        }
+        else if (seq == 2)
+        {
+            CHECK(std::fabs(mix.left) < 1e-5f);
+            CHECK(mix.right == doctest::Approx(20.0f / 29.0f).epsilon(1e-5));
+            sawOneShot = true;
+        }
+    }
+    CHECK(sawLoop);
+    CHECK(sawOneShot);
+
+    // A later plain Play still refreshes the loop (no third voice, no new
+    // backend start): the authored loop flag survived the override.
+    CHECK(h.sink.AudioPlay(uuid)); // seq 3: loop refresh
+    h.Update();
+    CHECK(A6LiveVoices(h, uuid) == 2);
+    CHECK(h.fake.starts.size() == 2);
     h.Stop(b.doc);
 }

@@ -202,8 +202,9 @@ queue**, not "audible". A command queued from `on_update` executes in
 that same frame's audio slot; the drain freezes the queue FIFO and
 re-entrant submissions wait for the next frame. `audio_play_at` carries
 a one-shot positional override on its voice through final-pose landing
-and mix refresh (overlapping one-shots keep distinct positions), and
-refuses looping sources — loops use `audio_play`. Synchronous `false` —
+and mix refresh (overlapping one-shots keep distinct positions); on a
+looping source it starts an independent non-looping one-shot without
+refreshing or disturbing the live loop. Synchronous `false` —
 never a raise, never a quarantine — is limited to malformed arguments
 (nil, wrong type, NaN, infinity, float overflow, out-of-range
 gain/pitch), a missing/invalid authored source (unknown entity, no

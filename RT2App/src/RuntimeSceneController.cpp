@@ -593,18 +593,11 @@ bool RuntimeSceneController::QueueAudioPlayAt(const UUID& source,
     A6ResolvedAudioSource resolved;
     if (!A6ResolveAudioSource(*this, source, "audio_play_at", true, resolved))
         return false;
-    // A6 settlement: audio_play_at is a one-shot positional override. On a
-    // looping source it would either pin the loop at the override (the
-    // per-voice override rides mix refresh) or fight the loop refresh, so
-    // it refuses loudly — loops use audio_play.
-    if (resolved.component.loop)
-    {
-        printf("[Audio] audio_play_at refused for %s "
-               "(looping source: one-shot override does not apply to loops; "
-               "use audio_play)\n",
-               source.ToString().c_str());
-        return false;
-    }
+    // A6 one-shot independence (READY Script API): audio_play_at is a
+    // one-shot positional override independently of the authored loop
+    // flag. The drain starts a fresh non-looping voice at the override
+    // and never refreshes a live loop for it; the authored loop flag is
+    // preserved, so a later audio_play still ensures the loop.
     if (A6AudioQueueFull(*this, source, "audio_play_at"))
         return false;
     rt2::audio::AudioPlayRequest req;

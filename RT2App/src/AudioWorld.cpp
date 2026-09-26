@@ -537,11 +537,16 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     // Looping Play is idempotent per source: a live loop is refreshed, not
     // duplicated. The refresh carries the new play sequence on the slot so
     // a later terminal failure for this voice replaces the refreshed
-    // success instead of an older one.
+    // success instead of an older one. A6 one-shot independence: a
+    // positional override (audio_play_at) never takes this branch — it
+    // always starts a fresh non-looping voice below, leaving any live loop
+    // untouched (the authored loop flag in state.component is preserved,
+    // so a later plain Play still refreshes).
     for (size_t i = 0; i < m_Slots.size(); ++i)
     {
         VoiceSlot& slot = m_Slots[i];
-        if (slot.live && slot.source == cmd.source && slot.loop)
+        if (!cmd.positionalOverride && slot.live &&
+            slot.source == cmd.source && slot.loop)
         {
             BackendVoiceMix mix;
             core::Error error;
@@ -637,7 +642,9 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     BackendVoiceStart start;
     start.session = m_Session;
     start.owner = m_Owner;
-    start.loop = cmd.component.loop;
+    // A6: a positional override starts a non-looping one-shot even when
+    // the authored source loops.
+    start.loop = cmd.component.loop && !cmd.positionalOverride;
     start.initialPaused = m_SessionPaused;
     start.bus = cmd.component.bus;
     start.initialLeft = initial.value.left;
@@ -712,7 +719,10 @@ bool AudioWorld::ExecutePlay(const Command& cmd, AudioUpdateStats& stats)
     slot.playSequence = cmd.sequence;
     slot.startOrder = m_StartOrderCounter++;
     slot.priority = cmd.component.priority;
-    slot.loop = cmd.component.loop;
+    // A6: matches start.loop above — an override voice never loops, so mix
+    // refresh (which honors hasPositionalOverride) and loop refresh (which
+    // an override never enters) cannot disagree about it.
+    slot.loop = cmd.component.loop && !cmd.positionalOverride;
     // A6: a one-shot positional override rides the voice, not the source:
     // final-pose landing and mix refresh below must not pull it back to
     // the entity (and overlapping one-shots keep distinct positions). A
