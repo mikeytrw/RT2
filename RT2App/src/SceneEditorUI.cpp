@@ -2878,32 +2878,14 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 				m_AudioClipPathTextActive = false;
 				m_AudioClipPathError.clear();
 				m_AudioDiagnostic.clear();
-				// A7 review P1: a committed clip replacement while this
-				// entity owns the preview restarts the audition explicitly
-				// (ticket: changing a previewed clip replaces only the
-				// preview voice), so the old clip never keeps playing under
-				// a Stop-labeled button. A refused restart still leaves
-				// zero preview voices with a loud typed diagnostic.
-				if (before.has_value() && fresh.has_value() &&
-				    DecidePreviewActionOnApply(audioThisPreviewing,
-				                               before->clip,
-				                               fresh->clip) ==
-				        AudioAuthoringPreviewAction::Restart)
-				{
-					if (m_OnAudioPreviewStart)
-					{
-						std::string restartDiagnostic;
-						if (!m_OnAudioPreviewStart(targetUuid,
-						                           m_AudioPreviewSpatial,
-						                           restartDiagnostic))
-							m_AudioDiagnostic = restartDiagnostic;
-					}
-					else
-					{
-						m_AudioDiagnostic =
-							"Preview unavailable: no preview backend is bound";
-					}
-				}
+				// Closure re-review: thin delegation to the probe-driven
+				// ExecuteAudioApplyPreviewStep seam (exact branch/hook/
+				// diagnostic logic lives there). A refused restart still
+				// leaves zero preview voices with a loud typed diagnostic.
+				ExecuteAudioApplyPreviewStep(
+					audioThisPreviewing, targetUuid, before, fresh,
+					m_OnAudioPreviewStart, m_AudioPreviewSpatial,
+					m_AudioDiagnostic);
 			}
 			}
 			ImGui::EndDisabled();
@@ -2938,18 +2920,14 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 					m_AudioClipPathTextActive = false;
 					m_AudioClipPathError.clear();
 					m_AudioDiagnostic.clear();
-					// A7 review P1: removing the previewed source stops
-					// its voice explicitly with status. Without this the
-					// next frame disables Stop (no live component) while
-					// the old voice keeps sounding.
-					if (DecidePreviewActionOnRemove(audioThisPreviewing) ==
-					    AudioAuthoringPreviewAction::Stop)
-					{
-						if (m_OnAudioPreviewStop)
-							m_OnAudioPreviewStop();
-						m_AudioDiagnostic =
-							"Preview stopped: the previewed source was removed";
-					}
+					// Closure re-review: thin delegation to the
+					// probe-driven ExecuteAudioRemovePreviewStep seam
+					// (exact branch/hook/diagnostic logic lives there).
+					// Without this the next frame disables Stop (no live
+					// component) while the old voice keeps sounding.
+					ExecuteAudioRemovePreviewStep(audioThisPreviewing,
+					                              m_OnAudioPreviewStop,
+					                              m_AudioDiagnostic);
 				}
 				else
 				{

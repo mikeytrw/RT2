@@ -259,13 +259,14 @@ void AudioPreviewController::Update(const AudioListenerPose& listener,
         m_Backend->DrainCompletions(m_Session);
     if (!drained.IsOk())
     {
-        // A failed drain is not silent: the typed error reaches the status
-        // UI (bounded — only when no failure is already sticky, so a
-        // persistently failing backend cannot grow the failure count every
-        // frame) and a diagnostic names it every frame it persists.
+        // A failed drain is not silent: the typed error publishes
+        // monotonically — a later DISTINCT failure replaces the sticky one
+        // so the status never shows a stale failure, while a persistently
+        // identical failure does not grow the count every frame — and a
+        // diagnostic names it every frame it persists.
         m_LastDiagnostic = "preview completion drain failed (" +
                            drained.error.detail + ")";
-        if (m_LastError.IsOk())
+        if (m_LastError != drained.error)
             RecordFailure(drained.error, m_ClipKey);
     }
     else
@@ -431,7 +432,7 @@ void AudioPreviewController::NoteMixFailure(const core::Error& error,
                                             const char* context)
 {
     m_LastDiagnostic = std::string(context) + " (" + error.detail + ")";
-    if (m_LastError.IsOk())
+    if (m_LastError != error)
         RecordFailure(error, m_ClipKey);
 }
 

@@ -92,16 +92,17 @@ public:
     // (spatial math or center), so the toggle audibly switches a running
     // preview instead of stranding it in the old mode. The switch commits
     // only after the new mix publishes: a compute/publish failure retains
-    // the last valid mix AND the old mode (typed LastError when none is
-    // sticky, plus a diagnostic) and retries next frame. Otherwise reaps
+    // the last valid mix AND the old mode (monotonic typed LastError plus
+    // a diagnostic) and retries next frame. Otherwise reaps
     // naturally completed/failed preview
     // voices (a finished one-shot ends the preview instead of lingering
     // live) and refreshes the spatial audition mix from the current
     // source/listener poses. Mix failures retain the last valid mix and
     // record a diagnostic; they never stop the preview. A failed
-    // completion drain records the typed error (bounded: only when no
-    // failure is already sticky) plus a diagnostic, so a silent backend
-    // drain failure still reaches the status UI. Never throws.
+    // completion drain publishes the typed error monotonically (a later
+    // distinct failure replaces the sticky one) plus a diagnostic, so a
+    // silent backend drain failure still reaches the status UI. Never
+    // throws.
     void Update(const AudioListenerPose& listener,
                 const float sourcePosition[3], bool hasTransform,
                 bool spatialAudition);
@@ -143,11 +144,12 @@ public:
 
 private:
     void RecordFailure(const core::Error& error, const std::string& asset);
-    // Mix-failure reporter for the Update paths (re-review finding 2): the
-    // diagnostic always names the failure, and the typed error reaches the
-    // host status through LastError — bounded to when no failure is already
-    // sticky, so a persistently failing backend cannot grow the failure
-    // count every frame. The voice keeps playing on the last valid mix.
+    // Mix-failure reporter for the Update paths (re-review findings): the
+    // diagnostic always names the failure, and the typed error publishes
+    // monotonically through LastError — a later DISTINCT failure replaces
+    // the sticky one so the status never goes stale, while an identical
+    // repeat does not grow the failure count. The voice keeps playing on
+    // the last valid mix.
     void NoteMixFailure(const core::Error& error, const char* context);
     // The clip reference captured at StartPreview. Valid only while
     // HasPreview(); the host reconciles it against the live authored clip

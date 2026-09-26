@@ -53,6 +53,20 @@ struct Error
 
     bool IsOk() const { return code == None; }
 
+    // Value equality for distinct-failure publication: a repeated
+    // identical failure must not grow the failure count every frame,
+    // while a later DISTINCT failure must publish immediately (audio A7
+    // re-review). Compares the full triple — a changed detail re-publishes.
+    bool operator==(const Error& other) const
+    {
+        return code == other.code && path == other.path &&
+               detail == other.detail;
+    }
+    bool operator!=(const Error& other) const
+    {
+        return !(*this == other);
+    }
+
     // Human-readable one-liner for logs and CLI output.
     // Format: "code=<name> path=<path> detail=<detail>"
     std::string Format() const;

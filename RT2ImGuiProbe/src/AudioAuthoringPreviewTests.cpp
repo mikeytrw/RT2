@@ -44,9 +44,17 @@
 //     (SceneManager + history + controller + restart); failed mixes reach
 //     LastError with retry; status lines go through the production
 //     FillAudioStatusSnapshot with real backend/world/controller objects.
-//     SceneEditorUI/WalnutApp cannot link here (ImGui/Walnut boundary), so
-//     the ImGui button chrome and host member plumbing are verified by the
-//     documented interactive acceptance below, not by automation.
+//   - Closure re-review: the inspector Remove/Apply step logic lives in
+//     the probe-linkable ExecuteAudio*PreviewStep seams, which the cases
+//     below drive with recording AND null hooks (branch, hook invocation,
+//     and diagnostic strings all asserted). HONEST LIMITATION, not caller
+//     proof: these cases execute the exact caller logic but cannot prove
+//     RenderAudioEditor invokes the seam, that Walnut installs the hooks,
+//     or the ImGui button chrome — the inspector TU cannot link here
+//     (FileDialog native dialogs, gizmo/editor closure, ImGui/Walnut
+//     boundary). Those three are covered by the interactive acceptance
+//     below, which was NOT performed live in this environment (no
+//     display/GPU session available to click through).
 //
 // INTERACTIVE ACCEPTANCE (Walnut session, against these exact transitions):
 //   1. Select a source, Preview: voice sounds, Stop enabled, status shows
@@ -1241,4 +1249,173 @@ TEST_CASE("A7 probe: failed steady spatial refresh reaches LastError")
     CHECK_FALSE(controller.LastError().IsOk());
     CHECK(controller.LastError().code ==
           rt2::core::Error::InvalidRuntimeState);
+}
+
+TEST_CASE("A7 probe: successive distinct failures publish monotonically")
+{
+    // Closure finding 1: after a sticky first failure, a later DISTINCT
+    // mix/drain failure must replace it in the rendered status — while an
+    // identical repeat must not grow the count. Each stage goes through
+    // the production Fill + formatter, which is what Walnut renders.
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+    AudioSourceComponent bound = TwoDSource();
+    BindClip(bound, f.ids);
+
+    rt2::audio::RecordingFakeAudioBackend fake;
+    rt2::audio::AudioPreviewController controller;
+    BindPreviewToFake(controller, fake);
+    rt2::core::Error error;
+    REQUIRE(StartBoundPreview(controller, uuid, bound, error));
+
+    auto renderedFailure = [&]() {
+        AudioStatusSnapshot snapshot;
+        const rt2::audio::AudioBackendStatus backend = fake.Status();
+        FillAudioStatusSnapshot(snapshot, true, &backend, 0, controller,
+                                nullptr, true,
+                                controller.LastError().Format(),
+                                controller.LastAffectedAsset(), 0, 0, 0);
+        return FindLineStarting(FormatAudioStatusLines(snapshot),
+                                "  Last failure: ");
+    };
+    const float pos[3] = { 0.0f, 0.0f, 0.0f };
+
+    // First failure: failed toggle publish (mix path).
+    fake.FailNextMix(rt2::core::Error{ rt2::core::Error::InvalidArgument,
+                                       "preview-voice",
+                                       "toggle publish refused" });
+    controller.Update(CenterListener(), pos, false, true);
+    REQUIRE_FALSE(controller.LastError().IsOk());
+    CHECK(controller.FailureCount() == 1);
+    CHECK(renderedFailure().find("invalid_argument") != std::string::npos);
+
+    // Second, DISTINCT failure: failed drain. The rendered line must track
+    // the latest failure, not the sticky first one (the old IsOk-gated
+    // code failed exactly here). The still-requested toggle retries on
+    // the same frame and commits once its script is consumed.
+    const rt2::core::Error drainFailure{ rt2::core::Error::InvalidRuntimeState,
+                                         "preview-session",
+                                         "drain refused" };
+    fake.FailNextDrain(drainFailure);
+    controller.Update(CenterListener(), pos, false, true);
+    CHECK(controller.FailureCount() == 2);
+    CHECK(controller.LastError() == drainFailure);
+    CHECK(controller.PreviewSpatialAudition());
+    const std::string secondLine = renderedFailure();
+    CHECK(secondLine.find("invalid_runtime_state") != std::string::npos);
+    CHECK(secondLine.find("preview-session") != std::string::npos);
+
+    // Identical repeat: no new publication, count holds, line unchanged.
+    fake.FailNextDrain(drainFailure);
+    controller.Update(CenterListener(), pos, false, true);
+    CHECK(controller.FailureCount() == 2);
+    CHECK(controller.LastError() == drainFailure);
+    CHECK(renderedFailure() == secondLine);
+
+    // Third, distinct again: toggling back to 2D refuses its center-mix
+    // publish and publishes once more (the steady path early-outs for
+    // this 2D component, so the toggle drives the mix call).
+    fake.FailNextMix(rt2::core::Error{ rt2::core::Error::Io,
+                                       "preview-voice",
+                                       "toggle-back refused" });
+    controller.Update(CenterListener(), pos, false, false);
+    CHECK(controller.FailureCount() == 3);
+    CHECK(controller.PreviewSpatialAudition());
+    CHECK(renderedFailure().find("code=io") != std::string::npos);
+}
+
+TEST_CASE("A7 probe: remove-step seam stops with status, loudly when unbound")
+{
+    // Exact caller logic with a recording hook: branch, single invocation,
+    // and diagnostic string all asserted — a broken Stop mapping or a
+    // dropped diagnostic fails here.
+    int stops = 0;
+    std::string diagnostic = "sentinel";
+    CHECK(ExecuteAudioRemovePreviewStep(
+        true, [&]() { ++stops; }, diagnostic));
+    CHECK(stops == 1);
+    CHECK(diagnostic == "Preview stopped: the previewed source was removed");
+
+    // Another entity's audition is untouched; the diagnostic is preserved.
+    diagnostic = "sentinel";
+    CHECK_FALSE(ExecuteAudioRemovePreviewStep(
+        false, [&]() { ++stops; }, diagnostic));
+    CHECK(stops == 1);
+    CHECK(diagnostic == "sentinel");
+
+    // A missing hook is loud, never a silent skip that would strand a
+    // voice behind a disabled Stop.
+    diagnostic = "sentinel";
+    CHECK_FALSE(ExecuteAudioRemovePreviewStep(
+        true, std::function<void()>{}, diagnostic));
+    CHECK(stops == 1);
+    CHECK(diagnostic ==
+          "Preview stop unavailable: no preview backend is bound");
+}
+
+TEST_CASE("A7 probe: apply-step seam restarts on clip moves only")
+{
+    AudioSceneFixture f;
+    const auto uuid = f.AddSource();
+    auto boundClip = [&](const char* path) {
+        AudioSourceComponent component = TwoDSource();
+        component.clip.kind = AssetKind::AudioClip;
+        component.clip.path = path;
+        component.clip.assetId = f.ids.CreateV4();
+        return component;
+    };
+    const AudioSourceComponent clipA = boundClip("sfx/a.wav");
+    const AudioSourceComponent clipB = boundClip("sfx/b.wav");
+    const std::optional<AudioSourceComponent> before = clipA;
+    const std::optional<AudioSourceComponent> after = clipB;
+    const std::optional<AudioSourceComponent> same = clipA;
+
+    // Clip move with a working hook: exact uuid + spatial forwarded, true
+    // only when the new voice is live, diagnostic untouched on success.
+    int starts = 0;
+    rt2::core::UUID seenTarget;
+    bool seenSpatial = false;
+    std::string diagnostic = "sentinel";
+    std::function<bool(const rt2::core::UUID&, bool, std::string&)> start =
+        [&](const rt2::core::UUID& target, bool spatial,
+            std::string&) {
+            ++starts;
+            seenTarget = target;
+            seenSpatial = spatial;
+            return true;
+        };
+    CHECK(ExecuteAudioApplyPreviewStep(true, uuid, before, after, start,
+                                       true, diagnostic));
+    CHECK(starts == 1);
+    CHECK(seenTarget == uuid);
+    CHECK(seenSpatial);
+    CHECK(diagnostic == "sentinel");
+
+    // Refused restart propagates the typed diagnostic and reports false.
+    start = [](const rt2::core::UUID&, bool, std::string& out) {
+        out = "code=MissingAsset path=sfx/b.wav detail=clip gone";
+        return false;
+    };
+    diagnostic = "sentinel";
+    CHECK_FALSE(ExecuteAudioApplyPreviewStep(true, uuid, before, after,
+                                             start, false, diagnostic));
+    CHECK(diagnostic == "code=MissingAsset path=sfx/b.wav detail=clip gone");
+
+    // Field-identical clips, foreign previews, and missing states issue
+    // no start and touch nothing.
+    diagnostic = "sentinel";
+    CHECK_FALSE(ExecuteAudioApplyPreviewStep(true, uuid, before, same,
+                                             start, false, diagnostic));
+    CHECK_FALSE(ExecuteAudioApplyPreviewStep(false, uuid, before, after,
+                                             start, false, diagnostic));
+    CHECK_FALSE(ExecuteAudioApplyPreviewStep(
+        true, uuid, std::nullopt, after, start, false, diagnostic));
+    CHECK(diagnostic == "sentinel");
+
+    // A missing hook is loud.
+    CHECK_FALSE(ExecuteAudioApplyPreviewStep(
+        true, uuid, before, after,
+        std::function<bool(const rt2::core::UUID&, bool, std::string&)>{},
+        false, diagnostic));
+    CHECK(diagnostic == "Preview unavailable: no preview backend is bound");
 }
