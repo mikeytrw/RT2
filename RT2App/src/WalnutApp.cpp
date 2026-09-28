@@ -1492,70 +1492,10 @@ public:
 		ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), "Unsaved changes");
 	ImGui::Separator();
 
-	// ---- File operations ----
-	if (ImGui::Button("New"))
-		NewScene();
-	ImGui::SameLine();
-	if (ImGui::Button("Open..."))
-	{
-		std::string path = FileDialog::OpenFile(
-			L"RT2 Project, Scene and Model Files (*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj)\0*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj\0RT2 Project (*.rt2proj)\0*.rt2proj\0RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
-			DialogInitialDirectory());
-		if (!path.empty())
-			RequestOpenScene(path);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Save"))
-		m_ActionQueue.Push(rt2::core::EditorAction::Save);
-	ImGui::SameLine();
-	if (ImGui::Button("Save As..."))
-		SaveRt2SceneAs();
+	// Document and transport controls live in the File menu and the
+	// persistent toolbar (one command seam); this panel keeps statistics
+	// and environment controls only.
 
-	ImGui::Separator();
-
-	// ---- Play/Pause/Step/Stop controls ----
-	{
-		auto state = m_Runtime.GetState();
-		bool playing = (state == rt2::core::SceneRunState::Playing);
-		bool paused  = (state == rt2::core::SceneRunState::Paused);
-		bool editing = (state == rt2::core::SceneRunState::Edit);
-
-		ImGui::BeginDisabled(playing);
-		if (ImGui::Button("Play"))
-		{
-			// Paused resumes, Edit enters Play; dispatch picks the same
-			// entry points as the toolbar through one seam.
-			m_ActionQueue.Push(paused
-				? rt2::core::EditorAction::Resume
-				: rt2::core::EditorAction::Play);
-		}
-		ImGui::EndDisabled();
-
-		ImGui::SameLine();
-		ImGui::BeginDisabled(!playing);
-		if (ImGui::Button("Pause"))
-			m_ActionQueue.Push(rt2::core::EditorAction::Pause);
-		ImGui::EndDisabled();
-
-		ImGui::SameLine();
-		ImGui::BeginDisabled(!paused);
-		if (ImGui::Button("Step"))
-			m_ActionQueue.Push(rt2::core::EditorAction::Step);
-		ImGui::EndDisabled();
-
-		ImGui::SameLine();
-		ImGui::BeginDisabled(editing);
-		if (ImGui::Button("Stop"))
-			m_ActionQueue.Push(rt2::core::EditorAction::Stop);
-		ImGui::EndDisabled();
-
-		// State indicator
-		const char* stateStr = editing ? "Edit" : (paused ? "Paused" : "Playing");
-		ImGui::SameLine();
-		ImGui::TextDisabled("(%s)", stateStr);
-	}
-
-	ImGui::Separator();
 	ImGui::Text("Environment Map");
 	if (ImGui::Button("Load HDR..."))
 	{
