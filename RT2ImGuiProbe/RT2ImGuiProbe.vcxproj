@@ -186,6 +186,13 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- Editor workspace persistence foundation: real-1.87 manual ini
+         lifecycle through the production checked byte path. -->
+    <ClCompile Include="src\EditorWorkspaceIniProbeTests.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
   </ItemGroup>
   <!-- T3: pinned Bullet core libraries. Explicit link order BulletDynamics,
        BulletCollision, LinearMath; every consumer links all three (no
