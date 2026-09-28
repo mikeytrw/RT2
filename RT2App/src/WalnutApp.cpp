@@ -40,6 +40,7 @@
 #include "SceneRenderBridge.h"
 #include "ECSComponents.h"
 #include "EditorSettings.h"
+#include "EditorWorkspaceState.h"
 #include "SceneRecoveryService.h"
 #include "UnsavedChangesCoordinator.h"
 #include "ViewportCoordinates.h"
@@ -278,6 +279,7 @@ public:
 
 	RT2Layer(std::shared_ptr<NgxRuntime> ngxRuntime)
 		: m_Ngx(std::move(ngxRuntime))
+		, m_Workspace(AppDataRoot(), ExecutableDirectory())
 	{
 		m_Cam = Camera(45.0f, 0.1f, 10000.0f, 0.005f, 2.5f);
 		m_Cam.m_Aperture = 0.0f;
@@ -308,8 +310,9 @@ public:
 			}
 		}
 
-		// Load saved window visibility + performance detail level.
-		LoadViewConfig();
+		// Window visibility + performance detail load in OnAttach (workspace
+		// persistence foundation): the ImGui context must exist and the load
+		// must precede the first NewFrame, neither of which holds here.
 
 		// Discover pending recovery records from a previous unclean exit.
 		// We surface these as a startup Restore/Discard modal below.
@@ -342,7 +345,7 @@ public:
 				LoadSceneInternal(a.path.string());
 				break;
 			case rt2::core::UnsavedChangesCoordinator::ActionKind::Exit:
-				SaveViewConfig();
+				FlushWorkspaceSettings("exit");
 				Walnut::Application::Get().Close();
 				break;
 			case rt2::core::UnsavedChangesCoordinator::ActionKind::None:
@@ -721,50 +724,51 @@ public:
 		}
 	}
 
+	virtual void OnAttach() override
+	{
+		// Editor workspace persistence foundation: manual ImGui ini
+		// ownership established here, before the first NewFrame. Walnut
+		// creates the ImGui context before pushing layers, so GetIO is
+		// valid. io.IniFilename stays null for the whole session: every
+		// geometry byte moves through checked IO in EditorWorkspaceState,
+		// and WantSaveIniSettings is cleared only after a successful write.
+		m_Workspace.SetHeadless(g_CLI.headless);
+		ImGui::GetIO().IniFilename = nullptr;
+		m_Workspace.ClassifyStartup();
+		const auto geometry = m_Workspace.LoadGeometryBytes();
+		if (geometry.IsOk() && !geometry.bytes.empty())
+			ImGui::LoadIniSettingsFromMemory(
+				geometry.bytes.data(), geometry.bytes.size());
+		if (!geometry.IsOk())
+		{
+			m_LastStatusMsg = std::string("Workspace layout session-only: ") +
+				geometry.error.Format();
+			printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+		}
+		const rt2::core::WorkspaceVisibility base =
+			m_Workspace.Classification().visibilityBasis ==
+				rt2::core::WorkspaceVisibilityBasis::NewProfile
+			? rt2::core::WorkspaceVisibility::NewProfileDefaults()
+			: rt2::core::WorkspaceVisibility::LegacyDefaults();
+		const auto visibility = m_Workspace.LoadVisibility(base);
+		ApplyWorkspaceVisibility(visibility.visibility);
+		m_WorkspaceUnknownLines = visibility.unknownLines;
+		if (!visibility.IsOk())
+		{
+			m_LastStatusMsg = std::string("Workspace visibility session-only: ") +
+				visibility.error.Format();
+			printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+		}
+		else if (m_Workspace.Status().visibility.lastError.code !=
+			rt2::core::Error::None)
+		{
+			printf("[Workspace] %s\n",
+				m_Workspace.Status().visibility.lastError.Format().c_str());
+		}
+	}
+
 	virtual void OnUIRender() override
 	{
-		// ImGui's default is a cwd-relative path. Keep writes in the user's
-		// application-data directory, while accepting an executable-local file
-		// as a read-only seed for portable installs.
-		if (!m_ImGuiIniConfigured)
-		{
-			const auto userIniPath = AppDataRoot() / "imgui.ini";
-			m_ImGuiIniPath = userIniPath.string();
-			std::error_code directoryError;
-			std::filesystem::create_directories(userIniPath.parent_path(),
-				directoryError);
-			if (directoryError)
-				printf("[ImGui] Failed to create config directory \"%s\": %s\n",
-					userIniPath.parent_path().u8string().c_str(),
-					directoryError.message().c_str());
-
-			std::filesystem::path loadIniPath = userIniPath;
-			std::error_code userIniError;
-			const bool hasUserIni = std::filesystem::is_regular_file(
-				userIniPath, userIniError) && !userIniError;
-			if (!hasUserIni)
-			{
-				const auto executableDirectory = ExecutableDirectory();
-				if (!executableDirectory.empty())
-				{
-					const auto portableIniPath = executableDirectory / "imgui.ini";
-					std::error_code portableIniError;
-					if (std::filesystem::is_regular_file(
-							portableIniPath, portableIniError) && !portableIniError)
-					{
-						loadIniPath = portableIniPath;
-						printf("[ImGui] Seeding user layout from portable config \"%s\"\n",
-							portableIniPath.u8string().c_str());
-					}
-				}
-			}
-
-			ImGui::GetIO().IniFilename = m_ImGuiIniPath.c_str();
-			const auto loadIniString = loadIniPath.string();
-			ImGui::LoadIniSettingsFromDisk(loadIniString.c_str());
-			m_ImGuiIniConfigured = true;
-		}
-
 		// Phase 5: ResolveUI applies ImGui suppression and viewport
 		// sub-context push/pop. The viewport hover / gizmo-consumes-mouse
 		// state from the PREVIOUS frame is used here (we don't know
@@ -1745,6 +1749,8 @@ public:
 		DrawInputBindingsPanel();
 	if (m_ShowContentBrowserWindow)
 		DrawContentBrowserPanel();
+	if (m_ShowWorkspaceSettingsWindow)
+		DrawWorkspaceSettingsPanel();
 	DrawRecoveryPrompt();
 	DrawUnsavedChangesPrompt();
 	DrawLoadingModal();
@@ -1757,6 +1763,9 @@ public:
 	// Phase 5: EndFrame commits current → previous state, clears
 	// per-frame deltas, and applies cursor capture. Called at the end
 	// of OnUIRender so all UI consumers have run.
+	// Workspace persistence runs first: visibility flags are final only
+	// after every panel (including close buttons) has submitted.
+	PollWorkspacePersistence();
 	m_Input.EndFrame();
 	} // end OnUIRender
 
@@ -1768,6 +1777,7 @@ public:
 		ImGui::Text("Dirty: %s", m_SceneMgr.IsDirty() ? "yes" : "no");
 		ImGui::Text("Revision: %llu", static_cast<unsigned long long>(m_SceneMgr.AuthoringRevision()));
 		ImGui::Text("Status: %s", m_LastStatusMsg.c_str());
+		ImGui::Text("Workspace: %s", m_Workspace.Status().SummaryMessage());
 		ImGui::Separator();
 		if (m_Settings2)
 		{
@@ -2386,6 +2396,196 @@ public:
 			ImGui::EndPopup();
 		}
 		ImGui::End();
+	}
+
+	// ---- Editor workspace recovery UI (persistence package 1) ----
+	// Always reachable via View > Workspace Settings. Shows the affected
+	// paths, the last typed error per file, unsaved parts, and the Retry
+	// Load / Retry Save / Reset Layout / backup-restore contracts. The
+	// durable WorkspacePersistenceStatus behind it lives for the whole
+	// session; this panel is only its presentation.
+
+	static const char* WorkspaceFileStateName(
+		rt2::core::WorkspaceFileState state)
+	{
+		using rt2::core::WorkspaceFileState;
+		switch (state)
+		{
+		case WorkspaceFileState::Loaded: return "saved";
+		case WorkspaceFileState::NewDefault: return "new default";
+		case WorkspaceFileState::SessionOnlyProtected: return "protected (session-only)";
+		case WorkspaceFileState::UnsavedChanges: return "unsaved changes";
+		case WorkspaceFileState::SaveFailed: return "save failed";
+		case WorkspaceFileState::LoadFailed: return "load failed";
+		case WorkspaceFileState::Unknown: default: return "unknown";
+		}
+	}
+
+	void DrawWorkspaceFileRow(const char* label,
+		const std::filesystem::path& path,
+		const rt2::core::WorkspaceFileStatus& status)
+	{
+		ImGui::Text("%s: %s", label, WorkspaceFileStateName(status.state));
+		ImGui::TextDisabled("%s", path.u8string().c_str());
+		if (!status.lastError.IsOk())
+			ImGui::Text("Error: %s", status.lastError.Format().c_str());
+		if (status.failureCount > 1)
+			ImGui::Text("Attempts since last success: %d", status.failureCount);
+		if (!status.backupPath.empty())
+			ImGui::TextDisabled("Backup: %s", status.backupPath.u8string().c_str());
+	}
+
+	void DrawWorkspaceSettingsPanel()
+	{
+		ImGui::Begin("Workspace Settings", &m_ShowWorkspaceSettingsWindow);
+		const auto& status = m_Workspace.Status();
+		ImGui::Text("Status: %s", status.SummaryMessage());
+		ImGui::Separator();
+		DrawWorkspaceFileRow("Layout geometry", m_Workspace.UserIniPath(),
+			status.geometry);
+		if (m_Workspace.Classification().geometrySource ==
+			rt2::core::WorkspaceGeometrySource::PortableSeed)
+			ImGui::TextDisabled("Seeded from portable file (never written).");
+		ImGui::Separator();
+		DrawWorkspaceFileRow("Panel visibility", m_Workspace.ViewConfigPath(),
+			status.visibility);
+		ImGui::Separator();
+		ImGui::TextWrapped("Geometry and visibility save independently: a crash "
+			"between writes can restore a mixed layout. Paired backups bound "
+			"recovery; Retry and Restore act on them now.");
+		ImGui::Separator();
+		if (ImGui::Button("Retry Save"))
+			FlushWorkspaceSettings("retry");
+		ImGui::SameLine();
+		if (ImGui::Button("Retry Load"))
+		{
+			// A successful load discards session-only geometry, so confirm
+			// first when the session holds unsaved layout edits. The flag
+			// lives in this panel (own scope), never in a popup ID stack.
+			if (m_Workspace.GeometryDirty() || m_Workspace.VisibilityDirty())
+				m_WorkspaceReloadArmed = true;
+			else
+				RetryWorkspaceLoad();
+		}
+		if (m_WorkspaceReloadArmed)
+		{
+			ImGui::Text("Reloading discards unsaved session layout. Continue?");
+			if (ImGui::Button("Confirm Reload"))
+			{
+				m_WorkspaceReloadArmed = false;
+				RetryWorkspaceLoad();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel"))
+				m_WorkspaceReloadArmed = false;
+		}
+		ImGui::Separator();
+		if (ImGui::Button("Reset Window Visibility"))
+			m_VisibilityResetArmed = true;
+		if (m_VisibilityResetArmed)
+		{
+			rt2::core::Error gate;
+			const bool canReset = m_Workspace.CanResetVisibility(gate);
+			ImGui::Text("Reset backs up view_config, restores default panel "
+				"visibility, and re-saves. Continue?");
+			if (!canReset)
+				ImGui::Text("Reset unavailable: %s", gate.Format().c_str());
+			if (ImGui::Button("Confirm Visibility Reset") && canReset)
+			{
+				m_VisibilityResetArmed = false;
+				ResetWorkspaceVisibility();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel"))
+				m_VisibilityResetArmed = false;
+		}
+		// Full Reset Layout (geometry rebuild) is intentionally unavailable:
+		// it needs the package-2 default-arrangement builder, and offering
+		// a reset that merely re-saves current geometry would mislead.
+		// The checked backup + full-reset CPU mechanism is implemented and
+		// tested; the user-facing geometry action ships with package 2.
+		ImGui::BeginDisabled(true);
+		ImGui::Button("Reset Layout (geometry)");
+		ImGui::EndDisabled();
+		ImGui::TextWrapped("Layout geometry reset arrives with the default "
+			"arrangement package. Backups, Retry, and visibility reset work now.");
+		ImGui::Separator();
+		ImGui::TextDisabled("Paired backups");
+		if (!status.geometry.backupPath.empty() &&
+			std::filesystem::is_regular_file(status.geometry.backupPath))
+		{
+			if (ImGui::Button("Restore Layout Backup"))
+			{
+				rt2::core::Error err;
+				if (m_Workspace.RestoreBackupGeometry(err))
+					RetryWorkspaceLoad();
+				else
+				{
+					m_LastStatusMsg = std::string("Workspace backup restore failed: ") +
+						err.Format();
+					printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+				}
+			}
+		}
+		if (!status.visibility.backupPath.empty() &&
+			std::filesystem::is_regular_file(status.visibility.backupPath))
+		{
+			ImGui::SameLine();
+			if (ImGui::Button("Restore Visibility Backup"))
+			{
+				rt2::core::Error err;
+				if (m_Workspace.RestoreBackupVisibility(err))
+					RetryWorkspaceLoad();
+				else
+				{
+					m_LastStatusMsg = std::string("Workspace backup restore failed: ") +
+						err.Format();
+					printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+				}
+			}
+		}
+		ImGui::End();
+	}
+
+	// Retry Load: re-probe and re-read both files. Success replaces the
+	// protected session-only state and applies the file state (geometry
+	// bytes into ImGui, visibility into the flags); failure leaves the
+	// session and originals untouched.
+	void RetryWorkspaceLoad()
+	{
+		rt2::core::Error err;
+		if (!m_Workspace.ReloadAll(
+				rt2::core::EditorWorkspaceState::Clock::now(), err))
+		{
+			m_LastStatusMsg = std::string("Workspace reload failed: ") + err.Format();
+			printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+			return;
+		}
+		const std::string& bytes = m_Workspace.LastSavedGeometry();
+		if (!bytes.empty())
+			ImGui::LoadIniSettingsFromMemory(bytes.data(), bytes.size());
+		ApplyWorkspaceVisibility(m_Workspace.LastSavedVisibility());
+		m_WorkspaceUnknownLines = m_Workspace.LastSavedUnknownLines();
+		m_LastStatusMsg = "Workspace settings reloaded";
+	}
+
+	// Bounded Reset Window Visibility: checked view_config backup first
+	// (failure blocks and reports path/error), then default visibility,
+	// force-saved without debounce. Geometry files are never touched.
+	void ResetWorkspaceVisibility()
+	{
+		rt2::core::Error err;
+		if (!m_Workspace.ResetVisibilityToDefaults(
+				rt2::core::EditorWorkspaceState::Clock::now(), err))
+		{
+			m_LastStatusMsg = std::string("Workspace visibility reset failed: ") +
+				err.Format();
+			printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+			return;
+		}
+		ApplyWorkspaceVisibility(m_Workspace.LastSavedVisibility());
+		m_WorkspaceUnknownLines = m_Workspace.LastSavedUnknownLines();
+		m_LastStatusMsg = "Workspace window visibility reset to defaults";
 	}
 
 	void DrawRecoveryPrompt()
@@ -3022,6 +3222,9 @@ public:
 
 	void OnDetach() override
 	{
+		// Workspace final flush while the ImGui context still exists
+		// (OnDetach runs before DestroyContext). Headless never writes.
+		FlushWorkspaceSettings("shutdown");
 		// ApplicationSpecification retains the provider lambda until the
 		// Application itself is destroyed. Tear NGX down explicitly while the
 		// Walnut Vulkan device is still alive; the shared owner destructor may
@@ -4549,8 +4752,6 @@ private:
 	// clobbers. Disarmed permanently once explicit selection or session
 	// fallback owns the session.
 	std::optional<ImplicitStartupDenoiser> m_ImplicitDefault;
-	bool m_ImGuiIniConfigured = false;
-	std::string m_ImGuiIniPath;
 
 	// Runtime lifecycle
 	SceneRenderBridge* m_RenderBridge = nullptr;
@@ -5178,55 +5379,102 @@ private:
 		return std::filesystem::current_path() / "RT2Editor";
 	}
 
-	// ---- View config persistence (window visibility + perf detail) ----
-	// Saved to <AppDataRoot>/view_config.txt as plain key=value lines.
-	// Loaded once at construction; saved when a flag changes (dirty bit).
-	std::filesystem::path ViewConfigPath() const
+	// ---- Editor workspace persistence (native workspace package 1) ----
+	// Geometry (imgui.ini) and visibility (view_config.txt) stay per-user
+	// files under AppDataRoot; the portable executable-directory ini is a
+	// read-only seed that is never written. Window identities are the
+	// existing Begin labels, preserved exactly so saved layouts survive.
+	rt2::core::WorkspaceVisibility CurrentWorkspaceVisibility() const
 	{
-		return AppDataRoot() / "view_config.txt";
+		rt2::core::WorkspaceVisibility v;
+		v.perfDetail = m_PerfDetailLevel;
+		v.showCamera = m_ShowInfoWindow;
+		v.showPerformance = m_ShowPerfWindow;
+		v.showRenderSettings = m_ShowRenderSettingsWin;
+		v.showScene = m_ShowSceneWindow;
+		v.showSession = m_ShowSessionWindow;
+		v.showInputBindings = m_ShowInputBindingsWindow;
+		v.showContentBrowser = m_ShowContentBrowserWindow;
+		v.showInspector = m_ShowInspectorWindow;
+		v.showOutliner = m_ShowHierarchyWindow;
+		return v;
 	}
 
-	void LoadViewConfig()
+	void ApplyWorkspaceVisibility(const rt2::core::WorkspaceVisibility& v)
 	{
-		std::ifstream in(ViewConfigPath());
-		if (!in) return;
-		std::string line;
-		while (std::getline(in, line))
+		m_PerfDetailLevel = v.perfDetail;
+		m_ShowInfoWindow = v.showCamera;
+		m_ShowPerfWindow = v.showPerformance;
+		m_ShowRenderSettingsWin = v.showRenderSettings;
+		m_ShowSceneWindow = v.showScene;
+		m_ShowSessionWindow = v.showSession;
+		m_ShowInputBindingsWindow = v.showInputBindings;
+		m_ShowContentBrowserWindow = v.showContentBrowser;
+		m_ShowInspectorWindow = v.showInspector;
+		m_ShowHierarchyWindow = v.showOutliner;
+	}
+
+	// Forced checked save of every dirty part (exit, shutdown, explicit
+	// Retry Save). Reports loudly through the Session status channel and
+	// stdout; never blocks the host action it accompanies.
+	bool FlushWorkspaceSettings(const char* context)
+	{
+		if (g_CLI.headless) return true;
+		size_t size = 0;
+		const char* data = ImGui::SaveIniSettingsToMemory(&size);
+		const std::string bytes(data != nullptr ? data : "", size);
+		rt2::core::Error err;
+		const bool ok = m_Workspace.Flush(
+			rt2::core::EditorWorkspaceState::Clock::now(),
+			CurrentWorkspaceVisibility(), m_WorkspaceUnknownLines,
+			&bytes, err);
+		if (!ok)
 		{
-			auto eq = line.find('=');
-			if (eq == std::string::npos) continue;
-			std::string key = line.substr(0, eq);
-			std::string val = line.substr(eq + 1);
-			auto getBool = [&](bool& out) {
-				if (val == "1" || val == "true") out = true;
-				else if (val == "0" || val == "false") out = false;
-			};
-			if (key == "perfDetail")      m_PerfDetailLevel      = std::atoi(val.c_str());
-			else if (key == "showCamera")        getBool(m_ShowInfoWindow);
-			else if (key == "showPerformance")   getBool(m_ShowPerfWindow);
-			else if (key == "showRenderSettings")getBool(m_ShowRenderSettingsWin);
-			else if (key == "showScene")         getBool(m_ShowSceneWindow);
-			else if (key == "showSession")       getBool(m_ShowSessionWindow);
-			else if (key == "showInspector")     getBool(m_ShowInspectorWindow);
-			else if (key == "showOutliner")      getBool(m_ShowHierarchyWindow);
+			m_LastStatusMsg = std::string("Workspace (") + context + "): " +
+				err.Format();
+			printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
 		}
+		return ok;
 	}
 
-	void SaveViewConfig()
+	// Per-frame driver, after all panels submitted: snapshot-compare the
+	// nine visibility flags (close buttons mutate them directly, so compare
+	// rather than hook), observe WantSaveIniSettings for geometry, and run
+	// debounced checked saves. Failures stay loud but coalesced; a partial
+	// save holds the Session channel until both sides persist.
+	void PollWorkspacePersistence()
 	{
-		auto path = ViewConfigPath();
-		std::error_code ec;
-		std::filesystem::create_directories(path.parent_path(), ec);
-		std::ofstream out(path, std::ios::trunc);
-		if (!out) return;
-		out << "perfDetail=" << m_PerfDetailLevel << "\n";
-		out << "showCamera=" << (m_ShowInfoWindow ? 1 : 0) << "\n";
-		out << "showPerformance=" << (m_ShowPerfWindow ? 1 : 0) << "\n";
-		out << "showRenderSettings=" << (m_ShowRenderSettingsWin ? 1 : 0) << "\n";
-		out << "showScene=" << (m_ShowSceneWindow ? 1 : 0) << "\n";
-		out << "showSession=" << (m_ShowSessionWindow ? 1 : 0) << "\n";
-		out << "showInspector=" << (m_ShowInspectorWindow ? 1 : 0) << "\n";
-		out << "showOutliner=" << (m_ShowHierarchyWindow ? 1 : 0) << "\n";
+		if (g_CLI.headless) return;
+		using Clock = rt2::core::EditorWorkspaceState::Clock;
+		const auto now = Clock::now();
+		m_Workspace.MarkVisibilitySnapshot(
+			CurrentWorkspaceVisibility(), m_WorkspaceUnknownLines, now);
+		if (ImGui::GetIO().WantSaveIniSettings)
+			m_Workspace.MarkGeometryDirty(now);
+		rt2::core::Error err;
+		if (m_Workspace.VisibilitySaveDue(now) &&
+			!m_Workspace.SaveVisibility(now, false, err))
+		{
+			m_LastStatusMsg = std::string("Workspace visibility not saved: ") +
+				err.Format();
+			printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+		}
+		if (m_Workspace.GeometrySaveDue(now))
+		{
+			size_t size = 0;
+			const char* data = ImGui::SaveIniSettingsToMemory(&size);
+			const std::string bytes(data != nullptr ? data : "", size);
+			if (m_Workspace.SaveGeometry(now, false, bytes, err))
+				ImGui::GetIO().WantSaveIniSettings = false;
+			else
+			{
+				m_LastStatusMsg = std::string("Workspace layout not saved: ") +
+					err.Format();
+				printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+			}
+		}
+		if (m_Workspace.Status().PartiallySaved())
+			m_LastStatusMsg = m_Workspace.Status().SummaryMessage();
 	}
 
 	std::unique_ptr<rt2::core::EditorSettingsStore>      m_Settings2;
@@ -5238,6 +5486,14 @@ private:
 	bool                                                  m_RecoveryPromptOpen = false;
 	std::string                                           m_UntitledRecoveryId; // stable per session
 	std::string                                           m_LastStatusMsg;
+	// Editor workspace persistence foundation (native workspace package 1):
+	// checked geometry/visibility policy, manual ini ownership, and the
+	// durable session status behind View > Workspace Settings. Constructed
+	// in the init list (no default state); loaded in OnAttach before the
+	// first frame. Unknown view_config lines ride alongside so rewrites
+	// retain forward-compatible keys.
+	rt2::core::EditorWorkspaceState                    m_Workspace;
+	std::vector<std::string>                            m_WorkspaceUnknownLines;
 	rt2::core::ScriptRepairPersistenceGate                m_ScriptRepairGate;
 	rt2::core::AssetMigrationPersistenceGate              m_AssetMigrationGate;
 
@@ -5815,6 +6071,11 @@ public:
 	bool m_ShowContentBrowserWindow = false;
 	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
 	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
+	// Workspace recovery UI state (View > Workspace Settings). Session-only,
+	// never persisted; public for the menubar callback like the flags above.
+	bool m_ShowWorkspaceSettingsWindow = false;
+	bool m_VisibilityResetArmed = false;
+	bool m_WorkspaceReloadArmed = false;
 	// One-shot session fallback latch (amendment step 5): set when the
 	// renderer settles requested RR onto another backend and the session
 	// selection is mirrored once. Cleared whenever RR is (re)selected.
@@ -6714,6 +6975,16 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::MenuItem("Content Browser", nullptr, &layerPtr->m_ShowContentBrowserWindow);
 			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
 			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
+			ImGui::Separator();
+			ImGui::TextDisabled("Workspace");
+			ImGui::Separator();
+			// Always reachable: manual persistence ships no recovery without
+			// this panel, which hosts the accurately named Retry / Restore /
+			// visibility-reset actions. A full geometry Reset Layout is NOT
+			// offered here: it needs the package-2 default builder, and a
+			// reset that merely re-saves current geometry would mislead.
+			ImGui::MenuItem("Workspace Settings", nullptr,
+				&layerPtr->m_ShowWorkspaceSettingsWindow);
 			ImGui::Separator();
 			ImGui::TextDisabled("Viewport");
 			ImGui::Separator();

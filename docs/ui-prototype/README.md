@@ -54,6 +54,7 @@ See [coverage and evidence](grounding.md). Grounded at `8b7f538477ecb482946675fd
 Browser DOM-event checks cover separate asset/entity selection, transform Undo/Redo, runtime locks/step/return, physics clean-draft restoration and dirty-draft conflicts, audio validation, unsaved-change choices, standalone gating, tool destinations and binding conflicts. `node --check editor.js` passed. Pointer automation was unreliable; the checks establish event/state behavior, not native clickability or engine acceptance.
 ## Durable design record
 
+- [Native implementation plan (draft)](planning/implementation-plan.md)
 - [Workspace decisions](planning/editor-workspace-concept.md)
 - [Current UI model](planning/current-ui-model.md)
 - [Gap analysis](planning/ui-prototype-gap-analysis.md)
