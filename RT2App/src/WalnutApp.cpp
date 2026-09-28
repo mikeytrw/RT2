@@ -1824,6 +1824,12 @@ public:
 		if (m_Settings2 && !m_Settings2->GetRecentScenes().empty())
 		{
 			ImGui::Text("Recent Scenes");
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Clear"))
+			{
+				m_Settings2->ClearRecentScenes();
+				PersistEditorSettings("recent scenes");
+			}
 			auto recents = m_Settings2->GetRecentScenes();
 			for (size_t i = 0; i < recents.size(); ++i)
 			{
