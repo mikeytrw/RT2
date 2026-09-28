@@ -633,3 +633,57 @@ TEST_CASE("Workspace: Retry Load replaces protected state after access is repair
     CHECK(ws.LoadGeometryBytes().bytes == "[Window][Repaired]\n");
     fs::remove_all(dir, ec);
 }
+
+TEST_CASE("Workspace: staged geometry reset backs up, installs defaults, writes nothing yet")
+{
+    auto dir = UniqueTempDir("stagedreset");
+    auto exe = UniqueTempDir("stagedreset_exe");
+    WriteBytes(dir / "imgui.ini", "[Window][Custom]\n");
+    WriteBytes(dir / "view_config.txt", "showScene=0\nfutureFlag=9\n");
+    WriteBytes(exe / "imgui.ini", "[Window][Seed]\n");
+    EditorWorkspaceState ws(dir, exe);
+    ws.ClassifyStartup();
+    Error err;
+    REQUIRE(ws.BeginGeometryReset(T(10.0), err));
+    // Both originals backed up; the seed untouched; nothing rewritten yet.
+    REQUIRE(fs::exists(dir / "imgui.ini.bak"));
+    REQUIRE(fs::exists(dir / "view_config.txt.bak"));
+    CHECK(ReadBytes(dir / "imgui.ini.bak") == "[Window][Custom]\n");
+    CHECK(ReadBytes(dir / "imgui.ini") == "[Window][Custom]\n");
+    CHECK(ReadBytes(exe / "imgui.ini") == "[Window][Seed]\n");
+    // Visibility defaults pending (interim: Scene on), unknowns harvested.
+    CHECK(ws.PendingVisibility() == WorkspaceVisibility::NewProfileDefaults());
+    CHECK(ws.PendingUnknownLines().size() == 1);
+    CHECK(ws.PendingUnknownLines()[0] == "futureFlag=9");
+    CHECK(ws.VisibilityDirty());
+    CHECK(ws.Status().visibility.state == WorkspaceFileState::UnsavedChanges);
+    // Host rebuild + forced flush completes the contract for both files.
+    ws.MarkGeometryDirty(T(11.0));
+    const std::string rebuilt = "[Window][Rebuilt]\n";
+    REQUIRE(ws.Flush(T(20.0), ws.PendingVisibility(), ws.PendingUnknownLines(),
+        &rebuilt, err));
+    CHECK(ReadBytes(dir / "imgui.ini") == rebuilt);
+    CHECK(ReadBytes(dir / "view_config.txt").find("showScene=1") != std::string::npos);
+    CHECK_FALSE(ws.Status().HasUnsaved());
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::remove_all(exe, ec);
+}
+
+TEST_CASE("Workspace: staged geometry reset blocked without backups, headless refused")
+{
+    auto dir = UniqueTempDir("stagedresetbad");
+    EditorWorkspaceState ws(dir, dir);
+    std::error_code ec;
+    fs::create_directories(dir / "imgui.ini", ec); // unreadable geometry
+    ws.ClassifyStartup();
+    Error err;
+    CHECK_FALSE(ws.BeginGeometryReset(T(10.0), err));
+    CHECK_FALSE(err.IsOk());
+    CHECK_FALSE(ws.VisibilityDirty());
+    EditorWorkspaceState headless(dir, dir);
+    headless.SetHeadless(true);
+    headless.ClassifyStartup();
+    CHECK_FALSE(headless.BeginGeometryReset(T(10.0), err));
+    fs::remove_all(dir, ec);
+}

@@ -40,6 +40,8 @@
 #include "SceneRenderBridge.h"
 #include "ECSComponents.h"
 #include "EditorSettings.h"
+#include "EditorTheme.h"
+#include "EditorWorkspaceDocking.h"
 #include "EditorWorkspaceState.h"
 #include "SceneRecoveryService.h"
 #include "UnsavedChangesCoordinator.h"
@@ -732,6 +734,11 @@ public:
 		// separate OS windows on restart.
 		ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
+		// Editor workspace theme (package 2): idempotent absolute token
+		// assignment over Walnut's base setup. Runs after Walnut Init, so
+		// these tokens win; re-running converges instead of compounding.
+		rt2::ApplyEditorTheme();
+
 		// Editor workspace persistence foundation: manual ImGui ini
 		// ownership established here, before the first NewFrame. Walnut
 		// creates the ImGui context before pushing layers, so GetIO is
@@ -770,6 +777,37 @@ public:
 		{
 			printf("[Workspace] %s\n",
 				m_Workspace.Status().visibility.lastError.Format().c_str());
+		}
+		// First-use seeding (package 2): a genuinely new profile builds the
+		// designed arrangement once, when the host has a valid content size.
+		// Readable existing layouts (even floating or tab-less) never arm
+		// this; visibility honors its own config independently above.
+		if (m_Workspace.Classification().geometrySource ==
+			rt2::core::WorkspaceGeometrySource::NewDefault)
+			m_DefaultLayoutPending = true;
+	}
+
+	// Pre-dock hook (Walnut OnDockspaceUI): runs inside the existing dock
+	// host after Begin, before DockSpace submission. Applies at most one
+	// pending default/reset arrangement per session trigger, then clears
+	// the request — never per frame, never on resize.
+	void OnDockspaceUI(uint32_t dockspaceId) override
+	{
+		if (!m_DefaultLayoutPending || g_CLI.headless) return;
+		const ImVec2 avail = ImGui::GetContentRegionAvail();
+		if (!rt2::BuildDefaultDockLayout(
+				static_cast<ImGuiID>(dockspaceId), avail))
+			return; // no valid content size yet; stay pending
+		m_DefaultLayoutPending = false;
+		// The rebuilt windows submit below; the layout persists through the
+		// normal WantSave path, forced without debounce after a Reset.
+		m_Workspace.MarkGeometryDirty(
+			rt2::core::EditorWorkspaceState::Clock::now());
+		m_ContentBrowserFocusRequest = true;
+		if (m_ResetRebuildPending)
+		{
+			m_ResetRebuildPending = false;
+			m_ResetRebuildApplied = true;
 		}
 	}
 
@@ -2038,6 +2076,11 @@ public:
 
 	void DrawContentBrowserPanel()
 	{
+		// One-shot first-use/reset focus: the visible Content Browser takes
+		// the bottom tab on the build frame. Skipped when hidden; the flag
+		// clears at end of frame either way.
+		if (m_ContentBrowserFocusRequest)
+			ImGui::SetNextWindowFocus();
 		ImGui::Begin("Content Browser", &m_ShowContentBrowserWindow);
 		const bool canOperate = rt2::core::CanOperateContentBrowser(
 			m_ProjectContext != nullptr);
@@ -2505,16 +2548,28 @@ public:
 			if (ImGui::Button("Cancel"))
 				m_VisibilityResetArmed = false;
 		}
-		// Full Reset Layout (geometry rebuild) is intentionally unavailable:
-		// it needs the package-2 default-arrangement builder, and offering
-		// a reset that merely re-saves current geometry would mislead.
-		// The checked backup + full-reset CPU mechanism is implemented and
-		// tested; the user-facing geometry action ships with package 2.
-		ImGui::BeginDisabled(true);
-		ImGui::Button("Reset Layout (geometry)");
-		ImGui::EndDisabled();
-		ImGui::TextWrapped("Layout geometry reset arrives with the default "
-			"arrangement package. Backups, Retry, and visibility reset work now.");
+		// Full Reset Layout (package 2): checked backups, default visibility,
+		// and the designed default arrangement rebuilt in-hook, then a
+		// forced two-file save once the rebuilt windows have submitted.
+		if (ImGui::Button("Reset Layout"))
+			m_LayoutResetArmed = true;
+		if (m_LayoutResetArmed)
+		{
+			rt2::core::Error gate;
+			const bool canReset = m_Workspace.CanReset(gate);
+			ImGui::Text("Reset backs up both files, restores default panels "
+				"and arrangement, and re-saves. Continue?");
+			if (!canReset)
+				ImGui::Text("Reset unavailable: %s", gate.Format().c_str());
+			if (ImGui::Button("Confirm Layout Reset") && canReset)
+			{
+				m_LayoutResetArmed = false;
+				ResetWorkspaceLayout();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel"))
+				m_LayoutResetArmed = false;
+		}
 		ImGui::Separator();
 		ImGui::TextDisabled("Paired backups");
 		if (!status.geometry.backupPath.empty() &&
@@ -2592,6 +2647,28 @@ public:
 		ApplyWorkspaceVisibility(m_Workspace.LastSavedVisibility());
 		m_WorkspaceUnknownLines = m_Workspace.LastSavedUnknownLines();
 		m_LastStatusMsg = "Workspace window visibility reset to defaults";
+	}
+
+	// Full Reset Layout (package 2): staged reset — backups and default
+	// visibility install now, the designed arrangement rebuilds in the
+	// pre-dock hook, and Poll force-saves both files once the rebuilt
+	// windows have submitted (no debounce wait, unsaved status kept until
+	// both writes succeed). Never touches the portable seed.
+	void ResetWorkspaceLayout()
+	{
+		rt2::core::Error err;
+		if (!m_Workspace.BeginGeometryReset(
+				rt2::core::EditorWorkspaceState::Clock::now(), err))
+		{
+			m_LastStatusMsg = std::string("Workspace reset failed: ") + err.Format();
+			printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+			return;
+		}
+		ApplyWorkspaceVisibility(m_Workspace.PendingVisibility());
+		m_WorkspaceUnknownLines = m_Workspace.PendingUnknownLines();
+		m_DefaultLayoutPending = true;
+		m_ResetRebuildPending = true;
+		m_LastStatusMsg = "Workspace layout rebuilding to defaults";
 	}
 
 	void DrawRecoveryPrompt()
@@ -5484,6 +5561,20 @@ private:
 		}
 		if (m_Workspace.Status().PartiallySaved())
 			m_LastStatusMsg = m_Workspace.Status().SummaryMessage();
+		// Explicit Reset keeps unsaved status until BOTH files succeed: once
+		// the rebuilt windows have submitted, force the two-file save without
+		// waiting for debounce. Kept armed across frames until it succeeds.
+		if (m_ResetRebuildApplied && !FlushWorkspaceSettings("reset"))
+			m_LastStatusMsg = std::string("Workspace reset not yet saved: ") +
+				m_Workspace.Status().SummaryMessage();
+		else if (m_ResetRebuildApplied)
+		{
+			m_ResetRebuildApplied = false;
+			m_LastStatusMsg = "Workspace layout reset to defaults";
+		}
+		// One-shot focus request lives for a single frame: panels above had
+		// their chance to consume it.
+		m_ContentBrowserFocusRequest = false;
 	}
 
 	std::unique_ptr<rt2::core::EditorSettingsStore>      m_Settings2;
@@ -5503,6 +5594,16 @@ private:
 	// retain forward-compatible keys.
 	rt2::core::EditorWorkspaceState                    m_Workspace;
 	std::vector<std::string>                            m_WorkspaceUnknownLines;
+	// Default-arrangement requests (package 2): at most one pending build
+	// per trigger (first-use or explicit Reset). The pre-dock hook consumes
+	// them; custom layouts never arm them. Reset adds a forced two-file
+	// save once the rebuilt windows have submitted.
+	bool                                                m_DefaultLayoutPending = false;
+	bool                                                m_ResetRebuildPending = false;
+	bool                                                m_ResetRebuildApplied = false;
+	// One-shot Content Browser focus after a default/reset build, consumed
+	// at its next submission (skipped when hidden), then cleared.
+	bool                                                m_ContentBrowserFocusRequest = false;
 	rt2::core::ScriptRepairPersistenceGate                m_ScriptRepairGate;
 	rt2::core::AssetMigrationPersistenceGate              m_AssetMigrationGate;
 
@@ -6084,6 +6185,7 @@ public:
 	// never persisted; public for the menubar callback like the flags above.
 	bool m_ShowWorkspaceSettingsWindow = false;
 	bool m_VisibilityResetArmed = false;
+	bool m_LayoutResetArmed = false;
 	bool m_WorkspaceReloadArmed = false;
 	// One-shot session fallback latch (amendment step 5): set when the
 	// renderer settles requested RR onto another backend and the session
@@ -6988,12 +7090,16 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::TextDisabled("Workspace");
 			ImGui::Separator();
 			// Always reachable: manual persistence ships no recovery without
-			// this panel, which hosts the accurately named Retry / Restore /
-			// visibility-reset actions. A full geometry Reset Layout is NOT
-			// offered here: it needs the package-2 default builder, and a
-			// reset that merely re-saves current geometry would mislead.
+			// this panel, which hosts Retry / Restore / visibility-reset /
+			// full Reset Layout (the geometry rebuild now installs the
+			// designed default arrangement).
 			ImGui::MenuItem("Workspace Settings", nullptr,
 				&layerPtr->m_ShowWorkspaceSettingsWindow);
+			if (ImGui::MenuItem("Reset Layout"))
+			{
+				layerPtr->m_ShowWorkspaceSettingsWindow = true;
+				layerPtr->m_LayoutResetArmed = true;
+			}
 			ImGui::Separator();
 			ImGui::TextDisabled("Viewport");
 			ImGui::Separator();

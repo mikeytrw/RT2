@@ -28,6 +28,13 @@ project "RT2ImGuiProbe"
         "../Walnut/vendor/imgui/imgui_widgets.cpp",
     }
 
+    -- Editor workspace theme + docking adapter (RT2App-owned ImGui-side
+    -- sources for the workspace probe tests; never in CPU closures).
+    files {
+        "../RT2App/src/EditorTheme.cpp",
+        "../RT2App/src/EditorWorkspaceDocking.cpp",
+    }
+
     -- Identical CPU translation-unit closure as RT2Tests (keep in lockstep
     -- with RT2Tests/premake5.lua and RT2Tests/RT2AppCpuSources.props).
     -- T8: PhysicsDebugLines.cpp + PhysicsDebugCapture.cpp are CPU-only and

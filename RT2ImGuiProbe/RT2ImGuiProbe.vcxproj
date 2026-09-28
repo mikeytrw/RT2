@@ -164,6 +164,18 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <!-- Editor workspace theme + docking adapter (RT2App-owned, ImGui-side;
+         exercised by the workspace probe tests, never in CPU closures). -->
+    <ClCompile Include="..\RT2App\src\EditorTheme.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\RT2App\src\EditorWorkspaceDocking.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\Main.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -189,6 +201,13 @@
     <!-- Editor workspace persistence foundation: real-1.87 manual ini
          lifecycle through the production checked byte path. -->
     <ClCompile Include="src\EditorWorkspaceIniProbeTests.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <!-- Editor workspace theme + default docking: production adapter
+         against the real 1.87 frame/dock lifecycle. -->
+    <ClCompile Include="src\EditorWorkspaceDockingProbeTests.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

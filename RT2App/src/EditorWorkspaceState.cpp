@@ -1020,6 +1020,45 @@ bool EditorWorkspaceState::CanResetVisibility(Error& err) const
     return true;
 }
 
+bool EditorWorkspaceState::BeginGeometryReset(Clock::time_point now, Error& err)
+{
+    err = Error{};
+    if (m_Headless)
+    {
+        err.code = Error::InvalidArgument;
+        err.detail = "Reset Layout refused: headless operation never rewrites preferences";
+        return false;
+    }
+    if (!CanReset(err)) return false;
+    if (ProbeWorkspaceFile(UserIniPath()).exists &&
+        !EnsureBackup(UserIniPath(), m_Status.geometry, err))
+    {
+        NoteFailure(m_Status.geometry, err, now);
+        return false;
+    }
+    if (ProbeWorkspaceFile(ViewConfigPath()).exists &&
+        !EnsureBackup(ViewConfigPath(), m_Status.visibility, err))
+    {
+        NoteFailure(m_Status.visibility, err, now);
+        return false;
+    }
+    m_ResetPerformed = true;
+    m_Classification.userIniProtected = false;
+    m_Classification.viewConfigProtected = false;
+    {
+        std::string current;
+        Error readErr;
+        if (ReadFileBytesChecked(ViewConfigPath(), current, readErr))
+            m_PendingUnknownLines =
+                ParseWorkspaceViewConfig(
+                    current, WorkspaceVisibility::NewProfileDefaults()).unknownLines;
+    }
+    m_PendingVisibility = WorkspaceVisibility::NewProfileDefaults();
+    m_VisibilityDirtySince = now;
+    m_Status.visibility.state = WorkspaceFileState::UnsavedChanges;
+    return true;
+}
+
 bool EditorWorkspaceState::RestoreBackupGeometry(Error& err)
 {
     err = Error{};

@@ -264,7 +264,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\EditorSyncRouter.h" />
     <ClInclude Include="src\EditorWorkspaceState.h" />
     <ClInclude Include="src\EditorTransformGizmo.h" />
+    <ClInclude Include="src\EditorTheme.h" />
     <ClInclude Include="src\EditorViewportIcons.h" />
+    <ClInclude Include="src\EditorWorkspaceDocking.h" />
     <ClInclude Include="src\EntityReferenceRemapper.h" />
     <ClInclude Include="src\FileDialog.h" />
     <ClInclude Include="src\FixtureGenerator.h" />
@@ -611,6 +613,16 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorViewportIconsDraw.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorTheme.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorWorkspaceDocking.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
