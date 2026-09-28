@@ -11,6 +11,8 @@
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 
 // ============================================================================
@@ -488,4 +490,57 @@ TEST_CASE("T5 probe: malformed otherBody text with a dirty field disables Apply 
     const std::string rawText = "not-a-uuid";
     CHECK_FALSE(rawText.empty());
     CHECK_FALSE(parseError.empty());
+}
+
+TEST_CASE("Layout: early docking load keeps saved panels in the main viewport")
+{
+    // RT2 loads its ini before Walnut's first NewFrame and disables platform
+    // viewports. The checked-in portable seed contains a docked Viewport;
+    // an older user ini may also contain undocked platform-window metadata.
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr; // Never rewrite the checked-in seed.
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+    constexpr const char* legacyFloating =
+        "[Window][Legacy Floating]\n"
+        "ViewportPos=2113,1111\n"
+        "ViewportId=0x044B1956\n"
+        "Size=442,392\n"
+        "Collapsed=0\n";
+    std::ifstream seed("RT2App/imgui.ini", std::ios::binary);
+    REQUIRE(seed.good());
+    std::string layout(std::istreambuf_iterator<char>{seed}, {});
+    layout += "\n";
+    layout += legacyFloating;
+    ImGui::LoadIniSettingsFromMemory(layout.c_str(), layout.size());
+    io.DisplaySize = ImVec2(1600.0f, 900.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char* pixels = nullptr;
+    int width = 0, height = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(io.DisplaySize);
+    ImGui::Begin("DockSpace Demo");
+    ImGui::DockSpace(ImGui::GetID("VulkanAppDockspace"));
+    ImGui::Begin("Viewport");
+    const bool viewportDocked = ImGui::GetWindowDockID() != 0;
+    ImGui::End();
+    ImGui::Begin("Legacy Floating");
+    const bool floatingIsMainViewport =
+        ImGui::GetWindowViewport()->ID == ImGui::GetMainViewport()->ID;
+    const ImVec2 floatingPos = ImGui::GetWindowPos();
+    ImGui::End();
+    ImGui::End();
+    ImGui::Render();
+    CHECK(viewportDocked);
+    CHECK(floatingIsMainViewport);
+    CHECK(floatingPos.x >= 0.0f);
+    CHECK(floatingPos.x < io.DisplaySize.x);
+    CHECK(floatingPos.y >= 0.0f);
+    CHECK(floatingPos.y < io.DisplaySize.y);
+    CHECK_FALSE((io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0);
+    ImGui::DestroyContext();
 }

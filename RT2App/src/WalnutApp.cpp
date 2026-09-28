@@ -721,50 +721,55 @@ public:
 		}
 	}
 
-	virtual void OnUIRender() override
+	void OnAttach() override
 	{
-		// ImGui's default is a cwd-relative path. Keep writes in the user's
-		// application-data directory, while accepting an executable-local file
-		// as a read-only seed for portable installs.
-		if (!m_ImGuiIniConfigured)
-		{
-			const auto userIniPath = AppDataRoot() / "imgui.ini";
-			m_ImGuiIniPath = userIniPath.string();
-			std::error_code directoryError;
-			std::filesystem::create_directories(userIniPath.parent_path(),
-				directoryError);
-			if (directoryError)
-				printf("[ImGui] Failed to create config directory \"%s\": %s\n",
-					userIniPath.parent_path().u8string().c_str(),
-					directoryError.message().c_str());
+		// Walnut enables platform viewports by default. RT2's panels belong
+		// inside its main window, even when they are not docked to a node.
+		// Set this before the first NewFrame so a saved layout cannot spawn
+		// separate OS windows on restart.
+		ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
-			std::filesystem::path loadIniPath = userIniPath;
-			std::error_code userIniError;
-			const bool hasUserIni = std::filesystem::is_regular_file(
-				userIniPath, userIniError) && !userIniError;
-			if (!hasUserIni)
+		// ImGui auto-loads IniFilename during its first NewFrame. Configure and
+		// load our user layout before that frame and before Walnut creates the
+		// dockspace; loading from OnUIRender was too late for docking restore.
+		const auto userIniPath = AppDataRoot() / "imgui.ini";
+		m_ImGuiIniPath = userIniPath.string();
+		std::error_code directoryError;
+		std::filesystem::create_directories(userIniPath.parent_path(),
+			directoryError);
+		if (directoryError)
+			printf("[ImGui] Failed to create config directory \"%s\": %s\n",
+				userIniPath.parent_path().u8string().c_str(),
+				directoryError.message().c_str());
+
+		std::filesystem::path loadIniPath = userIniPath;
+		std::error_code userIniError;
+		const bool hasUserIni = std::filesystem::is_regular_file(
+			userIniPath, userIniError) && !userIniError;
+		if (!hasUserIni)
+		{
+			const auto executableDirectory = ExecutableDirectory();
+			if (!executableDirectory.empty())
 			{
-				const auto executableDirectory = ExecutableDirectory();
-				if (!executableDirectory.empty())
+				const auto portableIniPath = executableDirectory / "imgui.ini";
+				std::error_code portableIniError;
+				if (std::filesystem::is_regular_file(
+						portableIniPath, portableIniError) && !portableIniError)
 				{
-					const auto portableIniPath = executableDirectory / "imgui.ini";
-					std::error_code portableIniError;
-					if (std::filesystem::is_regular_file(
-							portableIniPath, portableIniError) && !portableIniError)
-					{
-						loadIniPath = portableIniPath;
-						printf("[ImGui] Seeding user layout from portable config \"%s\"\n",
-							portableIniPath.u8string().c_str());
-					}
+					loadIniPath = portableIniPath;
+					printf("[ImGui] Seeding user layout from portable config \"%s\"\n",
+						portableIniPath.u8string().c_str());
 				}
 			}
-
-			ImGui::GetIO().IniFilename = m_ImGuiIniPath.c_str();
-			const auto loadIniString = loadIniPath.string();
-			ImGui::LoadIniSettingsFromDisk(loadIniString.c_str());
-			m_ImGuiIniConfigured = true;
 		}
 
+		ImGui::GetIO().IniFilename = m_ImGuiIniPath.c_str();
+		const auto loadIniString = loadIniPath.string();
+		ImGui::LoadIniSettingsFromDisk(loadIniString.c_str());
+	}
+
+	virtual void OnUIRender() override
+	{
 		// Phase 5: ResolveUI applies ImGui suppression and viewport
 		// sub-context push/pop. The viewport hover / gizmo-consumes-mouse
 		// state from the PREVIOUS frame is used here (we don't know
@@ -3022,6 +3027,16 @@ public:
 
 	void OnDetach() override
 	{
+		// Walnut destroys layers before ImGui::DestroyContext(). Save while the
+		// layer-owned path is alive, then prevent ImGui's later shutdown save
+		// from dereferencing the destroyed m_ImGuiIniPath string.
+		if (ImGui::GetCurrentContext())
+		{
+			if (!m_ImGuiIniPath.empty())
+				ImGui::SaveIniSettingsToDisk(m_ImGuiIniPath.c_str());
+			ImGui::GetIO().IniFilename = nullptr;
+		}
+
 		// ApplicationSpecification retains the provider lambda until the
 		// Application itself is destroyed. Tear NGX down explicitly while the
 		// Walnut Vulkan device is still alive; the shared owner destructor may
@@ -4549,7 +4564,6 @@ private:
 	// clobbers. Disarmed permanently once explicit selection or session
 	// fallback owns the session.
 	std::optional<ImplicitStartupDenoiser> m_ImplicitDefault;
-	bool m_ImGuiIniConfigured = false;
 	std::string m_ImGuiIniPath;
 
 	// Runtime lifecycle
