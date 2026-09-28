@@ -1,4 +1,5 @@
 #include "SceneEditorUI.h"
+#include "EditorToolbar.h"
 #include "PrimitiveGeometry.h"
 #include "FileDialog.h"
 #include "ECSComponents.h"
@@ -462,6 +463,100 @@ bool SceneEditorUI::MutationSelectionAllowed(std::string& reason) const
 		return false;
 	}
 	return true;
+}
+
+rt2::core::SharedAddMenuContext SceneEditorUI::AddMenuContext() const
+{
+	rt2::core::SharedAddMenuContext context;
+	context.editable = m_Editable;
+	const auto primary = m_State.Selection().Primary();
+	context.hasParent = !primary.IsNull();
+	context.parentLocked = context.hasParent && m_State.IsLocked(primary);
+	context.parentUuid = context.hasParent ? primary.ToString() : std::string{};
+	context.queue = m_ActionQueue;
+	return context;
+}
+
+bool SceneEditorUI::ExecuteAddAction(
+	rt2::core::EditorAction action, const std::string& payload, rt2::core::Error& err)
+{
+	err = rt2::core::Error{};
+	using rt2::core::EditorAction;
+	// Baked parameters match the legacy popup items exactly (see the shared
+	// contents in EditorToolbar); only the call site moved to dispatch.
+	switch (action)
+	{
+	case EditorAction::AddEmpty:
+		CreateEmptyCommand(std::nullopt);
+		return true;
+	case EditorAction::AddChildEmpty:
+	{
+		const auto parent = rt2::core::UUID::Parse(payload);
+		if (parent.IsNull())
+		{
+			err.code = rt2::core::Error::InvalidArgument;
+			err.detail = "AddChildEmpty refused: malformed parent UUID";
+			return false;
+		}
+		CreateEmptyCommand(parent);
+		return true;
+	}
+	case EditorAction::AddLightPoint:
+		// Punctual defaults: 50 cd at a few metres reads as a normal room
+		// light through inverse-square falloff.
+		CreateLightCommand("Point Light", LightType::Point,
+		                   {0, 3, 0}, {0, 0, -1}, {1, 1, 1}, 50.0f);
+		return true;
+	case EditorAction::AddLightSpot:
+		CreateLightCommand("Spot Light", LightType::Spot,
+		                   {0, 3, 0}, {0, -1, 0}, {1, 1, 1}, 50.0f);
+		return true;
+	case EditorAction::AddLightDirectional:
+		// Directionals carry arriving radiance (no falloff): far smaller number.
+		CreateLightCommand("Directional Light", LightType::Directional,
+		                   {0, 5, 0}, {0, -1, 0}, {1, 1, 1}, 3.0f);
+		return true;
+	case EditorAction::AddLightEmissiveSphere:
+		// Not punctual: real geometry sampled as a triangle light, the only
+		// visible-area light (soft shadows).
+		CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
+		return true;
+	case EditorAction::AddCube:
+		CreatePrimitiveCommand(PrimitiveComponent::Cube, 1.0f, "Cube", {0, 0.5f, 0});
+		return true;
+	case EditorAction::AddSphere:
+		CreatePrimitiveCommand(PrimitiveComponent::Sphere, 1.0f, "Sphere", {0, 0.5f, 0});
+		return true;
+	case EditorAction::AddPlane:
+		CreatePrimitiveCommand(PrimitiveComponent::Plane, 5.0f, "Plane", {0, 0, 0});
+		return true;
+	case EditorAction::AddImportScene:
+	case EditorAction::AddLoadMesh:
+	{
+		// Blocking chooser deferred to dispatch: same UX as the inline
+		// popup flow, outside the popup drawing stack. Cancellation (empty
+		// path) is a quiet no-op, as before.
+		const bool importScene = (action == EditorAction::AddImportScene);
+		const auto initialDirectory = m_DialogInitialDirectory
+			? m_DialogInitialDirectory() : std::filesystem::path{};
+		const std::string path = FileDialog::OpenFile(
+			importScene
+			? L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0"
+			: L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
+			initialDirectory);
+		if (!path.empty() && m_OnImportWithOptions)
+		{
+			m_PendingImportPath = path;
+			m_PendingImportMergeMegaMesh = true;
+			m_ImportOptionsOpen = true;
+		}
+		return true;
+	}
+	default:
+		err.code = rt2::core::Error::InvalidArgument;
+		err.detail = "ExecuteAddAction refused: not an Add action";
+		return false;
+	}
 }
 
 void SceneEditorUI::Undo()
@@ -1073,89 +1168,9 @@ void SceneEditorUI::RenderOutliner()
 
 	if (ImGui::BeginPopup("AddEntity"))
 	{
-		if (ImGui::MenuItem("Empty"))
-			CreateEmptyCommand(std::nullopt);
-		const auto selectedParent = m_State.Selection().Primary();
-		ImGui::BeginDisabled(selectedParent.IsNull() || m_State.IsLocked(selectedParent));
-		if (ImGui::MenuItem("Child Empty"))
-			CreateEmptyCommand(selectedParent);
-		ImGui::EndDisabled();
-		ImGui::Separator();
-		if (ImGui::BeginMenu("Light"))
-		{
-			// Punctual defaults. Point/spot intensity is candela and goes
-			// through inverse-square falloff, so 50 cd at a few metres reads
-			// as a normal room light. A directional light has no falloff at
-			// all — its intensity is the arriving radiance — which is why it
-			// needs a far smaller number to sit at the same exposure.
-			if (ImGui::MenuItem("Point"))
-			{
-				CreateLightCommand("Point Light", LightType::Point,
-				                   {0, 3, 0}, {0, 0, -1}, {1, 1, 1}, 50.0f);
-			}
-			if (ImGui::MenuItem("Spot"))
-			{
-				CreateLightCommand("Spot Light", LightType::Spot,
-				                   {0, 3, 0}, {0, -1, 0}, {1, 1, 1}, 50.0f);
-			}
-			if (ImGui::MenuItem("Directional"))
-			{
-				CreateLightCommand("Directional Light", LightType::Directional,
-				                   {0, 5, 0}, {0, -1, 0}, {1, 1, 1}, 3.0f);
-			}
-			ImGui::Separator();
-			// Not a punctual light: an emissive sphere, which is real geometry
-			// sampled by NEE as a triangle light. Kept because it is the only
-			// light with visible area, and so the only one that casts soft
-			// shadows.
-			if (ImGui::MenuItem("Emissive Sphere"))
-			{
-				CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
-			}
-			ImGui::EndMenu();
-		}
-		ImGui::Separator();
-		if (ImGui::MenuItem("Cube"))
-		{
-			CreatePrimitiveCommand(PrimitiveComponent::Cube, 1.0f, "Cube", {0, 0.5f, 0});
-		}
-		if (ImGui::MenuItem("Sphere"))
-		{
-			CreatePrimitiveCommand(PrimitiveComponent::Sphere, 1.0f, "Sphere", {0, 0.5f, 0});
-		}
-		if (ImGui::MenuItem("Plane"))
-		{
-			CreatePrimitiveCommand(PrimitiveComponent::Plane, 5.0f, "Plane", {0, 0, 0});
-		}
-		ImGui::Separator();
-		if (ImGui::MenuItem("Import Scene..."))
-		{
-			const auto initialDirectory = m_DialogInitialDirectory
-				? m_DialogInitialDirectory() : std::filesystem::path{};
-			std::string path = FileDialog::OpenFile(
-				L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
-				initialDirectory);
-			if (!path.empty() && m_OnImportWithOptions)
-			{
-				m_PendingImportPath = path;
-				m_PendingImportMergeMegaMesh = true;
-				m_ImportOptionsOpen = true;
-			}
-		}
-		if (ImGui::MenuItem("Load Mesh File..."))
-		{
-			const auto initialDirectory = m_DialogInitialDirectory
-				? m_DialogInitialDirectory() : std::filesystem::path{};
-			std::string path = FileDialog::OpenFile(
-				L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0",
-				initialDirectory);
-			if (!path.empty() && m_OnImportWithOptions)
-			{
-				m_PendingImportPath = path;
-				m_PendingImportMergeMegaMesh = true;
-				m_ImportOptionsOpen = true;
-			}
-		}
+		// Shared Add contents; this popup keeps its own scope (the toolbar
+		// owns an identical one). Clicks enqueue; dispatch runs the effects.
+		rt2::RenderSharedAddMenuContents(AddMenuContext());
 		ImGui::EndPopup();
 	}
 	ImGui::EndDisabled();

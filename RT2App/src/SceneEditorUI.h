@@ -4,6 +4,7 @@
 #define SCENE_EDITOR_UI_H
 
 #include "SceneManager.h"
+#include "EditorActionQueue.h"
 #include "EditorSceneState.h"
 #include "EditorCommandHistory.h"
 #include "EditorStructuralCommands.h"
@@ -53,6 +54,10 @@ public:
 	SceneEditorUI() = default;
 
 	void SetSceneMgr(SceneManager* mgr) { m_SceneMgr = mgr; }
+
+	// Workspace command seam: the per-frame action queue owned by the host.
+	// Shared Add contents emit into it; dispatch runs ExecuteAddAction.
+	void SetActionQueue(rt2::core::EditorActionQueue* queue) { m_ActionQueue = queue; }
 
 	// Called when the scene structure changes (add/remove entity, material change).
 	// Host should call SyncToGPU() + ResetAccumulation().
@@ -171,6 +176,14 @@ public:
 	{ return m_CommandHistory ? m_CommandHistory->UndoDescription() : std::string{}; }
 	std::string RedoDescription() const
 	{ return m_CommandHistory ? m_CommandHistory->RedoDescription() : std::string{}; }
+
+	// Workspace command seam (package 3): snapshot for the shared Add menu
+	// contents, and the single effect site for Add actions. Both the
+	// Outliner popup and the toolbar popups emit; ExecuteAddAction runs the
+	// same baked parameters and dialog flows the popup used to run inline.
+	rt2::core::SharedAddMenuContext AddMenuContext() const;
+	bool ExecuteAddAction(rt2::core::EditorAction action,
+		const std::string& payload, rt2::core::Error& err);
 
 	// Set whether authoring edits are allowed. During Play, the UI is
 	// read-only (bound to the runtime scene). Leaving editability finalizes or
@@ -464,6 +477,7 @@ private:
 
 	EditorCommandHistory* m_CommandHistory = nullptr;
 	rt2::core::ScriptFieldRegistry* m_FieldRegistry = nullptr;
+	rt2::core::EditorActionQueue* m_ActionQueue = nullptr;
 
 	TransformPreviewSession      m_TransformPreviewSession;
 	NameSession                  m_NameSession;
