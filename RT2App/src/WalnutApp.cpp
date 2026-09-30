@@ -5610,7 +5610,8 @@ private:
 				printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
 			}
 		}
-		if (m_Workspace.Status().PartiallySaved())
+		if (m_Workspace.Status().PartiallySaved() &&
+			m_Workspace.Status().HasFailed())
 			m_LastStatusMsg = m_Workspace.Status().SummaryMessage();
 		// Explicit Reset keeps unsaved status until BOTH files succeed: once
 		// the rebuilt windows have submitted, force the two-file save without
@@ -6231,7 +6232,7 @@ public:
 	bool m_ShowInputBindingsWindow = false;
 	bool m_ShowContentBrowserWindow = false;
 	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
-	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
+	bool m_ShowHierarchyWindow   = true; // Scene Browser panel (SceneEditorUI)
 	// Workspace recovery UI state (View > Workspace Settings). Session-only,
 	// never persisted; public for the menubar callback like the flags above.
 	bool m_ShowWorkspaceSettingsWindow = false;
@@ -7142,7 +7143,7 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::MenuItem("Session", nullptr, &layerPtr->m_ShowSessionWindow);
 			ImGui::MenuItem("Input Bindings", nullptr, &layerPtr->m_ShowInputBindingsWindow);
 			ImGui::MenuItem("Content Browser", nullptr, &layerPtr->m_ShowContentBrowserWindow);
-			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
+			ImGui::MenuItem("Scene Browser", nullptr, &layerPtr->m_ShowHierarchyWindow);
 			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
 			ImGui::Separator();
 			ImGui::TextDisabled("Workspace");

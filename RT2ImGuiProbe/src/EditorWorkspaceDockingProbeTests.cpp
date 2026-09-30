@@ -42,7 +42,7 @@ struct DockProbeContext
     ~DockProbeContext() { ImGui::DestroyContext(); }
 
     static constexpr const char* kNames[10] = {
-        "Viewport", "Outliner", "Inspector", "Content Browser", "Session",
+        "Viewport", "Scene Browser###Outliner", "Inspector", "Content Browser", "Session",
         "Performance", "Scene", "Camera", "Render Settings", "Input Bindings",
     };
 
@@ -94,7 +94,7 @@ TEST_CASE("WorkspaceDockingProbe: default build docks every identity by role")
     probe.Frame(dockId, false); // settle: docked windows land in nodes
 
     ImGuiWindow* viewport = DockProbeContext::Find("Viewport");
-    ImGuiWindow* outliner = DockProbeContext::Find("Outliner");
+    ImGuiWindow* outliner = DockProbeContext::Find("Scene Browser###Outliner");
     ImGuiWindow* inspector = DockProbeContext::Find("Inspector");
     ImGuiWindow* browser = DockProbeContext::Find("Content Browser");
     ImGuiWindow* session = DockProbeContext::Find("Session");

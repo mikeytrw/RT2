@@ -215,6 +215,8 @@ struct WorkspacePersistenceStatus
     bool headless = false;
 
     bool HasUnsaved() const;
+    // Any side failed (or protected) since the last success.
+    bool HasFailed() const;
     // Exactly one side saved while the other still needs writing.
     bool PartiallySaved() const;
     const char* SummaryMessage() const;

@@ -5,6 +5,7 @@
 
 #include "SceneManager.h"
 #include "EditorActionQueue.h"
+#include "EditorOutlinerFilter.h"
 #include "EditorSceneState.h"
 #include "EditorCommandHistory.h"
 #include "EditorStructuralCommands.h"
@@ -295,6 +296,11 @@ private:
 	void ApplyMutation(const EditorMutationResult& result, bool selectAffected = false);
 	bool MutationSelectionAllowed(std::string& reason) const;
 	bool MatchesSearch(SceneManager::EntityId entity) const;
+	// Scene Browser type filter (package: user follow-up). Session-only;
+	// never persisted. Empty mask passes everything (no stuck-empty view).
+	bool MatchesTypeIncludingDescendants(SceneManager::EntityId entity) const;
+	// Colored type square ahead of a tree row (legend = filter chips).
+	void DrawBrowserTypeGlyph(std::uint32_t typeBits) const;
 	SceneManager::EntityId SelectedEntity() const;
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;
@@ -453,6 +459,9 @@ private:
 	std::string m_TransformEditError;
 	std::string m_MutationError;
 	char m_SearchBuffer[128]{};
+	// Scene Browser type-chip mask (session-only). All bits set = no
+	// filtering; toggling chips narrows rows to matching types.
+	std::uint32_t m_BrowserTypeFilter = rt2::core::kEntityBrowserAllTypes;
 
 	// Phase 3B2: record-on-release property edit sessions. The state
 	// machine (PropertyEditSession<T>) is a pure template; the ImGui glue

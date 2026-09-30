@@ -1,4 +1,5 @@
 #include "SceneEditorUI.h"
+#include "EditorOutlinerFilter.h"
 #include "EditorToolbar.h"
 #include "PrimitiveGeometry.h"
 #include "FileDialog.h"
@@ -1118,6 +1119,39 @@ bool SceneEditorUI::MatchesSearch(SceneManager::EntityId entity) const
 	return false;
 }
 
+bool SceneEditorUI::MatchesTypeIncludingDescendants(
+	SceneManager::EntityId entity) const
+{
+	// Empty mask passes everything (documented no-stuck-empty rule).
+	const auto bits = rt2::core::ClassifyEntityForBrowser(*m_SceneMgr, entity);
+	if (m_BrowserTypeFilter == 0 || (bits & m_BrowserTypeFilter) != 0)
+		return true;
+	for (const auto child : m_SceneMgr->GetChildren(entity))
+		if (MatchesTypeIncludingDescendants(child)) return true;
+	return false;
+}
+
+void SceneEditorUI::DrawBrowserTypeGlyph(std::uint32_t typeBits) const
+{
+	// Colored type square ahead of the row label (no icon font needed;
+	// chips use the same colors as the legend). Sized from the font so it
+	// stays crisp at any DPI; the tag text is the hover tooltip.
+	const auto token = rt2::core::TokenForBrowserTypes(typeBits);
+	const float size = ImGui::GetTextLineHeight() * 0.72f;
+	ImVec2 corner = ImGui::GetCursorScreenPos();
+	corner.y += (ImGui::GetTextLineHeight() - size) * 0.5f;
+	ImGui::GetWindowDrawList()->AddRectFilled(
+		corner, ImVec2(corner.x + size, corner.y + size),
+		IM_COL32(static_cast<int>(token.r * 255.0f),
+		         static_cast<int>(token.g * 255.0f),
+		         static_cast<int>(token.b * 255.0f), 255),
+		2.0f);
+	ImGui::Dummy(ImVec2(size + 4.0f, size));
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", token.tag);
+	ImGui::SameLine();
+}
+
 SceneManager::EntityId SceneEditorUI::SelectedEntity() const
 {
 	if (!m_SceneMgr)
@@ -1152,7 +1186,11 @@ bool SceneEditorUI::IsSelected(SceneManager::EntityId entity) const
 
 void SceneEditorUI::RenderOutliner()
 {
-	ImGui::Begin("Outliner");
+	// Display name is "Scene Browser"; the ###Outliner ID suffix keeps the
+	// ImGui window identity stable for existing dock layouts (the ID hash
+	// changes once — see ticket — so this panel re-docks once on upgrade;
+	// Reset Layout rebuilds the full arrangement as needed).
+	ImGui::Begin("Scene Browser###Outliner");
 
 	if (!m_SceneMgr)
 	{
@@ -1202,6 +1240,39 @@ void SceneEditorUI::RenderOutliner()
 	if (ImGui::InputTextWithHint("##OutlinerSearch", "Search entities...",
 		m_SearchBuffer, sizeof(m_SearchBuffer)))
 		m_State.SearchText() = m_SearchBuffer;
+
+	// Type filter chips (session-only): narrow rows to component families.
+	// Unchecking everything shows everything (no stuck-empty view). Chip
+	// colors match the row glyphs as the legend.
+	{
+		ImGui::TextDisabled("Type:");
+		ImGui::SameLine();
+		const std::pair<const char*, std::uint32_t> chips[] = {
+			{ "Mesh", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Mesh) },
+			{ "Light", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Light) },
+			{ "Camera", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Camera) },
+			{ "Physics", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Physics) },
+			{ "Audio", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Audio) },
+			{ "Script", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Script) },
+			{ "Motion", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Motion) },
+		};
+		float rowX = 0.0f;
+		const float availW = ImGui::GetContentRegionAvail().x;
+		const float spacing = ImGui::GetStyle().ItemSpacing.x;
+		for (const auto& chip : chips)
+		{
+			const float chipW = ImGui::CalcTextSize(chip.first).x +
+				ImGui::GetFrameHeight() + spacing;
+			if (rowX > 0.0f && rowX + chipW > availW)
+				rowX = 0.0f; // wrap to the next row in narrow panels
+			else if (rowX > 0.0f)
+				ImGui::SameLine();
+			ImGui::CheckboxFlags(chip.first, &m_BrowserTypeFilter, chip.second);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Toggle %s entities (all off shows all)", chip.first);
+			rowX += chipW + spacing;
+		}
+	}
 
 	// Entity tree (root entities → children)
 	size_t count = m_SceneMgr->GetEntityCount();
@@ -1336,6 +1407,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 {
 	if (!entity.IsValid()) return;
 	if (!MatchesSearch(entity)) return;
+	if (!MatchesTypeIncludingDescendants(entity)) return;
 	const auto uuid = m_SceneMgr->GetEntityUuid(entity);
 	const bool directlyLocked = m_State.IsLocked(uuid);
 	const auto* visibleComponent = m_SceneMgr->GetECS().registry.try_get<VisibleComponent>(entity.id);
@@ -1345,13 +1417,12 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 	if (name.empty())
 		name = "Entity " + std::to_string((uint32_t)entity.id);
 
-	std::string label;
-	if (m_SceneMgr->HasCamera(entity))
-		label = "[Camera] " + name;
-	else if (m_SceneMgr->HasMeshRef(entity))
-		label = "[Mesh] " + name;
-	else
-		label = "[Entity] " + name;
+	// Type glyph carries the component family (colored square ahead of the
+	// row; chips use the same colors as the legend). The label keeps status
+	// prefixes only — selection, drag-drop, and prefab flows are unchanged.
+	const auto typeBits =
+		rt2::core::ClassifyEntityForBrowser(*m_SceneMgr, entity);
+	std::string label = name;
 	const auto prefabPresentation = rt2::core::DescribePrefabEntity(
 		m_SceneMgr->AuthoringDoc(), uuid);
 	const auto& prefabSelection = m_State.Selection().Ordered();
@@ -1370,6 +1441,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 
 	bool isSelected = IsSelected(entity);
 	bool hasChildren = m_SceneMgr->HasChildren(entity);
+	DrawBrowserTypeGlyph(typeBits);
 	auto handleDragDrop = [&]()
 	{
 		if (!m_Editable) return;
@@ -1602,7 +1674,7 @@ void SceneEditorUI::RenderInspector()
 	const auto selectedEntity = SelectedEntity();
 	if (!m_SceneMgr || !selectedEntity.IsValid() || !m_SceneMgr->IsEntityAlive(selectedEntity))
 	{
-		ImGui::TextDisabled("Select an entity in the Outliner");
+		ImGui::TextDisabled("Select an entity in the Scene Browser");
 		ImGui::End();
 		return;
 	}

@@ -428,6 +428,37 @@ TEST_CASE("Workspace: debounce and bounded retry delay gate automatic saves")
 
 // ---- Headless, Reset, backup recovery ----------------------------------------
 
+TEST_CASE("Workspace: summary distinguishes saving from failed")
+{
+    auto dir = UniqueTempDir("summary");
+    EditorWorkspaceState ws(dir, dir);
+    ws.ClassifyStartup();
+    // Dirty without failure: saving, not failed.
+    WorkspaceVisibility changed = WorkspaceVisibility::LegacyDefaults();
+    changed.showScene = false;
+    ws.MarkVisibilitySnapshot(changed, {}, T(0.0));
+    CHECK_FALSE(ws.Status().HasFailed());
+    CHECK(std::string(ws.Status().SummaryMessage()) == "Saving workspace settings...");
+    // A real failure earns the not-saved wording.
+    const fs::path rootFile = dir / "rootfile";
+    WriteBytes(rootFile, "x");
+    EditorWorkspaceState bad(rootFile, rootFile);
+    bad.ClassifyStartup();
+    bad.MarkVisibilitySnapshot(changed, {}, T(0.0));
+    Error err;
+    CHECK_FALSE(bad.SaveVisibility(T(10.0), true, err));
+    CHECK(bad.Status().HasFailed());
+    // Only visibility failed so far: the partial wording.
+    CHECK(std::string(bad.Status().SummaryMessage()) == "workspace changes not fully saved");
+    // Fail geometry too and the wording becomes the full not-saved variant.
+    bad.MarkGeometryDirty(T(11.0));
+    CHECK_FALSE(bad.SaveGeometry(T(12.0), true, "[Window][X]\n", err));
+    CHECK_FALSE(bad.Status().PartiallySaved());
+    CHECK(std::string(bad.Status().SummaryMessage()) == "Workspace changes not saved");
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 TEST_CASE("Workspace: headless operation never rewrites preferences")
 {
     auto dir = UniqueTempDir("headless");

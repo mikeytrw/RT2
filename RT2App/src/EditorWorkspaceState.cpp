@@ -335,6 +335,16 @@ bool WorkspacePersistenceStatus::HasUnsaved() const
            visibility.state == WorkspaceFileState::SaveFailed;
 }
 
+bool WorkspacePersistenceStatus::HasFailed() const
+{
+    const auto failed = [](WorkspaceFileState state) {
+        return state == WorkspaceFileState::SaveFailed ||
+               state == WorkspaceFileState::LoadFailed ||
+               state == WorkspaceFileState::SessionOnlyProtected;
+    };
+    return failed(geometry.state) || failed(visibility.state);
+}
+
 bool WorkspacePersistenceStatus::PartiallySaved() const
 {
     const bool geometryNeeds =
@@ -349,8 +359,14 @@ bool WorkspacePersistenceStatus::PartiallySaved() const
 const char* WorkspacePersistenceStatus::SummaryMessage() const
 {
     if (headless) return "Workspace persistence disabled (headless)";
-    if (PartiallySaved()) return "workspace changes not fully saved";
-    if (HasUnsaved()) return "Workspace changes not saved";
+    // Pending debounce is "saving", not failure: only a failed side earns
+    // the not-saved wording, so routine docking work never cries wolf.
+    if (PartiallySaved())
+        return HasFailed() ? "workspace changes not fully saved"
+                           : "Saving workspace settings...";
+    if (HasUnsaved())
+        return HasFailed() ? "Workspace changes not saved"
+                           : "Saving workspace settings...";
     const bool unavailable =
         geometry.state == WorkspaceFileState::SessionOnlyProtected ||
         visibility.state == WorkspaceFileState::SessionOnlyProtected;

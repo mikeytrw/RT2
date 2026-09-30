@@ -11,11 +11,12 @@
 //
 // Builds the accepted first-use/reset arrangement into a host dockspace:
 // right-hand Inspector (~23% width), bottom area (~27% height) shared by
-// Session + Performance + Content Browser, Outliner (~20% of the top
+// Session + Performance + Content Browser, Scene Browser (~20% of the top
 // remainder), Viewport in the remaining center. Scene, Camera, Render
 // Settings and Input Bindings pre-dock as right-side tabs so they open
-// sensibly on first use. Window identities are the stable Begin labels and
-// are never renamed here.
+// sensibly on first use. Window identities are the stable Begin labels
+// (Scene Browser keeps its ###Outliner ID suffix) and are never renamed
+// here.
 //
 // Runs at most once per pending request (genuinely new profile or explicit
 // Reset), driven by the host's pre-dock hook with a valid content size.
@@ -28,9 +29,10 @@
 
 namespace rt2 {
 
-// Stable window identities (must match the submitters' Begin labels).
+// Stable window identities (must match the submitters' Begin labels,
+// including ### ID suffixes where the display name differs).
 inline constexpr const char* kWorkspaceViewportName = "Viewport";
-inline constexpr const char* kWorkspaceOutlinerName = "Outliner";
+inline constexpr const char* kWorkspaceOutlinerName = "Scene Browser###Outliner";
 inline constexpr const char* kWorkspaceInspectorName = "Inspector";
 inline constexpr const char* kWorkspaceContentBrowserName = "Content Browser";
 inline constexpr const char* kWorkspaceSessionName = "Session";
