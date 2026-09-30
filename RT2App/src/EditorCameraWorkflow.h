@@ -197,6 +197,22 @@ bool TryGetCameraEntityPose(rt2::core::SceneDocument& document,
                             const EditorCameraPose& fallback,
                             EditorCameraPose& pose);
 
+// Screen-space selection highlight. Projects an authoring-space AABB's 12
+// edges to viewport pixels for the editor overlay (no GPU changes; the host
+// draws the returned segments through the viewport draw list, like the icon
+// layer). Returns empty when the box is entirely behind the camera
+// (all clip w <= 0). Partly-behind boxes project their in-front corners;
+// ImGui clips overflow to the window.
+struct ScreenLineSegment
+{
+    glm::vec2 a{};
+    glm::vec2 b{};
+};
+
+std::vector<ScreenLineSegment> ProjectSelectionBoxEdges(
+    const glm::mat4& viewProjection, const EditorSelectionBounds& bounds,
+    const glm::vec2& viewportMinPx, const glm::vec2& viewportSizePx);
+
 // Includes selected roots and all descendants without visibility filtering.
 // Non-renderable entities contribute a deterministic 0.5 m fallback cube.
 bool ComputeEditorSelectionBounds(

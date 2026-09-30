@@ -1652,6 +1652,37 @@ public:
 				m_EditorUI.SelectUuid(iconOverlay.clickedEntity);
 		}
 
+		// Selection highlight (Scene Browser follow-up). Meshes have no other
+		// viewport presence (gizmo shows the pivot, icons cover lights and
+		// cameras), so selected entities get a screen-space bounds box in the
+		// theme primary color. Edit-only like the gizmo; bounds math is the
+		// CPU-tested ComputeEditorSelectionBounds/ProjectSelectionBoxEdges
+		// pair, drawn here like the icon layer (no GPU changes).
+		if (editorMode && !m_EditorUI.Selection().Empty())
+		{
+			const glm::mat4 viewProj =
+				m_Cam.GetProjection() * m_Cam.GetView();
+			const glm::vec2 viewMin{ imageMin.x, imageMin.y };
+			const glm::vec2 viewSize{ imageSize.x, imageSize.y };
+			ImDrawList* overlay = ImGui::GetWindowDrawList();
+			for (const auto& uuid : m_EditorUI.Selection().Ordered())
+			{
+				EditorSelectionBounds selectionBounds;
+				if (!ComputeEditorSelectionBounds(
+						m_SceneMgr.AuthoringDoc(), { uuid }, selectionBounds) ||
+					!selectionBounds.valid)
+					continue;
+				for (const auto& segment : ProjectSelectionBoxEdges(
+						viewProj, selectionBounds, viewMin, viewSize))
+				{
+					overlay->AddLine(
+						{ segment.a.x, segment.a.y },
+						{ segment.b.x, segment.b.y },
+						IM_COL32(99, 102, 241, 255), 2.0f);
+				}
+			}
+		}
+
 		// T8 physics debug overlay. Runtime-only: drawn while Playing/Paused
 		// from the controller's immutable CPU snapshot (never through
 		// ISceneRenderBridge). Opposite polarity to the editor icons above.

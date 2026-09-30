@@ -1242,8 +1242,9 @@ void SceneEditorUI::RenderOutliner()
 		m_State.SearchText() = m_SearchBuffer;
 
 	// Type filter chips (session-only): narrow rows to component families.
-	// Unchecking everything shows everything (no stuck-empty view). Chip
-	// colors match the row glyphs as the legend.
+	// Unchecking everything shows everything (no stuck-empty view). Active
+	// chips read indigo; inactive chips sit on the frame color. Chip order
+	// matches the row-glyph legend colors.
 	{
 		ImGui::TextDisabled("Type:");
 		ImGui::SameLine();
@@ -1262,12 +1263,33 @@ void SceneEditorUI::RenderOutliner()
 		for (const auto& chip : chips)
 		{
 			const float chipW = ImGui::CalcTextSize(chip.first).x +
-				ImGui::GetFrameHeight() + spacing;
+				ImGui::GetStyle().FramePadding.x * 2.0f + spacing;
 			if (rowX > 0.0f && rowX + chipW > availW)
 				rowX = 0.0f; // wrap to the next row in narrow panels
 			else if (rowX > 0.0f)
 				ImGui::SameLine();
-			ImGui::CheckboxFlags(chip.first, &m_BrowserTypeFilter, chip.second);
+			const bool active = (m_BrowserTypeFilter & chip.second) != 0;
+			if (active)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button,
+					ImVec4(0.388f, 0.400f, 0.945f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+					ImVec4(0.470f, 0.478f, 0.957f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_Text,
+					ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
+			}
+			else
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button,
+					ImVec4(0.157f, 0.157f, 0.157f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+					ImVec4(0.208f, 0.208f, 0.208f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_Text,
+					ImVec4(0.635f, 0.635f, 0.635f, 1.0f));
+			}
+			if (ImGui::SmallButton(chip.first))
+				m_BrowserTypeFilter ^= chip.second;
+			ImGui::PopStyleColor(3);
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Toggle %s entities (all off shows all)", chip.first);
 			rowX += chipW + spacing;
