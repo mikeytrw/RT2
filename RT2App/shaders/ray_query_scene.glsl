@@ -78,8 +78,9 @@ struct RayQueryHit
 };
 
 // ---- Hit reconstruction from committed intersection -------------------------
-// Matches closesthit.rchit: hitTriPositions, hitBarycentric, hitFaceNormal,
-// hitUV, hitTangent, hitShadingNormal, material resolution, texture sampling.
+// Matches closesthit.rchit: loadHitAttributes, hitFaceNormalFrom,
+// hitVertexNormalFrom, hitTangentFrom/computeTangent, hitShadingNormalFrom,
+// material resolution, texture sampling.
 RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
 {
     RayQueryHit h;
@@ -102,7 +103,7 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
     h.hitT        = rayQueryGetIntersectionTEXT(query, true);
     h.worldPos    = rayOrigin + h.hitT * rayDir;
 
-    // ---- Triangle vertices (world space) — matches hitTriPositions ----
+    // ---- Triangle vertices (world space) — matches loadHitAttributes ----
     uvec4 meshInfo = instanceMeshInfo[h.instanceID];
     uint idxBase = meshInfo.y + h.primitiveID * 3u;
     uint i0 = indices[idxBase + 0u];
@@ -138,25 +139,22 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
         }
     }
 
-    // ---- UV — matches hitUV ----
+    // ---- UV — matches loadHitAttributes interpolation ----
     vec2 uv0 = uvs[meshInfo.w + i0].xy;
     vec2 uv1 = uvs[meshInfo.w + i1].xy;
     vec2 uv2 = uvs[meshInfo.w + i2].xy;
     h.uv = b0 * uv0 + b1 * uv1 + b2 * uv2;
 
-    // ---- Tangent — matches hitTangent / computeTangent ----
-    vec3 edge1 = p1 - p0;
-    vec3 edge2 = p2 - p0;
-    vec2 dUV1 = uv1 - uv0;
-    vec2 dUV2 = uv2 - uv0;
-    float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
-    if (abs(det) < 1e-8)
-        h.tangent = vec3(1.0, 0.0, 0.0);
-    else
-    {
-        float r = 1.0 / det;
-        h.tangent = normalize(r * (dUV2.y * edge1 - dUV1.y * edge2));
-    }
+    // ---- Tangent — matches hitTangentFrom / computeTangent in closesthit ----
+    // RT4-T1: lazily evaluated. The loader path above already fetched the
+    // mesh info, indices, transform and UVs once; tangent reconstruction
+    // (edges + determinant + normalize) runs only when a normal map will
+    // actually consume it below. Previously this ran unconditionally for
+    // every committed hit. h.tangent keeps a defined value on the
+    // non-normal-mapped path, but no consumer reads it there (only the
+    // normal-mapped branch below and shadingNormal/frontFace escape this
+    // function).
+    h.tangent = vec3(1.0, 0.0, 0.0);
 
     // ---- Material resolution (canonical per-triangle path) ----
     h.matIdx = resolveMaterialIndex(h.instanceID, h.primitiveID);
@@ -183,10 +181,25 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
     if (emissiveTexIdx >= 0)
         h.emissive *= texture(textures[nonuniformEXT(emissiveTexIdx)], h.uv).rgb;
 
-    // ---- Shading normal (normal-mapped or authored) — matches hitShadingNormal ----
+    // ---- Shading normal (normal-mapped or authored) — matches hitShadingNormalFrom ----
     int normalTexIdx = h.mat.textureIndices.y;
     if (normalTexIdx >= 0)
     {
+        // Tangent reconstruction on first (and only) use — verbatim the
+        // unconditional block this replaces, just deferred past the branch
+        // (including the degenerate-determinant fallback).
+        vec3 edge1 = p1 - p0;
+        vec3 edge2 = p2 - p0;
+        vec2 dUV1 = uv1 - uv0;
+        vec2 dUV2 = uv2 - uv0;
+        float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
+        if (abs(det) < 1e-8)
+            h.tangent = vec3(1.0, 0.0, 0.0);
+        else
+        {
+            float r = 1.0 / det;
+            h.tangent = normalize(r * (dUV2.y * edge1 - dUV1.y * edge2));
+        }
         vec3 tangentN = texture(textures[nonuniformEXT(normalTexIdx)], h.uv).rgb * 2.0 - 1.0;
         vec3 T = h.tangent;
         vec3 N = baseNormal;
