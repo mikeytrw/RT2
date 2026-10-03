@@ -2,6 +2,8 @@
 
 #include "RenderSettings.h"
 
+#include <limits>
+
 // ============================================================================
 // RenderSettings struct tests
 //
@@ -34,6 +36,82 @@ TEST_CASE("RenderSettings: default values")
 	CHECK(s.nrdJitterScale == 1.0f);
 	CHECK(s.gbufferDebugMode == -1);
 	CHECK(s.dirty == false);
+}
+
+TEST_CASE("RenderSettings: roulette defaults reproduce the legacy hard-codes")
+{
+	RenderSettings s;
+	CHECK(s.rrStartDepth == 3u);
+	CHECK(s.rrMinP == 0.05f);
+	CHECK(s.rrMaxP == 0.95f);
+	CHECK(kDefaultRRStartDepth == 3u);
+	CHECK(kDefaultRRMinP == 0.05f);
+	CHECK(kDefaultRRMaxP == 0.95f);
+}
+
+TEST_CASE("RenderSettings: canonical roulette values pass through untouched")
+{
+	RenderSettings s;
+	CanonicalizeRouletteSettings(s);
+	CHECK(s.rrStartDepth == 3u);
+	CHECK(s.rrMinP == 0.05f);
+	CHECK(s.rrMaxP == 0.95f);
+
+	s.rrStartDepth = 2;
+	s.rrMinP = 0.1f;
+	s.rrMaxP = 0.9f;
+	CanonicalizeRouletteSettings(s);
+	CHECK(s.rrStartDepth == 2u);
+	CHECK(s.rrMinP == 0.1f);
+	CHECK(s.rrMaxP == 0.9f);
+}
+
+TEST_CASE("RenderSettings: non-finite roulette bounds fall back to defaults")
+{
+	RenderSettings s;
+	s.rrMinP = std::numeric_limits<float>::quiet_NaN();
+	s.rrMaxP = std::numeric_limits<float>::infinity();
+	CanonicalizeRouletteSettings(s);
+	CHECK(s.rrMinP == 0.05f);
+	CHECK(s.rrMaxP == 0.95f);
+
+	s.rrMinP = -std::numeric_limits<float>::infinity();
+	s.rrMaxP = std::numeric_limits<float>::quiet_NaN();
+	CanonicalizeRouletteSettings(s);
+	CHECK(s.rrMinP == 0.05f);
+	CHECK(s.rrMaxP == 0.95f);
+}
+
+TEST_CASE("RenderSettings: out-of-range or inverted roulette bounds reset")
+{
+	RenderSettings s;
+	// Outside (0,1): each bound resets independently.
+	s.rrMinP = 0.0f;
+	s.rrMaxP = 1.0f;
+	CanonicalizeRouletteSettings(s);
+	CHECK(s.rrMinP == 0.05f);
+	CHECK(s.rrMaxP == 0.95f);
+
+	// In-range but inverted or degenerate: the whole window resets.
+	s.rrMinP = 0.8f;
+	s.rrMaxP = 0.2f;
+	CanonicalizeRouletteSettings(s);
+	CHECK(s.rrMinP == 0.05f);
+	CHECK(s.rrMaxP == 0.95f);
+
+	s.rrMinP = 0.5f;
+	s.rrMaxP = 0.5f;
+	CanonicalizeRouletteSettings(s);
+	CHECK(s.rrMinP == 0.05f);
+	CHECK(s.rrMaxP == 0.95f);
+}
+
+TEST_CASE("RenderSettings: roulette start depth floors at 1")
+{
+	RenderSettings s;
+	s.rrStartDepth = 0;
+	CanonicalizeRouletteSettings(s);
+	CHECK(s.rrStartDepth == 1u);
 }
 
 TEST_CASE("RenderSettings: dirty flag starts false")

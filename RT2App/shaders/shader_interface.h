@@ -295,8 +295,11 @@ struct SIGIPushConstants
 };
 
 // ============================================================================
-// NRD UBO — set 1 binding 6, 16 bytes
+// NRD UBO — set 1 binding 6, 32 bytes
 // spare fields repurposed for ReSTIR GI control without growing the UBO.
+// RR5-T1: trailing 16 bytes carry Russian-roulette tunables; the first 16
+// bytes are unchanged (prefix compatibility with prefix-only readers such
+// as gbuffer_debug.comp's NRDUniformDebug).
 // ============================================================================
 struct SINRDUniformData
 {
@@ -304,6 +307,10 @@ struct SINRDUniformData
     SI_UINT lobeDither;            // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
     SI_UINT restirGIEnabled;       // 1 = ReSTIR GI active (consume stored GI sample in raygen)
     SI_UINT restirGIReservoirIndex;// current GI reservoir region index (frame parity)
+    SI_UINT rrStartDepth;          // first bounce depth where roulette applies (default 3)
+    SI_FLOAT rrMinP;               // lower clamp for pContinue (default 0.05)
+    SI_FLOAT rrMaxP;               // upper clamp for pContinue (default 0.95)
+    SI_UINT rrReserved;            // zero-initialised padding/reserved word
 };
 
 // ============================================================================
@@ -319,6 +326,7 @@ struct SINRDUniformData
 // ============================================================================
 #ifdef __cplusplus
 #include <glm/glm.hpp>
+#include <cstddef>
 
 static_assert(sizeof(SICameraData) == 496, "SICameraData must be 496 bytes (7 vec4 + 6 mat4)");
 static_assert(sizeof(SIMaterial) == 80, "SIMaterial must be 80 bytes (2 vec4 + 4 float + 2 ivec4)");
@@ -326,7 +334,11 @@ static_assert(sizeof(SITriangleLight) == 32, "SITriangleLight must be 32 bytes (
 static_assert(sizeof(SIReservoir) == 32, "SIReservoir must be 32 bytes (2 uvec4)");
 static_assert(sizeof(SISurfaceHistory) == 32, "SISurfaceHistory must be 32 bytes (2 uvec4)");
 static_assert(sizeof(SIReSTIRPushConstants) == 60, "SIReSTIRPushConstants must be 60 bytes");
-static_assert(sizeof(SINRDUniformData) == 16, "SINRDUniformData must be 16 bytes");
+static_assert(sizeof(SINRDUniformData) == 32, "SINRDUniformData must be 32 bytes");
+static_assert(offsetof(SINRDUniformData, rrStartDepth) == 16, "rrStartDepth must be at byte 16");
+static_assert(offsetof(SINRDUniformData, rrMinP) == 20, "rrMinP must be at byte 20");
+static_assert(offsetof(SINRDUniformData, rrMaxP) == 24, "rrMaxP must be at byte 24");
+static_assert(offsetof(SINRDUniformData, rrReserved) == 28, "rrReserved must be at byte 28");
 static_assert(sizeof(SIGIReservoir) == 48, "SIGIReservoir must be 48 bytes (3 uvec4)");
 static_assert(sizeof(SIGIPushConstants) == 48, "SIGIPushConstants must be 48 bytes");
 

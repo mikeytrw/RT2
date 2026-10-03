@@ -255,12 +255,18 @@ layout(set = 1, binding = SI_BINDING_RR_NOISY_HDR, r11f_g11f_b10f) uniform image
 layout(set = 1, binding = SI_BINDING_RR_HIT_DISTANCE, r32f) uniform image2D rrHitDistance;
 
 // NRD enable flag (1 = NRD mode, 0 = normal temporal accumulation)
+// Trailing RR5-T1 roulette tunables mirror SINRDUniformData bytes 16-31;
+// the first four words keep their existing meaning.
 layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniform
 {
     uint nrdEnabled;            // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
     uint lobeDither;            // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
     uint restirGIEnabled;       // 1 = ReSTIR GI active (consume stored GI sample in raygen)
     uint restirGIReservoirIndex;// current GI reservoir region index (frame parity)
+    uint rrStartDepth;          // first bounce depth where roulette applies (default 3)
+    float rrMinP;               // lower clamp for pContinue (default 0.05)
+    float rrMaxP;               // upper clamp for pContinue (default 0.95)
+    uint rrReserved;            // zero-initialised padding/reserved word
 } nrdData;
 
 // ---- Payload ----------------------------------------------------------------

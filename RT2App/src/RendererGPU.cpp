@@ -1009,8 +1009,12 @@ void RendererGPU::SetEditorPresentation(bool editorPresentation)
 		ResetAccumulation();
 }
 
-void RendererGPU::ApplySettings(const RenderSettings& newSettings)
+void RendererGPU::ApplySettings(const RenderSettings& incomingSettings)
 {
+	// RR5-T1: canonicalize once at set-time so shaders never see NaN/inf.
+	// All comparisons and the stored copy below use the canonical values.
+	RenderSettings newSettings = incomingSettings;
+	CanonicalizeRouletteSettings(newSettings);
 	bool wasRestirEnabled = m_Settings.restirEnabled;
 	bool wasGIEnabled = m_Settings.restirGIEnabled;
 	const bool wasModeOrQualityChanged =
@@ -1038,6 +1042,9 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	                       m_Settings.restirGIWorldPosThreshold != newSettings.restirGIWorldPosThreshold;
 	if (m_Settings.spp != newSettings.spp ||
 	    m_Settings.maxBounces != newSettings.maxBounces ||
+	    m_Settings.rrStartDepth != newSettings.rrStartDepth ||
+	    m_Settings.rrMinP != newSettings.rrMinP ||
+	    m_Settings.rrMaxP != newSettings.rrMaxP ||
 	    m_Settings.showBackground != newSettings.showBackground ||
 	    m_Settings.neeOnly != newSettings.neeOnly ||
 	    m_Settings.emissiveBoost != newSettings.emissiveBoost ||
@@ -1079,7 +1086,24 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	{
 		m_Settings.dirty = true;
 	}
+	const bool rouletteChanged =
+		m_Settings.rrStartDepth != newSettings.rrStartDepth ||
+		m_Settings.rrMinP != newSettings.rrMinP ||
+		m_Settings.rrMaxP != newSettings.rrMaxP;
 	m_Settings = newSettings;
+
+	// RR5-T1: a roulette change resets temporal accumulation via the dirty
+	// flag above (handled in Render()). Record requested vs effective NRD
+	// mode alongside so fallback frames stay attributable in logs.
+	if (rouletteChanged)
+	{
+		RT_LOG("[Roulette] tunables changed: startDepth=%u minP=%.4f maxP=%.4f "
+		       "requestedNRD=%d effectiveNRD=%d",
+		       newSettings.rrStartDepth, (double)newSettings.rrMinP,
+		       (double)newSettings.rrMaxP,
+		       IsNrdAuthored(newSettings.denoiserMode) ? 1 : 0,
+		       EffectiveNrdEnabled(newSettings.denoiserMode, m_AutomaticNativeNrdFallback) ? 1 : 0);
+	}
 
 	if (m_Settings.restirEnabled != wasRestirEnabled ||
 	    (m_Settings.restirEnabled && (restirJitterPolicyChanged || restirPolicyChanged)))
@@ -1531,7 +1555,10 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		giPC,
 		m_GIFrameIndex,
 		m_GIFrameIndex & 1u,
-		m_Sampling.jitter
+		m_Sampling.jitter,
+		m_Settings.rrStartDepth,
+		m_Settings.rrMinP,
+		m_Settings.rrMaxP
 	};
 
 	const FrameRenderer::RecordedFrameOutcome recorded = FrameRenderer::RecordFrame(cmd, ctx);

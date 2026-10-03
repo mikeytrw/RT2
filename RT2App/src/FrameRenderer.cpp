@@ -140,12 +140,18 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 	// so fallback frames produce the NRD-branch packed radiance the denoiser
 	// consumes. When NRD is off, force lobe dither to 0 (white noise) — Bayer/IGN dithering
 	// is only needed for NRD's hit-distance reconstruction of skipped lobes.
+	// RR5-T1: trailing roulette words come from the canonicalized settings via
+	// the frame context; rrReserved stays zero. First 16 bytes unchanged.
 	uint32_t effectiveLobeDither = ctx.nrdEnabled ? (uint32_t)ctx.lobeDither : 0u;
 	SINRDUniformData nrdData = {
 		ctx.nrdEnabled ? 1u : 0u,
 		effectiveLobeDither,
 		ctx.restirGIEnabled ? 1u : 0u,
-		ctx.giReservoirIndex
+		ctx.giReservoirIndex,
+		ctx.rrStartDepth,
+		ctx.rrMinP,
+		ctx.rrMaxP,
+		0u
 	};
 	if (ctx.nrdUBO)
 		vkCmdUpdateBuffer(cmd, ctx.nrdUBO, 0, sizeof(SINRDUniformData), &nrdData);

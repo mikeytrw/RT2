@@ -7,6 +7,18 @@
 #include "SceneGraph.h"
 #include <glm/glm.hpp>
 #include <cstddef>
+#include <fstream>
+#include <iterator>
+#include <string>
+
+namespace
+{
+std::string ReadShaderSource(const char* path)
+{
+	std::ifstream in(path, std::ios::binary);
+	return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+}
 
 // ============================================================================
 // shader_interface.h struct layout tests (shared C++/GLSL)
@@ -27,9 +39,26 @@ TEST_CASE("SITriangleLight is 32 bytes")
     CHECK(sizeof(SITriangleLight) == 32);
 }
 
-TEST_CASE("SINRDUniformData is 16 bytes")
+TEST_CASE("SINRDUniformData is 32 bytes (RR5-T1: 16-byte prefix + roulette words)")
 {
-    CHECK(sizeof(SINRDUniformData) == 16);
+    CHECK(sizeof(SINRDUniformData) == 32);
+    // Exact 32B transport: existing 16B prefix unchanged, then uint
+    // depth16, float min20, float max24, reserved zero28.
+    CHECK(offsetof(SINRDUniformData, nrdEnabled) == 0);
+    CHECK(offsetof(SINRDUniformData, lobeDither) == 4);
+    CHECK(offsetof(SINRDUniformData, restirGIEnabled) == 8);
+    CHECK(offsetof(SINRDUniformData, restirGIReservoirIndex) == 12);
+    CHECK(offsetof(SINRDUniformData, rrStartDepth) == 16);
+    CHECK(offsetof(SINRDUniformData, rrMinP) == 20);
+    CHECK(offsetof(SINRDUniformData, rrMaxP) == 24);
+    CHECK(offsetof(SINRDUniformData, rrReserved) == 28);
+}
+
+TEST_CASE("SINRDUniformData zero-initializes the reserved word")
+{
+    SINRDUniformData d{};
+    CHECK(d.rrReserved == 0u);
+    CHECK(d.rrStartDepth == 0u);
 }
 
 TEST_CASE("SIGIReservoir is 48 bytes (3 uvec4, std430)")
@@ -57,6 +86,57 @@ TEST_CASE("SIReSTIRPushConstants carries both jitter samples")
 {
     CHECK(sizeof(SIReSTIRPushConstants) == 60);
     CHECK(offsetof(SIReSTIRPushConstants, jitter) == 44);
+}
+
+// ============================================================================
+// RR5-T1 roulette plumbing contract: tunables travel host -> set-1 NRD UBO ->
+// closest-hit with identical defaults; lobe probabilities stay hard-coded.
+// These source checks run from the repository root (like the script gates).
+// ============================================================================
+
+TEST_CASE("Roulette: closest-hit consumes UBO tunables, no literals remain")
+{
+    const std::string rchit = ReadShaderSource("RT2App/shaders/closesthit.rchit");
+    REQUIRE(!rchit.empty());
+    CHECK(rchit.find("nrdData.rrStartDepth") != std::string::npos);
+    CHECK(rchit.find("nrdData.rrMinP") != std::string::npos);
+    CHECK(rchit.find("nrdData.rrMaxP") != std::string::npos);
+    // Legacy hard-codes must be gone from the roulette block.
+    CHECK(rchit.find("depth >= 3u") == std::string::npos);
+    CHECK(rchit.find("0.05, 0.95") == std::string::npos);
+    // Unbiased survivor compensation is preserved.
+    CHECK(rchit.find("newThroughput /= pContinue") != std::string::npos);
+}
+
+TEST_CASE("Roulette: GLSL NRD uniform mirrors the 32-byte C++ layout")
+{
+    const std::string shared = ReadShaderSource("RT2App/shaders/pathtracer_shared.glsl");
+    REQUIRE(!shared.empty());
+    for (const char* field : { "rrStartDepth", "rrMinP", "rrMaxP", "rrReserved" })
+        CHECK(shared.find(field) != std::string::npos);
+}
+
+TEST_CASE("Roulette: lobe clamp stays hard-coded (deferred to a later ticket)")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    CHECK(scatter.find("0.25, 0.75") != std::string::npos);
+    CHECK(scatter.find("rrMinP") == std::string::npos);
+    CHECK(scatter.find("rrMaxP") == std::string::npos);
+    CHECK(scatter.find("specProbMin") == std::string::npos);
+    CHECK(scatter.find("specProbMax") == std::string::npos);
+}
+
+TEST_CASE("Roulette: debug view keeps the NRD prefix, GI declares no nrdData")
+{
+    const std::string debug = ReadShaderSource("RT2App/shaders/gbuffer_debug.comp");
+    REQUIRE(!debug.empty());
+    CHECK(debug.find("nrdEnabledDebug") != std::string::npos);
+    CHECK(debug.find("restirGIReservoirIndexDebug") != std::string::npos);
+    CHECK(debug.find("rrStartDepthDebug") != std::string::npos);
+    const std::string gi = ReadShaderSource("RT2App/shaders/restir_gi_bindings.glsl");
+    REQUIRE(!gi.empty());
+    CHECK(gi.find("nrdData") == std::string::npos);
 }
 
 TEST_CASE("GPUMaterial matches SIMaterial layout")

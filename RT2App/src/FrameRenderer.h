@@ -134,6 +134,13 @@ public:
 		// pixels). Fed to NGX InJitterOffset; motion vectors stay
 		// unjittered and each consumer compensates exactly once.
 		glm::vec2 samplingJitter;
+
+		// Russian-roulette tunables (RR5-T1, canonicalized at the settings
+		// boundary). Fed to the set-1 NRD UBO in RecordUBOUpdates; defaults
+		// reproduce the legacy closesthit.rchit behaviour exactly.
+		uint32_t rrStartDepth;
+		float rrMinP;
+		float rrMaxP;
 	};
 
 	// Record the full frame into the given command buffer.

@@ -1129,6 +1129,24 @@ public:
 	ImGui::Text("Sample Depth");
 	if (ImGui::DragInt("Bounces", &m_Settings.maxBounces, 1.0f, 2, 100))
 		m_RendererGPU.ApplySettings(m_Settings);
+	ImGui::Text("Russian Roulette");
+	int rrStartDepth = (int)m_Settings.rrStartDepth;
+	if (ImGui::DragInt("RR Start Depth", &rrStartDepth, 1.0f, 1, 16))
+	{
+		m_Settings.rrStartDepth = (uint32_t)rrStartDepth;
+		m_RendererGPU.ApplySettings(m_Settings);
+		m_Settings = m_RendererGPU.GetSettings();
+	}
+	if (ImGui::DragFloat("RR Min P", &m_Settings.rrMinP, 0.005f, 0.01f, 0.99f, "%.3f"))
+	{
+		m_RendererGPU.ApplySettings(m_Settings);
+		m_Settings = m_RendererGPU.GetSettings();
+	}
+	if (ImGui::DragFloat("RR Max P", &m_Settings.rrMaxP, 0.005f, 0.01f, 0.99f, "%.3f"))
+	{
+		m_RendererGPU.ApplySettings(m_Settings);
+		m_Settings = m_RendererGPU.GetSettings();
+	}
 	if (ImGui::Button("Reset")) {
 		m_Settings.spp = 1;
 		m_Settings.maxBounces = 2;
@@ -3749,7 +3767,24 @@ private:
 			m_Settings.spp = g_CLI.spp;
 		if (g_CLI.bounces > 0)
 			m_Settings.maxBounces = g_CLI.bounces;
+		if (g_CLI.rrStartDepth > 0)
+			m_Settings.rrStartDepth = (uint32_t)g_CLI.rrStartDepth;
+		if (g_CLI.rrMinP >= 0.0f)
+			m_Settings.rrMinP = g_CLI.rrMinP;
+		if (g_CLI.rrMaxP >= 0.0f)
+			m_Settings.rrMaxP = g_CLI.rrMaxP;
 		ApplyCLIDenoiserSelection(m_Settings);
+		if (g_CLI.nrdMaxAccumFrames > 0)
+			m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
+		if (g_CLI.nrdResponsiveRoughness >= 0.0f)
+			m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;
+		if (g_CLI.nrdResponsiveMinFrames >= 0)
+			m_Settings.nrdResponsiveMinAccumFrames = g_CLI.nrdResponsiveMinFrames;
+		if (g_CLI.rasterFirst)
+		{
+			m_Settings.rasterFirst = true;
+			m_Cam.m_Aperture = 0.0f;
+		}
 		if (g_CLI.nrdMaxAccumFrames > 0)
 			m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
 		if (g_CLI.nrdResponsiveRoughness >= 0.0f)
@@ -3773,6 +3808,9 @@ private:
 				m_Settings = m_RendererGPU.GetSettings();
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
+				if (g_CLI.rrStartDepth > 0) m_Settings.rrStartDepth = (uint32_t)g_CLI.rrStartDepth;
+				if (g_CLI.rrMinP >= 0.0f) m_Settings.rrMinP = g_CLI.rrMinP;
+				if (g_CLI.rrMaxP >= 0.0f) m_Settings.rrMaxP = g_CLI.rrMaxP;
 				ApplyCLIDenoiserSelection(m_Settings);
 				if (g_CLI.nrdMaxAccumFrames > 0) m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
 				if (g_CLI.nrdResponsiveRoughness >= 0.0f) m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;

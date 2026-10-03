@@ -48,12 +48,20 @@ layout(set = 0, binding = SI_BINDING_CAMERA_UBO, std140) uniform CameraData
   mat4 worldToView; mat4 worldToViewPrev; } camera;
 
 // NRD UBO — for GI debug views (restirGIReservoirIndex).
+// Mirrors SINRDUniformData (32 bytes): the first four words keep their
+// meaning (prefix compatibility), and the trailing RR5-T1 roulette words
+// are declared so the debug view sees the same layout. Debug views do not
+// consume the roulette fields.
 layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniformDebug
 {
     uint nrdEnabledDebug;
     uint lobeDitherDebug;
     uint restirGIEnabledDebug;
     uint restirGIReservoirIndexDebug;
+    uint rrStartDepthDebug;
+    float rrMinPDebug;
+    float rrMaxPDebug;
+    uint rrReservedDebug;
 } nrdDebugData;
 struct Material { vec4 baseColor_metallic; vec4 emissive_roughness; float ior;
   float alphaCutoff; float alphaMode; float baseAlpha; ivec4 textureIndices; ivec4 extraIndices; };
