@@ -85,6 +85,8 @@
 #define SI_BINDING_RR_SPECULAR_ALBEDO  14  // dedicated RR guide, RGBA8
 #define SI_BINDING_RR_NORMAL_ROUGHNESS 15  // dedicated RR guide, RGBA16F
 #define SI_BINDING_RR_HIT_DISTANCE     16  // dedicated RR guide, R32F
+#define SI_BINDING_DIAG_SEED           17  // RR5-T0 diagnostic sample-seed UBO (16B)
+#define SI_BINDING_DIAG_PROBE          18  // RR5-T0 RNG probe slots (16B storage, diagnostic writes only)
 
 // ============================================================================
 // Binding indices — set 1 (diagnostics)
@@ -314,6 +316,31 @@ struct SINRDUniformData
 };
 
 // ============================================================================
+// Diagnostic sample-seed UBO — set 1 binding 17, 16 bytes (RR5-T0).
+// Perturbs sampling streams on demand; default-zero preserves today's
+// streams exactly (the initRNG seed term adds 0). The probe words occupy
+// reserved space and default to 0 (probe off); they select one pixel
+// whose raw post-init RNG states the four consumers record into the
+// probe slots (set-1 binding 18) for the headless discriminator.
+// ============================================================================
+struct SIDiagSeedUniform
+{
+    SI_UINT diagSampleSeed;        // 0 = legacy streams; nonzero = perturbed pseudorandom streams
+    SI_UINT diagProbeActive;       // 0 = probe off; nonzero = record probe pixel states
+    SI_UINT diagProbeX;            // probe pixel x (render pixels)
+    SI_UINT diagProbeY;            // probe pixel y (render pixels)
+};
+
+// RNG probe slots — set 1 binding 18, 16 bytes (RR5-T0 discriminator).
+// Written by the four consumers (main RT, DI temporal, DI spatial, GI)
+// for the probe pixel only; read back headless per frame. 0xFFFFFFFF
+// fill = no sample (consumer did not reach initRNG for that pixel/frame).
+struct SIDiagProbeSlots
+{
+    SI_UINT slots[4];
+};
+
+// ============================================================================
 // GPU diagnostics constants — shared between GpuDiagnostics.h/.cpp and
 // diagnostics.glsl. Must stay in sync.
 // ============================================================================
@@ -339,6 +366,12 @@ static_assert(offsetof(SINRDUniformData, rrStartDepth) == 16, "rrStartDepth must
 static_assert(offsetof(SINRDUniformData, rrMinP) == 20, "rrMinP must be at byte 20");
 static_assert(offsetof(SINRDUniformData, rrMaxP) == 24, "rrMaxP must be at byte 24");
 static_assert(offsetof(SINRDUniformData, rrReserved) == 28, "rrReserved must be at byte 28");
+static_assert(sizeof(SIDiagSeedUniform) == 16, "SIDiagSeedUniform must be 16 bytes");
+static_assert(offsetof(SIDiagSeedUniform, diagSampleSeed) == 0, "diagSampleSeed must be at byte 0");
+static_assert(offsetof(SIDiagSeedUniform, diagProbeActive) == 4, "diagProbeActive must be at byte 4");
+static_assert(offsetof(SIDiagSeedUniform, diagProbeX) == 8, "diagProbeX must be at byte 8");
+static_assert(offsetof(SIDiagSeedUniform, diagProbeY) == 12, "diagProbeY must be at byte 12");
+static_assert(sizeof(SIDiagProbeSlots) == 16, "SIDiagProbeSlots must be 16 bytes");
 static_assert(sizeof(SIGIReservoir) == 48, "SIGIReservoir must be 48 bytes (3 uvec4)");
 static_assert(sizeof(SIGIPushConstants) == 48, "SIGIPushConstants must be 48 bytes");
 

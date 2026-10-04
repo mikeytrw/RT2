@@ -61,6 +61,71 @@ TEST_CASE("SINRDUniformData zero-initializes the reserved word")
     CHECK(d.rrStartDepth == 0u);
 }
 
+// ============================================================================
+// RR5-T0 diagnostic seed transport: 16-byte set-1 binding-17 UBO plus
+// 16-byte probe slots. First word is the seed; remaining words are the
+// probe selectors (default 0 = probe off).
+// ============================================================================
+
+TEST_CASE("SIDiagSeedUniform is 16 bytes with seed at byte 0")
+{
+    CHECK(sizeof(SIDiagSeedUniform) == 16);
+    CHECK(offsetof(SIDiagSeedUniform, diagSampleSeed) == 0);
+    CHECK(offsetof(SIDiagSeedUniform, diagProbeActive) == 4);
+    CHECK(offsetof(SIDiagSeedUniform, diagProbeX) == 8);
+    CHECK(offsetof(SIDiagSeedUniform, diagProbeY) == 12);
+    SIDiagSeedUniform d{};
+    CHECK(d.diagSampleSeed == 0u);
+    CHECK(d.diagProbeActive == 0u);
+}
+
+TEST_CASE("SIDiagProbeSlots is 16 bytes (4 consumer slots)")
+{
+    CHECK(sizeof(SIDiagProbeSlots) == 16);
+    CHECK(offsetof(SIDiagProbeSlots, slots) == 0);
+}
+
+TEST_CASE("DiagSeed: seed term precedes pcg in all three initRNG helpers")
+{
+    for (const char* path : { "RT2App/shaders/pathtracer_shared.glsl",
+                              "RT2App/shaders/restir_bindings.glsl",
+                              "RT2App/shaders/restir_gi_bindings.glsl" })
+    {
+        const std::string source = ReadShaderSource(path);
+        REQUIRE(!source.empty());
+        const size_t term = source.find("diagSampleSeed * 2654435761u");
+        CHECK(term != std::string::npos);
+        // The mix lands on the initial state before the warm-up pcg call
+        // of that helper (unsigned add; seed 0 is exactly 0).
+        const size_t init = source.find("uint initRNG(ivec2 pixel, float frameIndex)");
+        CHECK(init != std::string::npos);
+        CHECK(init < term);
+        const size_t pcgCall = source.find("pcg(rngState);", term);
+        CHECK(pcgCall != std::string::npos);
+        CHECK(source.find("diagWriteProbe") != std::string::npos);
+        CHECK(source.find("SI_BINDING_DIAG_SEED") != std::string::npos);
+        CHECK(source.find("SI_BINDING_DIAG_PROBE") != std::string::npos);
+    }
+}
+
+TEST_CASE("DiagSeed: four consumers record raw states at their call sites")
+{
+    const std::string raygen = ReadShaderSource("RT2App/shaders/secondary_raygen.rgen");
+    REQUIRE(!raygen.empty());
+    CHECK(raygen.find("diagWriteProbe(0u, pixel, rngState)") != std::string::npos);
+    const std::string diTemp = ReadShaderSource("RT2App/shaders/restir_temporal.comp");
+    REQUIRE(!diTemp.empty());
+    CHECK(diTemp.find("diagWriteProbe(1u, pixel, rngState)") != std::string::npos);
+    const std::string diSpat = ReadShaderSource("RT2App/shaders/restir_spatial.comp");
+    REQUIRE(!diSpat.empty());
+    CHECK(diSpat.find("diagWriteProbe(2u, pixel, rngState)") != std::string::npos);
+    const std::string giTemp = ReadShaderSource("RT2App/shaders/restir_gi_temporal.comp");
+    REQUIRE(!giTemp.empty());
+    CHECK(giTemp.find("diagWriteProbe(3u, pixel, rngState)") != std::string::npos);
+    // The DI spatial domain split that the probe samples after is intact.
+    CHECK(diSpat.find("camera.position.w + 7777.0") != std::string::npos);
+}
+
 TEST_CASE("SIGIReservoir is 48 bytes (3 uvec4, std430)")
 {
     CHECK(sizeof(SIGIReservoir) == 48);

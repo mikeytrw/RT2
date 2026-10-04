@@ -89,6 +89,24 @@ inline std::optional<ImplicitStartupDenoiser> ResolveImplicitStartupDenoiser(
 		"implicit default: NGX supported and eligible; starting RR Quality" };
 }
 
+// Strict unsigned 32-bit token parse (RR5-T0, shared by --diag-seed and
+// --diag-rng-pixel). Full-token match, finite magnitude, no wraparound:
+// strtoull accepts a leading '-' (wrapping) and saturates on overflow,
+// so both are rejected explicitly. Base 0 permits 0x-prefixed hex for
+// seeds; pixel coordinates use base 10.
+inline bool TryParseUint32Token(const char* text, uint32_t& out, int base)
+{
+	if (!text || text[0] == '\0' || text[0] == '-')
+		return false;
+	char* end = nullptr;
+	errno = 0;
+	const unsigned long long parsed = std::strtoull(text, &end, base);
+	if (end == text || *end != '\0' || errno == ERANGE || parsed > 0xFFFFFFFFull)
+		return false;
+	out = static_cast<uint32_t>(parsed);
+	return true;
+}
+
 struct CLIArgs
 {
 	std::string scenePath;
@@ -166,6 +184,19 @@ struct CLIArgs
 	int captureEvery = 0;              // save sequence frame every N frames
 	int cameraSweepCycles = 0;         // complete cycles before holding still (0 = repeat)
 	uint32_t sceneSeed = 0;            // deterministic sampling seed
+	// RR5-T0 diagnostic sample seed. 0 (default) preserves today's
+	// streams; nonzero perturbs them. Malformed input sets diagSeedError,
+	// which exits nonzero before any rendering/output (like rouletteError).
+	uint32_t diagSeed = 0;
+	bool hasDiagSeed = false;
+	// RNG probe pixel (render pixels) + headless JSON dump path. The dump
+	// requires an explicit pixel; the probe writes raw consumer states
+	// for that pixel every frame while armed.
+	bool hasDiagRngPixel = false;
+	uint32_t diagRngPixelX = 0;
+	uint32_t diagRngPixelY = 0;
+	std::string diagRngDump;
+	std::string diagSeedError;    // flag-specific diagnostic for invalid diag-seed CLI
 
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasProject() const { return !projectPath.empty(); }
@@ -426,6 +457,49 @@ struct CLIArgs
 		{
 			if (const char* v = next()) args.sceneSeed = static_cast<uint32_t>(std::strtoul(v, nullptr, 0));
 		}
+		else if (strcmp(a, "--diag-seed") == 0)
+		{
+			// RR5-T0: strict unsigned parse; malformed input fails loudly
+			// instead of seeding silently.
+			if (const char* v = next())
+			{
+				if (!TryParseUint32Token(v, args.diagSeed, 0))
+				{
+					if (args.diagSeedError.empty())
+						args.diagSeedError = std::string("invalid --diag-seed '") + v +
+							"' (want an unsigned 32-bit integer)";
+				}
+				else
+					args.hasDiagSeed = true;
+			}
+			else if (args.diagSeedError.empty())
+				args.diagSeedError = "missing value for --diag-seed (want an unsigned 32-bit integer)";
+		}
+		else if (strcmp(a, "--diag-rng-pixel") == 0)
+		{
+			const char* vx = next();
+			const char* vy = vx ? next() : nullptr;
+			uint32_t px = 0, py = 0;
+			if (!vx || !vy || !TryParseUint32Token(vx, px, 10) ||
+			    !TryParseUint32Token(vy, py, 10))
+			{
+				if (args.diagSeedError.empty())
+					args.diagSeedError = "invalid --diag-rng-pixel (want two non-negative integers: <x> <y>)";
+			}
+			else
+			{
+				args.diagRngPixelX = px;
+				args.diagRngPixelY = py;
+				args.hasDiagRngPixel = true;
+			}
+		}
+		else if (strcmp(a, "--diag-rng-dump") == 0)
+		{
+			if (const char* v = next())
+				args.diagRngDump = v;
+			else if (args.diagSeedError.empty())
+				args.diagSeedError = "missing value for --diag-rng-dump (want an output path)";
+		}
 		else if (strcmp(a, "--raster-first") == 0)
 		{
 			args.rasterFirst = true;
@@ -534,6 +608,9 @@ struct CLIArgs
 				printf("  --rr-start-depth <N>  Roulette start-depth override (default 3)\n");
 				printf("  --rr-min-p <F>        Roulette pContinue lower clamp override (default 0.05)\n");
 				printf("  --rr-max-p <F>        Roulette pContinue upper clamp override (default 0.95)\n");
+				printf("  --diag-seed <N>       Diagnostic sample-seed override (default 0 = legacy streams)\n");
+				printf("  --diag-rng-pixel <x> <y>  Probe pixel for raw RNG-state sampling (requires --diag-rng-dump)\n");
+				printf("  --diag-rng-dump <path>  Write per-frame raw RNG states (mainRT/DI-temporal/DI-spatial/GI) as JSON\n");
 				printf("  --nrd                Enable NRD denoiser\n");
 		printf("  --denoiser-mode <off|nrd|rr>  Select the denoiser path (default: RR Quality on\n");
 		printf("      supported RTX, NRD otherwise; an explicit choice always wins)\n");
@@ -600,6 +677,13 @@ struct CLIArgs
 			const float effectiveMax = args.hasRrMaxP ? args.rrMaxP : kDefaultRRMaxP;
 			if (!(effectiveMin < effectiveMax))
 				args.rouletteError = "invalid roulette window: --rr-min-p must be less than --rr-max-p (omitted flags use defaults 0.05/0.95)";
+		}
+		// RR5-T0: a dump without an explicit probe pixel would silently
+		// sample pixel (0,0); require the pairing instead.
+		if (args.diagSeedError.empty() && !args.diagRngDump.empty() &&
+		    !args.hasDiagRngPixel)
+		{
+			args.diagSeedError = "missing --diag-rng-pixel <x> <y> for --diag-rng-dump (the probe pixel must be explicit)";
 		}
 		if (args.headless && !args.hasOutput())
 			args.outputPath = "screenshot.png";

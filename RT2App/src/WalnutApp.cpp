@@ -284,6 +284,20 @@ static void ApplyRouletteCLIOverrides(RenderSettings& settings)
 	if (g_CLI.hasRrMaxP) settings.rrMaxP = g_CLI.rrMaxP;
 }
 
+// RR5-T0: one authority applying the diagnostic-seed CLI overrides onto
+// settings, shared by both headless startup sites. The probe pixel arms
+// the RNG probe; the dump path itself is consumed by the headless loop.
+static void ApplyDiagSeedCLIOverrides(RenderSettings& settings)
+{
+	if (g_CLI.hasDiagSeed) settings.diagSampleSeed = g_CLI.diagSeed;
+	if (g_CLI.hasDiagRngPixel)
+	{
+		settings.diagProbeActive = 1u;
+		settings.diagProbeX = g_CLI.diagRngPixelX;
+		settings.diagProbeY = g_CLI.diagRngPixelY;
+	}
+}
+
 class RT2Layer : public Walnut::Layer
 {
 public:
@@ -1157,6 +1171,30 @@ public:
 	{
 		m_RendererGPU.ApplySettings(m_Settings);
 		m_Settings = m_RendererGPU.GetSettings();
+	}
+	ImGui::Text("Diagnostic Sample Seed");
+	int diagSeed = (int)m_Settings.diagSampleSeed;
+	if (ImGui::DragInt("Diag Seed", &diagSeed, 1.0f, 0, 1000000))
+	{
+		m_Settings.diagSampleSeed = (uint32_t)(diagSeed < 0 ? 0 : diagSeed);
+		m_RendererGPU.ApplySettings(m_Settings);
+	}
+	bool diagProbe = m_Settings.diagProbeActive != 0u;
+	if (ImGui::Checkbox("Diag RNG Probe", &diagProbe))
+	{
+		m_Settings.diagProbeActive = diagProbe ? 1u : 0u;
+		m_RendererGPU.ApplySettings(m_Settings);
+	}
+	int diagPX = (int)m_Settings.diagProbeX;
+	int diagPY = (int)m_Settings.diagProbeY;
+	bool probeXYChanged = false;
+	if (ImGui::DragInt("Probe X", &diagPX, 1.0f, 0, 16384)) { probeXYChanged = true; }
+	if (ImGui::DragInt("Probe Y", &diagPY, 1.0f, 0, 16384)) { probeXYChanged = true; }
+	if (probeXYChanged)
+	{
+		m_Settings.diagProbeX = (uint32_t)(diagPX < 0 ? 0 : diagPX);
+		m_Settings.diagProbeY = (uint32_t)(diagPY < 0 ? 0 : diagPY);
+		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	if (ImGui::Button("Reset")) {
 		m_Settings.spp = 1;
@@ -3779,6 +3817,7 @@ private:
 		if (g_CLI.bounces > 0)
 			m_Settings.maxBounces = g_CLI.bounces;
 		ApplyRouletteCLIOverrides(m_Settings);
+		ApplyDiagSeedCLIOverrides(m_Settings);
 		ApplyCLIDenoiserSelection(m_Settings);
 		if (g_CLI.nrdMaxAccumFrames > 0)
 			m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
@@ -3804,6 +3843,7 @@ private:
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
 				ApplyRouletteCLIOverrides(m_Settings);
+				ApplyDiagSeedCLIOverrides(m_Settings);
 				ApplyCLIDenoiserSelection(m_Settings);
 				if (g_CLI.nrdMaxAccumFrames > 0) m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
 				if (g_CLI.nrdResponsiveRoughness >= 0.0f) m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;
@@ -4142,6 +4182,14 @@ private:
 			lastBenchmarkTimingFrame = timings.frameIndex;
 		};
 
+		// RR5-T0 RNG probe dump: per-frame raw post-init states
+		// (mainRT, DI-temporal, DI-spatial, GI) for the probe pixel.
+		// 0xFFFFFFFF in a slot means that consumer did not reach initRNG
+		// for the pixel/frame (e.g. early-out); it is evidence, not error.
+		struct DiagProbeFrame { int frame = 0; uint32_t slots[4] = {}; };
+		std::vector<DiagProbeFrame> diagProbeFrames;
+		const bool diagProbeDump = !g_CLI.diagRngDump.empty();
+
 		for (int i = 0; i < g_CLI.frames; i++)
 		{
 			if (g_CLI.cameraSweepAmplitude > 0.0f && i >= g_CLI.cameraSweepWarmup)
@@ -4193,6 +4241,10 @@ private:
 			expectedCurrentWorldToView = frameWorldToView;
 			haveExpectedCameraSample = true;
 			Timer timer;
+			// Arm unwritten sentinels before the frame so a missing
+			// consumer sample is distinguishable from stale data.
+			if (diagProbeDump)
+				m_RendererGPU.ClearDiagProbeSlots();
 			if (m_RendererGPU.IsAvailable())
 			{
 				lastRenderOutcome = m_RendererGPU.Render(m_Cam);
@@ -4204,6 +4256,15 @@ private:
 					RT_LOG("[Headless] frame %d discarded: %s", i + 1,
 						lastRenderOutcome.failureReason.empty() ? "no capture source" :
 						lastRenderOutcome.failureReason.c_str());
+				}
+				else if (diagProbeDump)
+				{
+					DiagProbeFrame sample = {};
+					sample.frame = i + 1;
+					if (m_RendererGPU.ReadDiagProbeSlots(sample.slots))
+						diagProbeFrames.push_back(sample);
+					else
+						RT_LOG("[DiagProbe] frame %d readback failed", i + 1);
 				}
 			}
 			else
@@ -4308,6 +4369,49 @@ private:
 			outputPersistenceFailure = !saveHDROutput(g_CLI.outputHDRPath) || outputPersistenceFailure;
 		else if (renderFailure)
 			discardOutput(g_CLI.outputHDRPath);
+		// RR5-T0 RNG probe dump: raw per-frame consumer states as JSON.
+		// An empty sample set fails loudly (a dump that sampled nothing
+		// proves nothing); sentinel slots are valid evidence, not failure.
+		if (diagProbeDump)
+		{
+			std::ofstream dump(g_CLI.diagRngDump, std::ios::binary | std::ios::trunc);
+			if (!dump.is_open())
+			{
+				RT_LOG("[DiagProbe] dump open failed: %s", g_CLI.diagRngDump.c_str());
+				outputPersistenceFailure = true;
+			}
+			else
+			{
+				dump << "{\"schema\":\"rt2.diag-rng-probe.v1\","
+				     << "\"seed\":" << m_Settings.diagSampleSeed << ","
+				     << "\"pixel\":[" << m_Settings.diagProbeX << "," << m_Settings.diagProbeY << "],"
+				     << "\"requestedFrames\":" << g_CLI.frames << ","
+				     << "\"sampledFrames\":" << diagProbeFrames.size() << ","
+				     << "\"slots\":[\"mainRT\",\"diTemporal\",\"diSpatial\",\"gi\"],"
+				     << "\"frames\":[";
+				for (size_t f = 0; f < diagProbeFrames.size(); f++)
+				{
+					const DiagProbeFrame& sample = diagProbeFrames[f];
+					if (f > 0) dump << ",";
+					dump << "{\"frame\":" << sample.frame
+					     << ",\"mainRT\":" << sample.slots[0]
+					     << ",\"diTemporal\":" << sample.slots[1]
+					     << ",\"diSpatial\":" << sample.slots[2]
+					     << ",\"gi\":" << sample.slots[3] << "}";
+				}
+				dump << "]}";
+				dump.flush();
+				if (!dump.good() || diagProbeFrames.empty())
+				{
+					RT_LOG("[DiagProbe] dump write failed or sampled no frames: %s",
+					       g_CLI.diagRngDump.c_str());
+					outputPersistenceFailure = true;
+				}
+				else
+					printf("[Headless] saved RNG probe dump: %s (%zu frames)\n",
+					       g_CLI.diagRngDump.c_str(), diagProbeFrames.size());
+			}
+		}
 		if (ShouldCommitHeadlessOutput(!g_CLI.outputDisplayPath.empty(),
 			m_RendererGPU.IsAvailable(), lastRenderOutcome.submitted,
 			lastRenderOutcome.captureAllowed, renderFailure))
@@ -6932,6 +7036,13 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	if (!g_CLI.rouletteError.empty())
 	{
 		fprintf(stderr, "[CLI] %s\n", g_CLI.rouletteError.c_str());
+		fflush(stderr);
+		std::exit(EXIT_FAILURE);
+	}
+	// RR5-T0: same treatment for the diagnostic seed CLI.
+	if (!g_CLI.diagSeedError.empty())
+	{
+		fprintf(stderr, "[CLI] %s\n", g_CLI.diagSeedError.c_str());
 		fflush(stderr);
 		std::exit(EXIT_FAILURE);
 	}

@@ -196,9 +196,42 @@ float randomFloat(inout uint state)
     return float(pcg(state) >> 8u) * (1.0 / 16777216.0);
 }
 
+// Diagnostic sample seed (RR5-T0): perturbs sampling streams on demand.
+// Default zero preserves today's streams exactly (the initRNG term below
+// adds 0). Probe words default to 0 (probe off). Mirrors
+// SIDiagSeedUniform bytes 0-15. (Repeated per RNG family, like pcg above:
+// each family header is included by disjoint shader sets.)
+layout(set = 1, binding = SI_BINDING_DIAG_SEED) uniform DiagSeedUniform
+{
+    uint diagSampleSeed;        // 0 = legacy streams; nonzero = perturbed streams
+    uint diagProbeActive;       // 0 = probe off; nonzero = record probe pixel states
+    uint diagProbeX;            // probe pixel x (render pixels)
+    uint diagProbeY;            // probe pixel y (render pixels)
+} diagSeedData;
+
+// RNG probe slots (RR5-T0 discriminator): raw post-init states recorded
+// by the consumers for the probe pixel only. Pure store, never feeds
+// rendering, so the seed-0 image is unaffected.
+layout(set = 1, binding = SI_BINDING_DIAG_PROBE) buffer DiagProbeSlots
+{
+    uint slots[];
+} diagProbeSlots;
+
+// T0 discriminator probe: records this invocation's raw post-init state
+// when the probe is armed and this is the probe pixel.
+void diagWriteProbe(uint slot, ivec2 pixel, uint state)
+{
+    if (diagSeedData.diagProbeActive != 0u &&
+        pixel == ivec2(int(diagSeedData.diagProbeX), int(diagSeedData.diagProbeY)))
+        diagProbeSlots.slots[slot] = state;
+}
+
 uint initRNG(ivec2 pixel, float frameIndex)
 {
     uint rngState = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + uint(frameIndex) * 26699u;
+    // RR5-T0: Knuth odd-constant mix before the first pcg call; seed 0
+    // adds exactly 0. GI clock unchanged.
+    rngState += diagSeedData.diagSampleSeed * 2654435761u;
     pcg(rngState);
     return rngState;
 }

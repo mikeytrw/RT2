@@ -253,3 +253,88 @@ TEST_CASE("CLI roulette rejects float underflow and round-up tokens")
     CHECK_FALSE(roundUpMax.rouletteError.empty());
     CHECK_FALSE(roundUpMax.hasRrMaxP);
 }
+
+// ============================================================================
+// RR5-T0: strict diagnostic-seed CLI. Full-token unsigned values with
+// explicit presence; malformed input sets diagSeedError (headless exits
+// nonzero before output) and never lands.
+// ============================================================================
+
+TEST_CASE("CLI diag-seed defaults are valid and unset")
+{
+    CLIArgs args = ParseArgs({ "RT2App" });
+    CHECK(args.diagSeedError.empty());
+    CHECK(args.diagSeed == 0u);
+    CHECK_FALSE(args.hasDiagSeed);
+    CHECK_FALSE(args.hasDiagRngPixel);
+    CHECK(args.diagRngDump.empty());
+}
+
+TEST_CASE("CLI diag-seed valid values parse with explicit presence")
+{
+    CLIArgs args = ParseArgs({ "RT2App", "--diag-seed", "12345" });
+    CHECK(args.diagSeedError.empty());
+    CHECK(args.hasDiagSeed);
+    CHECK(args.diagSeed == 12345u);
+
+    CLIArgs hex = ParseArgs({ "RT2App", "--diag-seed", "0xFF" });
+    CHECK(hex.diagSeedError.empty());
+    CHECK(hex.diagSeed == 255u);
+
+    CLIArgs zero = ParseArgs({ "RT2App", "--diag-seed", "0" });
+    CHECK(zero.diagSeedError.empty());
+    CHECK(zero.hasDiagSeed);
+    CHECK(zero.diagSeed == 0u);
+}
+
+TEST_CASE("CLI diag-seed rejects malformed, negative, overflowing and missing input")
+{
+    for (const char* bad : { "abc", "12x", "", "-1", "-0", "99999999999999999999",
+                             "4294967296", "1e3" })
+    {
+        CLIArgs args = ParseArgs({ "RT2App", "--diag-seed", bad });
+        CHECK_FALSE(args.diagSeedError.empty());
+        CHECK_FALSE(args.hasDiagSeed);
+    }
+    CLIArgs missing = ParseArgs({ "RT2App", "--diag-seed" });
+    CHECK_FALSE(missing.diagSeedError.empty());
+    CHECK_FALSE(missing.hasDiagSeed);
+}
+
+TEST_CASE("CLI diag-rng-pixel needs two non-negative integers")
+{
+    CLIArgs args = ParseArgs({ "RT2App", "--diag-rng-pixel", "24", "72" });
+    CHECK(args.diagSeedError.empty());
+    CHECK(args.hasDiagRngPixel);
+    CHECK(args.diagRngPixelX == 24u);
+    CHECK(args.diagRngPixelY == 72u);
+
+    for (const char* bad : { "abc", "-1", "4x" })
+    {
+        CLIArgs badArgs = ParseArgs({ "RT2App", "--diag-rng-pixel", bad, "72" });
+        CHECK_FALSE(badArgs.diagSeedError.empty());
+        CHECK_FALSE(badArgs.hasDiagRngPixel);
+    }
+    CLIArgs missingY = ParseArgs({ "RT2App", "--diag-rng-pixel", "24" });
+    CHECK_FALSE(missingY.diagSeedError.empty());
+    CHECK_FALSE(missingY.hasDiagRngPixel);
+    CLIArgs missingBoth = ParseArgs({ "RT2App", "--diag-rng-pixel" });
+    CHECK_FALSE(missingBoth.diagSeedError.empty());
+    CHECK_FALSE(missingBoth.hasDiagRngPixel);
+}
+
+TEST_CASE("CLI diag-rng-dump requires an explicit probe pixel")
+{
+    CLIArgs noPixel = ParseArgs({ "RT2App", "--diag-rng-dump", "out.json" });
+    CHECK_FALSE(noPixel.diagSeedError.empty());
+
+    CLIArgs paired = ParseArgs({ "RT2App", "--diag-rng-pixel", "24", "72",
+                                 "--diag-rng-dump", "out.json" });
+    CHECK(paired.diagSeedError.empty());
+    CHECK(paired.hasDiagRngPixel);
+    CHECK(paired.diagRngDump == "out.json");
+
+    CLIArgs missingPath = ParseArgs({ "RT2App", "--diag-rng-pixel", "24", "72",
+                                      "--diag-rng-dump" });
+    CHECK_FALSE(missingPath.diagSeedError.empty());
+}

@@ -156,6 +156,18 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 	if (ctx.nrdUBO)
 		vkCmdUpdateBuffer(cmd, ctx.nrdUBO, 0, sizeof(SINRDUniformData), &nrdData);
 
+	// RR5-T0 diag-seed UBO: seed + probe selectors from the frame context
+	// (defaults keep legacy streams and the probe off). Uploaded inside
+	// this same barrier block, so uniform consumers see it consistently.
+	SIDiagSeedUniform seedData = {
+		ctx.diagSampleSeed,
+		ctx.diagProbeActive,
+		ctx.diagProbeX,
+		ctx.diagProbeY
+	};
+	if (ctx.diagSeedUBO)
+		vkCmdUpdateBuffer(cmd, ctx.diagSeedUBO, 0, sizeof(SIDiagSeedUniform), &seedData);
+
 	VkMemoryBarrier uboPostBarrier = {};
 	uboPostBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 	uboPostBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;

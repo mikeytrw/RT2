@@ -37,6 +37,16 @@ struct RenderSettings
 	float    rrMinP       = 0.05f;
 	float    rrMaxP       = 0.95f;
 
+	// Diagnostic sample seed (RR5-T0, plumbing only — no policy change).
+	// Default 0 preserves today's sampling streams exactly; nonzero seeds
+	// perturb streams (pseudorandom, never certified independent).
+	// The probe words select one pixel whose raw RNG states the consumers
+	// record for the headless discriminator; active=0 disables the probe.
+	uint32_t diagSampleSeed = 0u;
+	uint32_t diagProbeActive = 0u;
+	uint32_t diagProbeX = 0u;
+	uint32_t diagProbeY = 0u;
+
 	// Deterministic sampling seed (0 = renderer default). Set from CLI
 	// --seed; consumed by the path tracer to initialize per-pixel RNG.
 	uint32_t sceneSeed   = 0;

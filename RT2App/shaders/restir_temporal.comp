@@ -123,6 +123,8 @@ void main()
     }
 
     uint rngState = initRNG(pixel, camera.position.w);
+    // RR5-T0 discriminator: raw DI-temporal stream state for the probe pixel.
+    diagWriteProbe(1u, pixel, rngState);
     uint M = max(pc.restir.freshCandidateCount, 1u);
 
     // ---- Generate fresh candidates ----

@@ -144,6 +144,8 @@ void main()
     uint frameIndex = pc.restir.frameIndex;
 
     uint rngState = initRNG(pixel, camera.position.w + 7777.0);
+    // RR5-T0 discriminator: raw DI-spatial (domain-split) stream state.
+    diagWriteProbe(2u, pixel, rngState);
 
     // Generate neighbor offsets using frame-rotated disk pattern
     // Use golden-angle spiral for quasi-random distribution

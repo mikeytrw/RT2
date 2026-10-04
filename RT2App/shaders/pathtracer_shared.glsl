@@ -269,6 +269,37 @@ layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniform
     uint rrReserved;            // zero-initialised padding/reserved word
 } nrdData;
 
+// Diagnostic sample seed (RR5-T0): perturbs sampling streams on demand.
+// Default zero preserves today's streams exactly (the initRNG term below
+// adds 0). Probe words default to 0 (probe off). Mirrors
+// SIDiagSeedUniform bytes 0-15.
+layout(set = 1, binding = SI_BINDING_DIAG_SEED) uniform DiagSeedUniform
+{
+    uint diagSampleSeed;        // 0 = legacy streams; nonzero = perturbed streams
+    uint diagProbeActive;       // 0 = probe off; nonzero = record probe pixel states
+    uint diagProbeX;            // probe pixel x (render pixels)
+    uint diagProbeY;            // probe pixel y (render pixels)
+} diagSeedData;
+
+// RNG probe slots (RR5-T0 discriminator): raw post-init states recorded
+// by the consumers for the probe pixel only. Read back headless per
+// frame; 0xFFFFFFFF fill means no sample. Pure store, never feeds
+// rendering, so the seed-0 image is unaffected.
+layout(set = 1, binding = SI_BINDING_DIAG_PROBE) buffer DiagProbeSlots
+{
+    uint slots[];
+} diagProbeSlots;
+
+// T0 discriminator probe: records this invocation's raw post-init state
+// when the probe is armed and this is the probe pixel. Executes the
+// consumed stream's actual state — not a copy — at the call site.
+void diagWriteProbe(uint slot, ivec2 pixel, uint state)
+{
+    if (diagSeedData.diagProbeActive != 0u &&
+        pixel == ivec2(int(diagSeedData.diagProbeX), int(diagSeedData.diagProbeY)))
+        diagProbeSlots.slots[slot] = state;
+}
+
 // ---- Payload ----------------------------------------------------------------
 // Packed into explicit vec4 rows to avoid cross-stage std430 alignment
 // ambiguity when mixing vec3/scalar fields in rayPayloadEXT.
@@ -931,10 +962,14 @@ float evalTransmissionBSDFPdf(vec3 wo, vec3 wi, vec3 n,
 
 // Initialize RNG from pixel coords + frame index (camera.position.w).
 // Returns warmed-up rngState ready for randomFloat/pcg calls.
+// RR5-T0: diagSampleSeed perturbs the initial state (Knuth odd-constant
+// mix) before the first pcg call; seed 0 adds exactly 0, preserving
+// today's streams bit-for-bit. Frame conversion unchanged.
 uint initRNG(ivec2 pixel, float frameIndex)
 {
     uint seed = uint(abs(frameIndex));
     uint rngState = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + seed * 26699u;
+    rngState += diagSeedData.diagSampleSeed * 2654435761u;
     pcg(rngState);
     return rngState;
 }

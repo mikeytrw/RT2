@@ -108,6 +108,8 @@ void main()
 
     // ---- Generate M fresh candidates ----
     uint rngState = initRNG(pixel, pc.gi.frameIndex);
+    // RR5-T0 discriminator: raw GI-temporal stream state for the probe pixel.
+    diagWriteProbe(3u, pixel, rngState);
     uint M = pc.gi.freshCandidateCount;
     if (M == 0u) M = 1u;
 

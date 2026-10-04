@@ -114,6 +114,15 @@ TEST_CASE("RenderSettings: roulette start depth floors at 1")
 	CHECK(s.rrStartDepth == 1u);
 }
 
+TEST_CASE("RenderSettings: diagnostic seed defaults preserve legacy streams")
+{
+	RenderSettings s;
+	CHECK(s.diagSampleSeed == 0u);
+	CHECK(s.diagProbeActive == 0u);
+	CHECK(s.diagProbeX == 0u);
+	CHECK(s.diagProbeY == 0u);
+}
+
 TEST_CASE("RenderSettings: dirty flag starts false")
 {
 	RenderSettings s;
