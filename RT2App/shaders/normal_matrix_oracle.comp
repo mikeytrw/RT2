@@ -1,0 +1,90 @@
+// normal_matrix_oracle.comp — RT4-T2 Part A GPU diagnostic oracle.
+//
+// Isolated compute dispatch: per instance it evaluates BOTH
+//   (a) the legacy in-shader expression transpose(inverse(mat3(world)))
+//       — exactly as closesthit.rchit did before Part A — from the
+//       uploaded instanceTransforms, and
+//   (b) the ACTUAL production uploaded 48-byte normal record
+// and transforms the 14 specified sample directions (6 unit axes + 8
+// normalized cube-corner diagonals) with each, writing all raw vectors
+// for host-side double-precision comparison. A CPU double inverse alone
+// is not substituted anywhere: both compared quantities come from the GPU.
+//
+// Own minimal descriptor layout (NOT the shared set-0 layout): the buffers
+// bound here are the production VkBuffers from SceneResources, so the
+// uploaded record bytes under test are exactly what rendering consumes.
+// Descriptor plumbing of set 0 itself is covered separately by validation
+// layers + the fixed-stream image regression through real rendering.
+#version 460
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer OracleTransforms
+{
+    mat4 worlds[];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer OracleNormalMatrices
+{
+    vec4 nmRecs[]; // 3 column-major vec4s per instance, w padding
+};
+
+// Per instance: 3 legacy columns + 3 uploaded columns + 14 legacy-transformed
+// sample normals + 14 uploaded-transformed sample normals = 34 vec4s.
+layout(set = 0, binding = 2, std430) writeonly buffer OracleResults
+{
+    vec4 outVecs[];
+};
+
+layout(push_constant) uniform OraclePush
+{
+    uint instanceCount;
+};
+
+// EXACT 14 specified directions: 6 unit axes + 8 normalized cube corners.
+vec3 sampleDir(uint k)
+{
+    if (k == 0u)  return vec3(1.0, 0.0, 0.0);
+    if (k == 1u)  return vec3(-1.0, 0.0, 0.0);
+    if (k == 2u)  return vec3(0.0, 1.0, 0.0);
+    if (k == 3u)  return vec3(0.0, -1.0, 0.0);
+    if (k == 4u)  return vec3(0.0, 0.0, 1.0);
+    if (k == 5u)  return vec3(0.0, 0.0, -1.0);
+    const float s = 0.5773502691896258; // 1/sqrt(3)
+    if (k == 6u)  return vec3(s, s, s);
+    if (k == 7u)  return vec3(s, s, -s);
+    if (k == 8u)  return vec3(s, -s, s);
+    if (k == 9u)  return vec3(s, -s, -s);
+    if (k == 10u) return vec3(-s, s, s);
+    if (k == 11u) return vec3(-s, s, -s);
+    if (k == 12u) return vec3(-s, -s, s);
+    return vec3(-s, -s, -s);
+}
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= instanceCount)
+        return;
+
+    // (a) legacy expression, exactly as the pre-Part-A closesthit did.
+    mat3 legacy = transpose(inverse(mat3(worlds[i])));
+
+    // (b) production uploaded record.
+    uint nb = i * 3u;
+    mat3 up = mat3(nmRecs[nb + 0u].xyz, nmRecs[nb + 1u].xyz, nmRecs[nb + 2u].xyz);
+
+    uint ob = i * 34u;
+    outVecs[ob + 0u] = vec4(legacy[0], 0.0);
+    outVecs[ob + 1u] = vec4(legacy[1], 0.0);
+    outVecs[ob + 2u] = vec4(legacy[2], 0.0);
+    outVecs[ob + 3u] = vec4(up[0], 0.0);
+    outVecs[ob + 4u] = vec4(up[1], 0.0);
+    outVecs[ob + 5u] = vec4(up[2], 0.0);
+    for (uint k = 0u; k < 14u; ++k)
+    {
+        vec3 d = sampleDir(k);
+        outVecs[ob + 6u + k] = vec4(normalize(legacy * d), 0.0);
+        outVecs[ob + 20u + k] = vec4(normalize(up * d), 0.0);
+    }
+}

@@ -779,6 +779,7 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 		m_Scene.GetInstanceTransformBuffer(),
 		m_Scene.GetInstanceTransformPrevBuffer(), m_Scene.GetMaterialIndexBuffer(),
 		m_Scene.GetInstanceMatOffsetBuffer(),
+		m_Scene.GetInstanceNormalMatrixBuffer(),
 		m_Scene.GetTLAS(),
 		m_Reservoirs.GetHistoryBuffer(), m_Reservoirs.GetScratchBuffer(),
 		m_Reservoirs.GetSurfaceHistoryBuffer(),

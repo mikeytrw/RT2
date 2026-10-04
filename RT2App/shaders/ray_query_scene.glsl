@@ -134,7 +134,12 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
         vec3 objectN = b0 * n0 + b1 * n1 + b2 * n2;
         if (dot(objectN, objectN) >= 1e-10)
         {
-            mat3 normalMatrix = transpose(inverse(mat3(world)));
+            // RT4-T2 Part A: precomputed per-instance normal matrix (same
+            // record contract as closesthit). N transform only.
+            uint nmBase = h.instanceID * 3u;
+            mat3 normalMatrix = mat3(instanceNormalMatrices[nmBase + 0u].xyz,
+                                     instanceNormalMatrices[nmBase + 1u].xyz,
+                                     instanceNormalMatrices[nmBase + 2u].xyz);
             baseNormal = normalize(normalMatrix * objectN);
         }
     }

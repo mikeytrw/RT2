@@ -3901,6 +3901,30 @@ private:
 		printf("[Headless] rendering %d frames...\n", g_CLI.frames);
 		fflush(stdout);
 
+		// RT4-T2 Part A diagnostic: synthetic matrix battery through the
+		// production upload path + isolated GPU oracle dispatch. Terminal:
+		// prints the verdict and exits without rendering frames.
+		if (g_CLI.normalMatrixOracle)
+		{
+			if (!m_RendererGPU.IsAvailable())
+			{
+				printf("[NormalMatrixOracle] FAILED: GPU renderer unavailable\n");
+				fflush(stdout);
+				Walnut::Application::Get().Close();
+				std::exit(EXIT_FAILURE);
+			}
+			printf("[Headless] running normal-matrix oracle (one warmup frame first)...\n");
+			fflush(stdout);
+			m_RendererGPU.Render(m_Cam);
+			const bool oraclePass = m_RendererGPU.RunNormalMatrixOracle(m_Cam);
+			printf("[Headless] normal-matrix oracle %s\n", oraclePass ? "PASSED" : "FAILED");
+			fflush(stdout);
+			Walnut::Application::Get().Close();
+			if (!oraclePass)
+				std::exit(EXIT_FAILURE);
+			return;
+		}
+
 		auto saveOutput = [&](const std::string& path) -> bool {
 			std::error_code directoryError;
 			const std::filesystem::path outputPath(path);

@@ -91,7 +91,13 @@ vec3 hitVertexNormalFrom(HitTriangle h)
     if (dot(objectN, objectN) < 1e-10)
         return hitFaceNormalFrom(h);
 
-    mat3 normalMatrix = transpose(inverse(mat3(h.world)));
+    // RT4-T2 Part A: precomputed transpose-inverse normal matrix, uploaded
+    // per instance (3 column-major vec4s). Replaces
+    // transpose(inverse(mat3(world))) on the hot path; N transform only.
+    uint nmBase = uint(gl_InstanceID) * 3u;
+    mat3 normalMatrix = mat3(instanceNormalMatrices[nmBase + 0u].xyz,
+                             instanceNormalMatrices[nmBase + 1u].xyz,
+                             instanceNormalMatrices[nmBase + 2u].xyz);
     return normalize(normalMatrix * objectN);
 }
 

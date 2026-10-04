@@ -84,6 +84,7 @@ project "RT2App"
         "shaders/gbuffer_debug.comp",
 		"shaders/rr_guides.comp",
 		"shaders/picking.comp",
+        "shaders/normal_matrix_oracle.comp",
         "shaders/pathtracer_shared.glsl",
         "shaders/scatter_shared.glsl",
         "shaders/restir_gi_shared.glsl",
@@ -229,6 +230,14 @@ project "RT2App"
 		buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/picking.comp -o " .. shaderDir .. "/picking.spv" }
 		buildoutputs { shaderDir .. "/picking.spv" }
 
+	-- RT4-T2 Part A diagnostic oracle (isolated compute dispatch, headless
+	-- --normal-matrix-oracle only; never bound by production pipelines).
+	filter {"files:shaders/normal_matrix_oracle.comp"}
+		buildmessage "Compiling normal_matrix_oracle.comp"
+		buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/normal_matrix_oracle.comp -o " .. shaderDir .. "/normal_matrix_oracle.spv" }
+		buildoutputs { shaderDir .. "/normal_matrix_oracle.spv" }
+		buildinputs { depBasic }
+
     -- Reset filter for the rest
     filter {}
 
@@ -319,7 +328,8 @@ project "RT2App"
             "copy /Y \"$(ProjectDir)shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\"",
 			"copy /Y \"$(ProjectDir)shaders\\rr_guides.spv\" \"%{cfg.targetdir}\"",
-			"copy /Y \"$(ProjectDir)shaders\\picking.spv\" \"%{cfg.targetdir}\""
+			"copy /Y \"$(ProjectDir)shaders\\picking.spv\" \"%{cfg.targetdir}\"",
+			"copy /Y \"$(ProjectDir)shaders\\normal_matrix_oracle.spv\" \"%{cfg.targetdir}\""
         }
 
    filter "configurations:Debug"

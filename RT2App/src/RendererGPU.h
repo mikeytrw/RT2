@@ -125,6 +125,13 @@ public:
 	void ClearRetainedFallback();
 	bool IsFallbackRetained() const { return m_AutomaticNativeNrdFallback; }	const RRFeatureState& GetRRState() const { return m_RR.State(); }
 	void SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
+	// RT4-T2 Part A diagnostic oracle: synthetic matrix battery through the
+	// production upload path + isolated compute dispatch comparing the legacy
+	// in-shader transpose(inverse()) against the uploaded record (14 sample
+	// directions, double-precision host gates). Headless
+	// --normal-matrix-oracle only. Swaps in its own synthetic scene and is
+	// terminal: the caller exits afterwards.
+	bool RunNormalMatrixOracle(const Camera& camera);
 	// Diagnostic: dump every material's metallic/roughness factors and texture
 	// indices to the log, flagging fully-metallic materials that have no
 	// metallicRoughness texture to modulate them. Off by default; enabled from

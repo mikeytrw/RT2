@@ -109,6 +109,14 @@ public:
 	VkBuffer GetPunctualLightBuffer() const { return m_PunctualLightBuffer; }
 	VkBuffer GetInstanceTransformBuffer() const { return m_InstanceTransformBuffer; }
 	VkBuffer GetInstanceTransformPrevBuffer() const { return m_InstanceTransformPrevBuffer; }
+	// RT4-T2 Part A: precomputed transpose-inverse normal matrices, one
+	// 48-byte record (3 column-major vec4s) per GPU instance, same ordering
+	// as the transform buffer. Empty scene still yields a valid nonzero
+	// range (single zero-initialised dummy record, logical count zero).
+	VkBuffer GetInstanceNormalMatrixBuffer() const { return m_InstanceNormalMatrixBuffer; }
+	// Out-of-support instance count from the last upload (identity fallback
+	// + loud diagnostic per instance). Zero in well-formed scenes.
+	uint32_t GetNormalMatrixOutOfSupportCount() const { return m_NormalMatrixOutOfSupportCount; }
 	VkBuffer GetInstanceMaterialIndexBuffer() const { return m_InstanceMaterialIndexBuffer; }
 
 	// AS accessors
@@ -179,6 +187,15 @@ private:
 	VkBuffer m_InstanceTransformPrevBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_InstanceTransformPrevBufferMemory = VK_NULL_HANDLE;
 	VkDeviceSize m_InstanceTransformBufferSize = 0;
+
+	// RT4-T2 Part A: precomputed normal matrices (48-byte records).
+	// Built alongside the transform buffer in CreateInstanceTransformBuffer
+	// so every lifetime (sync/async rebuild, transform-only sync, scene
+	// replacement/deletion) stays consistent by construction. Strides of
+	// the transform and previous-transform buffers are byte-untouched.
+	VkBuffer m_InstanceNormalMatrixBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_InstanceNormalMatrixBufferMemory = VK_NULL_HANDLE;
+	uint32_t m_NormalMatrixOutOfSupportCount = 0;
 
 	// Per-instance material index
 	VkBuffer m_InstanceMaterialIndexBuffer = VK_NULL_HANDLE;

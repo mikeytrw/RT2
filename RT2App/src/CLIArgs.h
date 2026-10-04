@@ -123,6 +123,9 @@ struct CLIArgs
 	std::string ngxProjectId;     // optional override; empty is a deliberate invalid-ID test
 	std::string ngxFeaturePath;   // optional isolated NGX runtime search path
 	bool benchmarkTimings = false; // emit one JSON timing record per completed GPU frame
+	// RT4-T2 Part A diagnostic: run the normal-matrix GPU oracle on a
+	// synthetic matrix battery (headless only) instead of rendering frames.
+	bool normalMatrixOracle = false; // --normal-matrix-oracle
 	bool rasterFirst = false;      // raster-first hybrid path
 	bool ris = false;              // enable ReSTIR DI (backward compat alias)
 	bool restir = false;           // enable ReSTIR DI
@@ -385,6 +388,10 @@ struct CLIArgs
 			{
 				args.benchmarkTimings = true;
 			}
+			else if (strcmp(a, "--normal-matrix-oracle") == 0)
+			{
+				args.normalMatrixOracle = true;
+			}
 			else if (strcmp(a, "--validate") == 0)
 			{
 				args.validate = true;
@@ -479,6 +486,7 @@ struct CLIArgs
 				printf("  --list               Print what would be loaded, then exit\n");
 			printf("  --verbose            Verbose logging\n");
 			printf("  --benchmark-timings  Emit per-frame GPU timing records as JSON lines\n");
+			printf("  --normal-matrix-oracle  Run the RT4-T2 normal-matrix GPU oracle (headless only)\n");
 			printf("  --validate           Enable Vulkan validation layers\n");
 			printf("  --sync-validate     Enable synchronization validation (implies --validate)\n");
 			printf("  --ngx-report         Print the read-only NGX support snapshot\n");

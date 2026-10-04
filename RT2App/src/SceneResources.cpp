@@ -2,6 +2,7 @@
 #include "GpuDevice.h"
 #include "CommandUtils.h"
 #include "StagingArena.h"
+#include "NormalMatrix.h"
 #include "RTLog.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
@@ -35,6 +36,7 @@ void SceneResources::Destroy()
 	GpuResources::DestroyBuffer(*m_Device, m_PunctualLightBuffer, m_PunctualLightBufferMemory);
 	GpuResources::DestroyBuffer(*m_Device, m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
 	GpuResources::DestroyBuffer(*m_Device, m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
+	GpuResources::DestroyBuffer(*m_Device, m_InstanceNormalMatrixBuffer, m_InstanceNormalMatrixBufferMemory);
 	GpuResources::DestroyBuffer(*m_Device, m_InstanceMaterialIndexBuffer, m_InstanceMaterialIndexBufferMemory);
 	GpuResources::DestroySampler(*m_Device, m_TextureSampler);
 	m_AS.Destroy();
@@ -759,6 +761,37 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev, bool pr
 	vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufferSize, 0, &data);
 	memcpy(data, transforms.data(), instanceCount * sizeof(glm::mat4));
 	vkUnmapMemory(device, m_InstanceTransformBufferMemory);
+
+	// RT4-T2 Part A: precomputed normal matrices, same instance ordering.
+	// One 48-byte record (3 column-major vec4s, w = 0) per instance.
+	// Empty scene: one zero-initialised dummy record, logical count zero,
+	// valid nonzero descriptor range (a null/zero-size range is not valid).
+	GpuResources::DestroyBuffer(dev, m_InstanceNormalMatrixBuffer, m_InstanceNormalMatrixBufferMemory);
+	const size_t normalRecordCount = instanceCount > 0 ? instanceCount : 1;
+	VkDeviceSize normalBufferSize = normalRecordCount * 3 * sizeof(glm::vec4);
+	GpuResources::CreateBuffer(dev, normalBufferSize,
+	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             m_InstanceNormalMatrixBuffer, m_InstanceNormalMatrixBufferMemory);
+
+	std::vector<glm::vec4> normalRecords(normalRecordCount * 3, glm::vec4(0.0f));
+	m_NormalMatrixOutOfSupportCount = 0;
+	for (size_t i = 0; i < instanceCount; i++)
+	{
+		const NormalMatrixPack pack = ComputeNormalMatrixPack(m_CurrentScene.instances[i].worldMatrix);
+		normalRecords[i * 3 + 0] = pack.columns[0];
+		normalRecords[i * 3 + 1] = pack.columns[1];
+		normalRecords[i * 3 + 2] = pack.columns[2];
+		if (!pack.supported)
+		{
+			m_NormalMatrixOutOfSupportCount++;
+			RT_LOG("[NormalMatrix] out-of-support instance %zu (identity fallback)", i);
+		}
+	}
+
+	vkMapMemory(device, m_InstanceNormalMatrixBufferMemory, 0, normalBufferSize, 0, &data);
+	memcpy(data, normalRecords.data(), (size_t)normalBufferSize);
+	vkUnmapMemory(device, m_InstanceNormalMatrixBufferMemory);
 
 	const bool canPreservePrevious = preservePrevious &&
 		oldCurrentBuffer != VK_NULL_HANDLE && oldCurrentSize == bufferSize;
