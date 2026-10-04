@@ -202,4 +202,54 @@ TEST_CASE("CLI roulette rejects an explicitly inverted window")
     CHECK(ordered.rouletteError.empty());
     CHECK(ordered.hasRrMinP);
     CHECK(ordered.hasRrMaxP);
+    // Explicit defaults are valid.
+    CLIArgs explicitDefaults = ParseArgs({ "RT2App", "--rr-min-p", "0.05",
+                                           "--rr-max-p", "0.95" });
+    CHECK(explicitDefaults.rouletteError.empty());
+    CHECK(explicitDefaults.hasRrMinP);
+    CHECK(explicitDefaults.hasRrMaxP);
+}
+
+// RR5-T1 fixup (review R1): a single bound is validated against the
+// omitted default, so --rr-min-p 0.96 fails (default max is 0.95)
+// instead of silently canonicalizing back to defaults.
+TEST_CASE("CLI roulette validates single flags against omitted defaults")
+{
+    CLIArgs minAboveDefaultMax = ParseArgs({ "RT2App", "--rr-min-p", "0.96" });
+    CHECK_FALSE(minAboveDefaultMax.rouletteError.empty());
+    // The token itself parsed; the effective window against the omitted
+    // default is what fails. Presence stays truthful (exit happens before
+    // any application site reads it).
+    CHECK(minAboveDefaultMax.hasRrMinP);
+
+    CLIArgs maxBelowDefaultMin = ParseArgs({ "RT2App", "--rr-max-p", "0.04" });
+    CHECK_FALSE(maxBelowDefaultMin.rouletteError.empty());
+    CHECK(maxBelowDefaultMin.hasRrMaxP);
+
+    CLIArgs minBelowDefaultMax = ParseArgs({ "RT2App", "--rr-min-p", "0.04" });
+    CHECK(minBelowDefaultMax.rouletteError.empty());
+    CHECK(minBelowDefaultMax.hasRrMinP);
+
+    CLIArgs maxAboveDefaultMin = ParseArgs({ "RT2App", "--rr-max-p", "0.96" });
+    CHECK(maxAboveDefaultMin.rouletteError.empty());
+    CHECK(maxAboveDefaultMin.hasRrMaxP);
+}
+
+// RR5-T1 fixup (review R1): the narrowed destination float is
+// validated, not just the double token. 1e-50 is finite in (0,1) as a
+// double but narrows to float 0; a decimal rounding up to 1.0f is
+// equally unusable as a survival-probability bound.
+TEST_CASE("CLI roulette rejects float underflow and round-up tokens")
+{
+    CLIArgs underflowMin = ParseArgs({ "RT2App", "--rr-min-p", "1e-50" });
+    CHECK_FALSE(underflowMin.rouletteError.empty());
+    CHECK_FALSE(underflowMin.hasRrMinP);
+
+    CLIArgs underflowMax = ParseArgs({ "RT2App", "--rr-max-p", "1e-50" });
+    CHECK_FALSE(underflowMax.rouletteError.empty());
+    CHECK_FALSE(underflowMax.hasRrMaxP);
+
+    CLIArgs roundUpMax = ParseArgs({ "RT2App", "--rr-max-p", "0.99999999999999999" });
+    CHECK_FALSE(roundUpMax.rouletteError.empty());
+    CHECK_FALSE(roundUpMax.hasRrMaxP);
 }

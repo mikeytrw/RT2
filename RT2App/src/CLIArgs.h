@@ -11,6 +11,7 @@
 #include "RRGuideContract.h"
 #include "DenoiserMode.h"
 #include "CameraPresentation.h"
+#include "RenderSettings.h"
 
 // Resolved denoiser selection: the single mapping from compatibility and
 // public CLI spellings onto the authored enum. Explicit --denoiser-mode
@@ -273,12 +274,17 @@ struct CLIArgs
 			}
 			else if (strcmp(a, "--rr-min-p") == 0)
 			{
+				// RR5-T1 fixup (review R1): validate the narrowed
+				// destination float, not just the double token. A token
+				// like 1e-50 is finite in (0,1) as a double but narrows
+				// to float 0; a token rounding up to 1.0f is equally
+				// unusable as a survival-probability bound.
 				if (const char* v = next())
 				{
 					char* end = nullptr;
-					const double parsed = std::strtod(v, &end);
-					if (end == v || *end != '\0' || !std::isfinite(parsed) ||
-					    parsed <= 0.0 || parsed >= 1.0)
+					const float narrowed = (float)std::strtod(v, &end);
+					if (end == v || *end != '\0' || !std::isfinite(narrowed) ||
+					    narrowed <= 0.0f || narrowed >= 1.0f)
 					{
 						if (args.rouletteError.empty())
 							args.rouletteError = std::string("invalid --rr-min-p '") + v +
@@ -286,7 +292,7 @@ struct CLIArgs
 					}
 					else
 					{
-						args.rrMinP = (float)parsed;
+						args.rrMinP = narrowed;
 						args.hasRrMinP = true;
 					}
 				}
@@ -298,9 +304,9 @@ struct CLIArgs
 				if (const char* v = next())
 				{
 					char* end = nullptr;
-					const double parsed = std::strtod(v, &end);
-					if (end == v || *end != '\0' || !std::isfinite(parsed) ||
-					    parsed <= 0.0 || parsed >= 1.0)
+					const float narrowed = (float)std::strtod(v, &end);
+					if (end == v || *end != '\0' || !std::isfinite(narrowed) ||
+					    narrowed <= 0.0f || narrowed >= 1.0f)
 					{
 						if (args.rouletteError.empty())
 							args.rouletteError = std::string("invalid --rr-max-p '") + v +
@@ -308,7 +314,7 @@ struct CLIArgs
 					}
 					else
 					{
-						args.rrMaxP = (float)parsed;
+						args.rrMaxP = narrowed;
 						args.hasRrMaxP = true;
 					}
 				}
@@ -583,13 +589,17 @@ struct CLIArgs
 			// RR-neutral validation must exercise the producer without relying on
 			// NRD's branch to populate any guide pixel.
 		}
-		// RR5-T1 fixup (review P2): an explicitly inverted [min,max] window
-		// is a CLI error (not a silent canonicalization), so scripts fail
-		// loudly before any output is produced.
-		if (args.rouletteError.empty() && args.hasRrMinP && args.hasRrMaxP &&
-		    !(args.rrMinP < args.rrMaxP))
+		// RR5-T1 fixup (review R1): validate the EFFECTIVE window, filling
+		// omitted flags with their defaults. A single --rr-min-p 0.96 is
+		// invalid against the default max 0.95 even though no --rr-max-p
+		// was given; such input must fail loudly, not silently
+		// canonicalize back to defaults.
+		if (args.rouletteError.empty() && (args.hasRrMinP || args.hasRrMaxP))
 		{
-			args.rouletteError = "invalid roulette window: --rr-min-p must be less than --rr-max-p";
+			const float effectiveMin = args.hasRrMinP ? args.rrMinP : kDefaultRRMinP;
+			const float effectiveMax = args.hasRrMaxP ? args.rrMaxP : kDefaultRRMaxP;
+			if (!(effectiveMin < effectiveMax))
+				args.rouletteError = "invalid roulette window: --rr-min-p must be less than --rr-max-p (omitted flags use defaults 0.05/0.95)";
 		}
 		if (args.headless && !args.hasOutput())
 			args.outputPath = "screenshot.png";

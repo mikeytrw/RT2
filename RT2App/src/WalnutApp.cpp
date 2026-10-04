@@ -3791,17 +3791,6 @@ private:
 			m_Settings.rasterFirst = true;
 			m_Cam.m_Aperture = 0.0f;
 		}
-		if (g_CLI.nrdMaxAccumFrames > 0)
-			m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
-		if (g_CLI.nrdResponsiveRoughness >= 0.0f)
-			m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;
-		if (g_CLI.nrdResponsiveMinFrames >= 0)
-			m_Settings.nrdResponsiveMinAccumFrames = g_CLI.nrdResponsiveMinFrames;
-		if (g_CLI.rasterFirst)
-		{
-			m_Settings.rasterFirst = true;
-			m_Cam.m_Aperture = 0.0f;
-		}
 		if (g_CLI.gbufferDebug >= 0)
 			m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 		m_Settings.sceneSeed = g_CLI.sceneSeed;
