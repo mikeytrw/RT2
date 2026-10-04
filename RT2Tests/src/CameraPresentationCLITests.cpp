@@ -287,6 +287,22 @@ TEST_CASE("CLI diag-seed valid values parse with explicit presence")
     CHECK(zero.diagSeed == 0u);
 }
 
+// RR5-T0 review P2: the full uint32 domain is representable — the CLI
+// and the InputScalar-U32 widget carry every value faithfully, with no
+// INT_MAX truncation. (The widget itself is not drivable in CPU tests;
+// these cases pin the parsing/application boundary it shares.)
+TEST_CASE("CLI diag-seed spans the full uint32 domain")
+{
+    CLIArgs intMax = ParseArgs({ "RT2App", "--diag-seed", "2147483647" });
+    CHECK(intMax.diagSeedError.empty());
+    CHECK(intMax.diagSeed == 2147483647u);
+
+    CLIArgs uintMax = ParseArgs({ "RT2App", "--diag-seed", "4294967295" });
+    CHECK(uintMax.diagSeedError.empty());
+    CHECK(uintMax.hasDiagSeed);
+    CHECK(uintMax.diagSeed == 4294967295u);
+}
+
 TEST_CASE("CLI diag-seed rejects malformed, negative, overflowing and missing input")
 {
     for (const char* bad : { "abc", "12x", "", "-1", "-0", "99999999999999999999",

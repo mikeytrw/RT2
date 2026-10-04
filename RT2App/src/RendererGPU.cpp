@@ -78,6 +78,15 @@ bool RendererGPU::Init()
 	// Create G-buffer descriptor set layout (set 1) first — needed by PathTracePass
 	CreateGBufferDescriptorSet();
 
+	// RR5-T0 review P2: mandatory diagnostic resources must exist before
+	// any descriptor write or consuming dispatch; fail the renderer loudly
+	// instead of running with null handles.
+	if (!CreateDiagSeedResources())
+	{
+		Destroy();
+		return false;
+	}
+
 	if (!m_PathTracePass.Init(m_Device, m_GBufferSetLayout))
 	{
 		RT_LOG("[RT2] GPU renderer initialization failed (pipeline creation error)");
@@ -2171,6 +2180,39 @@ void RendererGPU::DestroyGBufferImages()
 	m_RRGuides.Destroy();
 }
 
+// RR5-T0 review P2: both diagnostic allocations are mandatory — every
+// consumer shader declares bindings 17/18 unconditionally, so a null
+// handle would become invalid descriptor use or a silent missing probe.
+// Check both results, roll back partial state, and fail before any
+// descriptor write (mirrors GpuPickingPass/PathTracePass handling).
+bool RendererGPU::CreateDiagSeedResources()
+{
+	if (!m_DiagSeedUBO)
+	{
+		if (!GpuResources::CreateBuffer(m_Device, sizeof(SIDiagSeedUniform),
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				m_DiagSeedUBO, m_DiagSeedUBOMemory))
+		{
+			RT_LOG("[DiagSeed] failed to create seed UBO; renderer unavailable");
+			return false;
+		}
+	}
+	if (!m_DiagProbeBuffer)
+	{
+		if (!GpuResources::CreateBuffer(m_Device, sizeof(SIDiagProbeSlots),
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				m_DiagProbeBuffer, m_DiagProbeBufferMemory))
+		{
+			RT_LOG("[DiagProbe] failed to create probe buffer; rolling back seed UBO");
+			GpuResources::DestroyBuffer(m_Device, m_DiagSeedUBO, m_DiagSeedUBOMemory);
+			return false;
+		}
+	}
+	return true;
+}
+
 void RendererGPU::CreateGBufferDescriptorSet()
 {
 	VkDevice device = m_Device.device;
@@ -2274,23 +2316,6 @@ void RendererGPU::CreateGBufferDescriptorSet()
 		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_NRDUBO, m_NRDUBOMemory);
-	}
-
-	// Create RR5-T0 diagnostic seed UBO (host-written) + RNG probe slots
-	// (shader-written staging, host-readable for the headless readback).
-	if (!m_DiagSeedUBO)
-	{
-		GpuResources::CreateBuffer(m_Device, sizeof(SIDiagSeedUniform),
-		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             m_DiagSeedUBO, m_DiagSeedUBOMemory);
-	}
-	if (!m_DiagProbeBuffer)
-	{
-		GpuResources::CreateBuffer(m_Device, sizeof(SIDiagProbeSlots),
-		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             m_DiagProbeBuffer, m_DiagProbeBufferMemory);
 	}
 }
 

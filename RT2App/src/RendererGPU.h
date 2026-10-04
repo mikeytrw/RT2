@@ -290,6 +290,7 @@ private:
 	void CreateGBufferImages();
 	void DestroyGBufferImages();
 	void CreateGBufferDescriptorSet();
+	bool CreateDiagSeedResources();
 	void UpdateGBufferDescriptorSet();
 
 	void CreateFallbackTexture();

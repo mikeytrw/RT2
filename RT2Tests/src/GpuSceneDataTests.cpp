@@ -85,6 +85,57 @@ TEST_CASE("SIDiagProbeSlots is 16 bytes (4 consumer slots)")
     CHECK(offsetof(SIDiagProbeSlots, slots) == 0);
 }
 
+// ============================================================================
+// RR5-T0 review P2: mandatory diagnostic resources must be checked before
+// any descriptor write, with partial-allocation rollback. CPU tests cannot
+// fault-inject Vulkan allocation (CPU-only boundary), so this test pins
+// the checked structure in the production source: checked creation,
+// rollback, and init-gating before the descriptor-write section. No fault
+// injection was performed; the success path is proven by validation-clean
+// production runs.
+// ============================================================================
+
+TEST_CASE("DiagSeed: allocation failures are checked with rollback before writes")
+{
+    const std::string renderer = ReadShaderSource("RT2App/src/RendererGPU.cpp");
+    REQUIRE(!renderer.empty());
+    const size_t seedCheck = renderer.find(
+        "if (!GpuResources::CreateBuffer(m_Device, sizeof(SIDiagSeedUniform)");
+    CHECK(seedCheck != std::string::npos);
+    const size_t probeCheck = renderer.find(
+        "if (!GpuResources::CreateBuffer(m_Device, sizeof(SIDiagProbeSlots)");
+    CHECK(probeCheck != std::string::npos);
+    CHECK(renderer.find("failed to create seed UBO", seedCheck) != std::string::npos);
+    CHECK(renderer.find("failed to create probe buffer", probeCheck) != std::string::npos);
+    CHECK(renderer.find("rolling back seed UBO", probeCheck) != std::string::npos);
+    // Initialization fails before any descriptor write can see null handles.
+    // (CreateDiagSeedResources runs in Init right after the set-1 layout;
+    // descriptor writes happen later in UpdateGBufferDescriptorSet.)
+    CHECK(renderer.find("if (!CreateDiagSeedResources())") != std::string::npos);
+}
+
+// ============================================================================
+// RR5-T0 review P1: a probe dump is a checked artifact. The production
+// host must reject out-of-extent pixels before any frame, fail readback
+// errors instead of skipping frames, and require the requested frame
+// count plus at least one live slot before writing a success file.
+// ============================================================================
+
+TEST_CASE("DiagProbe: empty evidence fails loudly instead of dumping success")
+{
+    const std::string host = ReadShaderSource("RT2App/src/WalnutApp.cpp");
+    REQUIRE(!host.empty());
+    // Out-of-extent probe pixel exits before the frame loop.
+    CHECK(host.find("outside render extent") != std::string::npos);
+    CHECK(host.find("RNG probe pixel FAILED") != std::string::npos);
+    // Readback failure is run failure, never a skipped frame.
+    CHECK(host.find("diagProbeReadFailed = true") != std::string::npos);
+    // Requested-count and any-live-sample gates precede the success write.
+    CHECK(host.find("sampledFrames") != std::string::npos);
+    CHECK(host.find("no live RNG sample") != std::string::npos);
+    CHECK(host.find("discardOutput(g_CLI.diagRngDump)") != std::string::npos);
+}
+
 TEST_CASE("DiagSeed: seed term precedes pcg in all three initRNG helpers")
 {
     for (const char* path : { "RT2App/shaders/pathtracer_shared.glsl",
@@ -110,6 +161,12 @@ TEST_CASE("DiagSeed: seed term precedes pcg in all three initRNG helpers")
 
 TEST_CASE("DiagSeed: four consumers record raw states at their call sites")
 {
+    // Both raygen entries share slot 0: the SBT record runs exactly one
+    // per frame (RT-primary vs raster-first), so the slot always holds the
+    // primary stream that actually ran.
+    const std::string primaryRgen = ReadShaderSource("RT2App/shaders/raygen.rgen");
+    REQUIRE(!primaryRgen.empty());
+    CHECK(primaryRgen.find("diagWriteProbe(0u, pixel, rngState)") != std::string::npos);
     const std::string raygen = ReadShaderSource("RT2App/shaders/secondary_raygen.rgen");
     REQUIRE(!raygen.empty());
     CHECK(raygen.find("diagWriteProbe(0u, pixel, rngState)") != std::string::npos);

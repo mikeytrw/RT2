@@ -1173,29 +1173,22 @@ public:
 		m_Settings = m_RendererGPU.GetSettings();
 	}
 	ImGui::Text("Diagnostic Sample Seed");
-	int diagSeed = (int)m_Settings.diagSampleSeed;
-	if (ImGui::DragInt("Diag Seed", &diagSeed, 1.0f, 0, 1000000))
-	{
-		m_Settings.diagSampleSeed = (uint32_t)(diagSeed < 0 ? 0 : diagSeed);
+	// RR5-T0 review P2: the seed spans the full uint32 domain, so the
+	// widget must too. DragInt truncates above INT_MAX (4294967295
+	// displays as -1 and edits back to 0); InputScalar U32 represents
+	// every accepted value faithfully, matching the CLI contract.
+	if (ImGui::InputScalar("Diag Seed", ImGuiDataType_U32, &m_Settings.diagSampleSeed, nullptr, nullptr, "%u"))
 		m_RendererGPU.ApplySettings(m_Settings);
-	}
 	bool diagProbe = m_Settings.diagProbeActive != 0u;
 	if (ImGui::Checkbox("Diag RNG Probe", &diagProbe))
 	{
 		m_Settings.diagProbeActive = diagProbe ? 1u : 0u;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
-	int diagPX = (int)m_Settings.diagProbeX;
-	int diagPY = (int)m_Settings.diagProbeY;
-	bool probeXYChanged = false;
-	if (ImGui::DragInt("Probe X", &diagPX, 1.0f, 0, 16384)) { probeXYChanged = true; }
-	if (ImGui::DragInt("Probe Y", &diagPY, 1.0f, 0, 16384)) { probeXYChanged = true; }
-	if (probeXYChanged)
-	{
-		m_Settings.diagProbeX = (uint32_t)(diagPX < 0 ? 0 : diagPX);
-		m_Settings.diagProbeY = (uint32_t)(diagPY < 0 ? 0 : diagPY);
+	if (ImGui::InputScalar("Probe X", ImGuiDataType_U32, &m_Settings.diagProbeX, nullptr, nullptr, "%u"))
 		m_RendererGPU.ApplySettings(m_Settings);
-	}
+	if (ImGui::InputScalar("Probe Y", ImGuiDataType_U32, &m_Settings.diagProbeY, nullptr, nullptr, "%u"))
+		m_RendererGPU.ApplySettings(m_Settings);
 	if (ImGui::Button("Reset")) {
 		m_Settings.spp = 1;
 		m_Settings.maxBounces = 2;
@@ -4189,6 +4182,29 @@ private:
 		struct DiagProbeFrame { int frame = 0; uint32_t slots[4] = {}; };
 		std::vector<DiagProbeFrame> diagProbeFrames;
 		const bool diagProbeDump = !g_CLI.diagRngDump.empty();
+		bool diagProbeReadFailed = false;
+		if (diagProbeDump)
+		{
+			// RR5-T0 review P1: the probe pixel addresses shaders
+			// dispatching at render extent (RR renders below output
+			// extent), not output extent. Reject an out-of-extent
+			// pixel before any frame renders instead of dumping
+			// sentinels with a success status.
+			const RenderExtent probeExtent = m_RendererGPU.GetRenderExtent();
+			if (!m_RendererGPU.IsAvailable() || !probeExtent.IsValid() ||
+			    m_Settings.diagProbeX >= probeExtent.Width() ||
+			    m_Settings.diagProbeY >= probeExtent.Height())
+			{
+				RT_LOG("[DiagProbe] probe pixel (%u,%u) outside render extent %ux%u; failing before any frame",
+				       m_Settings.diagProbeX, m_Settings.diagProbeY,
+				       probeExtent.IsValid() ? probeExtent.Width() : 0u,
+				       probeExtent.IsValid() ? probeExtent.Height() : 0u);
+				printf("[Headless] RNG probe pixel FAILED\n");
+				fflush(stdout);
+				Walnut::Application::Get().Close();
+				std::exit(EXIT_FAILURE);
+			}
+		}
 
 		for (int i = 0; i < g_CLI.frames; i++)
 		{
@@ -4264,7 +4280,12 @@ private:
 					if (m_RendererGPU.ReadDiagProbeSlots(sample.slots))
 						diagProbeFrames.push_back(sample);
 					else
+					{
+						// RR5-T0 review P1: a failed readback is run
+						// failure, never a silently skipped frame.
 						RT_LOG("[DiagProbe] frame %d readback failed", i + 1);
+						diagProbeReadFailed = true;
+					}
 				}
 			}
 			else
@@ -4370,10 +4391,33 @@ private:
 		else if (renderFailure)
 			discardOutput(g_CLI.outputHDRPath);
 		// RR5-T0 RNG probe dump: raw per-frame consumer states as JSON.
-		// An empty sample set fails loudly (a dump that sampled nothing
-		// proves nothing); sentinel slots are valid evidence, not failure.
+		// The dump is a checked artifact: it requires every requested
+		// frame sampled, a readable file, and at least one live (non
+		// sentinel) slot anywhere. Individual early-out sentinels remain
+		// valid evidence, but an empty dump certifies nothing and must
+		// fail loudly instead of printing a success marker. A stale dump
+		// from an earlier run is discarded on failure.
 		if (diagProbeDump)
 		{
+			bool anyLiveSample = false;
+			for (const DiagProbeFrame& sample : diagProbeFrames)
+				for (uint32_t word : sample.slots)
+					if (word != 0xFFFFFFFFu) anyLiveSample = true;
+			const bool frameCountOk = !diagProbeReadFailed &&
+				diagProbeFrames.size() == static_cast<size_t>(g_CLI.frames) &&
+				g_CLI.frames > 0;
+			if (!frameCountOk)
+				RT_LOG("[DiagProbe] sampled %zu of %d requested frames (read failure: %d)",
+				       diagProbeFrames.size(), g_CLI.frames, diagProbeReadFailed ? 1 : 0);
+			if (!anyLiveSample)
+				RT_LOG("[DiagProbe] no live RNG sample in any slot; failing the dump");
+			if (!frameCountOk || !anyLiveSample)
+			{
+				discardOutput(g_CLI.diagRngDump);
+				outputPersistenceFailure = true;
+			}
+			else
+			{
 			std::ofstream dump(g_CLI.diagRngDump, std::ios::binary | std::ios::trunc);
 			if (!dump.is_open())
 			{
@@ -4401,15 +4445,16 @@ private:
 				}
 				dump << "]}";
 				dump.flush();
-				if (!dump.good() || diagProbeFrames.empty())
+				if (!dump.good())
 				{
-					RT_LOG("[DiagProbe] dump write failed or sampled no frames: %s",
+					RT_LOG("[DiagProbe] dump write failed: %s",
 					       g_CLI.diagRngDump.c_str());
 					outputPersistenceFailure = true;
 				}
 				else
 					printf("[Headless] saved RNG probe dump: %s (%zu frames)\n",
 					       g_CLI.diagRngDump.c_str(), diagProbeFrames.size());
+			}
 			}
 		}
 		if (ShouldCommitHeadlessOutput(!g_CLI.outputDisplayPath.empty(),
