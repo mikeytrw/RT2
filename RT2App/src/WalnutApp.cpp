@@ -273,6 +273,17 @@ static void ApplyCLIDenoiserSelection(RenderSettings& settings)
 		fprintf(stderr, "[CLI] note: --experimental-rr is deprecated and has no effect (RR is a standard preset)\n");
 }
 
+// RR5-T1 fixup (review P3): one authority applying the roulette CLI
+// overrides onto settings, shared by both headless startup sites (pre-init
+// seed and post-init apply). Invalid values exit at parse time via
+// rouletteError, so only present values are applied here.
+static void ApplyRouletteCLIOverrides(RenderSettings& settings)
+{
+	if (g_CLI.hasRrStartDepth) settings.rrStartDepth = (uint32_t)g_CLI.rrStartDepth;
+	if (g_CLI.hasRrMinP) settings.rrMinP = g_CLI.rrMinP;
+	if (g_CLI.hasRrMaxP) settings.rrMaxP = g_CLI.rrMaxP;
+}
+
 class RT2Layer : public Walnut::Layer
 {
 public:
@@ -3767,12 +3778,7 @@ private:
 			m_Settings.spp = g_CLI.spp;
 		if (g_CLI.bounces > 0)
 			m_Settings.maxBounces = g_CLI.bounces;
-		if (g_CLI.rrStartDepth > 0)
-			m_Settings.rrStartDepth = (uint32_t)g_CLI.rrStartDepth;
-		if (g_CLI.rrMinP >= 0.0f)
-			m_Settings.rrMinP = g_CLI.rrMinP;
-		if (g_CLI.rrMaxP >= 0.0f)
-			m_Settings.rrMaxP = g_CLI.rrMaxP;
+		ApplyRouletteCLIOverrides(m_Settings);
 		ApplyCLIDenoiserSelection(m_Settings);
 		if (g_CLI.nrdMaxAccumFrames > 0)
 			m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
@@ -3808,9 +3814,7 @@ private:
 				m_Settings = m_RendererGPU.GetSettings();
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
-				if (g_CLI.rrStartDepth > 0) m_Settings.rrStartDepth = (uint32_t)g_CLI.rrStartDepth;
-				if (g_CLI.rrMinP >= 0.0f) m_Settings.rrMinP = g_CLI.rrMinP;
-				if (g_CLI.rrMaxP >= 0.0f) m_Settings.rrMaxP = g_CLI.rrMaxP;
+				ApplyRouletteCLIOverrides(m_Settings);
 				ApplyCLIDenoiserSelection(m_Settings);
 				if (g_CLI.nrdMaxAccumFrames > 0) m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
 				if (g_CLI.nrdResponsiveRoughness >= 0.0f) m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;
@@ -6931,6 +6935,14 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	if (!g_CLI.presentationError.empty())
 	{
 		fprintf(stderr, "[CLI] %s\n", g_CLI.presentationError.c_str());
+		fflush(stderr);
+		std::exit(EXIT_FAILURE);
+	}
+	// RR5-T1 fixup (review P2): invalid roulette CLI exits nonzero here,
+	// before any window, rendering, or output file is produced.
+	if (!g_CLI.rouletteError.empty())
+	{
+		fprintf(stderr, "[CLI] %s\n", g_CLI.rouletteError.c_str());
 		fflush(stderr);
 		std::exit(EXIT_FAILURE);
 	}

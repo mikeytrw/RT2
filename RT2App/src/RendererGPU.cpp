@@ -1015,6 +1015,12 @@ void RendererGPU::ApplySettings(const RenderSettings& incomingSettings)
 	// All comparisons and the stored copy below use the canonical values.
 	RenderSettings newSettings = incomingSettings;
 	CanonicalizeRouletteSettings(newSettings);
+	// RR5-T1 fixup (review P1): the struct assignment below replaces
+	// m_Settings wholesale, so any dirty flag computed before it would be
+	// erased. Capture pre-assignment state here; the preserved union is
+	// applied after the assignment.
+	const bool alreadyDirty = m_Settings.dirty;
+	bool settingsChanged = false;
 	bool wasRestirEnabled = m_Settings.restirEnabled;
 	bool wasGIEnabled = m_Settings.restirGIEnabled;
 	const bool wasModeOrQualityChanged =
@@ -1084,13 +1090,17 @@ void RendererGPU::ApplySettings(const RenderSettings& incomingSettings)
 	    m_Settings.restirGIWorldPosThreshold != newSettings.restirGIWorldPosThreshold ||
 	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode)
 	{
-		m_Settings.dirty = true;
+		settingsChanged = true;
 	}
 	const bool rouletteChanged =
 		m_Settings.rrStartDepth != newSettings.rrStartDepth ||
 		m_Settings.rrMinP != newSettings.rrMinP ||
 		m_Settings.rrMaxP != newSettings.rrMaxP;
 	m_Settings = newSettings;
+	// RR5-T1 fixup (review P1): preserve computed dirty across the
+	// assignment — incoming request, pre-existing flag, and any field
+	// change detected above (including canonicalization-induced changes).
+	m_Settings.dirty = newSettings.dirty || alreadyDirty || settingsChanged;
 
 	// RR5-T1: a roulette change resets temporal accumulation via the dirty
 	// flag above (handled in Render()). Record requested vs effective NRD
@@ -1244,6 +1254,9 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	// Check dirty flag — auto reset accumulation on settings change
 	if (m_Settings.dirty)
 	{
+		// RR5-T1 fixup (review P1): make the settings-change reset
+		// observable so production transitions are verifiable in logs.
+		RT_LOG("[Render] settings changed; temporal accumulation reset");
 		ResetAccumulation();
 		m_Settings.dirty = false;
 	}

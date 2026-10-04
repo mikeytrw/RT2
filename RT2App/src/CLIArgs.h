@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
+#include <cerrno>
 #include <cmath>
 #include <optional>
 #include "RRGuideContract.h"
@@ -105,9 +106,16 @@ struct CLIArgs
 	int height = 720;             // viewport height for headless mode
 	int spp = 0;                  // SPP override (0 = use default)
 	int bounces = 0;              // bounces override (0 = use default)
-	int rrStartDepth = 0;         // roulette start-depth override (0 = use default)
-	float rrMinP = -1.0f;         // roulette pContinue lower-clamp override (<0 = use default)
-	float rrMaxP = -1.0f;         // roulette pContinue upper-clamp override (<0 = use default)
+	// RR5-T1 roulette overrides. Presence is explicit (hasRr*); values are
+	// only consumed when present. Malformed input sets rouletteError, which
+	// exits nonzero before any rendering/output (see CreateApplication).
+	int rrStartDepth = 0;         // roulette start-depth override
+	bool hasRrStartDepth = false;
+	float rrMinP = -1.0f;         // roulette pContinue lower-clamp override
+	bool hasRrMinP = false;
+	float rrMaxP = -1.0f;         // roulette pContinue upper-clamp override
+	bool hasRrMaxP = false;
+	std::string rouletteError;    // flag-specific diagnostic for invalid roulette CLI
 	bool nrd = false;             // enable NRD (compat: maps onto --denoiser-mode nrd)
 	std::string denoiserMode;     // public selector: off|nrd|rr (empty = default NRD)
 	std::string rrQuality;        // RR preset: quality|balanced|performance (empty = quality)
@@ -240,15 +248,72 @@ struct CLIArgs
 			}
 			else if (strcmp(a, "--rr-start-depth") == 0)
 			{
-				if (const char* v = next()) args.rrStartDepth = std::max(1, std::atoi(v));
+				// RR5-T1 fixup (review P2): strict full-token integer parse.
+				// atof/atoi silently accept garbage ("nan" -> 0) and ignore
+				// missing tokens; invalid input must exit before output.
+				if (const char* v = next())
+				{
+					char* end = nullptr;
+					errno = 0;
+					const long parsed = std::strtol(v, &end, 10);
+					if (end == v || *end != '\0' || errno == ERANGE || parsed < 1)
+					{
+						if (args.rouletteError.empty())
+							args.rouletteError = std::string("invalid --rr-start-depth '") + v +
+								"' (want an integer >= 1)";
+					}
+					else
+					{
+						args.rrStartDepth = (int)parsed;
+						args.hasRrStartDepth = true;
+					}
+				}
+				else if (args.rouletteError.empty())
+					args.rouletteError = "missing value for --rr-start-depth (want an integer >= 1)";
 			}
 			else if (strcmp(a, "--rr-min-p") == 0)
 			{
-				if (const char* v = next()) args.rrMinP = (float)std::atof(v);
+				if (const char* v = next())
+				{
+					char* end = nullptr;
+					const double parsed = std::strtod(v, &end);
+					if (end == v || *end != '\0' || !std::isfinite(parsed) ||
+					    parsed <= 0.0 || parsed >= 1.0)
+					{
+						if (args.rouletteError.empty())
+							args.rouletteError = std::string("invalid --rr-min-p '") + v +
+								"' (want a finite number in (0,1))";
+					}
+					else
+					{
+						args.rrMinP = (float)parsed;
+						args.hasRrMinP = true;
+					}
+				}
+				else if (args.rouletteError.empty())
+					args.rouletteError = "missing value for --rr-min-p (want a finite number in (0,1))";
 			}
 			else if (strcmp(a, "--rr-max-p") == 0)
 			{
-				if (const char* v = next()) args.rrMaxP = (float)std::atof(v);
+				if (const char* v = next())
+				{
+					char* end = nullptr;
+					const double parsed = std::strtod(v, &end);
+					if (end == v || *end != '\0' || !std::isfinite(parsed) ||
+					    parsed <= 0.0 || parsed >= 1.0)
+					{
+						if (args.rouletteError.empty())
+							args.rouletteError = std::string("invalid --rr-max-p '") + v +
+								"' (want a finite number in (0,1))";
+					}
+					else
+					{
+						args.rrMaxP = (float)parsed;
+						args.hasRrMaxP = true;
+					}
+				}
+				else if (args.rouletteError.empty())
+					args.rouletteError = "missing value for --rr-max-p (want a finite number in (0,1))";
 			}
 			else if (strcmp(a, "--nrd") == 0)
 			{
@@ -517,6 +582,14 @@ struct CLIArgs
 			args.rasterFirst = true;
 			// RR-neutral validation must exercise the producer without relying on
 			// NRD's branch to populate any guide pixel.
+		}
+		// RR5-T1 fixup (review P2): an explicitly inverted [min,max] window
+		// is a CLI error (not a silent canonicalization), so scripts fail
+		// loudly before any output is produced.
+		if (args.rouletteError.empty() && args.hasRrMinP && args.hasRrMaxP &&
+		    !(args.rrMinP < args.rrMaxP))
+		{
+			args.rouletteError = "invalid roulette window: --rr-min-p must be less than --rr-max-p";
 		}
 		if (args.headless && !args.hasOutput())
 			args.outputPath = "screenshot.png";

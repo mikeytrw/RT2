@@ -118,3 +118,88 @@ TEST_CASE("CLI presentation seed overlays each axis independently")
                                          false, 0.0f, untouched));
     CHECK(untouched == sentinel);
 }
+
+// ============================================================================
+// RR5-T1 fixup (review P2): strict roulette CLI parsing. Full-token,
+// finite, in-range values with explicit presence; anything else sets
+// rouletteError (headless exits nonzero before output) and never lands.
+// ============================================================================
+
+TEST_CASE("CLI roulette defaults are valid and unset")
+{
+    CLIArgs args = ParseArgs({ "RT2App" });
+    CHECK(args.rouletteError.empty());
+    CHECK_FALSE(args.hasRrStartDepth);
+    CHECK_FALSE(args.hasRrMinP);
+    CHECK_FALSE(args.hasRrMaxP);
+}
+
+TEST_CASE("CLI roulette valid values parse with explicit presence")
+{
+    CLIArgs args = ParseArgs({ "RT2App", "--rr-start-depth", "2",
+                               "--rr-min-p", "0.1", "--rr-max-p", "0.9" });
+    CHECK(args.rouletteError.empty());
+    CHECK(args.hasRrStartDepth);
+    CHECK(args.rrStartDepth == 2);
+    CHECK(args.hasRrMinP);
+    CHECK(args.rrMinP == doctest::Approx(0.1f));
+    CHECK(args.hasRrMaxP);
+    CHECK(args.rrMaxP == doctest::Approx(0.9f));
+
+    // Each flag stands alone.
+    CLIArgs depthOnly = ParseArgs({ "RT2App", "--rr-start-depth", "1" });
+    CHECK(depthOnly.rouletteError.empty());
+    CHECK(depthOnly.hasRrStartDepth);
+    CHECK_FALSE(depthOnly.hasRrMinP);
+    CHECK_FALSE(depthOnly.hasRrMaxP);
+}
+
+TEST_CASE("CLI roulette rejects malformed, missing and out-of-range depth")
+{
+    for (const char* bad : { "abc", "2x", "", "0", "-3", "2.5",
+                             "99999999999999999999" })
+    {
+        CLIArgs args = ParseArgs({ "RT2App", "--rr-start-depth", bad });
+        CHECK_FALSE(args.rouletteError.empty());
+        CHECK_FALSE(args.hasRrStartDepth);
+    }
+    CLIArgs missing = ParseArgs({ "RT2App", "--rr-start-depth" });
+    CHECK_FALSE(missing.rouletteError.empty());
+    CHECK_FALSE(missing.hasRrStartDepth);
+}
+
+TEST_CASE("CLI roulette rejects non-numeric, non-finite and out-of-range bounds")
+{
+    for (const char* bad : { "abc", "nan", "NaN", "inf", "-inf", "1e999",
+                             "0", "1", "-0.5", "1.5", "0.05x", "" })
+    {
+        CLIArgs minArgs = ParseArgs({ "RT2App", "--rr-min-p", bad });
+        CHECK_FALSE(minArgs.rouletteError.empty());
+        CHECK_FALSE(minArgs.hasRrMinP);
+        CLIArgs maxArgs = ParseArgs({ "RT2App", "--rr-max-p", bad });
+        CHECK_FALSE(maxArgs.rouletteError.empty());
+        CHECK_FALSE(maxArgs.hasRrMaxP);
+    }
+    CLIArgs missingMin = ParseArgs({ "RT2App", "--rr-min-p" });
+    CHECK_FALSE(missingMin.rouletteError.empty());
+    CHECK_FALSE(missingMin.hasRrMinP);
+    CLIArgs missingMax = ParseArgs({ "RT2App", "--rr-max-p" });
+    CHECK_FALSE(missingMax.rouletteError.empty());
+    CHECK_FALSE(missingMax.hasRrMaxP);
+}
+
+TEST_CASE("CLI roulette rejects an explicitly inverted window")
+{
+    CLIArgs inverted = ParseArgs({ "RT2App", "--rr-min-p", "0.9",
+                                   "--rr-max-p", "0.1" });
+    CHECK_FALSE(inverted.rouletteError.empty());
+    CLIArgs equal = ParseArgs({ "RT2App", "--rr-min-p", "0.5",
+                                "--rr-max-p", "0.5" });
+    CHECK_FALSE(equal.rouletteError.empty());
+    // A valid window stays valid regardless of flag order.
+    CLIArgs ordered = ParseArgs({ "RT2App", "--rr-max-p", "0.9",
+                                  "--rr-min-p", "0.1" });
+    CHECK(ordered.rouletteError.empty());
+    CHECK(ordered.hasRrMinP);
+    CHECK(ordered.hasRrMaxP);
+}
