@@ -27,23 +27,29 @@ bool giAlphaAcceptCandidate(rayQueryEXT query, inout uint rngState)
     if (mat.alphaMode < 0.5)
         return true;
 
-    // Reconstruct UV for this candidate to sample base alpha.
-    uvec4 meshInfo = instanceMeshInfo[instanceID];
-    uint idxBase = meshInfo.y + primitiveID * 3u;
-    uint i0 = indices[idxBase + 0u];
-    uint i1 = indices[idxBase + 1u];
-    uint i2 = indices[idxBase + 2u];
-    vec2 uv0 = uvs[meshInfo.w + i0].xy;
-    vec2 uv1 = uvs[meshInfo.w + i1].xy;
-    vec2 uv2 = uvs[meshInfo.w + i2].xy;
-    vec2 baryCand = rayQueryGetIntersectionBarycentricsEXT(query, false);
-    float u = 1.0 - baryCand.x - baryCand.y;
-    vec2 uv = u * uv0 + baryCand.x * uv1 + baryCand.y * uv2;
-
+    // Reconstruct UV for this candidate to sample base alpha — only when a
+    // base-color texture exists (same baseColorTexIdx >= 0 condition as
+    // anyhit.rahit / shadow.rahit). RT4-T4: previously unconditional;
+    // untextured candidates never consume the UV, so skipping the
+    // index/UV loads is exactly equivalent (alpha cutoff and BLEND RNG
+    // draw order below are untouched).
     float alpha = mat.baseAlpha;
     int baseColorTexIdx = mat.textureIndices.x;
     if (baseColorTexIdx >= 0)
+    {
+        uvec4 meshInfo = instanceMeshInfo[instanceID];
+        uint idxBase = meshInfo.y + primitiveID * 3u;
+        uint i0 = indices[idxBase + 0u];
+        uint i1 = indices[idxBase + 1u];
+        uint i2 = indices[idxBase + 2u];
+        vec2 uv0 = uvs[meshInfo.w + i0].xy;
+        vec2 uv1 = uvs[meshInfo.w + i1].xy;
+        vec2 uv2 = uvs[meshInfo.w + i2].xy;
+        vec2 baryCand = rayQueryGetIntersectionBarycentricsEXT(query, false);
+        float u = 1.0 - baryCand.x - baryCand.y;
+        vec2 uv = u * uv0 + baryCand.x * uv1 + baryCand.y * uv2;
         alpha *= texture(textures[nonuniformEXT(baseColorTexIdx)], uv).a;
+    }
 
     // MASK: hard cutoff.
     if (mat.alphaMode < 1.5)
