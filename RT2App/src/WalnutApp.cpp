@@ -4201,6 +4201,14 @@ private:
 				       probeExtent.IsValid() ? probeExtent.Height() : 0u);
 				printf("[Headless] RNG probe pixel FAILED\n");
 				fflush(stdout);
+				// RR5-T0 re-review P1: a failed probe invalidates every
+				// explicitly requested artifact of this run, so a prior
+				// success can never masquerade as this run's evidence.
+				// Exact requested targets only; no broad deletion.
+				discardOutput(g_CLI.diagRngDump);
+				discardOutput(g_CLI.outputPath);
+				discardOutput(g_CLI.outputHDRPath);
+				discardOutput(g_CLI.outputDisplayPath);
 				Walnut::Application::Get().Close();
 				std::exit(EXIT_FAILURE);
 			}
@@ -4406,6 +4414,20 @@ private:
 			const bool frameCountOk = !diagProbeReadFailed &&
 				diagProbeFrames.size() == static_cast<size_t>(g_CLI.frames) &&
 				g_CLI.frames > 0;
+			// RR5-T0 re-review P1: every probe failure invalidates the
+			// requested dump (stale or partial), verifies the removal,
+			// and fails loudly. A failed cleanup is itself loud — never
+			// mistaken for success.
+			auto discardDumpChecked = [&](const char* why) {
+				discardOutput(g_CLI.diagRngDump);
+				if (!g_CLI.diagRngDump.empty() &&
+				    std::filesystem::exists(g_CLI.diagRngDump))
+					RT_LOG("[DiagProbe] %s; dump cleanup FAILED, stale file remains: %s",
+					       why, g_CLI.diagRngDump.c_str());
+				else
+					RT_LOG("[DiagProbe] %s; stale/partial dump discarded", why);
+				outputPersistenceFailure = true;
+			};
 			if (!frameCountOk)
 				RT_LOG("[DiagProbe] sampled %zu of %d requested frames (read failure: %d)",
 				       diagProbeFrames.size(), g_CLI.frames, diagProbeReadFailed ? 1 : 0);
@@ -4413,8 +4435,7 @@ private:
 				RT_LOG("[DiagProbe] no live RNG sample in any slot; failing the dump");
 			if (!frameCountOk || !anyLiveSample)
 			{
-				discardOutput(g_CLI.diagRngDump);
-				outputPersistenceFailure = true;
+				discardDumpChecked("evidence contract violated");
 			}
 			else
 			{
@@ -4422,7 +4443,7 @@ private:
 			if (!dump.is_open())
 			{
 				RT_LOG("[DiagProbe] dump open failed: %s", g_CLI.diagRngDump.c_str());
-				outputPersistenceFailure = true;
+				discardDumpChecked("dump open failed");
 			}
 			else
 			{
@@ -4449,7 +4470,7 @@ private:
 				{
 					RT_LOG("[DiagProbe] dump write failed: %s",
 					       g_CLI.diagRngDump.c_str());
-					outputPersistenceFailure = true;
+					discardDumpChecked("dump write failed");
 				}
 				else
 					printf("[Headless] saved RNG probe dump: %s (%zu frames)\n",

@@ -136,6 +136,30 @@ TEST_CASE("DiagProbe: empty evidence fails loudly instead of dumping success")
     CHECK(host.find("discardOutput(g_CLI.diagRngDump)") != std::string::npos);
 }
 
+// RR5-T0 re-review P1: every probe failure invalidates the explicitly
+// requested artifacts (never a stale success), the cleanup is verified
+// loud, and no broad deletion reaches beyond the requested targets.
+TEST_CASE("DiagProbe: failures discard requested artifacts with loud cleanup")
+{
+    const std::string host = ReadShaderSource("RT2App/src/WalnutApp.cpp");
+    REQUIRE(!host.empty());
+    // Early pixel rejection discards the requested dump AND the
+    // requested image outputs of this run (bounded window: the printf
+    // and its discards belong to the same pre-loop branch).
+    const size_t gate = host.find("outside render extent");
+    REQUIRE(gate != std::string::npos);
+    const size_t marker = host.find("RNG probe pixel FAILED", gate);
+    REQUIRE(marker != std::string::npos);
+    const std::string branch = host.substr(marker, 1200);
+    CHECK(branch.find("discardOutput(g_CLI.diagRngDump)") != std::string::npos);
+    CHECK(branch.find("discardOutput(g_CLI.outputHDRPath)") != std::string::npos);
+    CHECK(branch.find("std::exit(EXIT_FAILURE)") != std::string::npos);
+    // Checked discard on evidence, open and write failures.
+    CHECK(host.find("discardDumpChecked") != std::string::npos);
+    CHECK(host.find("stale/partial dump discarded") != std::string::npos);
+    CHECK(host.find("dump cleanup FAILED, stale file remains") != std::string::npos);
+}
+
 TEST_CASE("DiagSeed: seed term precedes pcg in all three initRNG helpers")
 {
     for (const char* path : { "RT2App/shaders/pathtracer_shared.glsl",
