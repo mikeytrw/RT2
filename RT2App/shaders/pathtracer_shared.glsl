@@ -236,7 +236,13 @@ layout(set = 0, binding = SI_BINDING_INSTANCE_MAT_OFFSETS, std430) readonly buff
 // Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];
 
+#ifndef SCATTER_CONTRACT_COMPUTE
 layout(set = 0, binding = SI_BINDING_TLAS) uniform accelerationStructureEXT topLevelAS;
+#endif
+// (Contract-TU exclusion: the accel-struct type would demand a
+// ray-tracing capability that spirv-val rejects under vulkan1.2 for a
+// compute module. Nothing on the contract battery's executed path
+// references it; ray-tracing TUs are unaffected.)
 
 // ---- NRD G-buffer outputs (set 1) -------------------------------------------
 // Storage images written by closesthit at the primary hit (depth=0) and

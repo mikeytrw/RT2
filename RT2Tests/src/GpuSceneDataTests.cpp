@@ -283,6 +283,46 @@ TEST_CASE("LobeContract: raster-first GI consumption divides by P_d")
     CHECK(rgen.find("float mixturePdf = evalBSDFPdf(wo, wi, n, scatter.P_s, scatter.P_d, alpha);") != std::string::npos);
 }
 
+// ============================================================================
+// RR5-T2 re-review: the numeric battery invokes the consumed
+// scatterPrimaryHit (no replica) through the debug pass mode 27 and
+// records exact values for the CPU analysis in scripts/.
+// ============================================================================
+
+TEST_CASE("LobeContract: battery invokes consumed scatter with exact helpers")
+{
+    const std::string battery = ReadShaderSource("RT2App/shaders/scatter_contract.comp");
+    REQUIRE(!battery.empty());
+    // Consumed implementation (shared file, not a copy) with matched
+    // materials across specular/diffuse/delta/legacy branches.
+    CHECK(battery.find("#include \"scatter_shared.glsl\"") != std::string::npos);
+    CHECK(battery.find("ScatterResult r = scatterPrimaryHit(") != std::string::npos);
+    // Unweighted factors recomputed through the exact shared helpers the
+    // implementation calls — the definitional restatement under test.
+    CHECK(battery.find("F_Schlick(NdotV, F0)") != std::string::npos);
+    CHECK(battery.find("G1_Smith(NdotWi, alpha)") != std::string::npos);
+    CHECK(battery.find("F_Schlick(VdotH_d, F0)") != std::string::npos);
+    // Delta effective P == 1 branch and legacy record-only flag.
+    CHECK(battery.find("P = 1.0;") != std::string::npos);
+    CHECK(battery.find("flags += 8.0;") != std::string::npos);
+}
+
+TEST_CASE("LobeContract: battery is plumbed through the debug pass mode 27")
+{
+    const std::string pass = ReadShaderSource("RT2App/src/GBufferDebugPass.cpp");
+    REQUIRE(!pass.empty());
+    CHECK(pass.find("scattercontract.spv") != std::string::npos);
+    CHECK(pass.find("kScatterContractMode") != std::string::npos);
+    CHECK(pass.find("m_ContractPipeline") != std::string::npos);
+    const std::string frame = ReadShaderSource("RT2App/src/FrameRenderer.cpp");
+    REQUIRE(!frame.empty());
+    CHECK(frame.find("kScatterContractMode") != std::string::npos);
+    const std::string premake = ReadShaderSource("RT2App/premake5.lua");
+    REQUIRE(!premake.empty());
+    CHECK(premake.find("shaders/scatter_contract.comp") != std::string::npos);
+    CHECK(premake.find("scattercontract.spv") != std::string::npos);
+}
+
 TEST_CASE("DiagSeed: four consumers record raw states at their call sites")
 {
     // Both raygen entries share slot 0: the SBT record runs exactly one

@@ -354,3 +354,15 @@ TEST_CASE("CLI diag-rng-dump requires an explicit probe pixel")
                                       "--diag-rng-dump" });
     CHECK_FALSE(missingPath.diagSeedError.empty());
 }
+
+// RR5-T2: diagnostic GI disable is a plain headless-only boolean for the
+// acceptance harness (no validation, no UI); application flows through
+// the existing ApplySettings GI-toggle lifecycle.
+TEST_CASE("CLI diag-no-gi parses as a headless diagnostic switch")
+{
+    CLIArgs dflt = ParseArgs({ "RT2App" });
+    CHECK_FALSE(dflt.diagNoGI);
+    CLIArgs off = ParseArgs({ "RT2App", "--diag-no-gi" });
+    CHECK(off.diagSeedError.empty());
+    CHECK(off.diagNoGI);
+}

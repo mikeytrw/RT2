@@ -636,8 +636,22 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 
 bool FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 {
-    if (ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugMode < 19 &&
-        ctx.gbufferDebugPass.IsAvailable())
+    // RR5-T2: kScatterContractMode (27) runs the sampling-weight contract
+    // battery through the debug pass instead of path tracing (same
+    // replacement semantics as modes 0-18; compose/NRD stay skipped and
+    // the raw output image is captured).
+    const bool contractMode =
+        ctx.gbufferDebugMode == (int)GBufferDebugPass::kScatterContractMode;
+    if (contractMode && ctx.gbufferDebugPass.IsAvailable() &&
+        !ctx.gbufferDebugPass.IsContractAvailable())
+    {
+        // Loud, not silent: the battery analysis fails coverage without
+        // contract pixels, so this can never look like a passing check.
+        RT_LOG("[Frame] contract mode requested without contract pipeline; running path tracing instead");
+    }
+    if (((ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugMode < 19) || contractMode) &&
+        ctx.gbufferDebugPass.IsAvailable() &&
+        (!contractMode || ctx.gbufferDebugPass.IsContractAvailable()))
 	{
 		ctx.gbufferDebugPass.Record(cmd, ctx.renderExtent,
 		                          ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,

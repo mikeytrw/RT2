@@ -14,6 +14,13 @@ bool GBufferDebugPass::Init(const GpuDevice& dev, VkDescriptorSetLayout outputSe
 		RT_LOG("[GBufferDebug] Failed to load shader");
 		return false;
 	}
+	VkShaderModule contractShader = ShaderManager::LoadShader("scattercontract.spv");
+	if (!contractShader)
+	{
+		RT_LOG("[GBufferDebug] Failed to load contract shader");
+		vkDestroyShaderModule(m_Device, shader, nullptr);
+		return false;
+	}
 
 	VkDescriptorSetLayout setLayouts[] = { outputSetLayout, gbufferSetLayout };
 
@@ -48,6 +55,20 @@ bool GBufferDebugPass::Init(const GpuDevice& dev, VkDescriptorSetLayout outputSe
 	if (err != VK_SUCCESS)
 	{
 		RT_LOG("[GBufferDebug] vkCreateComputePipelines failed: %d", (int)err);
+		vkDestroyShaderModule(m_Device, contractShader, nullptr);
+		return false;
+	}
+
+	// RR5-T2 contract battery: same layouts/push convention, separate module.
+	VkPipelineShaderStageCreateInfo contractStage = stage;
+	contractStage.module = contractShader;
+	pipelineInfo.stage = contractStage;
+	err = vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_ContractPipeline);
+	vkDestroyShaderModule(m_Device, contractShader, nullptr);
+
+	if (err != VK_SUCCESS)
+	{
+		RT_LOG("[GBufferDebug] contract vkCreateComputePipelines failed: %d", (int)err);
 		return false;
 	}
 
@@ -58,6 +79,7 @@ bool GBufferDebugPass::Init(const GpuDevice& dev, VkDescriptorSetLayout outputSe
 void GBufferDebugPass::Destroy()
 {
 	if (m_Pipeline) { vkDestroyPipeline(m_Device, m_Pipeline, nullptr); m_Pipeline = VK_NULL_HANDLE; }
+	if (m_ContractPipeline) { vkDestroyPipeline(m_Device, m_ContractPipeline, nullptr); m_ContractPipeline = VK_NULL_HANDLE; }
 	if (m_PipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
 }
 
@@ -68,7 +90,22 @@ void GBufferDebugPass::Record(VkCommandBuffer cmd, const RenderExtent& extent,
 	const uint32_t width = extent.Width(); const uint32_t height = extent.Height();
 	if (!m_Pipeline) return;
 
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);
+	// RR5-T2: mode 27 runs the sampling-weight contract battery instead
+	// of the debug views (same sets, same push convention). A missing
+	// contract module never falls back to the debug shader: that would
+	// write unrelated content with a success status. The caller gates on
+	// IsContractAvailable; this belt-and-braces skip is loud.
+	if (mode == kScatterContractMode)
+	{
+		if (!m_ContractPipeline)
+		{
+			RT_LOG("[GBufferDebug] contract mode requested without contract pipeline; skipping dispatch");
+			return;
+		}
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ContractPipeline);
+	}
+	else
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout,
 	                        0, 1, &outputSet, 0, nullptr);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout,

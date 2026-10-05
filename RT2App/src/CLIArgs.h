@@ -197,6 +197,11 @@ struct CLIArgs
 	uint32_t diagRngPixelY = 0;
 	std::string diagRngDump;
 	std::string diagSeedError;    // flag-specific diagnostic for invalid diag-seed CLI
+	// RR5-T2 diagnostic GI disable (acceptance harness only, not a
+	// product switch: no UI, headless only). Forces restirGIEnabled off
+	// through the existing ApplySettings GI-toggle lifecycle so a bounded
+	// GI-off fixed-stream pair can be captured for the T2 parity check.
+	bool diagNoGI = false;
 
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasProject() const { return !projectPath.empty(); }
@@ -500,6 +505,10 @@ struct CLIArgs
 			else if (args.diagSeedError.empty())
 				args.diagSeedError = "missing value for --diag-rng-dump (want an output path)";
 		}
+		else if (strcmp(a, "--diag-no-gi") == 0)
+		{
+			args.diagNoGI = true;
+		}
 		else if (strcmp(a, "--raster-first") == 0)
 		{
 			args.rasterFirst = true;
@@ -611,6 +620,7 @@ struct CLIArgs
 				printf("  --diag-seed <N>       Diagnostic sample-seed override (default 0 = legacy streams)\n");
 				printf("  --diag-rng-pixel <x> <y>  Probe pixel for raw RNG-state sampling (requires --diag-rng-dump)\n");
 				printf("  --diag-rng-dump <path>  Write per-frame raw RNG states (mainRT/DI-temporal/DI-spatial/GI) as JSON\n");
+				printf("  --diag-no-gi          Diagnostic: force ReSTIR GI off headless (T2 acceptance harness only)\n");
 				printf("  --nrd                Enable NRD denoiser\n");
 		printf("  --denoiser-mode <off|nrd|rr>  Select the denoiser path (default: RR Quality on\n");
 		printf("      supported RTX, NRD otherwise; an explicit choice always wins)\n");

@@ -296,6 +296,10 @@ static void ApplyDiagSeedCLIOverrides(RenderSettings& settings)
 		settings.diagProbeX = g_CLI.diagRngPixelX;
 		settings.diagProbeY = g_CLI.diagRngPixelY;
 	}
+	// RR5-T2 diagnostic GI disable (acceptance harness only): force off
+	// through the standard field so the existing ApplySettings GI-toggle
+	// lifecycle (buffer realloc + history invalidation) applies.
+	if (g_CLI.diagNoGI) settings.restirGIEnabled = false;
 }
 
 class RT2Layer : public Walnut::Layer
@@ -3852,6 +3856,11 @@ private:
 				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 				m_Settings.sceneSeed = g_CLI.sceneSeed;
 				m_RendererGPU.ApplySettings(m_Settings);
+				// RR5-T2: record the effective GI state for acceptance
+				// provenance (the diagnostic --diag-no-gi forces it off).
+				RT_LOG("[CLI] effective restirGIEnabled=%d (diagNoGI=%d)",
+				       m_Settings.restirGIEnabled ? 1 : 0,
+				       g_CLI.diagNoGI ? 1 : 0);
 			}
 			else
 			{

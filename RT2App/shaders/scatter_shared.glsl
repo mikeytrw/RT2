@@ -11,7 +11,14 @@
 #include "restir_gi_shared.glsl"
 
 // Shadow ray payload (location 2) — used by sampleNEE / sampleEnvNEE.
+#ifndef SCATTER_CONTRACT_COMPUTE
 layout(location = 2) rayPayloadEXT float shadowVisible;
+#else
+// Compute-TU stand-in for the contract battery (scatter_contract.comp):
+// rayPayloadEXT is unavailable in compute, and the battery never traces.
+// NEE helpers still compile (dead in that TU) against this plain global.
+float shadowVisible = 0.0;
+#endif
 
 // ---- Reservoir buffer (set 0, binding 14 — history buffer, read by shading) ----
 layout(set = 0, binding = SI_BINDING_RESERVOIR_HISTORY, std430) readonly buffer ReservoirBuffer
@@ -399,10 +406,12 @@ NEEResult sampleEnvNEE(vec3 wo, vec3 N, vec3 P,
         return result;
 
     shadowVisible = 0.0;
+#ifndef SCATTER_CONTRACT_COMPUTE
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
                 P + N * 0.001, 0.001, L, 1e9, 2);
+#endif
 
     if (shadowVisible < 0.5)
         return result;
@@ -485,10 +494,12 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
         return result;
 
     shadowVisible = 0.0;
+#ifndef SCATTER_CONTRACT_COMPUTE
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
                 P + N * 0.001, 0.001, L, dist - 0.002, 2);
+#endif
 
     if (shadowVisible < 0.5)
         return result;
@@ -583,10 +594,12 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         // its visibility ray returns zero. Mark it handled before tracing so
         // the caller does not conditionally draw a second, biased NEE sample.
         shadowVisible = 0.0;
+#ifndef SCATTER_CONTRACT_COMPUTE
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                     0xFF, 2, 1, 1,
                     P + N * 0.001, 0.001, ts.L, ts.dist - 0.002, 2);
+#endif
 
         if (shadowVisible < 0.5)
             return result;
@@ -607,10 +620,12 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
             return result;
 
         shadowVisible = 0.0;
+#ifndef SCATTER_CONTRACT_COMPUTE
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                     0xFF, 2, 1, 1,
                     P + N * 0.001, 0.001, es.dir, 1e9, 2);
+#endif
 
         if (shadowVisible < 0.5)
             return result;
@@ -712,10 +727,12 @@ vec3 samplePunctualNEE(
         return vec3(0.0);
 
     shadowVisible = 0.0;
+#ifndef SCATTER_CONTRACT_COMPUTE
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
                 P + N * 0.001, 0.001, ps.toLight, tmax, 2);
+#endif
 
     if (shadowVisible < 0.5)
         return vec3(0.0);
