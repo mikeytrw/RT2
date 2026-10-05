@@ -1,12 +1,18 @@
 // NormalMatrixOracle.cpp — RT4-T2 Part A GPU diagnostic oracle driver.
 //
-// Isolated compute dispatch comparing, per synthetic instance, the legacy
-// in-shader expression transpose(inverse(mat3(world))) against the ACTUAL
-// production uploaded 48-byte normal record, plus the 14 specified sample
-// directions transformed by each (6 unit axes + 8 normalized cube corners).
+// Staged verification, all through the production upload path with an
+// isolated compute dispatch comparing, per instance, the legacy in-shader
+// expression transpose(inverse(mat3(world))) against the ACTUAL production
+// uploaded 48-byte normal record, plus the 14 specified sample directions
+// (6 unit axes + 8 normalized cube corners) transformed by each.
 // Host-side double-precision gates: matrix elements rel+abs 1e-5, sample
 // normals atan2(|cross|,dot) angular 1e-4 rad. Out-of-support instances are
 // verified against the identity+diagnostic contract ONLY (never parity).
+//
+// Stages: loaded scene as found (all real test-scene transforms, when a
+// scene is loaded) → synthetic 16-matrix battery → transform-only sync seam
+// → reload seam → resize seam → empty seam (dummy backing). A CPU double
+// inverse is never substituted: both compared quantities come from the GPU.
 //
 // RT2App-only (Vulkan); never linked into RT2Tests/RT2SliceRunner.
 // Headless entry: --normal-matrix-oracle (see WalnutApp RunHeadless).
@@ -63,30 +69,31 @@ std::vector<glm::mat4> OracleBattery()
     ms.push_back(glm::mat4(0.0f)); // 15 zero reject
     return ms;
 }
-} // namespace
 
-bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
+// SceneResources::SetScene takes its argument by move (m_CurrentScene =
+// std::move(sceneData)), so a staged driver MUST build a fresh GPUSceneData
+// for every SetScene call — reusing one across stages silently verifies an
+// emptied husk (observed: zero-dispatch FAIL + downstream crash).
+struct SyntheticScene
 {
-    printf("[NormalMatrixOracle] start: synthetic battery via production upload path\n");
-    fflush(stdout);
+    MeshData cube;
+    GPUSceneData data;
+    std::vector<bool> support;
+    uint32_t rejectCount = 0;
+};
 
-    // ---- Synthetic scene: one cube mesh, battery instances, one material --
-    MeshData cube = PrimitiveGeometry::CreateCube(1.0f);
-    GPUSceneData synth;
+SyntheticScene BuildSyntheticScene(const std::vector<glm::mat4>& battery)
+{
+    SyntheticScene out;
+    out.cube = PrimitiveGeometry::CreateCube(1.0f);
     GPUMeshGeometry geo;
-    geo.vertices = &cube.vertices;
-    geo.indices = &cube.indices;
-    geo.normals = cube.normals.empty() ? nullptr : &cube.normals;
+    geo.vertices = &out.cube.vertices;
+    geo.indices = &out.cube.indices;
+    geo.normals = out.cube.normals.empty() ? nullptr : &out.cube.normals;
     geo.uvs = nullptr;
-    synth.meshes.push_back(geo);
-    synth.materials.emplace_back();
-
-    const std::vector<glm::mat4> battery = OracleBattery();
-    const uint32_t instanceCount = (uint32_t)battery.size();
-    std::vector<bool> expectSupported;
-    expectSupported.reserve(instanceCount);
-    uint32_t expectReject = 0;
-    for (uint32_t i = 0; i < instanceCount; ++i)
+    out.data.meshes.push_back(geo);
+    out.data.materials.emplace_back();
+    for (uint32_t i = 0; i < (uint32_t)battery.size(); ++i)
     {
         GPUInstance inst;
         inst.meshIndex = 0;
@@ -94,109 +101,77 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
         inst.worldMatrix = battery[i];
         inst.prevWorldMatrix = battery[i];
         inst.isTransparent = false;
-        synth.instances.push_back(inst);
+        out.data.instances.push_back(inst);
         const bool s = ComputeNormalMatrixPack(battery[i]).supported;
-        expectSupported.push_back(s);
-        if (!s) expectReject++;
+        out.support.push_back(s);
+        if (!s) out.rejectCount++;
     }
+    return out;
+}
 
-    // ---- Production upload path (same as every scene) ----------------------
-    SetScene(synth, {});
-    // A throwaway render drives the pending AS rebuild + descriptor writes
-    // through the exact production flow (also pushes the new binding-19
-    // write through validation layers on real dispatch state).
-    RenderOutcome warmup = Render(camera);
-    (void)warmup;
-
-    const VkBuffer transformBuf = m_Scene.GetInstanceTransformBuffer();
-    const VkBuffer normalMatrixBuf = m_Scene.GetInstanceNormalMatrixBuffer();
-    if (transformBuf == VK_NULL_HANDLE || normalMatrixBuf == VK_NULL_HANDLE)
-    {
-        printf("[NormalMatrixOracle] FAIL: production buffers missing after sync\n");
-        fflush(stdout);
-        return false;
-    }
-    const uint32_t uploadedReject = m_Scene.GetNormalMatrixOutOfSupportCount();
-    printf("[NormalMatrixOracle] upload: %u instances, out-of-support=%u (expected %u)\n",
-           instanceCount, uploadedReject, expectReject);
-    fflush(stdout);
-
-    // ---- Isolated compute dispatch ----------------------------------------
-    VkShaderModule oracleShader = ShaderManager::LoadShader("normal_matrix_oracle.spv");
-    if (!oracleShader)
-        oracleShader = ShaderManager::LoadShader("RT2App/shaders/normal_matrix_oracle.spv");
-    if (!oracleShader)
-    {
-        printf("[NormalMatrixOracle] FAIL: normal_matrix_oracle.spv not found\n");
-        fflush(stdout);
-        return false;
-    }
-
+// One verification stage over the CURRENT production buffers: isolated
+// dispatch + readback + double-precision gates. Empty matrix list verifies
+// the dummy backing directly (zero workgroups are illegal to dispatch).
+bool VerifyStage(const GpuDevice& dev, const char* tag, VkPipeline pipeline,
+                 VkPipelineLayout pipelineLayout, VkDescriptorSetLayout sharedLayout,
+                 VkBuffer transformBuf, VkBuffer normalMatrixBuf, VkDeviceMemory normalMatrixMem,
+                 const std::vector<glm::mat4>& matrices,
+                 const std::vector<bool>& support,
+                 uint32_t expectReject, uint32_t uploadedReject)
+{
+    const uint32_t instanceCount = (uint32_t)matrices.size();
     bool ok = true;
-    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline pipeline = VK_NULL_HANDLE;
+    auto fail = [&](const char* what) {
+        printf("[NormalMatrixOracle][%s] FAIL: %s\n", tag, what);
+        fflush(stdout);
+        ok = false;
+    };
+
+    if (transformBuf == VK_NULL_HANDLE || normalMatrixBuf == VK_NULL_HANDLE)
+    { fail("production buffers missing"); return false; }
+
+    if (instanceCount == 0)
+    {
+        void* dummy = nullptr;
+        if (vkMapMemory(dev.device, normalMatrixMem, 0, 48, 0, &dummy) != VK_SUCCESS)
+        { fail("dummy map"); return false; }
+        const float* df = static_cast<const float*>(dummy);
+        for (int e = 0; e < 12; ++e)
+        {
+            if (df[e] != 0.0f)
+            {
+                printf("[NormalMatrixOracle][%s] FAIL: dummy float %d = %g, want 0\n",
+                       tag, e, (double)df[e]);
+                fflush(stdout);
+                ok = false;
+            }
+        }
+        vkUnmapMemory(dev.device, normalMatrixMem);
+        if (ok && uploadedReject != 0)
+        {
+            printf("[NormalMatrixOracle][%s] FAIL: diagnostic count %u on empty scene\n",
+                   tag, uploadedReject);
+            fflush(stdout);
+            ok = false;
+        }
+        printf("[NormalMatrixOracle][%s] %s: 0 instances, dummy backing verified\n",
+               tag, ok ? "PASS" : "FAIL");
+        fflush(stdout);
+        return ok;
+    }
+
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkBuffer resultBuf = VK_NULL_HANDLE;
     VkDeviceMemory resultMem = VK_NULL_HANDLE;
     const VkDeviceSize resultSize = (VkDeviceSize)instanceCount * kOracleVecsPerInstance * sizeof(glm::vec4);
 
-    auto fail = [&](const char* what) {
-        printf("[NormalMatrixOracle] FAIL: %s\n", what);
-        fflush(stdout);
-        ok = false;
-    };
-
-    // Layout: bindings 0/1/2 storage buffers + 4-byte push constant.
-    {
-        VkDescriptorSetLayoutBinding bindings[3] = {};
-        for (int i = 0; i < 3; ++i)
-        {
-            bindings[i].binding = (uint32_t)i;
-            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            bindings[i].descriptorCount = 1;
-            bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        }
-        VkDescriptorSetLayoutCreateInfo li = {};
-        li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        li.bindingCount = 3;
-        li.pBindings = bindings;
-        if (vkCreateDescriptorSetLayout(m_Device.device, &li, nullptr, &setLayout) != VK_SUCCESS)
-        { fail("set layout"); }
-
-        VkPushConstantRange push = {};
-        push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push.offset = 0;
-        push.size = sizeof(uint32_t);
-        VkPipelineLayoutCreateInfo pli = {};
-        pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pli.setLayoutCount = 1;
-        pli.pSetLayouts = &setLayout;
-        pli.pushConstantRangeCount = 1;
-        pli.pPushConstantRanges = &push;
-        if (ok && vkCreatePipelineLayout(m_Device.device, &pli, nullptr, &pipelineLayout) != VK_SUCCESS)
-        { fail("pipeline layout"); }
-
-        VkComputePipelineCreateInfo pi = {};
-        pi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        pi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        pi.stage.module = oracleShader;
-        pi.stage.pName = "main";
-        pi.layout = pipelineLayout;
-        if (ok && vkCreateComputePipelines(m_Device.device, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeline) != VK_SUCCESS)
-        { fail("compute pipeline"); }
-    }
-
-    // Result buffer (host-visible, like every other scene buffer).
-    if (ok && !GpuResources::CreateBuffer(m_Device, resultSize,
+    if (!GpuResources::CreateBuffer(dev, resultSize,
              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
              resultBuf, resultMem))
     { fail("result buffer"); }
 
-    // Pool + set + writes.
     if (ok)
     {
         VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 };
@@ -205,7 +180,7 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
         poolInfo.maxSets = 1;
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
-        if (vkCreateDescriptorPool(m_Device.device, &poolInfo, nullptr, &pool) != VK_SUCCESS)
+        if (vkCreateDescriptorPool(dev.device, &poolInfo, nullptr, &pool) != VK_SUCCESS)
         { fail("descriptor pool"); }
     }
     if (ok)
@@ -214,8 +189,8 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
         ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         ai.descriptorPool = pool;
         ai.descriptorSetCount = 1;
-        ai.pSetLayouts = &setLayout;
-        if (vkAllocateDescriptorSets(m_Device.device, &ai, &set) != VK_SUCCESS)
+        ai.pSetLayouts = &sharedLayout;
+        if (vkAllocateDescriptorSets(dev.device, &ai, &set) != VK_SUCCESS)
         { fail("descriptor set"); }
     }
     if (ok)
@@ -235,10 +210,12 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
             writes[i].descriptorCount = 1;
             writes[i].pBufferInfo = &infos[i];
         }
-        vkUpdateDescriptorSets(m_Device.device, 3, writes, 0, nullptr);
+        vkUpdateDescriptorSets(dev.device, 3, writes, 0, nullptr);
 
-        CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+        CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+            // The stage-local set is allocated from the shared oracle
+            // layout, so it is exactly compatible with the pipeline layout.
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout,
                                     0, 1, &set, 0, nullptr);
             vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -257,13 +234,12 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
         });
     }
 
-    // ---- Host-side double-precision verification ---------------------------
     double worstMatrixErr = 0.0;
     double worstAngle = 0.0;
     if (ok)
     {
         void* mapped = nullptr;
-        if (vkMapMemory(m_Device.device, resultMem, 0, resultSize, 0, &mapped) != VK_SUCCESS)
+        if (vkMapMemory(dev.device, resultMem, 0, resultSize, 0, &mapped) != VK_SUCCESS)
         { fail("result map"); }
         else
         {
@@ -279,7 +255,7 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
                     legacyM[e] = (double)base[(col * 4) + row];
                     upM[e] = (double)base[(12 + col * 4) + row];
                 }
-                if (expectSupported[i])
+                if (support[i])
                 {
                     for (int e = 0; e < 9; ++e)
                     {
@@ -289,8 +265,8 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
                         if (err > worstMatrixErr) worstMatrixErr = err;
                         if (err > tol)
                         {
-                            printf("[NormalMatrixOracle] FAIL: instance %u matrix elem %d |%g-%g|=%g > tol %g\n",
-                                   i, e, a, b, err, tol);
+                            printf("[NormalMatrixOracle][%s] FAIL: instance %u matrix elem %d |%g-%g|=%g > tol %g\n",
+                                   tag, i, e, a, b, err, tol);
                             fflush(stdout);
                             ok = false;
                         }
@@ -303,7 +279,8 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
                         const double bl = std::sqrt(bx * bx + by * by + bz * bz);
                         if (!(al > 0.0) || !(bl > 0.0))
                         {
-                            printf("[NormalMatrixOracle] FAIL: instance %u dir %u degenerate oracle vector\n", i, k);
+                            printf("[NormalMatrixOracle][%s] FAIL: instance %u dir %u degenerate oracle vector\n",
+                                   tag, i, k);
                             fflush(stdout);
                             ok = false;
                             break;
@@ -318,8 +295,8 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
                         if (angle > worstAngle) worstAngle = angle;
                         if (!(angle <= 1e-4))
                         {
-                            printf("[NormalMatrixOracle] FAIL: instance %u dir %u angle %.9f rad > 1e-4\n",
-                                   i, k, angle);
+                            printf("[NormalMatrixOracle][%s] FAIL: instance %u dir %u angle %.9f rad > 1e-4\n",
+                                   tag, i, k, angle);
                             fflush(stdout);
                             ok = false;
                         }
@@ -335,34 +312,221 @@ bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
                         const float got = base[(12 + col * 4) + row];
                         if (got != ident[e])
                         {
-                            printf("[NormalMatrixOracle] FAIL: instance %u out-of-support uploaded != identity (elem %d = %g)\n",
-                                   i, e, (double)got);
+                            printf("[NormalMatrixOracle][%s] FAIL: instance %u out-of-support uploaded != identity (elem %d = %g)\n",
+                                   tag, i, e, (double)got);
                             fflush(stdout);
                             ok = false;
                         }
                     }
                 }
             }
-            vkUnmapMemory(m_Device.device, resultMem);
+            vkUnmapMemory(dev.device, resultMem);
         }
     }
     if (ok && uploadedReject != expectReject)
     {
-        printf("[NormalMatrixOracle] FAIL: diagnostic count %u != expected %u\n", uploadedReject, expectReject);
+        printf("[NormalMatrixOracle][%s] FAIL: diagnostic count %u != expected %u\n",
+               tag, uploadedReject, expectReject);
         fflush(stdout);
         ok = false;
     }
 
-    printf("[NormalMatrixOracle] %s: %u instances (%u supported), worst matrix err %.3g (tol rel+abs 1e-5), worst angle %.3g rad (tol 1e-4)\n",
-           ok ? "PASS" : "FAIL", instanceCount, instanceCount - expectReject, worstMatrixErr, worstAngle);
+    printf("[NormalMatrixOracle][%s] %s: %u instances (%u supported), worst matrix err %.3g (tol rel+abs 1e-5), worst angle %.3g rad (tol 1e-4)\n",
+           tag, ok ? "PASS" : "FAIL", instanceCount, instanceCount - expectReject, worstMatrixErr, worstAngle);
     fflush(stdout);
 
-    // ---- Transient teardown -------------------------------------------------
+    if (pool) vkDestroyDescriptorPool(dev.device, pool, nullptr);
+    GpuResources::DestroyBuffer(dev, resultBuf, resultMem);
+    return ok;
+}
+} // namespace
+
+bool RendererGPU::RunNormalMatrixOracle(const Camera& camera)
+{
+    printf("[NormalMatrixOracle] start: staged verification via production upload path\n");
+    fflush(stdout);
+    bool allOk = true;
+
+    // ---- Shared oracle pipeline (one layout + module for all stages) -------
+    VkShaderModule oracleShader = ShaderManager::LoadShader("normal_matrix_oracle.spv");
+    if (!oracleShader)
+        oracleShader = ShaderManager::LoadShader("RT2App/shaders/normal_matrix_oracle.spv");
+    if (!oracleShader)
+    {
+        printf("[NormalMatrixOracle] FAIL: normal_matrix_oracle.spv not found\n");
+        fflush(stdout);
+        return false;
+    }
+    VkDescriptorSetLayout sharedLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    {
+        VkDescriptorSetLayoutBinding bindings[3] = {};
+        for (int i = 0; i < 3; ++i)
+        {
+            bindings[i].binding = (uint32_t)i;
+            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo li = {};
+        li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        li.bindingCount = 3;
+        li.pBindings = bindings;
+        VkPushConstantRange push = {};
+        push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push.offset = 0;
+        push.size = sizeof(uint32_t);
+        VkPipelineLayoutCreateInfo pli = {};
+        pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pli.setLayoutCount = 1;
+        pli.pSetLayouts = &sharedLayout;
+        pli.pushConstantRangeCount = 1;
+        pli.pPushConstantRanges = &push;
+        bool ok = true;
+        if (vkCreateDescriptorSetLayout(m_Device.device, &li, nullptr, &sharedLayout) != VK_SUCCESS)
+            ok = false;
+        if (ok)
+        {
+            pli.pSetLayouts = &sharedLayout;
+            if (vkCreatePipelineLayout(m_Device.device, &pli, nullptr, &pipelineLayout) != VK_SUCCESS)
+                ok = false;
+        }
+        if (ok)
+        {
+            VkComputePipelineCreateInfo pi = {};
+            pi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            pi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            pi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            pi.stage.module = oracleShader;
+            pi.stage.pName = "main";
+            pi.layout = pipelineLayout;
+            if (vkCreateComputePipelines(m_Device.device, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeline) != VK_SUCCESS)
+                ok = false;
+        }
+        if (!ok)
+        {
+            printf("[NormalMatrixOracle] FAIL: oracle pipeline setup\n");
+            fflush(stdout);
+            if (pipeline) vkDestroyPipeline(m_Device.device, pipeline, nullptr);
+            if (pipelineLayout) vkDestroyPipelineLayout(m_Device.device, pipelineLayout, nullptr);
+            if (sharedLayout) vkDestroyDescriptorSetLayout(m_Device.device, sharedLayout, nullptr);
+            if (oracleShader) vkDestroyShaderModule(m_Device.device, oracleShader, nullptr);
+            return false;
+        }
+    }
+
+    auto currentBuffers = [&]() {
+        return std::make_tuple(m_Scene.GetInstanceTransformBuffer(),
+                               m_Scene.GetInstanceNormalMatrixBuffer(),
+                               m_Scene.GetInstanceNormalMatrixBufferMemory());
+    };
+    auto classify = [](const std::vector<glm::mat4>& ms, std::vector<bool>& support, uint32_t& reject) {
+        support.clear();
+        reject = 0;
+        for (const auto& m : ms)
+        {
+            const bool s = ComputeNormalMatrixPack(m).supported;
+            support.push_back(s);
+            if (!s) reject++;
+        }
+    };
+
+    // ---- Stage 0: loaded scene as found (all real test-scene transforms) --
+    {
+        std::vector<glm::mat4> matrices;
+        for (const auto& inst : m_Scene.GetScene().instances)
+            matrices.push_back(inst.worldMatrix);
+        if (!matrices.empty())
+        {
+            std::vector<bool> support;
+            uint32_t expectReject = 0;
+            classify(matrices, support, expectReject);
+            auto [tBuf, nBuf, nMem] = currentBuffers();
+            allOk &= VerifyStage(m_Device, "loaded-scene", pipeline, pipelineLayout, sharedLayout,
+                                 tBuf, nBuf, nMem, matrices, support, expectReject,
+                                 m_Scene.GetNormalMatrixOutOfSupportCount());
+        }
+        else
+        {
+            printf("[NormalMatrixOracle][loaded-scene] SKIP: no scene loaded (synthetic covers)\n");
+            fflush(stdout);
+        }
+    }
+
+    // ---- Stage 1: synthetic battery ----------------------------------------
+    // Fresh scene object per SetScene: SetScene moves its argument.
+    const std::vector<glm::mat4> battery = OracleBattery();
+    {
+        SyntheticScene synth = BuildSyntheticScene(battery);
+        SetScene(synth.data, {});
+        // A throwaway render drives the pending AS rebuild + descriptor writes
+        // through the exact production flow (also pushes the new binding-19
+        // write through validation layers on real dispatch state).
+        { RenderOutcome warmup = Render(camera); (void)warmup; }
+        auto [tBuf, nBuf, nMem] = currentBuffers();
+        allOk &= VerifyStage(m_Device, "synthetic", pipeline, pipelineLayout, sharedLayout,
+                             tBuf, nBuf, nMem, battery, synth.support, synth.rejectCount,
+                             m_Scene.GetNormalMatrixOutOfSupportCount());
+    }
+
+    // ---- Stage 2: transform-only sync seam ----------------------------------
+    {
+        SyntheticScene synth = BuildSyntheticScene(battery);
+        UpdateSceneInstances(synth.data, {});
+        auto [tBuf, nBuf, nMem] = currentBuffers();
+        allOk &= VerifyStage(m_Device, "transform-only", pipeline, pipelineLayout, sharedLayout,
+                             tBuf, nBuf, nMem, battery, synth.support, synth.rejectCount,
+                             m_Scene.GetNormalMatrixOutOfSupportCount());
+    }
+
+    // ---- Stage 3: reload seam ------------------------------------------------
+    {
+        SyntheticScene synth = BuildSyntheticScene(battery);
+        SetScene(synth.data, {});
+        { RenderOutcome warmup = Render(camera); (void)warmup; }
+        auto [tBuf, nBuf, nMem] = currentBuffers();
+        allOk &= VerifyStage(m_Device, "reload", pipeline, pipelineLayout, sharedLayout,
+                             tBuf, nBuf, nMem, battery, synth.support, synth.rejectCount,
+                             m_Scene.GetNormalMatrixOutOfSupportCount());
+    }
+
+    // ---- Stage 4: resize seam (instance buffers must survive realloc) -------
+    OnResize(960, 540);
+    {
+        // Scene still holds the stage-3 reload state; only the support
+        // classification is needed (buffers re-fetched fresh).
+        SyntheticScene ref = BuildSyntheticScene(battery);
+        auto [tBuf, nBuf, nMem] = currentBuffers();
+        allOk &= VerifyStage(m_Device, "resize", pipeline, pipelineLayout, sharedLayout,
+                             tBuf, nBuf, nMem, battery, ref.support, ref.rejectCount,
+                             m_Scene.GetNormalMatrixOutOfSupportCount());
+    }
+
+    // ---- Stage 5: empty seam (dummy backing, logical count zero) ------------
+    {
+        // One mesh but zero instances: exercises the dummy-record backing
+        // without depending on Render() tolerating a fully meshless scene.
+        SyntheticScene full = BuildSyntheticScene(battery);
+        GPUSceneData emptyScene;
+        emptyScene.meshes = full.data.meshes;
+        emptyScene.materials = full.data.materials;
+        SetScene(emptyScene, {});
+        { RenderOutcome warmup = Render(camera); (void)warmup; }
+        std::vector<glm::mat4> none;
+        std::vector<bool> noSupport;
+        auto [tBuf, nBuf, nMem] = currentBuffers();
+        allOk &= VerifyStage(m_Device, "empty", pipeline, pipelineLayout, sharedLayout,
+                             tBuf, nBuf, nMem, none, noSupport, 0,
+                             m_Scene.GetNormalMatrixOutOfSupportCount());
+    }
+
     if (pipeline) vkDestroyPipeline(m_Device.device, pipeline, nullptr);
     if (pipelineLayout) vkDestroyPipelineLayout(m_Device.device, pipelineLayout, nullptr);
-    if (setLayout) vkDestroyDescriptorSetLayout(m_Device.device, setLayout, nullptr);
-    if (pool) vkDestroyDescriptorPool(m_Device.device, pool, nullptr);
+    if (sharedLayout) vkDestroyDescriptorSetLayout(m_Device.device, sharedLayout, nullptr);
     if (oracleShader) vkDestroyShaderModule(m_Device.device, oracleShader, nullptr);
-    GpuResources::DestroyBuffer(m_Device, resultBuf, resultMem);
-    return ok;
+
+    printf("[NormalMatrixOracle] %s: all stages complete\n", allOk ? "PASS" : "FAIL");
+    fflush(stdout);
+    return allOk;
 }

@@ -114,6 +114,7 @@ public:
 	// as the transform buffer. Empty scene still yields a valid nonzero
 	// range (single zero-initialised dummy record, logical count zero).
 	VkBuffer GetInstanceNormalMatrixBuffer() const { return m_InstanceNormalMatrixBuffer; }
+	VkDeviceMemory GetInstanceNormalMatrixBufferMemory() const { return m_InstanceNormalMatrixBufferMemory; }
 	// Out-of-support instance count from the last upload (identity fallback
 	// + loud diagnostic per instance). Zero in well-formed scenes.
 	uint32_t GetNormalMatrixOutOfSupportCount() const { return m_NormalMatrixOutOfSupportCount; }
