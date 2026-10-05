@@ -121,14 +121,6 @@ layout(set = 0, binding = SI_BINDING_INSTANCE_TRANSFORMS, std430) readonly buffe
     mat4 instanceTransforms[];
 };
 
-// ---- Precomputed normal matrices (RT4-T2 Part A) ---------------------------
-// Same 48-byte column-major record contract as pathtracer_shared.glsl:
-// 3 vec4 columns per instance, same GPU instance ordering.
-layout(set = 0, binding = SI_BINDING_INSTANCE_NORMAL_MATRICES, std430) readonly buffer InstanceNormalMatrices
-{
-    vec4 instanceNormalMatrices[];
-};
-
 // ---- Instance material indices (set 0, binding 13) --------------------------
 layout(set = 0, binding = SI_BINDING_INSTANCE_MATERIAL_INDICES, std430) readonly buffer InstanceMaterialIndexBuffer
 {
@@ -141,7 +133,7 @@ layout(set = 0, binding = SI_BINDING_INSTANCE_MAT_OFFSETS, std430) readonly buff
     uint instanceMatOffsets[];
 };
 
-// ---- Texture array (set 0, highest binding) --------------------------------
+// ---- Texture array (set 0, binding 18) -------------------------------------
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];
 
 // ---- TLAS (set 0, binding 4) — visible to compute for ray queries -----------

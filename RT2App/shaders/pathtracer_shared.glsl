@@ -218,18 +218,6 @@ layout(set = 0, binding = SI_BINDING_INSTANCE_TRANSFORMS, std430) readonly buffe
     mat4 instanceTransforms[];
 };
 
-// Per-instance precomputed normal matrices (RT4-T2 Part A).
-// Three explicitly column-major vec4 columns per instance (48-byte record
-// stride, w is zero padding), same GPU instance ordering as
-// instanceTransforms. Column (c) holds the c-th column of
-// transpose(inverse(mat3(world))), so
-//   mat3(nm[3*i+0].xyz, nm[3*i+1].xyz, nm[3*i+2].xyz)
-// is the hit-time normal matrix with no inverse() on the hot path.
-layout(set = 0, binding = SI_BINDING_INSTANCE_NORMAL_MATRICES, std430) readonly buffer InstanceNormalMatrixBuffer
-{
-    vec4 instanceNormalMatrices[];
-};
-
 // Per-triangle material indices (binding 13 — shared with raster path).
 // When the buffer has per-triangle entries, overrides gl_InstanceCustomIndexEXT.
 layout(set = 0, binding = SI_BINDING_INSTANCE_MATERIAL_INDICES, std430) readonly buffer InstanceMaterialIndexBuffer

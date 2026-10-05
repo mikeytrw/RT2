@@ -69,13 +69,6 @@ project "RT2Tests"
     files { "src/PhysicsDebugVisualizationTests.cpp" }
     files { "../RT2App/src/PhysicsDebugLines.cpp", "../RT2App/src/PhysicsDebugCapture.cpp" }
 
-    -- RT4-T2 Part A: host normal-matrix classification/packing tests.
-    -- NormalMatrix.h is header-inline glm-only math (no Vulkan), shared with
-    -- SceneResources upload; these CPU tests pin the s-rule boundaries and
-    -- the identity-fallback contract. Host-vs-shader equality is the GPU
-    -- oracle's job, not proven here.
-    files { "src/NormalMatrixTests.cpp" }
-
     -- Audio A0: contract/baseline checks (same rationale).
     -- CPU-only pins + deferred 20-check ownership map; no miniaudio/device imports.
     files { "src/AudioA0ContractBaselineTests.cpp" }

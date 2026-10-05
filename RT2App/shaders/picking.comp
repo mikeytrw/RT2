@@ -40,10 +40,9 @@ layout(set = 0, binding = 17, std430) readonly buffer InstanceMatOffsetBuffer
     uint instanceMatOffsets[];
 };
 // NOTE: this shader hardcodes its binding numbers rather than including
-// shader_interface.h, so it does not follow renumbering automatically. 20 is
-// SI_BINDING_TEXTURE_ARRAY (19 is SI_BINDING_INSTANCE_NORMAL_MATRICES since
-// RT4-T2 Part A), which must stay the set's highest binding.
-layout(set = 0, binding = 20) uniform sampler2D textures[];
+// shader_interface.h, so it does not follow renumbering automatically. 19 is
+// SI_BINDING_TEXTURE_ARRAY, which must stay the set's highest binding.
+layout(set = 0, binding = 19) uniform sampler2D textures[];
 
 layout(set = 1, binding = 0, std430) buffer PickOutput
 {

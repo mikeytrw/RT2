@@ -58,11 +58,7 @@
 // a number below it, and adding one above it is a spec violation the driver
 // will not necessarily complain about outside validation.
 #define SI_BINDING_PUNCTUAL_LIGHT_BUFFER 18  // point/spot/directional lights (Phase 8)
-// RT4-T2 Part A: precomputed transpose-inverse normal matrices, one 48-byte
-// record (3 column-major vec4s, w padding) per GPU instance, same ordering
-// as instanceTransforms. Takes 19; the texture array moves to 20 below.
-#define SI_BINDING_INSTANCE_NORMAL_MATRICES 19
-#define SI_BINDING_TEXTURE_ARRAY         20  // must remain the highest binding
+#define SI_BINDING_TEXTURE_ARRAY         19  // must remain the highest binding
 #define SI_BINDING_INSTANCE_TRANSFORMS_PREV 12
 #define SI_BINDING_INSTANCE_MATERIAL_INDICES 13
 #define SI_BINDING_RESERVOIR_HISTORY       14  // previous frame's final reservoir (read by temporal, written by spatial)

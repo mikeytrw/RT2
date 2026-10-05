@@ -112,7 +112,6 @@ copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2Ap
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\normal_matrix_oracle.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlss.dll" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlssd.dll" "../bin/Debug-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
@@ -161,7 +160,6 @@ copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\normal_matrix_oracle.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "../bin/Release-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
@@ -209,8 +207,7 @@ copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\normal_matrix_oracle.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -297,8 +294,6 @@ copy /Y "$(ProjectDir)shaders\normal_matrix_oracle.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\NgxLifecycle.h" />
     <ClInclude Include="src\NgxRuntime.h" />
     <ClInclude Include="src\NgxSupport.h" />
-    <!-- RT4-T2 Part A: header-inline classification math (also unit-tested). -->
-    <ClInclude Include="src\NormalMatrix.h" />
     <ClInclude Include="src\PathTracePass.h" />
     <ClInclude Include="src\PersistedComponents.h" />
     <ClInclude Include="src\Phase1AFixtureGenerator.h" />
@@ -716,12 +711,6 @@ copy /Y "$(ProjectDir)shaders\normal_matrix_oracle.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\NgxSupport.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <!-- RT4-T2 Part A: normal-matrix GPU oracle driver (RT2App-only). -->
-    <ClCompile Include="src\NormalMatrixOracle.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -1360,14 +1349,6 @@ copy /Y "$(ProjectDir)shaders\normal_matrix_oracle.spv" "../bin/Dist-windows-x86
       <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/picking.comp -o $(ProjectDir)shaders/picking.spv</Command>
       <Outputs>$(ProjectDir)shaders/picking.spv</Outputs>
       <Message>Compiling picking.comp</Message>
-    </CustomBuild>
-    <!-- RT4-T2 Part A diagnostic oracle (headless normal-matrix-oracle flag only). -->
-    <CustomBuild Include="shaders\normal_matrix_oracle.comp">
-      <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/normal_matrix_oracle.comp -o $(ProjectDir)shaders/normal_matrix_oracle.spv</Command>
-      <Outputs>$(ProjectDir)shaders/normal_matrix_oracle.spv</Outputs>
-      <Message>Compiling normal_matrix_oracle.comp</Message>
-      <AdditionalInputs>shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\raster.frag">
       <FileType>Document</FileType>

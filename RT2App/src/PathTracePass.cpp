@@ -47,9 +47,6 @@ static const std::vector<BindingDef>& GetSet0Bindings()
 		{ SI_BINDING_LIGHT_BUFFER,            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_PUNCTUAL_LIGHT_BUFFER,   VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_INSTANCE_TRANSFORMS,     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
-		// RT4-T2 Part A: precomputed normal matrices. Closest-hit + GI
-		// compute consume it; same visibility class as the GI data buffer.
-		{ SI_BINDING_INSTANCE_NORMAL_MATRICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,            1, allRTComputeFlags,  0 },
 		// Binding 11: ReSTIR GI monolithic buffer (reservoir A/B + receiver history prev/cur).
 		// Visible to compute (GI passes) and raygen (final shading consumes stored GI sample).
 		{ SI_BINDING_GI_DATA,                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allRTComputeFlags,  0 },
@@ -380,11 +377,10 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkBuffer normalBuffer, VkBuffer uvBuffer,
 	VkBuffer instanceMeshInfoBuffer,
 	VkBuffer lightBuffer, VkBuffer punctualLightBuffer,
-	VkBuffer instanceTransformBuffer,
+		VkBuffer instanceTransformBuffer,
 	VkBuffer instanceTransformPrevBuffer,
 	VkBuffer instanceMaterialIndexBuffer,
 	VkBuffer instanceMatOffsetBuffer,
-	VkBuffer instanceNormalMatrixBuffer,
 	VkAccelerationStructureKHR tlas,
 	VkBuffer reservoirBuffer, VkBuffer reservoirScratchBuffer,
 	VkBuffer surfaceHistoryBuffer,
@@ -408,7 +404,6 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkDescriptorBufferInfo punctualLightBufInfo = { punctualLightBuffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo transformBufInfo = { instanceTransformBuffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo transformPrevBufInfo = { instanceTransformPrevBuffer, 0, VK_WHOLE_SIZE };
-	VkDescriptorBufferInfo normalMatrixBufInfo = { instanceNormalMatrixBuffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo matIdxBufInfo = { instanceMaterialIndexBuffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo matOffsetBufInfo = { instanceMatOffsetBuffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo reservoirBufInfo = { reservoirBuffer, 0, VK_WHOLE_SIZE };
@@ -471,7 +466,6 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	addBufferWrite(SI_BINDING_LIGHT_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &lightBufInfo);
 	addBufferWrite(SI_BINDING_PUNCTUAL_LIGHT_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &punctualLightBufInfo);
 	addBufferWrite(SI_BINDING_INSTANCE_TRANSFORMS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &transformBufInfo);
-	addBufferWrite(SI_BINDING_INSTANCE_NORMAL_MATRICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &normalMatrixBufInfo);
 	addBufferWrite(SI_BINDING_GI_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &giDataBufInfo);
 	addBufferWrite(SI_BINDING_INSTANCE_TRANSFORMS_PREV, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &transformPrevBufInfo);
 	addBufferWrite(SI_BINDING_INSTANCE_MATERIAL_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &matIdxBufInfo);

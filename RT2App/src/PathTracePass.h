@@ -59,7 +59,6 @@ public:
 		VkBuffer instanceTransformPrevBuffer,
 		VkBuffer instanceMaterialIndexBuffer,
 		VkBuffer instanceMatOffsetBuffer,
-		VkBuffer instanceNormalMatrixBuffer,
 		VkAccelerationStructureKHR tlas,
 		VkBuffer reservoirBuffer, VkBuffer reservoirScratchBuffer,
 		VkBuffer surfaceHistoryBuffer,
