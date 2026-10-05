@@ -366,3 +366,15 @@ TEST_CASE("CLI diag-no-gi parses as a headless diagnostic switch")
     CHECK(off.diagSeedError.empty());
     CHECK(off.diagNoGI);
 }
+
+// RR5-T2 re-review: a conflicting --restir-gi invocation parses cleanly
+// (both intents recorded); the force-off wins at application time, which
+// WalnutApp orders after the --restir-gi block at both startup sites
+// (pinned structurally in GpuSceneDataTests).
+TEST_CASE("CLI conflicting GI flags coexist for ordered application")
+{
+    CLIArgs both = ParseArgs({ "RT2App", "--diag-no-gi", "--restir-gi" });
+    CHECK(both.diagSeedError.empty());
+    CHECK(both.diagNoGI);
+    CHECK(both.restirGI);
+}

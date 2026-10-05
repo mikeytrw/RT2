@@ -287,6 +287,9 @@ static void ApplyRouletteCLIOverrides(RenderSettings& settings)
 // RR5-T0: one authority applying the diagnostic-seed CLI overrides onto
 // settings, shared by both headless startup sites. The probe pixel arms
 // the RNG probe; the dump path itself is consumed by the headless loop.
+// RR5-T2 re-review: the diagnostic GI force-off lives here too and is
+// applied after --restir-gi at the post-init site, so --diag-no-gi wins
+// a conflicting invocation at both sites (pre-init has no restirGI block).
 static void ApplyDiagSeedCLIOverrides(RenderSettings& settings)
 {
 	if (g_CLI.hasDiagSeed) settings.diagSampleSeed = g_CLI.diagSeed;
@@ -3840,7 +3843,6 @@ private:
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
 				ApplyRouletteCLIOverrides(m_Settings);
-				ApplyDiagSeedCLIOverrides(m_Settings);
 				ApplyCLIDenoiserSelection(m_Settings);
 				if (g_CLI.nrdMaxAccumFrames > 0) m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
 				if (g_CLI.nrdResponsiveRoughness >= 0.0f) m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;
@@ -3853,6 +3855,11 @@ private:
 				if (g_CLI.restirNoSpatial) m_Settings.restirSpatialReuse = false;
 				if (g_CLI.restirGI) { m_Settings.restirGIEnabled = true; m_Settings.rasterFirst = true; }
 				if (g_CLI.restirGICandidates > 0) m_Settings.restirGIFreshCandidates = (uint32_t)g_CLI.restirGICandidates;
+				// RR5-T2 re-review: the diagnostic force-off applies AFTER
+				// --restir-gi so it wins a conflicting invocation; the
+				// pre-init site has no restirGI block, so precedence holds
+				// trivially there.
+				ApplyDiagSeedCLIOverrides(m_Settings);
 				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 				m_Settings.sceneSeed = g_CLI.sceneSeed;
 				m_RendererGPU.ApplySettings(m_Settings);

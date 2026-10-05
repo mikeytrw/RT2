@@ -620,7 +620,7 @@ struct CLIArgs
 				printf("  --diag-seed <N>       Diagnostic sample-seed override (default 0 = legacy streams)\n");
 				printf("  --diag-rng-pixel <x> <y>  Probe pixel for raw RNG-state sampling (requires --diag-rng-dump)\n");
 				printf("  --diag-rng-dump <path>  Write per-frame raw RNG states (mainRT/DI-temporal/DI-spatial/GI) as JSON\n");
-				printf("  --diag-no-gi          Diagnostic: force ReSTIR GI off headless (T2 acceptance harness only)\n");
+				printf("  --diag-no-gi          Diagnostic: force ReSTIR GI off headless (T2 acceptance harness only; wins over --restir-gi)\n");
 				printf("  --nrd                Enable NRD denoiser\n");
 		printf("  --denoiser-mode <off|nrd|rr>  Select the denoiser path (default: RR Quality on\n");
 		printf("      supported RTX, NRD otherwise; an explicit choice always wins)\n");

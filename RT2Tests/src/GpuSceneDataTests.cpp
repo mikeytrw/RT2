@@ -142,8 +142,7 @@ TEST_CASE("DiagProbe: empty evidence fails loudly instead of dumping success")
 TEST_CASE("DiagProbe: failures discard requested artifacts with loud cleanup")
 {
     const std::string host = ReadShaderSource("RT2App/src/WalnutApp.cpp");
-    REQUIRE(!host.empty());
-    // Early pixel rejection discards the requested dump AND the
+    REQUIRE(!host.empty());    // Early pixel rejection discards the requested dump AND the
     // requested image outputs of this run (bounded window: the printf
     // and its discards belong to the same pre-loop branch).
     const size_t gate = host.find("outside render extent");
@@ -1098,4 +1097,27 @@ TEST_CASE("UpdateInstancesFromECS moves punctual lights with their transform")
     CHECK(gpu.punctualLights[0].position_range.x == doctest::Approx(-4.0f));
     CHECK(gpu.punctualLights[0].position_range.y == doctest::Approx(5.0f));
     CHECK(gpu.punctualLights[0].position_range.z == doctest::Approx(6.0f));
+}
+
+// ============================================================================
+// RR5-T2 re-review: the diagnostic GI force-off wins a conflicting
+// --restir-gi at application time. Ordering is code order in the
+// post-init startup block (GetSettings refresh, then flags); this test
+// pins that the restirGI enable precedes the diag helper call there.
+// ============================================================================
+
+TEST_CASE("DiagNoGI: force-off applies after restir-gi at post-init startup")
+{
+    const std::string host = ReadShaderSource("RT2App/src/WalnutApp.cpp");
+    REQUIRE(!host.empty());
+    // The headless post-init refresh is the last GetSettings site; the
+    // conflicting-flag order lives in the block after it.
+    const size_t refresh = host.rfind("m_Settings = m_RendererGPU.GetSettings();");
+    REQUIRE(refresh != std::string::npos);
+    const std::string site = host.substr(refresh, 2500);
+    const size_t enable = site.find("if (g_CLI.restirGI)");
+    const size_t forceOff = site.find("ApplyDiagSeedCLIOverrides(m_Settings);");
+    REQUIRE(enable != std::string::npos);
+    REQUIRE(forceOff != std::string::npos);
+    CHECK(enable < forceOff);
 }
