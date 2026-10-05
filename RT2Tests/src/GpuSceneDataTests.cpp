@@ -183,6 +183,106 @@ TEST_CASE("DiagSeed: seed term precedes pcg in all three initRNG helpers")
     }
 }
 
+// ============================================================================
+// RR5-T2 active sampling-weight contract. These checks pin the probability/
+// weight pairing in the ACTUAL consumed shader sources (not a replica):
+// each supported branch divides by the probability its pick used. A
+// single-sided edit to either side breaks the asserted pairing. The
+// stochastic smooth-dielectric branch is recorded legacy behaviour —
+// the test documents its unchanged values without asserting correctness.
+// ============================================================================
+
+TEST_CASE("LobeContract: unused predictor is gone with no callers left")
+{
+    const std::string gi = ReadShaderSource("RT2App/shaders/restir_gi_bindings.glsl");
+    REQUIRE(!gi.empty());
+    // Deleted outright (choice (a), recorded): no definition, no tunable
+    // references, tombstone pointing at the real GI skip logic.
+    CHECK(gi.find("bool giWillSelectDiffuse") == std::string::npos);
+    CHECK(gi.find("was deleted here") != std::string::npos);
+    CHECK(gi.find("restir_gi_temporal.comp") != std::string::npos);
+    // Neither including consumer references it either.
+    for (const char* path : { "RT2App/shaders/restir_gi_temporal.comp",
+                              "RT2App/shaders/restir_gi_history.comp" })
+    {
+        const std::string consumer = ReadShaderSource(path);
+        REQUIRE(!consumer.empty());
+        CHECK(consumer.find("giWillSelectDiffuse") == std::string::npos);
+    }
+}
+
+TEST_CASE("LobeContract: regular branches divide by their pick probability")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    // Probability definition both branches pick from.
+    CHECK(scatter.find("result.P_s = clamp(mix(luminance(F), 1.0, metallic), 0.25, 0.75);") != std::string::npos);
+    CHECK(scatter.find("result.P_d = 1.0 - result.P_s;") != std::string::npos);
+    // Regular specular survivor compensation uses that same P_s.
+    CHECK(scatter.find("attenuation = F * G1_wi / result.P_s;") != std::string::npos);
+    // Regular diffuse survivor compensation uses that same P_d.
+    CHECK(scatter.find("attenuation = (1.0 - specWeight_d) * baseColor * (1.0 - metallic) / result.P_d;") != std::string::npos);
+}
+
+TEST_CASE("LobeContract: deterministic delta takes specular with P=1")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    const size_t delta = scatter.find("else if (roughness < 0.001 && metallic >= 0.5)");
+    CHECK(delta != std::string::npos);
+    // The delta branch body: reflect, undivided Fresnel, delta flag, no PDF.
+    const std::string body = scatter.substr(delta, 400);
+    CHECK(body.find("attenuation = F;") != std::string::npos);
+    CHECK(body.find("isDelta = true;") != std::string::npos);
+    CHECK(body.find("nextBsdfPdf = -1.0;") != std::string::npos);
+    CHECK(body.find("/ result.P_s") == std::string::npos);
+    CHECK(body.find("/ result.P_d") == std::string::npos);
+}
+
+TEST_CASE("LobeContract: smooth-dielectric branch recorded as legacy, unchanged")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    // Stochastic smooth-dielectric reflection: selected under r < P_s but
+    // stores attenuation = F WITHOUT /P_s. Documented legacy defect — the
+    // test records the values without asserting physical correctness, and
+    // no test may require /P_s here (see ticket RR5-T2).
+    const size_t branch = scatter.find("else if (r < result.P_s)");
+    CHECK(branch != std::string::npos);
+    const size_t smooth = scatter.find("if (roughness < 0.001)", branch);
+    CHECK(smooth != std::string::npos);
+    CHECK(smooth < branch + 600);
+    const std::string body = scatter.substr(smooth, 400);
+    CHECK(body.find("attenuation = F;") != std::string::npos);
+    CHECK(body.find("isDelta = true;") != std::string::npos);
+    CHECK(body.find("/P_s") == std::string::npos);
+    CHECK(body.find("/ P_s") == std::string::npos);
+}
+
+TEST_CASE("LobeContract: transmission and F0 authorities untouched")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    // Transmission uses its own distinct probabilities, not P_s/P_d.
+    CHECK(scatter.find("float P_refract  = (1.0 - F_scalar) * transmission;") != std::string::npos);
+    CHECK(scatter.find("float P_diffuse = (1.0 - F_scalar) * (1.0 - transmission) * (1.0 - metallic);") != std::string::npos);
+    // F0 authority chain intact.
+    const std::string shared = ReadShaderSource("RT2App/shaders/pathtracer_shared.glsl");
+    REQUIRE(!shared.empty());
+    CHECK(shared.find("return RRComputeF0(baseColor, metallic);") != std::string::npos);
+    CHECK(scatter.find("vec3 F0 = computeF0(baseColor, metallic);") != std::string::npos);
+}
+
+TEST_CASE("LobeContract: raster-first GI consumption divides by P_d")
+{
+    const std::string rgen = ReadShaderSource("RT2App/shaders/secondary_raygen.rgen");
+    REQUIRE(!rgen.empty());
+    // Non-joint path compensates the consumed diffuse sample.
+    CHECK(rgen.find("indirectRad = giDiffuseRad / scatter.P_d;") != std::string::npos);
+    // Joint path uses the full mixture density over both lobe probabilities.
+    CHECK(rgen.find("float mixturePdf = evalBSDFPdf(wo, wi, n, scatter.P_s, scatter.P_d, alpha);") != std::string::npos);
+}
+
 TEST_CASE("DiagSeed: four consumers record raw states at their call sites")
 {
     // Both raygen entries share slot 0: the SBT record runs exactly one

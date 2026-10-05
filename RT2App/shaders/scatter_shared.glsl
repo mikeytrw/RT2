@@ -101,6 +101,29 @@ ScatterResult scatterPrimaryHit(
     // NRD requires a valid sample in every 3x3 neighborhood to reconstruct the
     // skipped lobe's hit distance. Without clamping, metals (P_s=1) produce
     // blocks of all-zero diffuse hitT that can't be reconstructed.
+    //
+    // RR5-T2 ACTIVE SAMPLING-WEIGHT CONTRACT (any lobe change must respect
+    // all of the following; the removed giWillSelectDiffuse predictor in
+    // restir_gi_bindings.glsl is NOT a consumer of these probabilities):
+    // - Regular specular survivors divide by the selection probability:
+    //   attenuation = F * G1_wi / P_s below. Regular diffuse survivors
+    //   divide by P_d: attenuation = (1-specW) * baseColor * (1-metallic)
+    //   / P_d below. P_s/P_d here are the probabilities the r < P_s pick
+    //   used, so each branch is unbiased for its own selection.
+    // - Deterministic delta (roughness < 0.001 && metallic >= 0.5) takes
+    //   specular with probability 1: attenuation = F, no division.
+    // - LEGACY DEFECT (documented, not corrected here): the stochastic
+    //   smooth-dielectric reflection branch stores attenuation = F WITHOUT
+    //   /P_s. Changing lobe bounds therefore changes expected reflected
+    //   energy there — bounds are NOT pure variance controls until a
+    //   separately approved correction lands. No test may require /P_s
+    //   on that branch.
+    // - Transmission uses distinct probabilities (P_reflect/refract/diffuse
+    //   above), not P_s/P_d.
+    // - Raster-first GI consumption: non-joint path divides stored diffuse
+    //   radiance by scatter.P_d (secondary_raygen.rgen); the joint path
+    //   uses the full mixture density. GI candidate generation never
+    //   predicts lobes (cosine sampling + negligible-weight skip).
     result.P_s = clamp(mix(luminance(F), 1.0, metallic), 0.25, 0.75);
     result.P_d = 1.0 - result.P_s;
 
