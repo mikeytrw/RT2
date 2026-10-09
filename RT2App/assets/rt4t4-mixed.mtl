@@ -1,0 +1,10 @@
+# RT4-T4 mixed-mesh discriminator fixture materials.
+newmtl OpaqueRed
+Kd 0.8 0.2 0.2
+Ke 1.0 1.0 1.0
+d 1.0
+
+newmtl BlendGreen
+Kd 0.2 0.8 0.2
+Ke 1.0 1.0 1.0
+d 0.35

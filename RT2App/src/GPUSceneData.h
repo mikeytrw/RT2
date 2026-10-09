@@ -196,6 +196,25 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
 void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene,
                             RenderInstanceMap* instanceMap = nullptr);
 
+// ============================================================================
+// Alpha-traversal classification (RT4-T4 repair). Three authorities, one
+// rule — see glossary `transparent (mesh vs instance vs per-triangle)`.
+// Conservative direction is ALWAYS toward any-hit: a corrupt/unknown index
+// classifies as alpha, never opaque.
+// ============================================================================
+// True iff any triangle of the mesh resolves to an alphaMode > 0.5
+// material. With per-triangle indices, scans them (out-of-range values
+// fail open to alpha); without, falls back to mesh.materialIndex exactly
+// as the old BLAS rule did (materials[0] when unset).
+bool MeshHasAlphaTriangle(const GPUMeshGeometry& mesh,
+                          const std::vector<GPUMaterial>& materials);
+// True iff the instance can hit an alpha triangle: an explicit override
+// resolves through the override material; MeshRef -1 (0xFFFFFFFF) resolves
+// through the mesh's per-triangle data. Corrupt mesh references fail open.
+bool InstanceNeedsAlphaTraversal(uint32_t overrideMat, uint32_t meshIndex,
+                                  const std::vector<GPUMeshGeometry>& meshes,
+                                  const std::vector<GPUMaterial>& materials);
+
 // Build marginal and conditional CDFs for env map importance sampling (M8).
 void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height,
                     std::vector<float>& marginalCDF, std::vector<float>& conditionalCDF);

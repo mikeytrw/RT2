@@ -251,6 +251,47 @@ void BuildPunctualLightsFromECS(const ECSScene& ecsScene,
     }
 }
 
+namespace
+{
+bool MaterialIsAlpha(uint32_t matIdx, const std::vector<GPUMaterial>& materials)
+{
+    // Fail open: unknown materials classify as alpha (any-hit runs), never
+    // opaque. An empty material table cannot happen (builders push a
+    // default), but the guard costs nothing.
+    if (matIdx >= materials.size())
+        return true;
+    return materials[matIdx].alphaMode > 0.5f;
+}
+} // namespace
+
+bool MeshHasAlphaTriangle(const GPUMeshGeometry& mesh,
+                          const std::vector<GPUMaterial>& materials)
+{
+    if (mesh.materialIndices && !mesh.materialIndices->empty())
+    {
+        for (uint32_t triMat : *mesh.materialIndices)
+        {
+            if (MaterialIsAlpha(triMat, materials))
+                return true;
+        }
+        return false;
+    }
+    // No per-triangle data: legacy mesh-level fallback (mesh.materialIndex
+    // is unset/0 in practice — preserved exactly, not reinterpreted).
+    return MaterialIsAlpha(mesh.materialIndex, materials);
+}
+
+bool InstanceNeedsAlphaTraversal(uint32_t overrideMat, uint32_t meshIndex,
+                                  const std::vector<GPUMeshGeometry>& meshes,
+                                  const std::vector<GPUMaterial>& materials)
+{
+    if (overrideMat != 0xFFFFFFFFu)
+        return MaterialIsAlpha(overrideMat, materials);
+    if (meshIndex >= meshes.size())
+        return true; // corrupt reference fails open
+    return MeshHasAlphaTriangle(meshes[meshIndex], materials);
+}
+
 GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
                                      RenderInstanceMap* instanceMap)
 {
@@ -305,12 +346,11 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
         inst.worldMatrix = tf.worldMatrix;
         inst.prevWorldMatrix = tf.prevWorldMatrix;
 
-        // Check transparency from material (only for override materials)
-        if (inst.materialIndex != 0xFFFFFFFFu && inst.materialIndex < gpu.materials.size())
-        {
-            float alphaMode = gpu.materials[inst.materialIndex].alphaMode;
-            inst.isTransparent = (alphaMode > 0.5f);
-        }
+        // Effective alpha traversal (RT4-T4 repair): the override resolves
+        // through its material; MeshRef -1 resolves per-triangle. The old
+        // override-only rule silently dropped the per-triangle case.
+        inst.isTransparent = InstanceNeedsAlphaTraversal(
+            inst.materialIndex, inst.meshIndex, gpu.meshes, gpu.materials);
 
         gpu.instances.push_back(inst);
 		if (instanceMap)
@@ -466,11 +506,9 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene,
         inst.worldMatrix = tf.worldMatrix;
         inst.prevWorldMatrix = tf.prevWorldMatrix;
 
-        if (inst.materialIndex != 0xFFFFFFFFu && inst.materialIndex < gpu.materials.size())
-        {
-            float alphaMode = gpu.materials[inst.materialIndex].alphaMode;
-            inst.isTransparent = (alphaMode > 0.5f);
-        }
+        // Same effective-alpha rule as the full build (RT4-T4 repair).
+        inst.isTransparent = InstanceNeedsAlphaTraversal(
+            inst.materialIndex, inst.meshIndex, gpu.meshes, gpu.materials);
 
         gpu.instances.push_back(inst);
 		if (instanceMap)
