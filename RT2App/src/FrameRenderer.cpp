@@ -556,7 +556,7 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRGITemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.restirGIPass.RecordTemporal(cmd, ctx.renderExtent,
 	                               ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
-	                               ctx.restirGIPC);
+	                               ctx.restirGIPC, ctx.shadowTailDiag);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRGITemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 

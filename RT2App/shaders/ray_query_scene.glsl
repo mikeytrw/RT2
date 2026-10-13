@@ -265,7 +265,7 @@ bool giTraceShadow(vec3 origin, vec3 dir, float dist, uint alphaSeed)
                           origin, 0.001,
                           dir, dist - 0.002);
 
-    uint rngState = alphaSeed;
+    uint rngState = alphaSeed; ST_GI_BEGIN(_stg);
     while (rayQueryProceedEXT(query))
     {
         if (rayQueryGetIntersectionTypeEXT(query, false) ==
@@ -276,7 +276,7 @@ bool giTraceShadow(vec3 origin, vec3 dir, float dist, uint alphaSeed)
         }
     }
 
-    uint committedType = rayQueryGetIntersectionTypeEXT(query, true);
+    uint committedType = rayQueryGetIntersectionTypeEXT(query, true); ST_GI_END(_stg);
     // If nothing was committed, the path is unoccluded.
     return committedType == gl_RayQueryCommittedIntersectionNoneEXT;
 }

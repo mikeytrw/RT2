@@ -124,6 +124,7 @@ struct CLIArgs
 	std::string ngxFeaturePath;   // optional isolated NGX runtime search path
 	bool benchmarkTimings = false; // emit one JSON timing record per completed GPU frame
 	bool rasterFirst = false;      // raster-first hybrid path
+	bool shadowTail = false;       // shadow-tail diagnostic (ON-variant pipelines + set-1 binding 11)
 	bool ris = false;              // enable ReSTIR DI (backward compat alias)
 	bool restir = false;           // enable ReSTIR DI
 	int restirCandidates = 0;     // ReSTIR fresh candidate count override (0 = use default)
@@ -344,6 +345,10 @@ struct CLIArgs
 		{
 			args.rasterFirst = true;
 		}
+		else if (strcmp(a, "--shadow-tail") == 0)
+		{
+			args.shadowTail = true;
+		}
 		else if (strcmp(a, "--ris") == 0)
 		{
 			args.ris = true;  // backward compat
@@ -456,6 +461,7 @@ struct CLIArgs
 				printf("  --nrd-responsive-min-frames <N>  Override responsive minimum history\n");
 				printf("  --no-accumulate      Disable non-NRD temporal accumulation\n");
 				printf("  --raster-first       Enable raster-first hybrid path\n");
+				printf("  --shadow-tail        Enable shadow-tail diagnostic (ON-variant pipelines; fails loud if unavailable)\n");
 				printf("  --ris                Enable ReSTIR DI (alias for --restir, requires raster-first)\n");
 			printf("  --restir             Enable ReSTIR DI\n");
 		printf("  --restir-candidates <N>  ReSTIR fresh candidate count\n");

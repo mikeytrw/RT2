@@ -9,6 +9,7 @@
 #include "restir_shared.glsl"
 #include "surface_history_shared.glsl"
 #include "restir_gi_shared.glsl"
+#include "shadow_tail.glsl"
 
 // Shadow ray payload (location 2) — used by sampleNEE / sampleEnvNEE.
 layout(location = 2) rayPayloadEXT float shadowVisible;
@@ -375,11 +376,11 @@ NEEResult sampleEnvNEE(vec3 wo, vec3 N, vec3 P,
     if (dot(brdf, brdf) <= 0.0)
         return result;
 
-    shadowVisible = 0.0;
+    shadowVisible = 0.0; ST_RT_BEGIN(_st_env);
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
-                P + N * 0.001, 0.001, L, 1e9, 2);
+                P + N * 0.001, 0.001, L, 1e9, 2); ST_RT_END(_st_env, 0u);
 
     if (shadowVisible < 0.5)
         return result;
@@ -461,11 +462,11 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     if (dot(brdf, brdf) <= 0.0)
         return result;
 
-    shadowVisible = 0.0;
+    shadowVisible = 0.0; ST_RT_BEGIN(_st_tri);
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
-                P + N * 0.001, 0.001, L, dist - 0.002, 2);
+                P + N * 0.001, 0.001, L, dist - 0.002, 2); ST_RT_END(_st_tri, 1u);
 
     if (shadowVisible < 0.5)
         return result;
@@ -559,11 +560,11 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         // A reconstructed reservoir sample is a complete estimator even when
         // its visibility ray returns zero. Mark it handled before tracing so
         // the caller does not conditionally draw a second, biased NEE sample.
-        shadowVisible = 0.0;
+        shadowVisible = 0.0; ST_RT_BEGIN(_st_rtri);
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                     0xFF, 2, 1, 1,
-                    P + N * 0.001, 0.001, ts.L, ts.dist - 0.002, 2);
+                    P + N * 0.001, 0.001, ts.L, ts.dist - 0.002, 2); ST_RT_END(_st_rtri, 2u);
 
         if (shadowVisible < 0.5)
             return result;
@@ -583,11 +584,11 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         if (dot(brdf, brdf) <= 0.0)
             return result;
 
-        shadowVisible = 0.0;
+        shadowVisible = 0.0; ST_RT_BEGIN(_st_renv);
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                     0xFF, 2, 1, 1,
-                    P + N * 0.001, 0.001, es.dir, 1e9, 2);
+                    P + N * 0.001, 0.001, es.dir, 1e9, 2); ST_RT_END(_st_renv, 3u);
 
         if (shadowVisible < 0.5)
             return result;
@@ -688,11 +689,11 @@ vec3 samplePunctualNEE(
     if (tmax <= 0.001)
         return vec3(0.0);
 
-    shadowVisible = 0.0;
+    shadowVisible = 0.0; ST_RT_BEGIN(_st_punct);
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
-                P + N * 0.001, 0.001, ps.toLight, tmax, 2);
+                P + N * 0.001, 0.001, ps.toLight, tmax, 2); ST_RT_END(_st_punct, 4u);
 
     if (shadowVisible < 0.5)
         return vec3(0.0);

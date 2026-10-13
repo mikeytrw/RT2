@@ -105,6 +105,10 @@ project "RT2Tests"
     -- GPU visibility is proven by headless discriminators, not here.
     files { "src/AlphaClassificationTests.cpp" }
 
+    -- RT4-T4 shadow-tail diagnostic: CPU edge/quantile/inference contract.
+    -- Header-only (RT2App/src/ShadowTailBins.h); no RT2App .cpp needed.
+    files { "src/ShadowTailBinsTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

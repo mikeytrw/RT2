@@ -263,7 +263,7 @@ void main()
     vec3 n = frontFace ? normal : -normal;
 
     uint rngState = floatBitsToUint(payload.a.w);
-    uint depth = uint(payload.b.w);
+    uint depth = uint(payload.b.w); ST_SET_DEPTH(depth == 0u ? 0u : 1u);
     uint maxBounces = uint(camera.viewportSPP.w);
 
     vec3 hitPoint = gl_WorldRayOriginEXT + gl_HitTEXT * rayDir;

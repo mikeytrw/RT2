@@ -29,6 +29,7 @@
 #include "GpuResources.h"
 #include "FrameContext.h"
 #include "GpuTimestampProfiler.h"
+#include "ShadowTailDiag.h"
 #include "RenderInstanceMap.h"
 #include "GpuPickingPass.h"
 #include "FrameSampling.h"
@@ -249,6 +250,13 @@ public:
 	const GpuTimestampProfiler::Timings& GetGpuTimings() const { return m_GpuProfiler.GetLatest(); }
 	bool HasGpuTimings() const { return m_GpuProfiler.IsAvailable(); }
 
+	// Shadow-tail diagnostic (RT4-T4): latest fenced snapshot + JSON.
+	// A requested-but-unavailable diagnostic fails loud at the caller
+	// (RendererGPU::Render outcome / headless exit), never silent zeros.
+	bool IsShadowTailAvailable() const;
+	std::string GetShadowTailJson();
+	uint64_t GetShadowTailFrame() const;
+
 	// Last BLAS/TLAS build timings (milliseconds, CPU wall-clock around the
 	// build/record calls). -1.0 means no build has run yet. Forwarded from
 	// SceneResources for the Performance window's level-3 view.
@@ -433,6 +441,10 @@ private:
 	std::optional<PickResult> m_CompletedPick;
 	uint64_t m_LatestPickSerial = 0;
 	GpuTimestampProfiler m_GpuProfiler;
+	// Shadow-tail diagnostic SSBO (RT4-T4). Buffer always exists once
+	// initialized; shaders touch it only in ON-variant pipelines, and the
+	// clock feature gate is checked wherever the flag is consumed.
+	ShadowTailDiag m_ShadowTailDiag;
 };
 
 #endif // !RENDERER_GPU_H

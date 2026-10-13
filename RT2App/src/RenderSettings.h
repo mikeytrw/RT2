@@ -84,6 +84,12 @@ struct RenderSettings
 	// G-buffer debug view (-1 = off, 0-10 = view modes)
 	int   gbufferDebugMode  = -1;
 
+	// Shadow-tail diagnostic (RT4-T4): selects the ON-variant RT/GI
+	// pipelines with device-clock shadow brackets writing set-1 binding
+	// 11. Opt-in, default off; production behavior unchanged when off.
+	// Init-time/rebuild-on-toggle only (see RendererGPU::ApplySettings).
+	bool  shadowTailDiag  = false;
+
 	// Dirty flag — set true by SetSettings() when any field changes.
 	// RendererGPU::Render() checks this, calls ResetAccumulation, clears it.
 	bool  dirty = false;

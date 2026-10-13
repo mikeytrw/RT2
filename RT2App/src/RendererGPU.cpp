@@ -1,4 +1,5 @@
 #include "RendererGPU.h"
+#include "Walnut/Application.h"
 #include "ColorTransfer.h"
 #include "ToneMapMath.h"
 #include "ShaderManager.h"
@@ -115,6 +116,11 @@ bool RendererGPU::Init()
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		m_Frames[i].Init(m_Device.device, m_Device.queueFamily);
 	m_GpuProfiler.Init(m_Device, MAX_FRAMES_IN_FLIGHT);
+	// Shadow-tail SSBO (RT4-T4): always created (6 KB); shaders touch it
+	// only in ON-variant pipelines. Soft-fail keeps production running —
+	// a requested diagnostic without it fails loud (IsShadowTailAvailable).
+	if (!m_ShadowTailDiag.Init(m_Device, MAX_FRAMES_IN_FLIGHT))
+		RT_LOG("[RT2] ShadowTailDiag init failed (non-fatal, diagnostic unavailable)");
 
 	m_Initialized = true;
 	return true;
@@ -264,6 +270,7 @@ void RendererGPU::Destroy()
 		(void)m_NgxRuntime->ReleaseRRFeature(reason);
 	}
 	m_GpuProfiler.Destroy(device);
+	m_ShadowTailDiag.Destroy(m_Device);
 	m_PickingPass.Destroy();
 
 	m_NRD.Destroy();
@@ -310,6 +317,28 @@ void RendererGPU::FlushGpuTimings()
 	vkDeviceWaitIdle(m_Device.device);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		m_GpuProfiler.ReadCompletedSlot(m_Device.device, i);
+}
+
+// Shadow-tail availability (RT4-T4): every link of the chain must hold —
+// device clock feature, ON-variant RT + GI pipelines actually built and
+// selected, and the SSBO alive. Any gap fails loud at the caller.
+bool RendererGPU::IsShadowTailAvailable() const
+{
+	return Walnut::Application::IsShaderDeviceClockEnabled()
+	    && m_PathTracePass.IsDiagAvailable()
+	    && m_PathTracePass.UsingDiagVariant()
+	    && m_ReSTIRGIPass.IsDiagAvailable()
+	    && m_ShadowTailDiag.IsAvailable();
+}
+
+std::string RendererGPU::GetShadowTailJson()
+{
+	return ShadowTailDiag::SnapshotToJson(m_ShadowTailDiag.GetLatest());
+}
+
+uint64_t RendererGPU::GetShadowTailFrame() const
+{
+	return m_ShadowTailDiag.GetLatest().frameIndex;
 }
 
 void RendererGPU::CreateOutputImage()
@@ -1075,11 +1104,29 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.restirGIDepthThreshold != newSettings.restirGIDepthThreshold ||
 	    m_Settings.restirGINormalThreshold != newSettings.restirGINormalThreshold ||
 	    m_Settings.restirGIWorldPosThreshold != newSettings.restirGIWorldPosThreshold ||
-	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode)
+	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode ||
+	    m_Settings.shadowTailDiag != newSettings.shadowTailDiag)
 	{
 		m_Settings.dirty = true;
 	}
 	m_Settings = newSettings;
+
+	// Shadow-tail variant toggle (RT4-T4): rebuild the RT pipeline+SBT and
+	// use the ON GI temporal pipeline. Hard failure here is loud (the
+	// availability gate below fires); production is never silently degraded.
+	// Note: a failed toggle leaves the previous variant destroyed — the
+	// gate treats that as unavailable, exactly as required.
+	if (m_PathTracePass.IsAvailable())
+	{
+		const bool wantDiag = m_Settings.shadowTailDiag;
+		if (wantDiag != m_PathTracePass.UsingDiagVariant())
+		{
+			if (!m_PathTracePass.RebuildForDiagVariant(m_Device, wantDiag))
+			{
+				RT_LOG("[RT2] shadow-tail pipeline rebuild failed (loud, no fallback)");
+			}
+		}
+	}
 
 	if (m_Settings.restirEnabled != wasRestirEnabled ||
 	    (m_Settings.restirEnabled && (restirJitterPolicyChanged || restirPolicyChanged)))
@@ -1360,9 +1407,22 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		return outcome;
 	}
 
+	// Shadow-tail loud gate (RT4-T4): a requested diagnostic without the
+	// full chain (clock feature + diag pipelines + SSBO) fails the frame
+	// here — never silent zeros, never production data as diagnostic data.
+	if (m_Settings.shadowTailDiag && !IsShadowTailAvailable())
+	{
+		RT_LOG("[RT2] Render: shadow-tail diagnostic requested but unavailable");
+		outcome.failure = true;
+		outcome.failureReason = "shadow-tail diagnostic requested but unavailable (clock feature, tail pipelines, or SSBO)";
+		m_LastRenderOutcome = outcome;
+		return outcome;
+	}
+
 	// The frame slot has already been waited and any extent rebuild has already
 	// completed before the camera UBO was populated.
 	m_GpuProfiler.ReadCompletedSlot(device, m_CurrentFrame);
+	m_ShadowTailDiag.ReadCompletedSlot(m_Device, m_CurrentFrame);
 	if (auto completed = m_PickingPass.ReadCompletedSlot(m_CurrentFrame))
 	{
 		RT_LOG("[GpuPick] read serial=%llu latest=%llu hit=%d instance=%u map=%zu",
@@ -1399,6 +1459,8 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		return outcome;
 	}
 	m_GpuProfiler.BeginFrame(cmd, m_CurrentFrame, m_FrameIndex);
+	if (m_Settings.shadowTailDiag)
+		m_ShadowTailDiag.BeginFrame(cmd, m_CurrentFrame, m_FrameIndex);
 
 	// Clear ReSTIR history if invalidated (resize, scene change, enable toggle)
 	if (m_ReSTIRHistoryInvalidated && m_Reservoirs.IsValid())
@@ -1531,7 +1593,8 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		giPC,
 		m_GIFrameIndex,
 		m_GIFrameIndex & 1u,
-		m_Sampling.jitter
+		m_Sampling.jitter,
+		m_Settings.shadowTailDiag
 	};
 
 	const FrameRenderer::RecordedFrameOutcome recorded = FrameRenderer::RecordFrame(cmd, ctx);
@@ -1576,6 +1639,8 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_PendingPick.reset();
 	}
 	m_GpuProfiler.EndFrame(m_CurrentFrame);
+	if (m_Settings.shadowTailDiag)
+		m_ShadowTailDiag.EndFrame(cmd, m_CurrentFrame);
 
 	// ---- Submit this frame's work (async, no wait) ----
 	RT_LOG("[Render] submitting frame %d (NRD=%d composeCached=%d)",
@@ -2049,7 +2114,7 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	VkDevice device = m_Device.device;
 
 	// Set 1 layout: existing NRD images plus five named, RT2-owned RR guides.
-	VkDescriptorSetLayoutBinding bindings[16] = {};
+	VkDescriptorSetLayoutBinding bindings[17] = {};
 	// Bindings 0-5: storage images (gNormalRoughness, gViewZ, gMotion, gDiff, gSpec, gAlbedoF0)
 	for (int i = 0; i < 6; i++)
 	{
@@ -2094,25 +2159,36 @@ void RendererGPU::CreateGBufferDescriptorSet()
 		bindings[entry].descriptorCount = 1;
 		bindings[entry].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT;
 	}
+	// Entry 16: shadow-tail diagnostic SSBO, binding 11 (RT4-T4). Written
+	// always; shaders touch it only in ON-variant pipelines. Any-hit
+	// stage visibility is deliberately omitted (brackets sit outside
+	// any-hit shaders).
+	bindings[16].binding = SI_BINDING_DIAGNOSTICS;
+	bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[16].descriptorCount = 1;
+	bindings[16].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+	                          VK_SHADER_STAGE_COMPUTE_BIT;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 16;
+	layoutInfo.bindingCount = 17;
 	layoutInfo.pBindings = bindings;
 
 	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_GBufferSetLayout);
 
 	// Create dedicated pool
-	VkDescriptorPoolSize poolSizes[2] = {};
+	VkDescriptorPoolSize poolSizes[3] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	poolSizes[0].descriptorCount = 15;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[1].descriptorCount = 1;
+	poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	poolSizes[2].descriptorCount = 1; // set-1 binding 11: shadow-tail SSBO
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.maxSets = 1;
-	poolInfo.poolSizeCount = 2;
+	poolInfo.poolSizeCount = 3;
 	poolInfo.pPoolSizes = poolSizes;
 
 	vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_GBufferPool);
@@ -2224,4 +2300,24 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 	}
 
 	vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
+
+	// Binding 11: shadow-tail diagnostic SSBO, separate update (its slot
+	// is outside the image/UBO packing above). Written whenever the
+	// buffer exists (always, once initialized); shaders access it only
+	// in ON-variant pipelines, so ordinary launches are unaffected.
+	if (m_ShadowTailDiag.IsAvailable())
+	{
+		VkDescriptorBufferInfo diagInfo = {};
+		diagInfo.buffer = m_ShadowTailDiag.GetBuffer();
+		diagInfo.offset = 0;
+		diagInfo.range = m_ShadowTailDiag.GetBufferSize();
+		VkWriteDescriptorSet diagWrite = {};
+		diagWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		diagWrite.dstSet = m_GBufferSet;
+		diagWrite.dstBinding = SI_BINDING_DIAGNOSTICS;
+		diagWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		diagWrite.descriptorCount = 1;
+		diagWrite.pBufferInfo = &diagInfo;
+		vkUpdateDescriptorSets(device, 1, &diagWrite, 0, nullptr);
+	}
 }

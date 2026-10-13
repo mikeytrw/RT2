@@ -38,6 +38,12 @@ public:
 	bool Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetLayout);
 	void Destroy();
 
+	// Rebuild the pipeline + SBT for the shadow-tail diagnostic variant
+	// (or back to production). See the .cpp for the hard-failure contract.
+	bool RebuildForDiagVariant(const GpuDevice& dev, bool useDiag);
+	bool IsDiagAvailable() const { return m_DiagAvailable; }
+	bool UsingDiagVariant() const { return m_UseDiagVariant; }
+
 	// Allocate (or re-allocate) the descriptor set with space for the given
 	// texture count. If a set is already allocated with >= textureCount slots,
 	// this is a no-op. Otherwise the old set is freed and a new one allocated.
@@ -111,6 +117,16 @@ private:
 	VkShaderModule m_ClosestShader = VK_NULL_HANDLE;
 	VkShaderModule m_AnyHitShader = VK_NULL_HANDLE;
 	VkShaderModule m_ShadowHitShader = VK_NULL_HANDLE;
+	// Shadow-tail ON variants (tail SPVs); null when unavailable.
+	VkShaderModule m_ClosestTailShader = VK_NULL_HANDLE;
+	VkShaderModule m_SecondaryTailShader = VK_NULL_HANDLE;
+	bool m_DiagAvailable = false;
+	bool m_UseDiagVariant = false;
+
+	// Shared pipeline+SBT builder (production + variant rebuilds).
+	bool BuildPipelineAndSBT(const GpuDevice& dev,
+	                         VkShaderModule closestModule,
+	                         VkShaderModule secondaryModule);
 
 	// SBT
 	GpuBuffer m_SBTBuffer;

@@ -3763,6 +3763,8 @@ private:
 		}
 		if (g_CLI.gbufferDebug >= 0)
 			m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
+		if (g_CLI.shadowTail)
+			m_Settings.shadowTailDiag = true;
 		m_Settings.sceneSeed = g_CLI.sceneSeed;
 
 		if (Walnut::Application::IsRayTracingSupported() && !m_RendererGPU.IsAvailable())
@@ -3786,6 +3788,7 @@ private:
 				if (g_CLI.restirGI) { m_Settings.restirGIEnabled = true; m_Settings.rasterFirst = true; }
 				if (g_CLI.restirGICandidates > 0) m_Settings.restirGIFreshCandidates = (uint32_t)g_CLI.restirGICandidates;
 				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
+				if (g_CLI.shadowTail) m_Settings.shadowTailDiag = true;
 				m_Settings.sceneSeed = g_CLI.sceneSeed;
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
@@ -4110,9 +4113,33 @@ private:
 			benchmarkTimings.push_back(timings);
 			lastBenchmarkTimingFrame = timings.frameIndex;
 		};
+		// Shadow-tail snapshots (RT4-T4): collected whenever requested,
+		// valid or not — an invalid snapshot carries its reason and the
+		// analysis gate treats it as inconclusive, never as silent zeros.
+		std::vector<std::string> shadowTailSnapshots;
+		uint64_t lastShadowTailFrame = UINT64_MAX;
+		auto collectShadowTail = [&]() {
+			if (!g_CLI.shadowTail || !m_RendererGPU.IsAvailable())
+				return;
+			const uint64_t frame = m_RendererGPU.GetShadowTailFrame();
+			if (frame == lastShadowTailFrame)
+				return;
+			shadowTailSnapshots.push_back(m_RendererGPU.GetShadowTailJson());
+			lastShadowTailFrame = frame;
+		};
 
 		for (int i = 0; i < g_CLI.frames; i++)
 		{
+			if (i == 0 && g_CLI.shadowTail && m_RendererGPU.IsAvailable() &&
+			    !m_RendererGPU.IsShadowTailAvailable())
+			{
+				// Fast loud gate (the per-frame Render gate would also fire):
+				// do not burn GPU time on a diagnostic that cannot produce data.
+				printf("[Headless] shadow-tail diagnostic requested but unavailable; no output committed\n");
+				fflush(stdout);
+				Walnut::Application::Get().Close();
+				std::exit(EXIT_FAILURE);
+			}
 			if (g_CLI.cameraSweepAmplitude > 0.0f && i >= g_CLI.cameraSweepWarmup)
 			{
 				const int motionFrame = i - g_CLI.cameraSweepWarmup;
@@ -4187,6 +4214,7 @@ private:
 					lastRenderOutcome.failureReason.c_str());
 			}
 			collectBenchmarkTiming();
+			collectShadowTail();
 			float ms = timer.ElapsedMillis();
 			if (g_CLI.verbose || i == g_CLI.frames - 1)
 				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
@@ -4229,6 +4257,7 @@ private:
 		{
 			m_RendererGPU.FlushGpuTimings();
 			collectBenchmarkTiming();
+			collectShadowTail();
 			const auto& timings = m_RendererGPU.GetGpuTimings();
 			printf("[Headless] GPU timings (frame %llu)\n",
 			       static_cast<unsigned long long>(timings.frameIndex));
@@ -4262,6 +4291,13 @@ private:
 				}
 				printf("}}\n");
 			}
+			fflush(stdout);
+		}
+
+		if (g_CLI.shadowTail)
+		{
+			for (const auto& snapshotJson : shadowTailSnapshots)
+				printf("[ShadowTail] %s\n", snapshotJson.c_str());
 			fflush(stdout);
 		}
 

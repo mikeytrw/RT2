@@ -129,7 +129,7 @@ void main()
             continue;
 
         // Evaluate Lo along this direction (trace + NEE/env/emissive).
-        GIRadianceResult rad = giEvaluateRadiance(worldPos, n, wo, wi, cosTheta, rootSeed);
+        ST_SET_GIPROV(0u, i); GIRadianceResult rad = giEvaluateRadiance(worldPos, n, wo, wi, cosTheta, rootSeed);
 
         // Compute target density and proposal PDF.
         vec3 C = evalDiffuseBRDF(wo, wi, n, baseColor, metallic) * rad.Lo * cosTheta;
@@ -198,7 +198,7 @@ void main()
                         if (histCosTheta > 0.0)
                         {
                             uint histSeed = giSeed(histRes);
-                            GIRadianceResult histRad = giEvaluateRadiance(
+                            ST_SET_GIPROV(1u, 0u); GIRadianceResult histRad = giEvaluateRadiance(
                                 worldPos, n, wo, histWi, histCosTheta, histSeed);
 
                             if (dot(histRad.Lo, histRad.Lo) > 0.0)
