@@ -33,7 +33,8 @@ public:
 
 	bool Init(const GpuDevice& dev,
 	          VkDescriptorSetLayout set0Layout,
-	          VkDescriptorSetLayout set1Layout);
+	          VkDescriptorSetLayout set1Layout,
+	          bool allowDiag);
 	void Destroy();
 
 	// Record the temporal dispatch (prev reservoir + prev history → current reservoir).

@@ -258,14 +258,14 @@ RayQueryHit giTraceRadiance(vec3 origin, vec3 dir, float tMin, float tMax,
 // terminates the query (matches shadow.rahit "accept = blocks light").
 bool giTraceShadow(vec3 origin, vec3 dir, float dist, uint alphaSeed)
 {
-    rayQueryEXT query;
+    rayQueryEXT query; ST_GI_BEGIN(_stg);
     rayQueryInitializeEXT(query, tlas,
                           gl_RayFlagsTerminateOnFirstHitEXT,
                           0xFF,
                           origin, 0.001,
                           dir, dist - 0.002);
 
-    uint rngState = alphaSeed; ST_GI_BEGIN(_stg);
+    uint rngState = alphaSeed;
     while (rayQueryProceedEXT(query))
     {
         if (rayQueryGetIntersectionTypeEXT(query, false) ==

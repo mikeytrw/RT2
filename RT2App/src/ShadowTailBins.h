@@ -25,6 +25,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace shadowtail
 {
@@ -36,6 +38,34 @@ constexpr uint32_t kAcceptanceEdgesMax = kAcceptanceBinsMax + 1u; // 226 edges
 constexpr uint32_t kSlots = 2u;               // matches MAX_FRAMES_IN_FLIGHT
 constexpr uint32_t kFamilies = 2u;            // 0 = RT shadow, 1 = GI shadow
 constexpr uint64_t kUint32Max = 0xFFFFFFFFull;
+
+// SSBO layout constants shared with shaders/shadow_tail.glsl and
+// ShadowTailDiag (offsets in u32 words; see that header for the map).
+constexpr uint32_t kHeaderU32 = 8u;
+constexpr uint32_t kStrataN = 16u;
+constexpr uint32_t kOrdN = 16u; // per-invocation ordinal distribution
+constexpr uint32_t kCountersN = 4u; // eligible, recorded, blocked, visible
+constexpr uint32_t kReservedN = 2u;
+constexpr uint32_t kFamStride =
+    kPilotCounters + kAcceptanceEdgesMax + kCountersN + kStrataN + kOrdN + kReservedN; // 298
+constexpr uint32_t kCtlN = 2u; // positive-control checksums (RT, GI)
+constexpr uint32_t kSlotStride = 2u * kFamStride + kCtlN; // 598
+constexpr uint32_t kTotalU32 =
+    kHeaderU32 + 2u * kAcceptanceEdgesMax + kSlots * kSlotStride; // 1656
+
+// In-family word offsets (mirror shaders/shadow_tail.glsl exactly).
+constexpr uint32_t kOffPilot = 0u;
+constexpr uint32_t kOffHist = kPilotCounters;                        // 34
+constexpr uint32_t kOffEligible = kOffHist + kAcceptanceEdgesMax;    // 260
+constexpr uint32_t kOffRecorded = kOffEligible + 1u;                 // 261
+constexpr uint32_t kOffBlocked = kOffEligible + 2u;                  // 262
+constexpr uint32_t kOffVisible = kOffEligible + 3u;                  // 263
+constexpr uint32_t kOffStrata = kOffEligible + 4u;                   // 264
+constexpr uint32_t kOffOrd = kOffStrata + kStrataN;                  // 280
+// Header indices.
+constexpr uint32_t kHeadMagic = 0u, kHeadVersion = 1u, kHeadFrame = 2u;
+constexpr uint32_t kHeadMode = 3u, kHeadEdgeRT = 4u, kHeadEdgeGI = 5u;
+constexpr uint32_t kHeadVariant = 6u;
 
 // Pilot bin/sentinel codes from PilotBracket.
 constexpr int kPilotEmpty = -1;     // N == 0: no samples at all
@@ -235,6 +265,129 @@ inline bool PairedT95UpperBound(const double* x, int blocks, double* out)
     }
     var /= (blocks - 1);
     *out = std::exp(mean + t * std::sqrt(var / blocks));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Frozen edge manifest (fixed schema, strict hand-rolled parse — zero
+// dependencies so calibration tooling and unit tests share it):
+//   {"edgesRT":[e0,e1,...],"edgesGI":[...]}
+// Each array: 2..226 monotone strictly increasing uint32 values starting
+// at 0. Anything else (unsorted, duplicate, out of range, wrong types,
+// trailing garbage) is rejected with a reason — never defaulted.
+// ---------------------------------------------------------------------------
+inline bool ParseEdgeManifest(const std::string& text,
+                              std::vector<uint32_t>& edgesRT,
+                              std::vector<uint32_t>& edgesGI,
+                              std::string& err)
+{
+    edgesRT.clear();
+    edgesGI.clear();
+    size_t pos = 0;
+    const size_t n = text.size();
+    auto skipWs = [&]() {
+        while (pos < n && (text[pos] == ' ' || text[pos] == '\t' ||
+                           text[pos] == '\n' || text[pos] == '\r'))
+            ++pos;
+    };
+    auto expectLit = [&](const char* lit) -> bool {
+        for (const char* p = lit; *p; ++p, ++pos)
+        {
+            if (pos >= n || text[pos] != *p)
+                return false;
+        }
+        return true;
+    };
+    // Parses one [u0,u1,...] array with full validation. No negatives
+    // (a '-' fails the digit check), no floats ('.' fails), no overflow
+    // past 2^32-1 (accumulate in uint64 and range-check).
+    auto parseArray = [&](std::vector<uint32_t>& out) -> bool {
+        skipWs();
+        if (pos >= n || text[pos] != '[')
+        {
+            err = "expected '['";
+            return false;
+        }
+        ++pos;
+        skipWs();
+        if (pos < n && text[pos] == ']')
+        {
+            ++pos;
+            err = "empty edge array";
+            return false;
+        }
+        for (;;)
+        {
+            skipWs();
+            if (pos >= n || text[pos] < '0' || text[pos] > '9')
+            {
+                err = "expected unsigned integer";
+                return false;
+            }
+            uint64_t v = 0;
+            while (pos < n && text[pos] >= '0' && text[pos] <= '9')
+            {
+                v = v * 10u + static_cast<uint64_t>(text[pos] - '0');
+                if (v > kUint32Max)
+                {
+                    err = "edge value exceeds u32";
+                    return false;
+                }
+                ++pos;
+            }
+            if (!out.empty() && v <= out.back())
+            {
+                err = "edges must be strictly increasing";
+                return false;
+            }
+            out.push_back(static_cast<uint32_t>(v));
+            if (out.size() > kAcceptanceEdgesMax)
+            {
+                err = "too many edges";
+                return false;
+            }
+            skipWs();
+            if (pos >= n)
+            {
+                err = "unterminated array";
+                return false;
+            }
+            if (text[pos] == ',')
+            {
+                ++pos;
+                continue;
+            }
+            if (text[pos] == ']')
+            {
+                ++pos;
+                break;
+            }
+            err = "expected ',' or ']'";
+            return false;
+        }
+        if (out.size() < 2u)
+        {
+            err = "fewer than 2 edges";
+            return false;
+        }
+        if (out[0] != 0u)
+        {
+            err = "first edge must be 0";
+            return false;
+        }
+        return true;
+    };
+
+    skipWs();
+    if (!expectLit("{\"edgesRT\":")) { err = "expected {\"edgesRT\":"; return false; }
+    if (!parseArray(edgesRT)) return false;
+    skipWs();
+    if (!expectLit(",\"edgesGI\":")) { err = "expected ,\"edgesGI\":"; return false; }
+    if (!parseArray(edgesGI)) return false;
+    skipWs();
+    if (!expectLit("}")) { err = "expected closing }"; return false; }
+    skipWs();
+    if (pos != n) { err = "trailing content"; return false; }
     return true;
 }
 

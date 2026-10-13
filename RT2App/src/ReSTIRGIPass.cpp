@@ -6,7 +6,8 @@
 
 bool ReSTIRGIPass::Init(const GpuDevice& dev,
                         VkDescriptorSetLayout set0Layout,
-                        VkDescriptorSetLayout set1Layout)
+                        VkDescriptorSetLayout set1Layout,
+                        bool allowDiag)
 {
 	if (m_TemporalPipeline != VK_NULL_HANDLE)
 		return true;
@@ -31,13 +32,19 @@ bool ReSTIRGIPass::Init(const GpuDevice& dev,
 		return false;
 	}
 
-	// Shadow-tail diagnostic (RT4-T4, ON-only temporal module). Soft-fail:
-	// production is unaffected; a requested diagnostic without this module
-	// fails loud at request time (IsDiagAvailable), never with silent zeros.
-	m_TemporalTailShader = ShaderManager::LoadShader("restir_gi_temporal_tail.spv");
-	if (!m_TemporalTailShader)
-		m_TemporalTailShader = ShaderManager::LoadShader("RT2App/shaders/restir_gi_temporal_tail.spv");
-	m_DiagAvailable = (m_TemporalTailShader != VK_NULL_HANDLE);
+	// Shadow-tail diagnostic (RT4-T4, ON-only temporal module). Gated by
+	// allowDiag so ordinary startup on clock-unsupported devices never
+	// touches tail modules. Soft-fail: production is unaffected; a
+	// requested diagnostic without this module fails loud at request
+	// time (IsDiagAvailable), never with silent zeros.
+	m_DiagAvailable = false;
+	if (allowDiag)
+	{
+		m_TemporalTailShader = ShaderManager::LoadShader("restir_gi_temporal_tail.spv");
+		if (!m_TemporalTailShader)
+			m_TemporalTailShader = ShaderManager::LoadShader("RT2App/shaders/restir_gi_temporal_tail.spv");
+		m_DiagAvailable = (m_TemporalTailShader != VK_NULL_HANDLE);
+	}
 	RT_LOG("[ReSTIRGIPass] shadow-tail variant %s", m_DiagAvailable ? "available" : "unavailable (tail SPV not loaded)");
 
 	VkPipelineLayoutCreateInfo layoutInfo = {};
@@ -68,13 +75,26 @@ bool ReSTIRGIPass::Init(const GpuDevice& dev,
 	                                  &temporalInfo, nullptr, &m_TemporalPipeline));
 
 	// Diagnostic temporal pipeline shares the layout; built only when the
-	// tail module loaded (same hard-failure contract as PathTracePass).
+	// tail module loaded. Soft-fail (VkResult checked, never VK_CHECK
+	// abort): an ordinary startup must never abort on a diagnostic
+	// pipeline, and a requested diagnostic without it fails loud via
+	// IsDiagAvailable at request time.
 	if (m_DiagAvailable)
 	{
 		VkComputePipelineCreateInfo diagInfo = temporalInfo;
 		diagInfo.stage.module = m_TemporalTailShader;
-		VK_CHECK(vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1,
-		                                  &diagInfo, nullptr, &m_DiagTemporalPipeline));
+		VkPipeline diagPipeline = VK_NULL_HANDLE;
+		const VkResult diagErr = vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1,
+		                                                  &diagInfo, nullptr, &diagPipeline);
+		if (diagErr != VK_SUCCESS || diagPipeline == VK_NULL_HANDLE)
+		{
+			RT_LOG("[ReSTIRGIPass] diagnostic temporal pipeline build failed: %d (loud, no fallback)", (int)diagErr);
+			if (diagPipeline) { vkDestroyPipeline(m_Device, diagPipeline, nullptr); }
+			m_DiagAvailable = false;
+			if (m_TemporalTailShader) { vkDestroyShaderModule(m_Device, m_TemporalTailShader, nullptr); m_TemporalTailShader = VK_NULL_HANDLE; }
+		}
+		else
+			m_DiagTemporalPipeline = diagPipeline;
 	}
 
 	VkComputePipelineCreateInfo historyInfo = {};

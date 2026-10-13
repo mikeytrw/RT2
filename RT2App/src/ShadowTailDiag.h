@@ -18,13 +18,14 @@ struct GpuDevice;
 //
 // Layout (frozen; MUST match shaders/shadow_tail.glsl):
 //   header[8]: magic, version, frameIndex, mode, edgeCountRT,
-//     edgeCountGI, reserved, reserved.
+//     edgeCountGI, variantTag, reserved.
 //   edgesRT[226], edgesGI[226]: frozen acceptance edges (u32 ticks,
 //     written by CPU at freeze via SetEdges; zeroed before that).
 //   per slot (2) per family RT=0/GI=1:
 //     pilot[34], hist[226], eligible, recorded, blocked, visible,
-//     strata[16], reserved[2]  => 282 u32 per family-slot.
-// Total 1588 u32 = 6352 bytes. Lifecycle mirrors GpuDiagnostics
+//     strata[16], ord[16], reserved[2]  => 298 u32 per family-slot,
+//     plus 2 positive-control checksums per slot.
+// Total 1656 u32 = 6624 bytes. Lifecycle mirrors GpuDiagnostics
 // (fill-zero + edge upload per frame, fenced copy to per-slot host
 // readback); the buffer is extent-independent so no resize path exists.
 // An unvalidated snapshot (bad magic/version/frame/mode, edge counts
@@ -33,13 +34,18 @@ struct GpuDevice;
 class ShadowTailDiag
 {
 public:
-    static constexpr uint32_t kHeaderU32 = 8u;
-    static constexpr uint32_t kEdgesPerFamily = shadowtail::kAcceptanceEdgesMax; // 226
-    static constexpr uint32_t kSlotStride = 282u;
-    static constexpr uint32_t kTotalU32 =
-        kHeaderU32 + 2u * kEdgesPerFamily + 2u * 2u * kSlotStride; // 1588
+    // Layout mirrors shaders/shadow_tail.glsl via ShadowTailBins.h:
+    // header[8] (magic, version, frameIndex, mode, edgeCountRT,
+    // edgeCountGI, variantTag, reserved), edgesRT/GI[226], then per
+    // slot per family: pilot[34], hist[226], eligible, recorded,
+    // blocked, visible, strata[16], ord[16], reserved[2], plus 2
+    // positive-control checksums per slot.
+    static constexpr uint32_t kHeaderU32 = shadowtail::kHeaderU32;
+    static constexpr uint32_t kEdgesPerFamily = shadowtail::kAcceptanceEdgesMax;
+    static constexpr uint32_t kTotalU32 = shadowtail::kTotalU32; // 1660
     static constexpr uint32_t kMagic = 0x53484457u; // 'SHDW'
     static constexpr uint32_t kVersion = 1u;
+    static constexpr uint32_t kVariantTag = 1u; // staged ON tag, see below
     static constexpr uint32_t kMaxFrameSlots = shadowtail::kSlots; // 2
 
     struct Snapshot
@@ -78,10 +84,18 @@ public:
     void ReadCompletedSlot(const GpuDevice& device, uint32_t frameSlot);
     const Snapshot& GetLatest() const { return m_Latest; }
 
+    // RendererGPU calls this when --shadow-tail-edges supplies a frozen
+    // manifest (validated here, staged for upload). No manifest staged
+    // (edge counts zero) means pilot-only output: SnapshotFrom rejects
+    // every result, so an acceptance snapshot can never validate.
     static std::string SnapshotToJson(const Snapshot& snapshot);
 
 private:
-    Snapshot SnapshotFrom(const uint32_t* words, uint64_t frameIndex) const;
+    Snapshot SnapshotFrom(const uint32_t* words, uint64_t frameIndex,
+                          uint32_t expEdgeRT, uint32_t expEdgeGI) const;
+    // Segment validation on a completed slot (sums, bounds, coverage).
+    // Mutates snapshot.valid/invalidReason only; never passes silently.
+    bool ValidateSlot(Snapshot& snapshot, uint32_t slot) const;
 
     static constexpr VkDeviceSize kBytesTotal = VkDeviceSize(kTotalU32) * 4u;
     static constexpr VkDeviceSize kHeaderEdgesBytes =
@@ -105,5 +119,5 @@ private:
     std::array<uint32_t, kHeaderU32 + 2u * kEdgesPerFamily> m_Staged = {};
 };
 
-static_assert(ShadowTailDiag::kTotalU32 * 4u == 6352u,
-              "ShadowTailDiag SSBO must be 6352 bytes (header+edges+slots)");
+static_assert(ShadowTailDiag::kTotalU32 * 4u == 6624u,
+              "ShadowTailDiag SSBO must be 6624 bytes (header+edges+slots)");

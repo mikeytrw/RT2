@@ -30,6 +30,7 @@
 #include "FrameContext.h"
 #include "GpuTimestampProfiler.h"
 #include "ShadowTailDiag.h"
+#include <vector>
 #include "RenderInstanceMap.h"
 #include "GpuPickingPass.h"
 #include "FrameSampling.h"
@@ -256,6 +257,10 @@ public:
 	bool IsShadowTailAvailable() const;
 	std::string GetShadowTailJson();
 	uint64_t GetShadowTailFrame() const;
+	// Stage a frozen edge manifest (validated, staged for upload).
+	// Loud false on any violation; call before the measured frames.
+	bool SetShadowTailEdges(const std::vector<uint32_t>& edgesRT,
+	                        const std::vector<uint32_t>& edgesGI);
 
 	// Last BLAS/TLAS build timings (milliseconds, CPU wall-clock around the
 	// build/record calls). -1.0 means no build has run yet. Forwarded from

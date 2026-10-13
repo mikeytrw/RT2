@@ -63,7 +63,8 @@ static const std::vector<BindingDef>& GetSet0Bindings()
 	return bindings;
 }
 
-bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetLayout)
+bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetLayout,
+                         bool allowDiag)
 {
 	if (m_Pipeline != VK_NULL_HANDLE) return true;
 	m_Device = dev.device;
@@ -130,27 +131,34 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	VK_CHECK(vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_PipelineLayout));
 
-	if (!BuildPipelineAndSBT(dev, m_ClosestShader, m_SecondaryRgenShader))
+	if (!BuildPipelineAndSBT(dev, m_ClosestShader, m_SecondaryRgenShader,
+	                         &m_Pipeline, &m_SBTBuffer))
 		return false;
+	m_SBTSize = m_SBTBuffer.size;
 
-	// Shadow-tail diagnostic (RT4-T4, ON-only modules). Soft-fail: production
-	// is unaffected; a requested diagnostic without these modules fails loud
-	// at request time (IsDiagAvailable), never with silent zeros.
-	m_ClosestTailShader = ShaderManager::LoadShader("closesthit_tail.spv");
-	if (!m_ClosestTailShader) m_ClosestTailShader = ShaderManager::LoadShader("RT2App/shaders/closesthit_tail.spv");
-	m_SecondaryTailShader = ShaderManager::LoadShader("secondary_raygen_tail.spv");
-	if (!m_SecondaryTailShader) m_SecondaryTailShader = ShaderManager::LoadShader("RT2App/shaders/secondary_raygen_tail.spv");
-	m_DiagAvailable = (m_ClosestTailShader != VK_NULL_HANDLE &&
-	                   m_SecondaryTailShader != VK_NULL_HANDLE);
+	// Shadow-tail diagnostic (RT4-T4, ON-only modules). Gated by allowDiag
+	// so ordinary startup on clock-unsupported devices never touches tail
+	// modules. Soft-fail: production is unaffected; a requested diagnostic
+	// without these modules fails loud at request time (IsDiagAvailable).
+	if (allowDiag)
+	{
+		m_ClosestTailShader = ShaderManager::LoadShader("closesthit_tail.spv");
+		if (!m_ClosestTailShader) m_ClosestTailShader = ShaderManager::LoadShader("RT2App/shaders/closesthit_tail.spv");
+		m_SecondaryTailShader = ShaderManager::LoadShader("secondary_raygen_tail.spv");
+		if (!m_SecondaryTailShader) m_SecondaryTailShader = ShaderManager::LoadShader("RT2App/shaders/secondary_raygen_tail.spv");
+		m_DiagAvailable = (m_ClosestTailShader != VK_NULL_HANDLE &&
+		                   m_SecondaryTailShader != VK_NULL_HANDLE);
+	}
 	RT_LOG("[PathTracePass] shadow-tail variant %s", m_DiagAvailable ? "available" : "unavailable (tail SPVs not loaded)");
 	return true;
 }
 
 // Rebuild the pipeline + SBT for the shadow-tail variant (or back to
 // production). The layout, pool and set-0 descriptor set are untouched.
-// Caller must ensure the GPU is idle; returns false on build failure
-// (production pipeline is left destroyed — the caller treats this as a
-// hard diagnostic error, never a silent fallback).
+// Build-then-swap: the replacement is fully built into temporaries first;
+// only on success are the live members swapped. A failed ON build keeps
+// the working pipeline intact and returns false (loud, no fallback).
+// Caller must ensure the GPU is idle.
 bool PathTracePass::RebuildForDiagVariant(const GpuDevice& dev, bool useDiag)
 {
 	if (useDiag == m_UseDiagVariant)
@@ -161,15 +169,22 @@ bool PathTracePass::RebuildForDiagVariant(const GpuDevice& dev, bool useDiag)
 		return false;
 	}
 	vkDeviceWaitIdle(m_Device);
-	if (m_Pipeline) { vkDestroyPipeline(m_Device, m_Pipeline, nullptr); m_Pipeline = VK_NULL_HANDLE; }
-	if (m_SBTBuffer.buffer) { vkDestroyBuffer(m_Device, m_SBTBuffer.buffer, nullptr); m_SBTBuffer.buffer = VK_NULL_HANDLE; }
-	if (m_SBTBuffer.memory) { vkFreeMemory(m_Device, m_SBTBuffer.memory, nullptr); m_SBTBuffer.memory = VK_NULL_HANDLE; }
-	m_SBTBuffer.size = 0;
-	m_SBTSize = 0;
+	VkPipeline newPipeline = VK_NULL_HANDLE;
+	GpuBuffer newSBT = {};
 	if (!BuildPipelineAndSBT(dev,
 	                         useDiag ? m_ClosestTailShader : m_ClosestShader,
-	                         useDiag ? m_SecondaryTailShader : m_SecondaryRgenShader))
+	                         useDiag ? m_SecondaryTailShader : m_SecondaryRgenShader,
+	                         &newPipeline, &newSBT))
+	{
+		RT_LOG("[PathTracePass] variant rebuild failed; keeping live pipeline");
 		return false;
+	}
+	if (m_Pipeline) { vkDestroyPipeline(m_Device, m_Pipeline, nullptr); }
+	if (m_SBTBuffer.buffer) { vkDestroyBuffer(m_Device, m_SBTBuffer.buffer, nullptr); }
+	if (m_SBTBuffer.memory) { vkFreeMemory(m_Device, m_SBTBuffer.memory, nullptr); }
+	m_Pipeline = newPipeline;
+	m_SBTBuffer = newSBT;
+	m_SBTSize = newSBT.size;
 	m_UseDiagVariant = useDiag;
 	RT_LOG("[PathTracePass] rebuilt for %s variant", useDiag ? "shadow-tail" : "production");
 	return true;
@@ -181,7 +196,9 @@ bool PathTracePass::RebuildForDiagVariant(const GpuDevice& dev, bool useDiag)
 // variant rebuild only swaps shader code — never layout or SBT geometry.
 bool PathTracePass::BuildPipelineAndSBT(const GpuDevice& dev,
                                         VkShaderModule closestModule,
-                                        VkShaderModule secondaryModule)
+                                        VkShaderModule secondaryModule,
+                                        VkPipeline* pipeOut,
+                                        GpuBuffer* sbtOut)
 {
 	// 7 stages (6 original + secondary_raygen)
 	VkPipelineShaderStageCreateInfo stages[7] = {};
@@ -258,11 +275,11 @@ bool PathTracePass::BuildPipelineAndSBT(const GpuDevice& dev,
 	pipelineInfo.layout = m_PipelineLayout;
 
 	VkResult err = g_RTDispatch.CreateRayTracingPipelinesKHR(
-		m_Device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_Pipeline);
+		m_Device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, pipeOut);
 	if (err != VK_SUCCESS)
 	{
 		RT_LOG("[PathTracePass] vkCreateRayTracingPipelinesKHR failed: %d", (int)err);
-		m_Pipeline = VK_NULL_HANDLE;
+		*pipeOut = VK_NULL_HANDLE;
 		return false;
 	}
 
@@ -281,24 +298,28 @@ bool PathTracePass::BuildPipelineAndSBT(const GpuDevice& dev,
 	if (!GpuResources::CreateBuffer(dev, sbtSize,
 		VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		m_SBTBuffer))
+		*sbtOut))
 	{
 		RT_LOG("[PathTracePass] failed to create SBT buffer");
+		vkDestroyPipeline(m_Device, *pipeOut, nullptr);
+		*pipeOut = VK_NULL_HANDLE;
 		return false;
 	}
-	m_SBTSize = sbtSize;
 
 	std::vector<uint8_t> handles(7 * handleSize);
 	err = g_RTDispatch.GetRayTracingShaderGroupHandlesKHR(
-		m_Device, m_Pipeline, 0, 7, handles.size(), handles.data());
+		m_Device, *pipeOut, 0, 7, handles.size(), handles.data());
 	if (err != VK_SUCCESS)
 	{
 		RT_LOG("[PathTracePass] GetRayTracingShaderGroupHandlesKHR failed: %d", (int)err);
+		vkDestroyPipeline(m_Device, *pipeOut, nullptr);
+		*pipeOut = VK_NULL_HANDLE;
+		GpuResources::DestroyBuffer(dev, *sbtOut);
 		return false;
 	}
 
 	void* mapped = nullptr;
-	vkMapMemory(m_Device, m_SBTBuffer.memory, 0, sbtSize, 0, &mapped);
+	vkMapMemory(m_Device, sbtOut->memory, 0, sbtSize, 0, &mapped);
 	std::memset(mapped, 0, (size_t)sbtSize);
 	uint8_t* dst = static_cast<uint8_t*>(mapped);
 	std::memcpy(dst + 0, handles.data() + 0 * handleSize, handleSize);
@@ -310,7 +331,8 @@ bool PathTracePass::BuildPipelineAndSBT(const GpuDevice& dev,
 	std::memcpy(dst + hitBase + baseAlign, handles.data() + 4 * handleSize, handleSize);
 	std::memcpy(dst + hitBase + baseAlign * 2, handles.data() + 5 * handleSize, handleSize);
 	std::memcpy(dst + hitBase + baseAlign * 3, handles.data() + 5 * handleSize, handleSize);
-	vkUnmapMemory(m_Device, m_SBTBuffer.memory);
+	vkUnmapMemory(m_Device, sbtOut->memory);
+	sbtOut->size = sbtSize;
 
 	// ---- Dedicated descriptor pool for set 0 (created once; variant
 	// rebuilds keep the pool, layout and set-0 descriptor set) ----

@@ -35,7 +35,8 @@ public:
 	PathTracePass() = default;
 	~PathTracePass() { Destroy(); }
 
-	bool Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetLayout);
+	bool Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetLayout,
+	          bool allowDiag);
 	void Destroy();
 
 	// Rebuild the pipeline + SBT for the shadow-tail diagnostic variant
@@ -124,9 +125,15 @@ private:
 	bool m_UseDiagVariant = false;
 
 	// Shared pipeline+SBT builder (production + variant rebuilds).
+	// Writes ONLY through pipeOut/sbtOut: the caller swaps them into
+	// members after success, so a failed ON build never destroys the
+	// working production pipeline (build-then-swap). All failures return
+	// false (no abort); production Init treats false as fatal as before.
 	bool BuildPipelineAndSBT(const GpuDevice& dev,
 	                         VkShaderModule closestModule,
-	                         VkShaderModule secondaryModule);
+	                         VkShaderModule secondaryModule,
+	                         VkPipeline* pipeOut,
+	                         GpuBuffer* sbtOut);
 
 	// SBT
 	GpuBuffer m_SBTBuffer;

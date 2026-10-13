@@ -41,12 +41,15 @@ bool ShadowTailDiag::Init(const GpuDevice& device, uint32_t frameSlotCount)
         }
     }
 
-    // Staged header defaults: magic/version/mode set; edge counts zero
-    // (manifest validation rejects a zero-count snapshot downstream).
+    // Staged header defaults: magic/version/mode/variant set; edge counts
+    // zero (manifest validation rejects a zero-count snapshot downstream:
+    // pilot-only output is never a valid acceptance snapshot).
     m_Staged.fill(0u);
     m_Staged[0] = kMagic;
     m_Staged[1] = kVersion;
     m_Staged[3] = 1u; // mode ON
+    m_Staged[6] = kVariantTag; // staged ON tag (see SnapshotFrom)
+    m_Staged[6] = kVariantTag; // staged ON tag (see SnapshotFrom)
 
     RT_LOG("[ShadowTail] enabled (%u bytes, %u frame slots)", (unsigned)kBytesTotal,
            frameSlotCount);
@@ -169,7 +172,9 @@ void ShadowTailDiag::EndFrame(VkCommandBuffer cmd, uint32_t frameSlot)
 }
 
 ShadowTailDiag::Snapshot ShadowTailDiag::SnapshotFrom(const uint32_t* words,
-                                                      uint64_t frameIndex) const
+                                                      uint64_t frameIndex,
+                                                      uint32_t expEdgeRT,
+                                                      uint32_t expEdgeGI) const
 {
     Snapshot snapshot;
     snapshot.frameIndex = frameIndex;
@@ -191,15 +196,72 @@ ShadowTailDiag::Snapshot ShadowTailDiag::SnapshotFrom(const uint32_t* words,
         snapshot.invalidReason = "mode is not ON";
         return snapshot;
     }
+    if (snapshot.head[2] != static_cast<uint32_t>(frameIndex & 0xFFFFFFFFull))
+    {
+        snapshot.invalidReason = "header frame differs from submitted slot";
+        return snapshot;
+    }
+    if (snapshot.head[6] != kVariantTag)
+    {
+        snapshot.invalidReason = "variant tag mismatch (not staged ON data)";
+        return snapshot;
+    }
     if (snapshot.head[4] < 2u || snapshot.head[4] > kEdgesPerFamily ||
         snapshot.head[5] < 2u || snapshot.head[5] > kEdgesPerFamily)
     {
         snapshot.invalidReason = "edge counts outside manifest capacity";
         return snapshot;
     }
+    if (snapshot.head[4] != expEdgeRT || snapshot.head[5] != expEdgeGI)
+    {
+        snapshot.invalidReason = "edge counts differ from staged manifest";
+        return snapshot;
+    }
     snapshot.data.assign(words, words + kTotalU32);
+    // Per-family validation on the completed slot is done by
+    // ValidateSlot below (needs the slot index, not just the words).
     snapshot.valid = true;
     return snapshot;
+}
+
+// ValidateSlot: sums, bounds and coverage on one completed slot's segment.
+// All aggregates use 64-bit accumulation. Any failure writes the reason
+// and returns false — the snapshot is then invalid, never passed.
+bool ShadowTailDiag::ValidateSlot(Snapshot& snapshot, uint32_t slot) const
+{
+    constexpr uint32_t kSlotBase = kHeaderU32 + 2u * kEdgesPerFamily;
+    const uint32_t seg = kSlotBase + slot * shadowtail::kSlotStride;
+    bool anyShadow = false;
+    for (uint32_t f = 0; f < shadowtail::kFamilies; ++f)
+    {
+        const uint32_t base = seg + f * shadowtail::kFamStride;
+        const uint32_t eligible = snapshot.data[base + shadowtail::kOffEligible];
+        const uint32_t recorded = snapshot.data[base + shadowtail::kOffRecorded];
+        if (recorded > eligible)
+        {
+            snapshot.valid = false;
+            snapshot.invalidReason = "recorded exceeds eligible";
+            return false;
+        }
+        uint64_t histSum = 0;
+        for (uint32_t i = 0; i < shadowtail::kAcceptanceEdgesMax; ++i)
+            histSum += snapshot.data[base + shadowtail::kOffHist + i];
+        if (histSum != recorded)
+        {
+            snapshot.valid = false;
+            snapshot.invalidReason = "histogram sum differs from recorded";
+            return false;
+        }
+        if (eligible > 0u)
+            anyShadow = true;
+    }
+    if (!anyShadow)
+    {
+        snapshot.valid = false;
+        snapshot.invalidReason = "zero shadow invocations in both families";
+        return false;
+    }
+    return true;
 }
 
 void ShadowTailDiag::ReadCompletedSlot(const GpuDevice& device, uint32_t frameSlot)
@@ -209,28 +271,43 @@ void ShadowTailDiag::ReadCompletedSlot(const GpuDevice& device, uint32_t frameSl
     Slot& slot = m_Slots[frameSlot];
     if (!slot.submitted)
         return;
+    slot.submitted = false;
+
+    // A failed map/readback INVALIDATES the latest snapshot (with the
+    // slot's frame id and a reason) instead of retaining an older valid
+    // one — a previous frame must never stand in for a failed later frame.
+    Snapshot failed;
+    failed.frameIndex = slot.frameIndex;
+    failed.valid = false;
 
     void* mapped = nullptr;
     if (vkMapMemory(device.device, m_ReadbackBuffers[frameSlot].memory,
-                    0, kBytesTotal, 0, &mapped) == VK_SUCCESS)
-    {
-        const Snapshot snapshot =
-            SnapshotFrom(static_cast<const uint32_t*>(mapped), slot.frameIndex);
-        vkUnmapMemory(device.device, m_ReadbackBuffers[frameSlot].memory);
-        if (!snapshot.valid)
-        {
-            RT_LOG("[ShadowTail] invalid snapshot (frame %llu: %s)",
-                   static_cast<unsigned long long>(slot.frameIndex),
-                   snapshot.invalidReason.c_str());
-        }
-        else if (!m_Latest.valid || snapshot.frameIndex >= m_Latest.frameIndex)
-            m_Latest = snapshot;
-    }
-    else
+                    0, kBytesTotal, 0, &mapped) != VK_SUCCESS || mapped == nullptr)
     {
         RT_LOG("[ShadowTail] failed to map completed frame slot %u", frameSlot);
+        failed.invalidReason = "readback map failure";
+        m_Latest = failed;
+        return;
     }
-    slot.submitted = false;
+    Snapshot snapshot = SnapshotFrom(static_cast<const uint32_t*>(mapped),
+                                     slot.frameIndex, m_Staged[4], m_Staged[5]);
+    vkUnmapMemory(device.device, m_ReadbackBuffers[frameSlot].memory);
+    if (snapshot.valid && !ValidateSlot(snapshot, frameSlot))
+    {
+        RT_LOG("[ShadowTail] invalid snapshot (frame %llu: %s)",
+               static_cast<unsigned long long>(slot.frameIndex),
+               snapshot.invalidReason.c_str());
+    }
+    if (!snapshot.valid)
+    {
+        RT_LOG("[ShadowTail] invalid snapshot (frame %llu: %s)",
+               static_cast<unsigned long long>(slot.frameIndex),
+               snapshot.invalidReason.c_str());
+    }
+    // Monotonic replacement only: never let an older slot overwrite newer
+    // data, but a failed newer frame MUST replace an older valid one.
+    if (!m_Latest.valid || snapshot.frameIndex >= m_Latest.frameIndex)
+        m_Latest = snapshot;
 }
 
 std::string ShadowTailDiag::SnapshotToJson(const Snapshot& snapshot)

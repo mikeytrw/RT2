@@ -5,6 +5,7 @@
 #include "Walnut/Timer.h"
 #include "RendererGPU.h"
 #include "RenderSettings.h"
+#include "ShadowTailBins.h"
 #include "SceneManager.h"
 #include "FileDialog.h"
 #include "SceneTypes.h"
@@ -4139,6 +4140,33 @@ private:
 				fflush(stdout);
 				Walnut::Application::Get().Close();
 				std::exit(EXIT_FAILURE);
+			}
+			if (i == 0 && g_CLI.shadowTail && !g_CLI.shadowTailEdges.empty() &&
+			    m_RendererGPU.IsAvailable())
+			{
+				// Frozen edge manifest (calibration output): strict parse +
+				// staged upload. Any violation fails loud before frame 1 —
+				// without it every snapshot stays pilot-only (invalid).
+				std::ifstream manifestFile(g_CLI.shadowTailEdges, std::ios::binary);
+				std::string manifestText;
+				if (manifestFile)
+					manifestText.assign(std::istreambuf_iterator<char>(manifestFile),
+					                    std::istreambuf_iterator<char>());
+				std::vector<uint32_t> manifestRT, manifestGI;
+				std::string manifestErr;
+				if (manifestText.empty() ||
+				    !shadowtail::ParseEdgeManifest(manifestText, manifestRT, manifestGI, manifestErr) ||
+				    !m_RendererGPU.SetShadowTailEdges(manifestRT, manifestGI))
+				{
+					printf("[Headless] shadow-tail manifest rejected (%s); no output committed\n",
+					       manifestText.empty() ? "unreadable file" : manifestErr.c_str());
+					fflush(stdout);
+					Walnut::Application::Get().Close();
+					std::exit(EXIT_FAILURE);
+				}
+				printf("[Headless] shadow-tail manifest staged: RT %u edges, GI %u edges\n",
+				       (unsigned)manifestRT.size(), (unsigned)manifestGI.size());
+				fflush(stdout);
 			}
 			if (g_CLI.cameraSweepAmplitude > 0.0f && i >= g_CLI.cameraSweepWarmup)
 			{

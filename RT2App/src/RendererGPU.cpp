@@ -79,7 +79,13 @@ bool RendererGPU::Init()
 	// Create G-buffer descriptor set layout (set 1) first — needed by PathTracePass
 	CreateGBufferDescriptorSet();
 
-	if (!m_PathTracePass.Init(m_Device, m_GBufferSetLayout))
+	// Shadow-tail ON modules/pipelines are created only when the device
+	// clock feature is enabled; ordinary startup (or clock-unsupported
+	// devices) never touches tail SPVs or the clock capability.
+	const bool allowShadowTail =
+		Walnut::Application::IsShaderDeviceClockEnabled();
+
+	if (!m_PathTracePass.Init(m_Device, m_GBufferSetLayout, allowShadowTail))
 	{
 		RT_LOG("[RT2] GPU renderer initialization failed (pipeline creation error)");
 		return false;
@@ -92,7 +98,8 @@ bool RendererGPU::Init()
 
 	m_ReSTIRPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
 
-	m_ReSTIRGIPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
+	m_ReSTIRGIPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout,
+	                      allowShadowTail);
 	// Allocate GI buffer (dummy while disabled, full when enabled).
 	if (m_Settings.restirGIEnabled && m_RenderExtent.IsValid())
 		m_GIReservoirs.Create(m_Device, m_RenderExtent);
@@ -317,6 +324,32 @@ void RendererGPU::FlushGpuTimings()
 	vkDeviceWaitIdle(m_Device.device);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		m_GpuProfiler.ReadCompletedSlot(m_Device.device, i);
+	// Fence-backed final drain for the shadow-tail readback as well: the
+	// last in-flight frames must reach snapshots, not die unsubmitted.
+	// (WaitIdle above proves GPU completion for both.)
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		m_ShadowTailDiag.ReadCompletedSlot(m_Device, i);
+}
+
+bool RendererGPU::SetShadowTailEdges(const std::vector<uint32_t>& edgesRT,
+                                     const std::vector<uint32_t>& edgesGI)
+{
+	if (!m_ShadowTailDiag.IsAvailable())
+	{
+		RT_LOG("[RT2] SetShadowTailEdges: diagnostic buffer unavailable");
+		return false;
+	}
+	// ShadowTailDiag::SetEdges validates (monotone, capacity, E_0 == 0)
+	// and returns false LOUDLY on any violation — never clamps silently.
+	if (!m_ShadowTailDiag.SetEdges((uint32_t)edgesRT.size(), edgesRT.data(),
+	                               (uint32_t)edgesGI.size(), edgesGI.data()))
+	{
+		RT_LOG("[RT2] SetShadowTailEdges: manifest rejected");
+		return false;
+	}
+	RT_LOG("[RT2] SetShadowTailEdges: RT %u edges, GI %u edges (staged)",
+	       (unsigned)edgesRT.size(), (unsigned)edgesGI.size());
+	return true;
 }
 
 // Shadow-tail availability (RT4-T4): every link of the chain must hold —
@@ -1417,6 +1450,34 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		outcome.failureReason = "shadow-tail diagnostic requested but unavailable (clock feature, tail pipelines, or SSBO)";
 		m_LastRenderOutcome = outcome;
 		return outcome;
+	}
+
+	// Shadow-tail pre-run counter bound (RT4-T4): prove pixels ×
+	// worst-case calls/px < 2^31 BEFORE any eligible/bin/outcome atomic
+	// can execute. Conservative by construction: 8 shadow traces per
+	// bounce level per sample (env+tri+reservoir+punctual with headroom)
+	// plus 2x (fresh+replay) GI queries per candidate. Over-approximation
+	// is safe here (it only rejects); under-counting would risk silent
+	// counter wrap, which no post-hoc check can detect.
+	if (m_Settings.shadowTailDiag && m_RenderExtent.IsValid())
+	{
+		const uint64_t pixels =
+			uint64_t(m_RenderExtent.Width()) * uint64_t(m_RenderExtent.Height());
+		const uint64_t maxCallsPerPx =
+			uint64_t(m_Settings.spp) *
+			(uint64_t(m_Settings.maxBounces + 1u) * 8u +
+			 (uint64_t(m_Settings.restirGIFreshCandidates) + 1u) * 2u);
+		// Tested predicate (ShadowTailBins.h): maxCallsPerPx < 2^31/pixels.
+		if (!shadowtail::CounterBoundOk(pixels, maxCallsPerPx))
+		{
+			RT_LOG("[RT2] Render: shadow-tail counter bound exceeded (pixels=%llu calls/px=%llu)",
+			       static_cast<unsigned long long>(pixels),
+			       static_cast<unsigned long long>(maxCallsPerPx));
+			outcome.failure = true;
+			outcome.failureReason = "shadow-tail counter bound exceeded for this extent/settings";
+			m_LastRenderOutcome = outcome;
+			return outcome;
+		}
 	}
 
 	// The frame slot has already been waited and any extent rebuild has already

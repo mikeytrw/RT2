@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace
@@ -176,3 +177,74 @@ TEST_CASE("ShadowTailBins paired-t 95% upper bound")
     const double bad[] = { 0.01, 0.02, std::numeric_limits<double>::infinity(), 0.03 };
     CHECK_FALSE(shadowtail::PairedT95UpperBound(bad, 4, &out));
 }
+
+TEST_CASE("ShadowTailBins edge manifest strict parsing")
+{
+    std::vector<uint32_t> rt, gi;
+    std::string err;
+    CHECK(shadowtail::ParseEdgeManifest(
+        "{\"edgesRT\":[0,4096,8192,16384,32768],\"edgesGI\":[0,100,200]}",
+        rt, gi, err));
+    CHECK(rt.size() == 5u);
+    CHECK(rt.back() == 32768u);
+    CHECK(gi.size() == 3u);
+    CHECK(err.empty());
+
+    const char* rejects[] = {
+        "{\"edgesRT\":[0,100,100],\"edgesGI\":[0,1]}",   // duplicate
+        "{\"edgesRT\":[0,200,100],\"edgesGI\":[0,1]}",   // unsorted
+        "{\"edgesRT\":[4,100],\"edgesGI\":[0,1]}",       // first != 0
+        "{\"edgesRT\":[0],\"edgesGI\":[0,1]}",           // fewer than 2
+        "{\"edgesRT\":[],\"edgesGI\":[0,1]}",            // empty
+        "{\"edgesRT\":[0,-4],\"edgesGI\":[0,1]}",        // negative
+        "{\"edgesRT\":[0,4.5],\"edgesGI\":[0,1]}",       // float
+        "{\"edgesRT\":[0,4294967296],\"edgesGI\":[0,1]}",// u32 overflow
+        "{\"edgesRT\":[0,4],\"edgesGI\":[0,1]}trailing", // trailing content
+        "{\"edgesRT\":[0,4],\"edgesGI\":[0,1]",          // unterminated
+        "{\"edgesRT\":[0,4],\"edgesGI\":[0,1],}",        // trailing comma brace
+        "{\"edgesRT\":[0,4,],\"edgesGI\":[0,1]}",        // trailing comma array
+        "{\"edgesRT\":[0,4]}",                           // missing GI
+        "not json at all",                               // garbage
+        "",                                              // empty
+    };
+    for (const char* bad : rejects)
+    {
+        rt.clear();
+        gi.clear();
+        err.clear();
+        CHECK_FALSE(shadowtail::ParseEdgeManifest(bad, rt, gi, err));
+        CHECK_FALSE(err.empty()); // every rejection carries a reason
+    }
+    // 227 edges exceeds capacity.
+    std::string big = "{\"edgesRT\":[0";
+    for (uint32_t i = 1; i < 227u; ++i)
+    {
+        big += ",";
+        big += std::to_string(i * 128u);
+    }
+    big += "],\"edgesGI\":[0,1]}";
+    CHECK_FALSE(shadowtail::ParseEdgeManifest(big, rt, gi, err));
+}
+
+TEST_CASE("ShadowTailBins SSBO layout constants match the frozen map")
+{
+    // Header + edges + slots; mirrors ShadowTailDiag + shadow_tail.glsl.
+    CHECK(shadowtail::kFamStride == 298u);
+    CHECK(shadowtail::kSlotStride == 598u);
+    CHECK(shadowtail::kTotalU32 == 1656u);
+    CHECK(shadowtail::kTotalU32 * 4u == 6624u);
+    // Per-family offsets inside a family block starting at `base`.
+    constexpr uint32_t kPilot = 0u, kHist = 34u;
+    constexpr uint32_t kEligible = 260u, kRecorded = 261u;
+    constexpr uint32_t kBlocked = 262u, kVisible = 263u;
+    constexpr uint32_t kStrata = 264u, kOrd = 280u;
+    CHECK(kHist == shadowtail::kPilotCounters);
+    CHECK(kEligible == kHist + shadowtail::kAcceptanceEdgesMax);
+    CHECK(kStrata == kEligible + 4u);
+    CHECK(kOrd == kStrata + shadowtail::kStrataN);
+    CHECK(shadowtail::kFamStride == kOrd + shadowtail::kOrdN + 2u);
+    (void)kPilot;
+    (void)kBlocked;
+    (void)kVisible;
+}
+
