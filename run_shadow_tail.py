@@ -188,6 +188,152 @@ def check_freeze_seal(manifest, manifest_hash=None):
     return ""
 
 
+def seal_path_for(freeze_path):
+    """Sidecar path for the calibration seal of a freeze manifest."""
+    return freeze_path + ".calibration.json"
+
+
+def seal_calibration(freeze_path, campdir):
+    """Seal a campaign-derived freeze with full calibration evidence.
+
+    Called by a COMPLETED calib campaign on its own freeze file. The
+    seal lives in a SIDECAR file (`<freeze>.calibration.json`), never
+    by rewriting the freeze: every edges_sha256 hash recorded against
+    the frozen file during the campaign must keep matching it byte for
+    byte. The sidecar binds the freeze hash to the reread campaign
+    record (complete, mode calib, within cap) with the full gate
+    families (4 check-freeze-*, 4 parity-*, 4 headroom-*, 2
+    response-* all complete) plus every evidence directory. A
+    trials-only freeze has no sidecar and can never unlock acceptance.
+    Returns '' or FAIL (and never writes on failure)."""
+    try:
+        with open(os.path.join(campdir, "campaign.json")) as f:
+            camp = json.load(f)
+    except (OSError, ValueError) as e:
+        return "cannot read campaign record: %s" % e
+    if not camp.get("complete") or camp.get("mode") != "calib":
+        return "campaign record is not a completed calibration"
+    if camp.get("elapsed_min", 1e9) > camp.get("cap_min", 0):
+        return "campaign record exceeds its cap"
+    stages = dict(camp.get("stages", []))
+    required = (["check-freeze-%s" % c for c in CONFIGS] +
+                ["parity-%s" % c for c in CONFIGS] +
+                ["headroom-%s" % c for c in CONFIGS] +
+                ["response-control-RT", "response-control-GI"])
+    for name in required:
+        if stages.get(name) != "complete":
+            return "calibration stage missing/incomplete: %s" % name
+    try:
+        freeze_hash = sha256_file(freeze_path)
+    except OSError as e:
+        return "cannot hash freeze file: %s" % e
+    sidecar = {
+        "sealed": True,
+        "freeze_sha256": freeze_hash,
+        "campaign": os.path.abspath(campdir),
+        "campaign_sha256": sha256_file(
+            os.path.join(campdir, "campaign.json")),
+        "stages": {k: stages[k] for k in required},
+        "confirms": {c: os.path.join(os.path.abspath(campdir),
+                                     "confirm-%s" % c) for c in CONFIGS},
+        "offs": {c: os.path.join(os.path.abspath(campdir), "off-%s" % c)
+                 for c in CONFIGS},
+        "legacys": {c: os.path.join(os.path.abspath(campdir),
+                                    "legacy-%s" % c) for c in CONFIGS},
+        "controls": {"control-RT": os.path.join(os.path.abspath(campdir),
+                                                 "control-RT"),
+                     "control-GI": os.path.join(os.path.abspath(campdir),
+                                                 "control-GI")},
+    }
+    err = write_text_checked(seal_path_for(freeze_path),
+                             json.dumps(sidecar, indent=1) + "\n")
+    if err:
+        return "seal write failed: %s" % err
+    return ""
+
+
+def revalidate_calibration(manifest, freeze_path, ref_exe):
+    """Recompute the calibration gates behind a sealed freeze.
+
+    Acceptance recomputes — it never trusts the seal strings: the
+    sealed campaign record is reread and hash-checked, every
+    confirmation is re-run through check-freeze, every OFF/legacy
+    parity, headroom and control response is recomputed from the
+    retained evidence, and the frozen edges must equal the manifest.
+    The seal is a sidecar file (`<freeze>.calibration.json`); the
+    frozen manifest bytes themselves never change after derivation,
+    so all edges_sha256 hashes recorded during the campaign stay
+    valid. Returns '' or FAIL."""
+    try:
+        with open(seal_path_for(freeze_path)) as f:
+            cal = json.load(f)
+    except (OSError, ValueError) as e:
+        return ("no calibration seal sidecar: a trials-only freeze "
+                "cannot unlock acceptance (%s)" % e)
+    if cal.get("sealed") is not True:
+        return ("no calibration seal: a trials-only freeze cannot "
+                "unlock acceptance")
+    try:
+        if sha256_file(freeze_path) != cal.get("freeze_sha256"):
+            return ("freeze file changed since calibration sealing "
+                    "(edges file ≠ sealed evidence)")
+    except OSError as e:
+        return "freeze reread failed: %s" % e
+    campdir = cal.get("campaign", "")
+    try:
+        with open(os.path.join(campdir, "campaign.json")) as f:
+            camp = json.load(f)
+    except (OSError, ValueError) as e:
+        return "calibration campaign unreadable: %s" % e
+    if not camp.get("complete") or camp.get("mode") != "calib":
+        return "calibration campaign not complete"
+    if camp.get("elapsed_min", 1e9) > camp.get("cap_min", 0):
+        return "calibration campaign exceeds its cap"
+    try:
+        if sha256_file(os.path.join(campdir, "campaign.json")) != \
+                cal.get("campaign_sha256"):
+            return "calibration campaign record changed since sealing"
+    except OSError as e:
+        return "calibration campaign reread failed: %s" % e
+    try:
+        ref_hash = sha256_file(ref_exe)
+    except OSError as e:
+        return "cannot hash reference exe: %s" % e
+    if manifest.get("lineage", {}).get("ref_exe_sha256") != ref_hash:
+        return "freeze lineage exe differs from current reference"
+    for cfg in CONFIGS:
+        confirm = cal.get("confirms", {}).get(cfg, "")
+        if not confirm or not os.path.isdir(confirm):
+            return "calibration confirm missing: %s" % cfg
+        cargs = argparse.Namespace(run_dirs=[confirm], manifest=freeze_path,
+                                   config=cfg, ref_exe=ref_exe)
+        if cmd_check_freeze(cargs) != 0:
+            return "calibration confirmation revalidation failed: %s" % cfg
+        off = cal.get("offs", {}).get(cfg, "")
+        legacy = cal.get("legacys", {}).get(cfg, "")
+        if check_legacy_parity(off, legacy) != "complete":
+            return "calibration OFF/legacy parity revalidation failed: %s" \
+                % cfg
+        if check_calib_headroom(confirm, off, cfg) != "":
+            return "calibration headroom revalidation failed: %s" % cfg
+    try:
+        with open(freeze_path) as f:
+            frozen = json.load(f)
+        fRT, fGI = validate_manifest_edges(frozen)
+    except (OSError, ValueError) as e:
+        return "frozen edges unreadable: %s" % e
+    pairs = (("control-RT", "C1", "confirm-C1"),
+             ("control-GI", "C3", "confirm-C3"))
+    for tag, cfg, ordinary in pairs:
+        control = cal.get("controls", {}).get(tag, "")
+        ordinary_dir = os.path.join(campdir, ordinary)
+        resp = check_control_response(control, ordinary_dir, cfg, (fRT, fGI))
+        if resp != "":
+            return ("calibration control-response revalidation failed "
+                    "%s: %s" % (tag, resp))
+    return ""
+
+
 def revalidate_freeze_lineage(manifest, ref_exe):
     """Prove the freeze came from reference-only calibration evidence.
 
@@ -598,7 +744,12 @@ def run_capture(args, run_fn=None, timeout_min=0):
     the budget killed the process: preserved logs, no manifest."""
     if run_fn is None:
         run_fn = default_run_fn
-    rundir = os.path.join(args.out_root, args.name)
+    # Own-directory absolutization: the capture process runs with the
+    # exe directory as CWD, so the rundir (and everything under it,
+    # including --output-display) must be absolute — a relative
+    # --out-root would otherwise write the frame elsewhere and fail
+    # validation against the requested target.
+    rundir = os.path.abspath(os.path.join(args.out_root, args.name))
     if os.path.exists(rundir):
         print("ERROR: rundir exists (non-overwriting rule): %s" % rundir)
         return 1
@@ -631,8 +782,11 @@ def run_capture(args, run_fn=None, timeout_min=0):
     diag = bool(args.diag)
     if diag:
         cmd += ["--shadow-tail"]
-        if args.edges:
-            cmd += ["--shadow-tail-edges", args.edges]
+        if edges_abs:
+            # The RESOLVED manifest path goes on the command line: the
+            # process CWD (exe dir) cannot see invocation-relative
+            # paths. Hashing the absolute file alone is not enough.
+            cmd += ["--shadow-tail-edges", edges_abs]
         if args.control:
             cmd += ["--shadow-tail-control"]
     exe_dir = os.path.dirname(os.path.abspath(args.exe))
@@ -1149,15 +1303,23 @@ def check_calib_headroom(on_dir, off_dir, config):
     """Per-config ON-vs-OFF observer check at fixed rate 1 (plan §8).
 
     Every affected dispatch (RT Shading everywhere, GI Temporal where
-    GI runs) must satisfy medianON/medianOFF <= 1.03 over the measured
-    window, else the configuration is invalid at rate 1. Missing
-    records for a REQUIRED region fail — never a silent exemption.
-    Returns '' or FAIL."""
+    GI runs) needs the COMPLETE 20-frame measured timing window on
+    BOTH compared legs before any median is computed — a one-frame
+    sample cannot certify a 3% ceiling. The ratio of window medians
+    must satisfy medianON/medianOFF <= 1.03, else the configuration is
+    invalid at rate 1. Missing/incomplete records for a REQUIRED
+    region fail — never a silent exemption. Returns '' or FAIL."""
     import statistics
     for region in OBSERVER_REGIONS:
         required = (region == "RT Shading" or
                     (region == "ReSTIR GI Temporal" and
                      GI_TIMING_REQUIRED.get(config, False)))
+        if required:
+            for tag, sdir in (("ON", on_dir), ("OFF", off_dir)):
+                window_probs = check_timing_window(sdir, [region])
+                if window_probs:
+                    return ("FAIL (%s %s %s leg: %s)"
+                            % (config, region, tag, window_probs[0]))
         on = window_median_timings(on_dir, region)
         off = window_median_timings(off_dir, region)
         if not on or not off:
@@ -1183,6 +1345,25 @@ def split_budget(remaining_min, stages_left):
     return remaining_min / stages_left
 
 
+def remaining_timeout(deadline, units_left):
+    """Launch-gate timeout for capped orchestration.
+
+    Returns None when deadline is None (standalone run: explicitly
+    uncapped, no budget applies); "SKIP" when no budget remains
+    (zero or negative — this must NEVER reach the uncapped execution
+    mode, so the stage is marked INCOMPLETE without spawning);
+    otherwise a strictly positive equal share. Callers must check for
+    "SKIP" before spawning any process."""
+    if deadline is None:
+        return None
+    if units_left <= 0:
+        return "SKIP"
+    remaining = (deadline - time.monotonic()) / 60
+    if remaining <= 0:
+        return "SKIP"
+    return remaining / units_left
+
+
 def stage_result(rc):
     """Map a capture/quartet return code to a manifest status: 0 is
     complete; 2 (budget timeout / deadline expiry) is INCOMPLETE — the
@@ -1197,7 +1378,7 @@ def stage_result(rc):
 
 def run_quartet(args, run_fn=None, deadline_min=0):
     """One block = R_ON/R_OFF/C_ON/C_OFF with block manifest + deadline."""
-    blockdir = os.path.join(args.out_root, args.name)
+    blockdir = os.path.abspath(os.path.join(args.out_root, args.name))
     if os.path.exists(blockdir):
         print("ERROR: blockdir exists: %s" % blockdir)
         return 1
@@ -1214,7 +1395,7 @@ def run_quartet(args, run_fn=None, deadline_min=0):
     results = {}
     legs = list(order)
     for idx, (sub, exe, diag, edges, control) in enumerate(legs):
-        if deadline is not None and time.monotonic() > deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             results[sub] = "INCOMPLETE (deadline)"
             continue
         extra = list(args.extra_args)
@@ -1227,18 +1408,14 @@ def run_quartet(args, run_fn=None, deadline_min=0):
             frames=args.frames, spp=args.spp, width=args.width,
             height=args.height, edges=edges, diag=diag, control=control,
             config=args.config if diag else "", extra_args=extra)
-        # Hard per-leg timeout: equal share of the ACTUAL remaining
-        # deadline with no floor — a floor would let a process run past
-        # the cap it was supposed to enforce. Zero or negative
-        # remaining means the leg does not launch at all.
-        leg_timeout = None
-        if deadline is not None:
-            legs_left = len(legs) - idx
-            leg_timeout = split_budget((deadline - time.monotonic()) / 60,
-                                       legs_left)
-            if leg_timeout <= 0:
-                results[sub] = "INCOMPLETE (deadline)"
-                continue
+        # Hard per-leg timeout via the launch gate: a "SKIP" means
+        # zero/negative budget remains, so the leg is marked
+        # INCOMPLETE WITHOUT spawning (spawning with timeout 0 would
+        # run uncapped in default_run_fn).
+        leg_timeout = remaining_timeout(deadline, len(legs) - idx)
+        if leg_timeout == "SKIP":
+            results[sub] = "INCOMPLETE (deadline)"
+            continue
         rc = run_capture(sub_args, run_fn=run_fn, timeout_min=leg_timeout)
         results[sub] = stage_result(rc)
         if rc != 0:
@@ -1347,6 +1524,14 @@ def cmd_analyze(args):
     lineage_err = revalidate_freeze_lineage(manifest, args.ref_exe)
     if lineage_err:
         print("FAIL analyze: %s" % lineage_err)
+        return 1
+    # Acceptance recomputes the calibration behind the seal: confirms,
+    # OFF/legacy parity, headroom and control responses are re-run
+    # from retained evidence. A trials-only freeze fails here.
+    calib_err = revalidate_calibration(manifest, args.manifest,
+                                       args.ref_exe)
+    if calib_err:
+        print("FAIL analyze: %s" % calib_err)
         return 1
     blocks = []
     on_identities, off_identities = set(), set()
@@ -1604,7 +1789,7 @@ def run_campaign(args, run_fn=None):
     if run_fn is None:
         run_fn = default_run_fn
     cap_min = CALIB_CAP_MIN if args.mode == "calib" else ACCEPT_CAP_MIN
-    campdir = os.path.join(args.out_root, args.name)
+    campdir = os.path.abspath(os.path.join(args.out_root, args.name))
     if os.path.exists(campdir):
         print("ERROR: campaign dir exists: %s" % campdir)
         return 1
@@ -1623,10 +1808,7 @@ def run_campaign(args, run_fn=None):
     stages = []
 
     def expired():
-        return time.monotonic() > deadline
-
-    def remaining_min():
-        return max(0.0, (deadline - time.monotonic()) / 60)
+        return time.monotonic() >= deadline
 
     def cap_args(exe, scene, name, cfg, frames=60, diag=False, edges="",
                  control=False, timed=True):
@@ -1643,12 +1825,11 @@ def run_campaign(args, run_fn=None):
             config=cfg, extra_args=extra)
 
     def stage_timeout(stages_left):
-        # Equal share of the ACTUAL remaining budget per unfinished
-        # stage, with NO floor: a floor allotment beyond the remaining
-        # wall time would let a process outlive the cap it enforces.
-        # Callers only reach this when expired() is false, so the share
-        # is positive; the process is killed within it (exit 124).
-        return split_budget(remaining_min(), stages_left)
+        # Launch-gate share via remaining_timeout: "SKIP" when the
+        # budget is exhausted (zero/negative — this must NEVER reach
+        # the uncapped execution mode), else a strictly positive
+        # share. Callers MUST check for "SKIP" before spawning.
+        return remaining_timeout(deadline, stages_left)
 
     if args.mode == "calib":
         # 18 runs + derive + 4 checks + 4 parities + 4 headrooms +
@@ -1660,8 +1841,11 @@ def run_campaign(args, run_fn=None):
                 continue
             a = cap_args(args.ref_exe, getattr(args, "scene_" + cfg),
                          "trial-%s" % cfg, cfg, diag=True)
-            rc = run_capture(a, run_fn=run_fn,
-                             timeout_min=stage_timeout(33 - len(stages)))
+            to = stage_timeout(33 - len(stages))
+            if to == "SKIP":
+                stages.append((a.name, "INCOMPLETE (cap)"))
+                continue
+            rc = run_capture(a, run_fn=run_fn, timeout_min=to)
             stages.append((a.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -1688,8 +1872,11 @@ def run_campaign(args, run_fn=None):
             a = cap_args(args.ref_exe, getattr(args, "scene_" + cfg),
                          "confirm-%s" % cfg, cfg, diag=True,
                          edges=freeze_out)
-            rc = run_capture(a, run_fn=run_fn,
-                             timeout_min=stage_timeout(33 - len(stages)))
+            to = stage_timeout(33 - len(stages))
+            if to == "SKIP":
+                stages.append((a.name, "INCOMPLETE (cap)"))
+                continue
+            rc = run_capture(a, run_fn=run_fn, timeout_min=to)
             stages.append((a.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -1712,14 +1899,20 @@ def run_campaign(args, run_fn=None):
                 continue
             scene = getattr(args, "scene_" + cfg)
             a = cap_args(args.ref_exe, scene, "off-%s" % cfg, cfg)
-            rc = run_capture(a, run_fn=run_fn,
-                             timeout_min=stage_timeout(33 - len(stages)))
+            to = stage_timeout(33 - len(stages))
+            if to == "SKIP":
+                stages.append((a.name, "INCOMPLETE (cap)"))
+                continue
+            rc = run_capture(a, run_fn=run_fn, timeout_min=to)
             stages.append((a.name, stage_result(rc)))
             if rc != 0:
                 break
             b = cap_args(args.legacy_exe, scene, "legacy-%s" % cfg, cfg)
-            rc = run_capture(b, run_fn=run_fn,
-                             timeout_min=stage_timeout(33 - len(stages)))
+            to = stage_timeout(33 - len(stages))
+            if to == "SKIP":
+                stages.append((b.name, "INCOMPLETE (cap)"))
+                continue
+            rc = run_capture(b, run_fn=run_fn, timeout_min=to)
             stages.append((b.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -1750,8 +1943,11 @@ def run_campaign(args, run_fn=None):
                 continue
             a = cap_args(args.ref_exe, getattr(args, "scene_" + cfg), tag,
                          cfg, diag=True, edges=freeze_out, control=True)
-            rc = run_capture(a, run_fn=run_fn,
-                             timeout_min=stage_timeout(33 - len(stages)))
+            to = stage_timeout(33 - len(stages))
+            if to == "SKIP":
+                stages.append((a.name, "INCOMPLETE (cap)"))
+                continue
+            rc = run_capture(a, run_fn=run_fn, timeout_min=to)
             stages.append((a.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -1814,6 +2010,11 @@ def run_campaign(args, run_fn=None):
         if lineage_err:
             print("ERROR: accept lineage revalidation: %s" % lineage_err)
             return 1
+        calib_err = revalidate_calibration(frozen_acc, args.freeze,
+                                           args.ref_exe)
+        if calib_err:
+            print("ERROR: accept calibration revalidation: %s" % calib_err)
+            return 1
         order = [(c2, qn) for c2 in CONFIGS for qn in range(1, 5)]
         n_quartets = len(order)
         for cfg in CONFIGS:
@@ -1831,12 +2032,14 @@ def run_campaign(args, run_fn=None):
                     height=WORKLOADS[cfg]["height"], edges=args.freeze,
                     control=False, config=cfg,
                     extra_args=list(WORKLOADS[cfg]["extra"]))
-                # Equal share of the remaining budget per quartet (no
-                # floor — see stage_timeout).
+                # Equal share of the remaining budget per quartet via
+                # the launch gate: "SKIP" stops without spawning.
                 done = len([s for s in stages
                             if s[0].startswith("block-")])
-                share = split_budget((deadline - time.monotonic()) / 60,
-                                     n_quartets - done)
+                share = remaining_timeout(deadline, n_quartets - done)
+                if share == "SKIP":
+                    stages.append((qname, "INCOMPLETE (cap)"))
+                    continue
                 rc = run_quartet(qa, run_fn=run_fn, deadline_min=share)
                 stages.append((qa.name, "complete" if rc == 0 else
                                ("INCOMPLETE" if rc == 2 else "FAIL")))
@@ -1868,6 +2071,14 @@ def run_campaign(args, run_fn=None):
     if err:
         print("ERROR: %s" % err)
         return 1
+    if args.mode == "calib" and manifest["complete"]:
+        # Seal the campaign freeze with the full calibration evidence:
+        # without this seal the freeze is trials-only and can never
+        # unlock acceptance, no matter what its edges say.
+        seal_err = seal_calibration(freeze_out, campdir)
+        if seal_err:
+            print("ERROR: calibration seal failed: %s" % seal_err)
+            return 1
     print("CAMPAIGN %s %s stages=%d elapsed=%.1fmin" %
           (args.name, "complete" if manifest["complete"] else "INCOMPLETE",
            len(stages), elapsed_min))
@@ -2554,251 +2765,16 @@ def self_test():
         check("fake derive-freeze exe mismatch fails",
               cmd_derive_freeze(da_bad) == 1)
 
-        # check-freeze pass + fail paths on an explicit confirmation
-        # rundir (full measured window, sealed provenance).
-        cdir = os.path.join(tmp, "confirm")
-        os.makedirs(cdir)
-        from PIL import Image as _CfmImage
-        _CfmImage.new("RGB", (8, 8), (10, 20, 30)).save(
-            os.path.join(cdir, "frame.png"))
-        import bisect
-        er, eg = frozen["edgesRT"], frozen["edgesGI"]
-        birt = bisect.bisect_right(er, 10000) - 1
-        big = bisect.bisect_right(eg, 10000) - 1
-
-        def confirm_line(fr):
-            cl = {"schema": SCHEMA, "frame": fr, "slot": 0, "serial": fr,
-                  "valid": True,
-                  "head": [0x53484457, 1, fr, 1, 226, 226, 1, 0],
-                  "data": [0] * 1196}
-            # Mass inside narrow bins of the frozen edges (bin of [9984,10112)).
-            cl["data"][0 + 0 * 298 + 34 + birt] = 1000
-            cl["data"][0 + 0 * 298 + 260] = 1000
-            cl["data"][0 + 0 * 298 + 261] = 1000
-            cl["data"][0 + 1 * 298 + 34 + big] = 1000
-            cl["data"][0 + 1 * 298 + 260] = 1000
-            cl["data"][0 + 1 * 298 + 261] = 1000
-            # C3 strata: RT tri primary/recursive + punctual, GI tri fresh/replay.
-            cl["data"][0 + 0 * 298 + 264 + 1 * 2 + 0] = 120
-            cl["data"][0 + 0 * 298 + 264 + 1 * 2 + 1] = 110
-            cl["data"][0 + 0 * 298 + 264 + 4 * 2 + 0] = 100
-            cl["data"][0 + 0 * 298 + 264 + 4 * 2 + 1] = 100
-            cl["data"][0 + 1 * 298 + 264 + 0 * 2 + 0] = 110
-            cl["data"][0 + 1 * 298 + 264 + 0 * 2 + 1] = 105
-            return cl
-
-        with open(os.path.join(cdir, "run.log"), "w") as f:
-            f.write("[NGX] supported=yes backend=none (fake)\n")
-            f.write("[Denoiser] submitted=Off backend=none (fake)\n")
-            for fr in range(41, 61):
-                f.write("[ShadowTail] %s\n" % json.dumps(confirm_line(fr)))
-        with open(os.path.join(cdir, "completion.json"), "w") as f:
-            json.dump({"complete": True,
-                       "ngx_effective": "[NGX] fake",
-                       "denoiser_effective": "[Denoiser] fake"}, f)
-        with open(os.path.join(cdir, "provenance.json"), "w") as f:
-            json.dump({"exe_sha256": sha256_file(exe),
-                       "scene_sha256": sha256_file(scene),
-                       "frames": 60, "config": "C3",
-                       "workload": WORKLOADS["C3"],
-                       "edges_sha256": sha256_file(mout)}, f)
-        ca = argparse.Namespace(run_dirs=[cdir], manifest=mout,
-                               config="C3", ref_exe=exe)
-        check("fake check-freeze passes", cmd_check_freeze(ca) == 0)
-        ovf = confirm_line(45)
-        ovf["data"][0 + 0 * 298 + 34 + 225] = 20000  # all overflow
-        ovf["data"][0 + 0 * 298 + 34 + birt] = 0
-        with open(os.path.join(cdir, "run.log"), "w") as f:
-            f.write("[NGX] supported=yes backend=none (fake)\n")
-            f.write("[Denoiser] submitted=Off backend=none (fake)\n")
-            for fr in range(41, 61):
-                o = confirm_line(fr) if fr != 45 else ovf
-                f.write("[ShadowTail] %s\n" % json.dumps(o))
-        check("fake check-freeze overflow fails",
-              cmd_check_freeze(ca) == 1)
-
-        # Quartet happy path (fake, instant) + deadline INCOMPLETE.
-        qa = argparse.Namespace(
-            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
-            name="b1", frames=60, spp=1, width=64, height=64,
-            edges=mf, control=False, config="", extra_args=[])
-        check("fake quartet complete",
-              run_quartet(qa, run_fn=lambda e, c, w, l, t=0: fake_run(
-                  e, c, w, l, lambda: snap_lines())) == 0)
-        # Budget kill maps to INCOMPLETE (gate undecided at the cap),
-        # never to a failure verdict or a silent pass.
-        check("fake capture timeout incomplete",
-              run_capture(mkargs("tmout"),
-                          run_fn=lambda e, c, w, l, t=None: 124) == 2)
-        qa_to = argparse.Namespace(
-            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
-            name="btimeout", frames=60, spp=1, width=64, height=64,
-            edges=mf, control=False, config="", extra_args=[])
-        check("fake quartet timeout leg incomplete",
-              run_quartet(qa_to,
-                          run_fn=lambda e, c, w, l, t=None: 124) == 2)
-
-        # Fake clock: each monotonic() call advances 100s, so a 1-minute
-        # deadline expires deterministically after the first sub-run.
-        real_mono = time.monotonic
-        clock = [0.0]
-
-        def fake_mono():
-            clock[0] += 100.0
-            return clock[0]
-
-        try:
-            time.monotonic = fake_mono
-            qa2 = argparse.Namespace(**{**vars(qa), "name": "b2"})
-            check("fake quartet deadline incomplete",
-                  run_quartet(qa2, run_fn=lambda e, c, w, l, t=0: fake_run(
-                      e, c, w, l, lambda: snap_lines()),
-                      deadline_min=1) == 2)
-        finally:
-            time.monotonic = real_mono
-
-        # Analyze: fake 4-block campaign (C1, identical R/C → PASS).
-        from PIL import Image as _PILImage
-        adir = os.path.join(tmp, "campaign")
-        os.makedirs(adir)
-        er = frozen["edgesRT"]
-        birt_a = bisect.bisect_right(er, 10000) - 1
-
-        def make_block(bname, slow_cand=False, empty_tail=False,
-                       cfg="C1", gi_mass=False, gi_timings=True):
-            # cfg selects the declared workload seal + GI requirements;
-            # gi_mass fills family-1 histograms (needed for C3/C4
-            # minimums); gi_timings controls GI Temporal records.
-            bdir = os.path.join(adir, bname)
-            os.makedirs(bdir)
-            for sub, shift in (("R_ON", 0), ("R_OFF", 0),
-                               ("C_ON", 1 if slow_cand else 0),
-                               ("C_OFF", 0)):
-                sdir = os.path.join(bdir, sub)
-                os.makedirs(sdir)
-                lines = []
-                lines.append("[NGX] supported=yes backend=none (fake)")
-                lines.append("[Denoiser] submitted=Off backend=none (fake)")
-                for f in range(41, 61):
-                    s = {"schema": SCHEMA, "frame": f, "slot": 0,
-                         "serial": f, "valid": True,
-                         "head": [0x53484457, 1, f, 1, 226, 226, 1, 0],
-                         "data": [0] * 1196}
-                    b = birt_a + (20 if (shift and sub == "C_ON") else 0)
-                    if not empty_tail:
-                        s["data"][0 + 0 * 298 + 34 + b] = 1000
-                        s["data"][0 + 0 * 298 + 260] = 1000
-                        s["data"][0 + 0 * 298 + 261] = 1000
-                        if gi_mass:
-                            s["data"][0 + 1 * 298 + 34 + b] = 1000
-                            s["data"][0 + 1 * 298 + 260] = 1000
-                            s["data"][0 + 1 * 298 + 261] = 1000
-                    else:
-                        # Structurally valid but zero-mass: the analyzer
-                        # must return INCONCLUSIVE, never raise TypeError.
-                        s["data"][0 + 0 * 298 + 260] = 0
-                        s["data"][0 + 0 * 298 + 261] = 0
-                    s["data"][0 + 0 * 298 + 264 + 1 * 2 + 0] = 600
-                    s["data"][0 + 0 * 298 + 264 + 1 * 2 + 1] = 550
-                    s["data"][0 + 0 * 298 + 264 + 4 * 2 + 0] = 700
-                    s["data"][0 + 0 * 298 + 264 + 4 * 2 + 1] = 650
-                    lines.append("[ShadowTail] %s" % json.dumps(s))
-                    regions = '"RT Shading":0.5,'
-                    if gi_timings:
-                        regions += '"ReSTIR GI Temporal":0.3,'
-                    regions += '"GPU Frame":1.0'
-                    lines.append('[HeadlessTiming] {"frame":%d,'
-                                 '"regions_ms":{%s}}' % (f, regions))
-                with open(os.path.join(sdir, "run.log"), "w") as lf:
-                    lf.write("\n".join(lines) + "\n")
-                with open(os.path.join(sdir, "completion.json"), "w") as cf:
-                    json.dump({"complete": True,
-                               "ngx_effective": "[NGX] fake",
-                               "denoiser_effective": "[Denoiser] fake"}, cf)
-                with open(os.path.join(sdir, "provenance.json"), "w") as pf:
-                    json.dump({"exe_sha256": sha256_file(exe),
-                               "scene_sha256": sha256_file(scene),
-                               "frames": 60, "config": cfg,
-                               "workload": WORKLOADS[cfg],
-                               "edges_sha256": sha256_file(mout)}, pf)
-                _PILImage.new("RGB", (8, 8), (10, 20, 30)).save(
-                    os.path.join(sdir, "frame.png"))
-            with open(os.path.join(bdir, "block.json"), "w") as bf:
-                json.dump({"block": bname, "complete": True, "results": {
-                    "R_ON": "complete", "R_OFF": "complete",
-                    "C_ON": "complete", "C_OFF": "complete",
-                    "R_timing_parity": "complete",
-                    "C_timing_parity": "complete",
-                    "R_image_parity": "complete",
-                    "C_image_parity": "complete"}}, bf)
-
-        for bname in ("k1", "k2", "k3", "k4"):
-            make_block(bname)
-        ana = argparse.Namespace(
-            block_dirs=[os.path.join(adir, b) for b in
-                        ("k1", "k2", "k3", "k4")],
-            manifest=mout, ref_exe=exe, config="C1")
-        check("fake analyze passes", cmd_analyze(ana) == 0)
-        for bname in ("j1", "j2", "j3", "j4"):
-            make_block(bname, slow_cand=True)
-        ana2 = argparse.Namespace(
-            block_dirs=[os.path.join(adir, b) for b in
-                        ("j1", "j2", "j3", "j4")],
-            manifest=mout, ref_exe=exe, config="C1")
-        check("fake analyze slow-candidate fails",
-              cmd_analyze(ana2) == 1)
-        ana3 = argparse.Namespace(
-            block_dirs=[os.path.join(adir, b) for b in ("k1", "k2", "k3")],
-            manifest=mout, ref_exe=exe, config="C1")
-        check("fake analyze 3-block inconclusive",
-              cmd_analyze(ana3) == 2)
-        # Empty-tail campaign (Sol round-3 repro): structurally valid
-        # but zero-mass snapshots must yield INCONCLUSIVE exit 2 —
-        # never TypeError from unpacking a missing p95 bracket.
-        for bname in ("e1", "e2", "e3", "e4"):
-            make_block(bname, empty_tail=True)
-        ana4 = argparse.Namespace(
-            block_dirs=[os.path.join(adir, b) for b in
-                        ("e1", "e2", "e3", "e4")],
-            manifest=mout, ref_exe=exe, config="C1")
-        try:
-            rc_empty = cmd_analyze(ana4)
-        except TypeError as e:
-            print("FAIL - empty-tail analyze raised TypeError: %s" % e)
-            rc_empty = -1
-        check("fake analyze empty-tail inconclusive (no TypeError)",
-              rc_empty == 2)
-        # Mixed scene identity across blocks fails closed (never pooled).
-        with open(os.path.join(adir, "k1", "R_ON",
-                               "provenance.json")) as pf:
-            k1prov = json.load(pf)
-        k1prov["scene_sha256"] = "0" * 64
-        with open(os.path.join(adir, "k1", "R_ON",
-                               "provenance.json"), "w") as pf:
-            json.dump(k1prov, pf)
-        check("fake analyze mixed identity fails",
-              cmd_analyze(ana) == 1)
-
-        # Quartet WITH config: OFF legs must skip coverage (they carry
-        # none by design) while ON legs enforce it. snap_lines carries
-        # C1 strata; C1 ON legs pass, OFF legs pass without coverage.
-        def c1_lines():
-            return snap_lines()
-        qa3 = argparse.Namespace(
-            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
-            name="b3", frames=60, spp=1, width=64, height=64,
-            edges=mf, control=False, config="C1", extra_args=[])
-        # good[] carries C1 RT tri/punctual strata (>=50 each) — reuse it.
-        check("fake quartet with config passes OFF legs",
-              run_quartet(qa3, run_fn=lambda e, c, w, l, t=0: fake_run(
-                  e, c, w, l, c1_lines)) == 0)
-
         # Campaign driver: full calib (18 runs) + accept (64 runs) tables
         # with injected fake processes. Trial/confirm mass sits in the
-        # k=13 doubling bin, so the derived freeze matches `frozen`
-        # above (226 edges); confirms carry generous strata for every
-        # config's coverage matrix.
-        birt_c = bisect.bisect_right(er, 10000) - 1
+        # k=13 doubling bin by construction (5000 counts/line); the
+        # campaign's own derive-freeze verifies the resulting 226-edge
+        # freeze, and the sealed-equality check below pins the
+        # assumption. Confirms carry generous strata for every config's
+        # coverage matrix.
+        import bisect as _bisect_campaign
+        birt_c = _bisect_campaign.bisect_right(
+            build_edges(8192, 16384), 10000) - 1
         scenes = {}
         written = set()
         for cfg in ("C1", "C2", "C3", "C4"):
@@ -2921,45 +2897,308 @@ def self_test():
             camp = json.load(f)
         check("fake calib 33 stages staged",
               len(camp["stages"]) == 33 and camp["complete"] is True)
+        # The campaign seals its own freeze with the full calibration
+        # evidence; downstream acceptance tests consume THIS sealed
+        # file (a trials-only freeze can never unlock acceptance).
+        sealed = os.path.join(tmp, "calib1", "frozen-edges.json")
+        with open(sealed) as f:
+            sealed_manifest = json.load(f)
+        with open(seal_path_for(sealed)) as f:
+            sealed_sidecar = json.load(f)
+        check("fake calib freeze sealed",
+              sealed_sidecar.get("sealed") is True and
+              sealed_sidecar.get("freeze_sha256") == sha256_file(sealed))
+        check("fake sealed edges match fixture assumption",
+              sealed_manifest["edgesRT"] == build_edges(8192, 16384) and
+              len(sealed_manifest["edgesRT"]) == 226)
+        sealed_birt = _bisect_campaign.bisect_right(
+            sealed_manifest["edgesRT"], 10000) - 1
+        check("fake sealed assumption consistent", sealed_birt == birt_c)
         # Legacy parity is byte identity: corrupt one legacy frame and
-        # the parity gate must fail (fail-closed, never silent).
-        with open(os.path.join(tmp, "calib1", "legacy-C1",
-                               "frame.png"), "wb") as pf:
+        # the parity gate must fail (fail-closed, never silent) — then
+        # RESTORE the evidence byte-for-byte (acceptance revalidates
+        # the same calibration evidence below).
+        legacy_frame = os.path.join(tmp, "calib1", "legacy-C1", "frame.png")
+        with open(legacy_frame, "rb") as pf:
+            legacy_bytes = pf.read()
+        with open(legacy_frame, "wb") as pf:
             pf.write(b"tampered!")
         check("fake legacy parity detects tamper",
               check_legacy_parity(
                   os.path.join(tmp, "calib1", "off-C1"),
                   os.path.join(tmp, "calib1", "legacy-C1")) != "complete")
+        with open(legacy_frame, "wb") as pf:
+            pf.write(legacy_bytes)
+        check("fake legacy evidence restored",
+              check_legacy_parity(
+                  os.path.join(tmp, "calib1", "off-C1"),
+                  os.path.join(tmp, "calib1", "legacy-C1")) == "complete")
 
-        # Acceptance runs against a freeze derived from THIS campaign's
-        # own calibration trials (the real workflow: calib → freeze →
-        # accept on the same fixtures and reference binary).
-        acc_trials = [os.path.join(tmp, "calib1", "trial-%s" % c)
-                      for c in CONFIGS]
-        acc_freeze = os.path.join(tmp, "accept-freeze.json")
-        da_acc = argparse.Namespace(trial_dirs=acc_trials, ref_exe=exe,
-                                    out=acc_freeze)
-        check("fake calib freeze derives for accept",
-              cmd_derive_freeze(da_acc) == 0)
+
+        # check-freeze pass + fail paths on an explicit confirmation
+        # rundir (full measured window, sealed provenance).
+        cdir = os.path.join(tmp, "confirm")
+        os.makedirs(cdir)
+        from PIL import Image as _CfmImage
+        _CfmImage.new("RGB", (8, 8), (10, 20, 30)).save(
+            os.path.join(cdir, "frame.png"))
+        import bisect
+        er, eg = (sealed_manifest["edgesRT"], sealed_manifest["edgesGI"])
+        birt = bisect.bisect_right(er, 10000) - 1
+        big = bisect.bisect_right(eg, 10000) - 1
+
+        def confirm_line(fr):
+            cl = {"schema": SCHEMA, "frame": fr, "slot": 0, "serial": fr,
+                  "valid": True,
+                  "head": [0x53484457, 1, fr, 1, 226, 226, 1, 0],
+                  "data": [0] * 1196}
+            # Mass inside narrow bins of the frozen edges (bin of [9984,10112)).
+            cl["data"][0 + 0 * 298 + 34 + birt] = 1000
+            cl["data"][0 + 0 * 298 + 260] = 1000
+            cl["data"][0 + 0 * 298 + 261] = 1000
+            cl["data"][0 + 1 * 298 + 34 + big] = 1000
+            cl["data"][0 + 1 * 298 + 260] = 1000
+            cl["data"][0 + 1 * 298 + 261] = 1000
+            # C3 strata: RT tri primary/recursive + punctual, GI tri fresh/replay.
+            cl["data"][0 + 0 * 298 + 264 + 1 * 2 + 0] = 120
+            cl["data"][0 + 0 * 298 + 264 + 1 * 2 + 1] = 110
+            cl["data"][0 + 0 * 298 + 264 + 4 * 2 + 0] = 100
+            cl["data"][0 + 0 * 298 + 264 + 4 * 2 + 1] = 100
+            cl["data"][0 + 1 * 298 + 264 + 0 * 2 + 0] = 110
+            cl["data"][0 + 1 * 298 + 264 + 0 * 2 + 1] = 105
+            return cl
+
+        with open(os.path.join(cdir, "run.log"), "w") as f:
+            f.write("[NGX] supported=yes backend=none (fake)\n")
+            f.write("[Denoiser] submitted=Off backend=none (fake)\n")
+            for fr in range(41, 61):
+                f.write("[ShadowTail] %s\n" % json.dumps(confirm_line(fr)))
+        with open(os.path.join(cdir, "completion.json"), "w") as f:
+            json.dump({"complete": True,
+                       "ngx_effective": "[NGX] fake",
+                       "denoiser_effective": "[Denoiser] fake"}, f)
+        with open(os.path.join(cdir, "provenance.json"), "w") as f:
+            json.dump({"exe_sha256": sha256_file(exe),
+                       "scene_sha256": sha256_file(scene),
+                       "frames": 60, "config": "C3",
+                       "workload": WORKLOADS["C3"],
+                       "edges_sha256": sha256_file(sealed)}, f)
+        ca = argparse.Namespace(run_dirs=[cdir], manifest=sealed,
+                               config="C3", ref_exe=exe)
+        check("fake check-freeze passes", cmd_check_freeze(ca) == 0)
+        ovf = confirm_line(45)
+        ovf["data"][0 + 0 * 298 + 34 + 225] = 20000  # all overflow
+        ovf["data"][0 + 0 * 298 + 34 + birt] = 0
+        with open(os.path.join(cdir, "run.log"), "w") as f:
+            f.write("[NGX] supported=yes backend=none (fake)\n")
+            f.write("[Denoiser] submitted=Off backend=none (fake)\n")
+            for fr in range(41, 61):
+                o = confirm_line(fr) if fr != 45 else ovf
+                f.write("[ShadowTail] %s\n" % json.dumps(o))
+        check("fake check-freeze overflow fails",
+              cmd_check_freeze(ca) == 1)
+
+        # Quartet happy path (fake, instant) + deadline INCOMPLETE.
+        qa = argparse.Namespace(
+            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+            name="b1", frames=60, spp=1, width=64, height=64,
+            edges=mf, control=False, config="", extra_args=[])
+        check("fake quartet complete",
+              run_quartet(qa, run_fn=lambda e, c, w, l, t=0: fake_run(
+                  e, c, w, l, lambda: snap_lines())) == 0)
+        # Budget kill maps to INCOMPLETE (gate undecided at the cap),
+        # never to a failure verdict or a silent pass.
+        check("fake capture timeout incomplete",
+              run_capture(mkargs("tmout"),
+                          run_fn=lambda e, c, w, l, t=None: 124) == 2)
+        qa_to = argparse.Namespace(
+            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+            name="btimeout", frames=60, spp=1, width=64, height=64,
+            edges=mf, control=False, config="", extra_args=[])
+        check("fake quartet timeout leg incomplete",
+              run_quartet(qa_to,
+                          run_fn=lambda e, c, w, l, t=None: 124) == 2)
+
+        # Fake clock: each monotonic() call advances 100s, so a 1-minute
+        # deadline expires deterministically after the first sub-run.
+        real_mono = time.monotonic
+        clock = [0.0]
+
+        def fake_mono():
+            clock[0] += 100.0
+            return clock[0]
+
+        try:
+            time.monotonic = fake_mono
+            qa2 = argparse.Namespace(**{**vars(qa), "name": "b2"})
+            check("fake quartet deadline incomplete",
+                  run_quartet(qa2, run_fn=lambda e, c, w, l, t=0: fake_run(
+                      e, c, w, l, lambda: snap_lines()),
+                      deadline_min=1) == 2)
+        finally:
+            time.monotonic = real_mono
+
+        # Analyze: fake 4-block campaign (C1, identical R/C → PASS).
+        # Bin placement follows the SEALED calibration edges (same
+        # frozen formula the campaign derived).
+        from PIL import Image as _PILImage
+        adir = os.path.join(tmp, "campaign")
+        os.makedirs(adir)
+        er = sealed_manifest["edgesRT"]
+        birt_a = bisect.bisect_right(er, 10000) - 1
+
+        def make_block(bname, slow_cand=False, empty_tail=False,
+                       cfg="C1", gi_mass=False, gi_timings=True):
+            # cfg selects the declared workload seal + GI requirements;
+            # gi_mass fills family-1 histograms (needed for C3/C4
+            # minimums); gi_timings controls GI Temporal records.
+            bdir = os.path.join(adir, bname)
+            os.makedirs(bdir)
+            for sub, shift in (("R_ON", 0), ("R_OFF", 0),
+                               ("C_ON", 1 if slow_cand else 0),
+                               ("C_OFF", 0)):
+                sdir = os.path.join(bdir, sub)
+                os.makedirs(sdir)
+                lines = []
+                lines.append("[NGX] supported=yes backend=none (fake)")
+                lines.append("[Denoiser] submitted=Off backend=none (fake)")
+                for f in range(41, 61):
+                    s = {"schema": SCHEMA, "frame": f, "slot": 0,
+                         "serial": f, "valid": True,
+                         "head": [0x53484457, 1, f, 1, 226, 226, 1, 0],
+                         "data": [0] * 1196}
+                    b = birt_a + (20 if (shift and sub == "C_ON") else 0)
+                    if not empty_tail:
+                        s["data"][0 + 0 * 298 + 34 + b] = 1000
+                        s["data"][0 + 0 * 298 + 260] = 1000
+                        s["data"][0 + 0 * 298 + 261] = 1000
+                        if gi_mass:
+                            s["data"][0 + 1 * 298 + 34 + b] = 1000
+                            s["data"][0 + 1 * 298 + 260] = 1000
+                            s["data"][0 + 1 * 298 + 261] = 1000
+                    else:
+                        # Structurally valid but zero-mass: the analyzer
+                        # must return INCONCLUSIVE, never raise TypeError.
+                        s["data"][0 + 0 * 298 + 260] = 0
+                        s["data"][0 + 0 * 298 + 261] = 0
+                    s["data"][0 + 0 * 298 + 264 + 1 * 2 + 0] = 600
+                    s["data"][0 + 0 * 298 + 264 + 1 * 2 + 1] = 550
+                    s["data"][0 + 0 * 298 + 264 + 4 * 2 + 0] = 700
+                    s["data"][0 + 0 * 298 + 264 + 4 * 2 + 1] = 650
+                    lines.append("[ShadowTail] %s" % json.dumps(s))
+                    regions = '"RT Shading":0.5,'
+                    if gi_timings:
+                        regions += '"ReSTIR GI Temporal":0.3,'
+                    regions += '"GPU Frame":1.0'
+                    lines.append('[HeadlessTiming] {"frame":%d,'
+                                 '"regions_ms":{%s}}' % (f, regions))
+                with open(os.path.join(sdir, "run.log"), "w") as lf:
+                    lf.write("\n".join(lines) + "\n")
+                with open(os.path.join(sdir, "completion.json"), "w") as cf:
+                    json.dump({"complete": True,
+                               "ngx_effective": "[NGX] fake",
+                               "denoiser_effective": "[Denoiser] fake"}, cf)
+                with open(os.path.join(sdir, "provenance.json"), "w") as pf:
+                    json.dump({"exe_sha256": sha256_file(exe),
+                               "scene_sha256": sha256_file(scene),
+                               "frames": 60, "config": cfg,
+                               "workload": WORKLOADS[cfg],
+                               "edges_sha256": sha256_file(sealed)}, pf)
+                _PILImage.new("RGB", (8, 8), (10, 20, 30)).save(
+                    os.path.join(sdir, "frame.png"))
+            with open(os.path.join(bdir, "block.json"), "w") as bf:
+                json.dump({"block": bname, "complete": True, "results": {
+                    "R_ON": "complete", "R_OFF": "complete",
+                    "C_ON": "complete", "C_OFF": "complete",
+                    "R_timing_parity": "complete",
+                    "C_timing_parity": "complete",
+                    "R_image_parity": "complete",
+                    "C_image_parity": "complete"}}, bf)
+
+        for bname in ("k1", "k2", "k3", "k4"):
+            make_block(bname)
+        ana = argparse.Namespace(
+            block_dirs=[os.path.join(adir, b) for b in
+                        ("k1", "k2", "k3", "k4")],
+            manifest=sealed, ref_exe=exe, config="C1")
+        check("fake analyze passes", cmd_analyze(ana) == 0)
+        for bname in ("j1", "j2", "j3", "j4"):
+            make_block(bname, slow_cand=True)
+        ana2 = argparse.Namespace(
+            block_dirs=[os.path.join(adir, b) for b in
+                        ("j1", "j2", "j3", "j4")],
+            manifest=sealed, ref_exe=exe, config="C1")
+        check("fake analyze slow-candidate fails",
+              cmd_analyze(ana2) == 1)
+        ana3 = argparse.Namespace(
+            block_dirs=[os.path.join(adir, b) for b in ("k1", "k2", "k3")],
+            manifest=sealed, ref_exe=exe, config="C1")
+        check("fake analyze 3-block inconclusive",
+              cmd_analyze(ana3) == 2)
+        # Empty-tail campaign (Sol round-3 repro): structurally valid
+        # but zero-mass snapshots must yield INCONCLUSIVE exit 2 —
+        # never TypeError from unpacking a missing p95 bracket.
+        for bname in ("e1", "e2", "e3", "e4"):
+            make_block(bname, empty_tail=True)
+        ana4 = argparse.Namespace(
+            block_dirs=[os.path.join(adir, b) for b in
+                        ("e1", "e2", "e3", "e4")],
+            manifest=sealed, ref_exe=exe, config="C1")
+        try:
+            rc_empty = cmd_analyze(ana4)
+        except TypeError as e:
+            print("FAIL - empty-tail analyze raised TypeError: %s" % e)
+            rc_empty = -1
+        check("fake analyze empty-tail inconclusive (no TypeError)",
+              rc_empty == 2)
+        # Mixed scene identity across blocks fails closed (never pooled).
+        with open(os.path.join(adir, "k1", "R_ON",
+                               "provenance.json")) as pf:
+            k1prov = json.load(pf)
+        k1prov["scene_sha256"] = "0" * 64
+        with open(os.path.join(adir, "k1", "R_ON",
+                               "provenance.json"), "w") as pf:
+            json.dump(k1prov, pf)
+        check("fake analyze mixed identity fails",
+              cmd_analyze(ana) == 1)
+
+        # Quartet WITH config: OFF legs must skip coverage (they carry
+        # none by design) while ON legs enforce it. snap_lines carries
+        # C1 strata; C1 ON legs pass, OFF legs pass without coverage.
+        def c1_lines():
+            return snap_lines()
+        qa3 = argparse.Namespace(
+            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+            name="b3", frames=60, spp=1, width=64, height=64,
+            edges=mf, control=False, config="C1", extra_args=[])
+        # good[] carries C1 RT tri/punctual strata (>=50 each) — reuse it.
+        check("fake quartet with config passes OFF legs",
+              run_quartet(qa3, run_fn=lambda e, c, w, l, t=0: fake_run(
+                  e, c, w, l, c1_lines)) == 0)
+
+        # Acceptance runs against the SEALED calibration freeze from
+        # the campaign above (same fixtures, same reference binary).
+        # No separate pilot-only freeze is derived for acceptance.
         accept = argparse.Namespace(
             mode="accept", ref_exe=exe, cand_exe=exe, legacy_exe="",
             scene_C1=scenes["C1"], scene_C2=scenes["C2"],
             scene_C3=scenes["C3"], scene_C4=scenes["C4"],
-            out_root=tmp, name="accept1", freeze=acc_freeze)
+            out_root=tmp, name="accept1", freeze=sealed)
         check("fake accept campaign completes",
               run_campaign(accept, run_fn=camp_fake) == 0)
         with open(os.path.join(tmp, "accept1", "campaign.json")) as f:
             acc = json.load(f)
         check("fake accept 64 runs + 4 analyzes staged",
               len(acc["stages"]) == 20 and acc["complete"] is True)
-        # Accept with a foreign freeze (mout, from different fixtures)
-        # must fail the calibration-identity binding.
+        # Accept with a pilot-only freeze (mout: trials but no
+        # calibration seal, different fixtures) must fail — a valid
+        # trial-derived Q alone does not certify the calibration.
         accept_foreign = argparse.Namespace(
             mode="accept", ref_exe=exe, cand_exe=exe, legacy_exe="",
             scene_C1=scenes["C1"], scene_C2=scenes["C2"],
             scene_C3=scenes["C3"], scene_C4=scenes["C4"],
             out_root=tmp, name="accept-foreign", freeze=mout)
-        check("fake accept foreign freeze rejected",
+        check("fake accept pilot-only freeze rejected",
               run_campaign(accept_foreign, run_fn=camp_fake) != 0)
 
         # --- Round-5 adversarial cases (each review repro, actual paths) ---
@@ -3007,7 +3246,7 @@ def self_test():
               if os.path.exists(tiny_abs) else True)
 
         # --- Round-4 adversarial cases (each review repro, actual paths) ---
-        fRT, fGI = frozen["edgesRT"], frozen["edgesGI"]
+        fRT, fGI = (sealed_manifest["edgesRT"], sealed_manifest["edgesGI"])
 
         def write_runlog(parent, name, lines, prov_extra):
             rdir = os.path.join(parent, name)
@@ -3025,7 +3264,7 @@ def self_test():
                     "scene_sha256": sha256_file(scene),
                     "frames": 60, "config": "C1",
                     "workload": WORKLOADS["C1"],
-                    "edges_sha256": sha256_file(mout)}
+                    "edges_sha256": sha256_file(sealed)}
             prov.update(prov_extra)
             with open(os.path.join(rdir, "provenance.json"), "w") as f:
                 json.dump(prov, f)
@@ -3067,7 +3306,7 @@ def self_test():
         ana_gi = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("g1", "g2", "g3", "g4")],
-            manifest=mout, ref_exe=exe, config="C3")
+            manifest=sealed, ref_exe=exe, config="C3")
         check("fake analyze missing-GI inconclusive",
               cmd_analyze(ana_gi) == 2)
         # C3 WITH GI records analyzes clean (gate is about evidence).
@@ -3076,7 +3315,7 @@ def self_test():
         ana_gi2 = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("h1", "h2", "h3", "h4")],
-            manifest=mout, ref_exe=exe, config="C3")
+            manifest=sealed, ref_exe=exe, config="C3")
         check("fake analyze C3 with GI passes", cmd_analyze(ana_gi2) == 0)
 
         # Workload-tampered provenance fails analysis (frozen seal).
@@ -3108,7 +3347,7 @@ def self_test():
               cmd_check_freeze(ca_hand) == 1)
         # Tampered edge values break the lineage edge seal.
         tam = os.path.join(tmp, "tampered-freeze.json")
-        with open(mout) as f:
+        with open(sealed) as f:
             mcopy = json.load(f)
         mcopy["edgesRT"] = list(mcopy["edgesRT"])
         mcopy["edgesRT"][1] += 1
@@ -3119,7 +3358,7 @@ def self_test():
 
         # check-freeze binds the requested config: C3 evidence presented
         # as C1 must fail.
-        ca_wrong = argparse.Namespace(run_dirs=[cdir], manifest=mout,
+        ca_wrong = argparse.Namespace(run_dirs=[cdir], manifest=sealed,
                                       config="C1", ref_exe=exe)
         check("fake check-freeze wrong config rejected",
               cmd_check_freeze(ca_wrong) == 1)
@@ -3196,11 +3435,11 @@ def self_test():
         hrdir = os.path.join(tmp, "headroom")
         os.makedirs(hrdir)
 
-        def write_timed(name,legung_r, legung_gi=True):
+        def write_timed(name,legung_r, legung_gi=True, frames=None):
             rdir = os.path.join(hrdir, name)
             os.makedirs(rdir)
             with open(os.path.join(rdir, "run.log"), "w") as f:
-                for fr in range(41, 61):
+                for fr in frames if frames is not None else range(41, 61):
                     regions = '"RT Shading":%s,' % legung_r
                     if legung_gi:
                         regions += '"ReSTIR GI Temporal":0.3,'
@@ -3222,12 +3461,21 @@ def self_test():
               check_calib_headroom(on_nogi, off_nogi, "C3") != "")
         check("headroom C1 GI absence exempt",
               check_calib_headroom(on_nogi, off_nogi, "C1") == "")
+        # One-frame timing samples fail in the calibration path for
+        # both RT (C1) and GI (C3) — medians over a 1/20 window prove
+        # no 3% ceiling.
+        on_thin = write_timed("on-thin", 0.5, frames=[41])
+        off_thin = write_timed("off-thin", 0.5, frames=[41])
+        check("headroom one-frame RT fails",
+              check_calib_headroom(on_thin, off_thin, "C1") != "")
+        check("headroom one-frame GI fails",
+              check_calib_headroom(on_thin, off_thin, "C3") != "")
 
         # --- Round-5 adversarial cases (each review repro, actual paths) ---
         # Forged lineage: plausible strings, valid configs, recomputed
         # edge digest — but trial dirs that do not exist. The seal
         # arithmetic passes; source revalidation must fail.
-        with open(mout) as f:
+        with open(sealed) as f:
             forged = json.load(f)
         forged["lineage"]["trials"] = {
             cfg: dict(rec, dir=os.path.join(tmp, "no-such-trial-%s" % cfg))
@@ -3243,9 +3491,10 @@ def self_test():
             manifest=forged_path, ref_exe=exe, config="C1")
         check("fake analyze forged lineage rejected",
               cmd_analyze(ana_forged) == 1)
-        # Gutted trial: flip a real trial's completion after derivation
-        # → check-freeze lineage revalidation fails; then restore.
-        gut_path = os.path.join(pdir, "T1", "completion.json")
+        # Gutted trial: flip a real calibration trial's completion
+        # after sealing → lineage revalidation fails; then restore.
+        gut_path = os.path.join(tmp, "calib1", "trial-C1",
+                                "completion.json")
         with open(gut_path) as f:
             gut_orig = f.read()
         with open(gut_path, "w") as f:
@@ -3423,6 +3672,100 @@ def self_test():
             ncm = json.load(f)
         check("fake lump over-cap recorded",
               ncm["complete"] is False and ncm.get("over_cap") is True)
+
+        # Launch-gate units: None means standalone-uncapped, zero and
+        # negative mean SKIP (never the uncapped mode), positives pass
+        # through as shares.
+        real_mono_gate = time.monotonic
+        try:
+            time.monotonic = lambda: 1000.0
+            check("launch gate standalone uncapped",
+                  remaining_timeout(None, 4) is None)
+            check("launch gate past deadline skips",
+                  remaining_timeout(999.0, 4) == "SKIP")
+            check("launch gate exact-zero skips",
+                  remaining_timeout(1000.0, 4) == "SKIP")
+            check("launch gate positive shares",
+                  remaining_timeout(1060.0, 4) == 0.25)
+        finally:
+            time.monotonic = real_mono_gate
+        # Scripted-clock race: the expiry check passes (clock <
+        # deadline) but the clock reaches the deadline before the share
+        # is computed — the leg must NOT launch (zero launches) and
+        # must record INCOMPLETE, never an uncapped spawn.
+        race_clock = [0.0, 0.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0,
+                      60.0, 60.0]
+        race_launches = [0]
+
+        def race_fake(exe_, cmd, cwd, logpath, timeout_min=None):
+            race_launches[0] += 1
+            return fake_run(exe_, cmd, cwd, logpath, lambda: snap_lines())
+
+        real_mono_race = time.monotonic
+        try:
+            time.monotonic = lambda: (race_clock.pop(0)
+                                      if race_clock else 60.0)
+            # deadline_min is a run_quartet parameter (not a Namespace
+            # field): the scripted clock passes the expiry check
+            # (0 < 60) then reports zero remaining at share time.
+            rc_race = run_quartet(
+                argparse.Namespace(
+                    ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+                    name="race1", frames=60, spp=1, width=64, height=64,
+                    edges=mf, control=False, config="", extra_args=[]),
+                run_fn=race_fake, deadline_min=1)
+        finally:
+            time.monotonic = real_mono_race
+        check("fake race zero-budget never launches",
+              race_launches[0] == 0 and rc_race == 2)
+
+        # Relative-root capture: launched argv carries ABSOLUTE scene,
+        # edges and output-display paths, CWD is the exe dir, and the
+        # frame is written/read at the real requested target.
+        seen_argv = []
+
+        def spy_fake(exe_, cmd, cwd, logpath, timeout_min=None):
+            seen_argv.append((list(cmd), cwd))
+            return fake_run(exe_, cmd, cwd, logpath,
+                            lambda: snap_lines())
+
+        rel_root = os.path.relpath(tmp, os.getcwd())
+        a_rel = mkargs("relroot", edges=mf)
+        a_rel.out_root = rel_root
+        a_rel.name = "relroot-%s" % os.path.basename(tmp)
+        check("fake relative-root capture completes",
+              run_capture(a_rel, run_fn=spy_fake) == 0)
+        if seen_argv:
+            argv, argv_cwd = seen_argv[0]
+            edge_idx = argv.index("--shadow-tail-edges") + 1
+            out_idx = argv.index("--output-display") + 1
+            scene_idx = argv.index("--scene") + 1
+            check("fake argv paths absolute",
+                  os.path.isabs(argv[edge_idx]) and
+                  os.path.isabs(argv[out_idx]) and
+                  os.path.isabs(argv[scene_idx]))
+            check("fake argv CWD is exe dir",
+                  argv_cwd == os.path.dirname(os.path.abspath(exe)))
+            check("fake frame at requested target",
+                  os.path.exists(argv[out_idx]))
+        else:
+            check("fake argv recorded", False)
+
+        # Calibration recompute on tampered evidence: corrupt a
+        # retained OFF frame inside the sealed campaign → parity
+        # recomputation fails (proves gates rerun, not trusted).
+        off2_frame = os.path.join(tmp, "calib1", "legacy-C2", "frame.png")
+        with open(off2_frame, "rb") as pf:
+            off2_bytes = pf.read()
+        with open(off2_frame, "wb") as pf:
+            pf.write(b"tampered!")
+        with open(sealed) as f:
+            sealed_for_recompute = json.load(f)
+        check("fake recompute detects tampered evidence",
+              revalidate_calibration(sealed_for_recompute, sealed, exe)
+              != "")
+        with open(off2_frame, "wb") as pf:
+            pf.write(off2_bytes)
 
         # Missing tail SPVs fail diag captures loudly.
         bare = os.path.join(tmp, "bare")
