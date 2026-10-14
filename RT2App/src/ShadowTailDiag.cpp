@@ -4,8 +4,6 @@
 #include "RTLog.h"
 
 #include <cstring>
-#include <sstream>
-
 bool ShadowTailDiag::Init(const GpuDevice& device, uint32_t frameSlotCount)
 {
     if (IsAvailable())
@@ -114,6 +112,26 @@ void ShadowTailDiag::BeginFrame(VkCommandBuffer cmd, uint32_t frameSlot,
     if (!IsAvailable() || frameSlot >= m_FrameSlotCount)
         return;
 
+    // Cross-frame ordering FIRST: the previous frame's readback copy
+    // (transfer read of this buffer) must complete before this frame's
+    // header update + counter clear (transfer writes). Same-queue submit
+    // order alone does not create this memory dependency across command
+    // buffers; without it the next clear/header update may race the
+    // previous copy or still-running producers (plan §5: next clear
+    // waits for the previous copy's transfer read).
+    VkBufferMemoryBarrier orderBarrier = {};
+    orderBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    orderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    orderBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    orderBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    orderBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    orderBarrier.buffer = m_DeviceBuffer.buffer;
+    orderBarrier.offset = 0;
+    orderBarrier.size = kBytesTotal;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 1, &orderBarrier, 0, nullptr);
+
     // Header + frozen edges first (vkCmdUpdateBuffer: 1840 B, one shot),
     // then zero the counter region. Both TRANSFER_DST writes precede the
     // transfer->RT/compute barrier below.
@@ -198,51 +216,25 @@ ShadowTailDiag::Snapshot ShadowTailDiag::SnapshotFrom(const uint32_t* words,
                                                       uint32_t expEdgeRT,
                                                       uint32_t expEdgeGI) const
 {
+    // Thin wrapper over the tested core: data words are ALWAYS recovered
+    // past structural checks (pilot + control carry real counters), while
+    // `valid` stays reserved for acceptance-usable snapshots.
     Snapshot snapshot;
     snapshot.frameIndex = frameIndex;
     snapshot.valid = false;
-    for (uint32_t i = 0; i < kHeaderU32; ++i)
-        snapshot.head[i] = words[i];
-    if (snapshot.head[0] != kMagic)
+    if (words == nullptr)
     {
-        snapshot.invalidReason = "bad magic";
+        snapshot.invalidReason = "null buffer";
         return snapshot;
     }
-    if (snapshot.head[1] != kVersion)
-    {
-        snapshot.invalidReason = "version mismatch";
-        return snapshot;
-    }
-    if (snapshot.head[3] != 1u)
-    {
-        snapshot.invalidReason = "mode is not ON";
-        return snapshot;
-    }
-    if (snapshot.head[2] != static_cast<uint32_t>(frameIndex & 0xFFFFFFFFull))
-    {
-        snapshot.invalidReason = "header frame differs from submitted slot";
-        return snapshot;
-    }
-    if (snapshot.head[6] != kVariantTag)
-    {
-        snapshot.invalidReason = "variant tag mismatch (not staged ON data)";
-        return snapshot;
-    }
-    if (snapshot.head[4] < 2u || snapshot.head[4] > kEdgesPerFamily ||
-        snapshot.head[5] < 2u || snapshot.head[5] > kEdgesPerFamily)
-    {
-        snapshot.invalidReason = "edge counts outside manifest capacity";
-        return snapshot;
-    }
-    if (snapshot.head[4] != expEdgeRT || snapshot.head[5] != expEdgeGI)
-    {
-        snapshot.invalidReason = "edge counts differ from staged manifest";
-        return snapshot;
-    }
-    snapshot.data.assign(words, words + kTotalU32);
-    // Per-family validation on the completed slot is done by
-    // ValidateSlot below (needs the slot index, not just the words).
-    snapshot.valid = true;
+    uint32_t data[shadowtail::kTotalU32];
+    std::string reason;
+    const bool ok = shadowtail::ValidateSnapshotWords(
+        words, shadowtail::kTotalU32, frameIndex, expEdgeRT, expEdgeGI,
+        snapshot.head.data(), data, shadowtail::kTotalU32, reason);
+    snapshot.data.assign(data, data + shadowtail::kTotalU32);
+    snapshot.valid = ok;
+    snapshot.invalidReason = ok ? "" : reason;
     return snapshot;
 }
 
@@ -385,25 +377,19 @@ std::vector<ShadowTailDiag::Snapshot> ShadowTailDiag::DrainNewSnapshots()
 
 std::string ShadowTailDiag::SnapshotToJson(const Snapshot& snapshot)
 {
-    std::ostringstream out;
-    out << "{\"schema\":\"rt2.shadow-tail.v1\",\"frame\":" << snapshot.frameIndex
-        << ",\"slot\":" << snapshot.slot << ",\"serial\":" << snapshot.serial
-        << ",\"valid\":" << (snapshot.valid ? "true" : "false");
-    if (!snapshot.valid)
-    {
-        out << ",\"reason\":\"" << snapshot.invalidReason << "\"}";
-        return out.str();
-    }
-    out << ",\"head\":[";
-    for (uint32_t i = 0; i < kHeaderU32; ++i)
-        out << (i ? "," : "") << snapshot.head[i];
-    // Counter region only (edges live in the frozen manifest, referenced
-    // by frame + edge counts): slots follow the header+edges in full layout.
-    constexpr uint32_t kDataBase = kHeaderU32 + 2u * kEdgesPerFamily;
-    constexpr uint32_t kDataCount = kTotalU32 - kDataBase;
-    out << "],\"data\":[";
-    for (uint32_t i = 0; i < kDataCount; ++i)
-        out << (i ? "," : "") << snapshot.data[kDataBase + i];
-    out << "]}";
-    return out.str();
+    // Thin wrapper over the tested core (pilot/mode/reason/edge rules in
+    // one place; the golden outputs are pinned by unit tests).
+    const uint32_t* dataPtr =
+        snapshot.data.empty() ? nullptr : snapshot.data.data();
+    // Core requires full kTotalU32 words; snapshots that failed before the
+    // data copy carry an empty vector — serialize zeros explicitly so the
+    // schema (not the values) stays intact. Such snapshots are invalid by
+    // construction (their reason says why).
+    static const std::vector<uint32_t> kZeros(shadowtail::kTotalU32, 0u);
+    if (dataPtr == nullptr || snapshot.data.size() != shadowtail::kTotalU32)
+        dataPtr = kZeros.data();
+    return shadowtail::SnapshotJson(snapshot.frameIndex, snapshot.slot,
+                                    snapshot.serial, snapshot.valid,
+                                    snapshot.invalidReason, snapshot.head.data(),
+                                    dataPtr);
 }

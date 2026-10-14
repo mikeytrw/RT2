@@ -275,6 +275,10 @@ public:
 	// Wait for submitted frames and collect the newest timestamp slot. Intended
 	// for headless benchmarks and explicit capture points, not the live loop.
 	void FlushGpuTimings();
+	// Independent shadow-tail final drain (see .cpp): callable whether or
+	// not the timestamp profiler exists. Headless calls this before the
+	// final snapshot collection, unconditionally.
+	void FlushShadowTail();
 
 	// Debug: dump GPU instance transform buffer contents to log.
 	void DumpInstanceTransforms() const;

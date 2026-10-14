@@ -4286,7 +4286,6 @@ private:
 		{
 			m_RendererGPU.FlushGpuTimings();
 			collectBenchmarkTiming();
-			collectShadowTail();
 			const auto& timings = m_RendererGPU.GetGpuTimings();
 			printf("[Headless] GPU timings (frame %llu)\n",
 			       static_cast<unsigned long long>(timings.frameIndex));
@@ -4299,6 +4298,14 @@ private:
 				       timings.milliseconds[i]);
 			}
 			fflush(stdout);
+		}
+		// Shadow-tail final drain: independent of timestamp-profiler
+		// availability (the drain above is skipped without it). Collects
+		// BOTH pending slots in submission order — never just the newest.
+		if (g_CLI.shadowTail && m_RendererGPU.IsAvailable())
+		{
+			m_RendererGPU.FlushShadowTail();
+			collectShadowTail();
 		}
 
 		if (g_CLI.benchmarkTimings)
@@ -6966,6 +6973,18 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	spec.Name = "RT2";
 	spec.EnableValidation = g_CLI.validate;
 	spec.EnableSyncValidation = g_CLI.syncValidate;
+	// Shadow-tail clock opt-in (RT4-T4): the device feature can only be
+	// enabled at device creation, so a requested diagnostic must opt in
+	// BEFORE Walnut creates the device. Ordinary launches leave the
+	// variable unset and keep prior behavior exactly.
+	if (g_CLI.shadowTail)
+	{
+#ifdef _WIN32
+		_putenv("RT2_SHADOW_TAIL_DIAG=1");
+#else
+		setenv("RT2_SHADOW_TAIL_DIAG", "1", 1);
+#endif
+	}
 	std::filesystem::path ngxFeaturePath;
 	if (!g_CLI.ngxFeaturePath.empty())
 		ngxFeaturePath = std::filesystem::path(g_CLI.ngxFeaturePath);

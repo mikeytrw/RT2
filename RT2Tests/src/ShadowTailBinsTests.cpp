@@ -257,6 +257,102 @@ TEST_CASE("ShadowTailBins edge manifest strict parsing")
     CHECK_FALSE(shadowtail::ParseEdgeManifest(big, rt, gi, err));
 }
 
+TEST_CASE("ShadowTailBins snapshot validation separates pilot/control/acceptance")
+{
+    // Word buffer sized to the frozen total; tests fill header + slot 0.
+    std::vector<uint32_t> words(shadowtail::kTotalU32, 0u);
+    uint32_t head[shadowtail::kHeaderU32] = {};
+    uint32_t data[shadowtail::kTotalU32] = {};
+    std::string reason;
+    auto base = [&](uint32_t slot, uint32_t fam) {
+        return shadowtail::kHeaderU32 + 2u * shadowtail::kAcceptanceEdgesMax
+               + slot * shadowtail::kSlotStride + fam * shadowtail::kFamStride;
+    };
+
+    // Pilot state: no manifest staged (edge counts zero), real counters.
+    words[0] = 0x53484457u;
+    words[1] = 1u;
+    words[2] = 41u;
+    words[3] = 1u;
+    words[6] = 1u;
+    words[base(0u, 0u) + 260u] = 100u; // eligible RT
+    words[base(0u, 0u) + 261u] = 100u; // recorded RT
+    words[base(0u, 0u) + 1u] = 100u;   // pilot bin k=13-ish mass
+    CHECK_FALSE(shadowtail::ValidateSnapshotWords(
+        words.data(), shadowtail::kTotalU32, 41u, 5u, 3u, head, data,
+        shadowtail::kTotalU32, reason));
+    CHECK(reason == "pilot-only: no manifest staged");
+    CHECK(data[base(0u, 0u) + 260u] == 100u); // data ALWAYS recovered
+
+    // Positive-control state: edges staged, mode 2.
+    words[4] = 5u;
+    words[5] = 3u;
+    words[3] = 2u;
+    CHECK_FALSE(shadowtail::ValidateSnapshotWords(
+        words.data(), shadowtail::kTotalU32, 41u, 5u, 3u, head, data,
+        shadowtail::kTotalU32, reason));
+    CHECK(reason == "positive-control mode");
+    CHECK(data[base(0u, 0u) + 261u] == 100u);
+
+    // Acceptance state: mode 1, matching edges.
+    words[3] = 1u;
+    CHECK(shadowtail::ValidateSnapshotWords(
+        words.data(), shadowtail::kTotalU32, 41u, 5u, 3u, head, data,
+        shadowtail::kTotalU32, reason));
+    CHECK(reason.empty());
+
+    // Structural failures never expose data.
+    words[0] = 0xDEADBEEFu;
+    CHECK_FALSE(shadowtail::ValidateSnapshotWords(
+        words.data(), shadowtail::kTotalU32, 41u, 5u, 3u, head, data,
+        shadowtail::kTotalU32, reason));
+    CHECK(reason == "bad magic");
+    words[0] = 0x53484457u;
+    CHECK_FALSE(shadowtail::ValidateSnapshotWords(
+        words.data(), shadowtail::kTotalU32, 99u, 5u, 3u, head, data,
+        shadowtail::kTotalU32, reason));
+    CHECK(reason == "frame mismatch");
+}
+
+TEST_CASE("ShadowTailBins snapshot JSON golden outputs")
+{
+    // PAIRED WITH run_shadow_tail.py TEST_GOLDEN_PILOT_JSON /
+    // TEST_GOLDEN_CONTROL_JSON: these exact strings are embedded there so
+    // the python derive/control integration tests exercise the ACTUAL
+    // serialized path, not hand-written JSON. If this test's goldens
+    // change, update the python file in the same commit.
+    uint32_t head[shadowtail::kHeaderU32] = {
+        0x53484457u, 1u, 41u, 1u, 0u, 0u, 1u, 0u
+    };
+    uint32_t data[shadowtail::kTotalU32] = {};
+    data[460u + 260u] = 100u; // slot 0 RT eligible
+    data[460u + 261u] = 100u; // slot 0 RT recorded
+    data[460u + 1u] = 100u;   // slot 0 RT pilot bin
+    const std::string pilotJson = shadowtail::SnapshotJson(
+        41u, 0u, 7u, false, "pilot-only: no manifest staged", head, data);
+    CHECK(pilotJson.rfind("{\"schema\":\"rt2.shadow-tail.v1\",\"frame\":41,"
+                          "\"slot\":0,\"serial\":7,\"valid\":false,"
+                          "\"pilot\":true,\"mode\":1,"
+                          "\"reason\":\"pilot-only: no manifest staged\","
+                          "\"head\":[1397245015,1,41,1,0,0,1,0],\"data\":[",
+                          0) == 0);
+    CHECK(pilotJson.find(",100,100,0,") != std::string::npos); // eligible/recorded + zeros
+
+    uint32_t chead[shadowtail::kHeaderU32] = {
+        0x53484457u, 1u, 42u, 2u, 5u, 3u, 1u, 1u
+    };
+    uint32_t cdata[shadowtail::kTotalU32] = {};
+    cdata[460u + 598u + 596u + 1u] = 305u; // slot 1 GI control checksum word
+    const std::string ctlJson = shadowtail::SnapshotJson(
+        42u, 1u, 9u, false, "positive-control mode", chead, cdata);
+    CHECK(ctlJson.rfind("{\"schema\":\"rt2.shadow-tail.v1\",\"frame\":42,"
+                        "\"slot\":1,\"serial\":9,\"valid\":false,"
+                        "\"pilot\":false,\"mode\":2,"
+                        "\"reason\":\"positive-control mode\","
+                        "\"head\":[1397245015,1,42,2,5,3,1,1],\"data\":[",
+                        0) == 0);
+}
+
 TEST_CASE("ShadowTailBins SSBO layout constants match the frozen map")
 {
     // Header + edges + slots; mirrors ShadowTailDiag + shadow_tail.glsl.

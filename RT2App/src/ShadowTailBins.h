@@ -412,4 +412,127 @@ inline bool ParseEdgeManifest(const std::string& text,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot validation + serialization core (pure: operates on caller-owned
+// word arrays, no Vulkan). ShadowTailDiag.cpp is a thin lifecycle wrapper
+// around these; unit tests pin golden outputs here, and the python runner
+// self-test embeds the SAME golden strings (paired by comment) so the
+// actual serialized path — not hand-written JSON — is integration-tested.
+// ---------------------------------------------------------------------------
+
+// ValidateSnapshotWords checks structural integrity AND acceptance state:
+//   magic, version, frame equality, mode in {1,2}, edge counts within
+//   capacity and equal to the staged expectation, variant tag.
+// Returns true only for acceptance-usable snapshots. Pilot (zero edges)
+// and control (mode 2) snapshots return FALSE with reason set — but
+// their data words are ALWAYS valid for recovery (outData assigned
+// whenever magic/version/frame hold). copies nwords on structural pass.
+// reasonOut receives a short machine-readable code (never empty on false).
+inline bool ValidateSnapshotWords(const uint32_t* words, uint32_t nwords,
+                                  uint64_t frameIndex,
+                                  uint32_t expEdgeRT, uint32_t expEdgeGI,
+                                  uint32_t headOut[kHeaderU32],
+                                  uint32_t* dataOut, uint32_t dataCap,
+                                  std::string& reasonOut)
+{
+    reasonOut.clear();
+    if (words == nullptr || headOut == nullptr || dataOut == nullptr)
+    {
+        reasonOut = "null buffer";
+        return false;
+    }
+    if (nwords < kTotalU32)
+    {
+        reasonOut = "short buffer";
+        return false;
+    }
+    for (uint32_t i = 0; i < kHeaderU32; ++i)
+        headOut[i] = words[i];
+    if (headOut[0] != 0x53484457u) { reasonOut = "bad magic"; return false; }
+    if (headOut[1] != 1u) { reasonOut = "version mismatch"; return false; }
+    if (headOut[2] != static_cast<uint32_t>(frameIndex & 0xFFFFFFFFull))
+    {
+        reasonOut = "frame mismatch";
+        return false;
+    }
+    if (headOut[3] != 1u && headOut[3] != 2u)
+    {
+        reasonOut = "mode is not ON";
+        return false;
+    }
+    if (headOut[6] != 1u) { reasonOut = "variant tag mismatch"; return false; }
+    // Data words are ALWAYS recoverable past this point (pilot + control
+    // carry real counters); only acceptance validity is still open.
+    if (dataCap < kTotalU32)
+    {
+        reasonOut = "data capacity short";
+        return false;
+    }
+    for (uint32_t i = 0; i < kTotalU32; ++i)
+        dataOut[i] = words[i];
+    if (headOut[4] < 2u || headOut[4] > kAcceptanceEdgesMax ||
+        headOut[5] < 2u || headOut[5] > kAcceptanceEdgesMax)
+    {
+        // Pilot state (zero edges) or corrupt counts: data preserved,
+        // acceptance closed. Pilot-only output is never valid.
+        reasonOut = (headOut[4] == 0u && headOut[5] == 0u)
+                        ? "pilot-only: no manifest staged"
+                        : "edge counts outside manifest capacity";
+        return false;
+    }
+    if (headOut[4] != expEdgeRT || headOut[5] != expEdgeGI)
+    {
+        reasonOut = "edge counts differ from staged manifest";
+        return false;
+    }
+    if (headOut[3] == 2u)
+    {
+        // Positive-control state: well-formed and data-bearing, but never
+        // an acceptance snapshot (separate sensitivity gate consumes it).
+        reasonOut = "positive-control mode";
+        return false;
+    }
+    return true;
+}
+
+// SnapshotJson serializes head + FULL counter region + pilot flag + mode.
+// Data is always present (see above); `valid` distinguishes structural
+// acceptance usability, `pilot` marks the no-manifest state explicitly.
+inline std::string SnapshotJson(uint64_t frameIndex, uint32_t slot,
+                                uint64_t serial, bool valid,
+                                const std::string& reason,
+                                const uint32_t head[kHeaderU32],
+                                const uint32_t* data)
+{
+    std::string out = "{\"schema\":\"rt2.shadow-tail.v1\",\"frame\":";
+    out += std::to_string(frameIndex);
+    out += ",\"slot\":" + std::to_string(slot);
+    out += ",\"serial\":" + std::to_string(serial);
+    out += ",\"valid\":";
+    out += (valid ? "true" : "false");
+    out += ",\"pilot\":";
+    out += ((head[4] == 0u && head[5] == 0u) ? "true" : "false");
+    out += ",\"mode\":" + std::to_string(head[3]);
+    if (!valid)
+    {
+        out += ",\"reason\":\"" + reason + "\"";
+    }
+    out += ",\"head\":[";
+    for (uint32_t i = 0; i < kHeaderU32; ++i)
+    {
+        if (i) out += ",";
+        out += std::to_string(head[i]);
+    }
+    constexpr uint32_t kDataBase = kHeaderU32 + 2u * kAcceptanceEdgesMax;
+    constexpr uint32_t kDataCount = kTotalU32 - kDataBase;
+    out += "],\"data\":[";
+    for (uint32_t i = 0; i < kDataCount; ++i)
+    {
+        if (i) out += ",";
+        out += std::to_string(data[kDataBase + i]);
+    }
+    out += "]}";
+    return out;
+}
+
 } // namespace shadowtail

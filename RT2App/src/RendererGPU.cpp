@@ -324,9 +324,17 @@ void RendererGPU::FlushGpuTimings()
 	vkDeviceWaitIdle(m_Device.device);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		m_GpuProfiler.ReadCompletedSlot(m_Device.device, i);
-	// Fence-backed final drain for the shadow-tail readback as well: the
-	// last in-flight frames must reach snapshots, not die unsubmitted.
-	// (WaitIdle above proves GPU completion for both.)
+}
+
+// Fence-backed final drain for the shadow-tail readback, INDEPENDENT of
+// timestamp-profiler availability (finding: diagnostic completion must
+// not depend on it). Fences prove per-slot completion; the wait makes
+// both slot reads see finished work.
+void RendererGPU::FlushShadowTail()
+{
+	if (!m_Initialized || !m_ShadowTailDiag.IsAvailable())
+		return;
+	vkDeviceWaitIdle(m_Device.device);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		m_ShadowTailDiag.ReadCompletedSlot(m_Device, i);
 }

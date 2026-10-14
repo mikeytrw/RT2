@@ -67,6 +67,10 @@ MATRIX = {
 }
 STRATUM_MIN = 50
 FAMILY_MIN = 10000
+# Families with required minimums per config (plan §3b): C1/C2 run with
+# GI disabled, so GI minimums never apply there — enforcing them would
+# fail every C1/C2 confirmation on empty-but-correct data.
+FAMILY_REQUIRED = {"C1": [0], "C2": [0], "C3": [0, 1], "C4": [0, 1]}
 
 U32MAX = 0xFFFFFFFF
 DATA_WORDS = 2 * (2 * 298 + 2)  # 1200-word counter region per snapshot
@@ -132,7 +136,7 @@ def validate_manifest_edges(obj):
 def parse_snapshot_data(obj):
     """Structural parse shared by valid + pilot snapshots.
 
-    Returns (frame, slot, head, data). Does NOT judge validity —
+    Returns (frame, slot, serial, head, data). Does NOT judge validity —
     callers decide (acceptance needs valid:true; pilot needs data)."""
     if not isinstance(obj, dict):
         raise ValueError("snapshot must be an object")
@@ -144,6 +148,9 @@ def parse_snapshot_data(obj):
     slot = obj.get("slot")
     if slot not in (0, 1):
         raise ValueError("bad slot id")
+    serial = obj.get("serial")
+    if not isinstance(serial, int) or isinstance(serial, bool) or serial < 0:
+        raise ValueError("bad submit serial")
     head = obj.get("head")
     if not isinstance(head, list) or len(head) != 8:
         raise ValueError("bad header")
@@ -155,15 +162,18 @@ def parse_snapshot_data(obj):
         if not isinstance(v, int) or isinstance(v, bool) or v < 0 \
                 or v > U32MAX:
             raise ValueError("bad data word")
-    return frame, slot, head, data
+    return frame, slot, serial, head, data
 
 
 def validate_snapshot_line(obj):
-    """Acceptance-grade parse: rejects invalid snapshots loudly."""
-    frame, slot, head, data = parse_snapshot_data(obj)
+    """Acceptance-grade parse: rejects invalid snapshots loudly.
+
+    Returns (frame, slot, serial, head, data). Serial order is the
+    submission order used by window/sequence checks."""
+    frame, slot, serial, head, data = parse_snapshot_data(obj)
     if obj.get("valid") is not True:
         raise ValueError("snapshot invalid: %s" % obj.get("reason", "?"))
-    return frame, slot, head, data
+    return frame, slot, serial, head, data
 
 
 def pilot_bracket(counts34):
@@ -231,7 +241,7 @@ def check_coverage(config, snapshots):
         return ["unknown config %s" % config]
     rt_cells = [0] * 16
     gi_cells = [0] * 16
-    for _, slot, _, data in snapshots:
+    for _, slot, _, _, data in snapshots:
         base = slot * (2 * 298 + 2)
         for fam, cells in ((0, rt_cells), (1, gi_cells)):
             off = base + fam * 298 + STRATA_OFF
@@ -302,12 +312,23 @@ def run_capture(args, run_fn=None):
         print("ERROR: provenance hash failed: %s" % e)
         return 1
     prov["spvs"] = {}
-    for name in ("closesthit.spv", "secondary_raygen.spv",
-                 "restir_gi_temporal.spv", "closesthit_tail.spv",
-                 "secondary_raygen_tail.spv", "restir_gi_temporal_tail.spv"):
+    prod_spvs = ("closesthit.spv", "secondary_raygen.spv",
+                 "restir_gi_temporal.spv")
+    tail_spvs = ("closesthit_tail.spv", "secondary_raygen_tail.spv",
+                 "restir_gi_temporal_tail.spv")
+    for name in prod_spvs + tail_spvs:
         p = os.path.join(exe_dir, name)
         if os.path.exists(p):
             prov["spvs"][name] = sha256_file(p)
+    # SPV requirements: diag runs need all six (production + tail ON
+    # variants — an ON pipeline cannot exist without them); plain runs
+    # need the three production modules. Missing files fail loudly here,
+    # never as a mysterious pipeline error later.
+    need = prod_spvs + tail_spvs if diag else prod_spvs
+    missing = [n for n in need if n not in prov["spvs"]]
+    if missing:
+        print("FAIL missing required SPVs: %s" % missing)
+        return 1
     err = write_text_checked(os.path.join(rundir, "provenance.json"),
                              json.dumps(prov, indent=1) + "\n")
     if err:
@@ -320,6 +341,21 @@ def run_capture(args, run_fn=None):
         return 1
     if rc != 0:
         print("FAIL capture exit=%d (preserved, no manifest)" % rc)
+        return 1
+    # Hash reread: inputs hashed before execution must match after it
+    # (replacement mid-run fails here, never silently).
+    try:
+        if sha256_file(args.exe) != prov["exe_sha256"]:
+            print("FAIL exe hash changed during run (tamper/race)")
+            return 1
+        if sha256_file(args.scene) != prov["scene_sha256"]:
+            print("FAIL scene hash changed during run (tamper/race)")
+            return 1
+        if args.edges and sha256_file(args.edges) != prov["edges_sha256"]:
+            print("FAIL edges hash changed during run (tamper/race)")
+            return 1
+    except OSError as e:
+        print("FAIL reread hash failed: %s" % e)
         return 1
     problems, n_valid, n_pilot = validate_rundir(rundir, args)
     manifest = {"name": args.name, "exit": rc, "problems": problems,
@@ -382,17 +418,43 @@ def validate_rundir(rundir, args):
                     pass
                 # Pilot fallback: data-bearing but not acceptance-valid.
                 try:
-                    frame, slot, head, data = parse_snapshot_data(obj)
-                    snaps_pilot.append((frame, slot, head, data))
+                    frame, slot, serial, head, data = parse_snapshot_data(obj)
+                    snaps_pilot.append((frame, slot, serial, head, data))
                 except ValueError as e:
                     problems.append("bad snapshot line: %s" % e)
     except OSError as e:
         problems.append("unreadable run.log: %s" % e)
     seen = set()
-    for frame, slot, _, _ in snaps_valid + snaps_pilot:
+    for frame, slot, _, _, _ in snaps_valid + snaps_pilot:
         if (frame, slot) in seen:
             problems.append("duplicate frame/slot (%d,%d)" % (frame, slot))
         seen.add((frame, slot))
+    if args.diag and args.edges and snaps_valid:
+        # Measured-window authority (contract: frames 41..60 of a
+        # 60-frame run): every measured frame must be present. Warmup
+        # frames may be absent (drain timing), measured frames may not.
+        # Serial order must follow frame order (submission order).
+        have_frames = set(f for f, _, _, _, _ in snaps_valid)
+        if args.frames == 60:
+            missing = [f for f in range(41, 61) if f not in have_frames]
+            if missing:
+                problems.append("measured window incomplete, missing %s"
+                                % missing[:8])
+        by_frame = {}
+        for frame, _, serial, _, _ in snaps_valid:
+            by_frame.setdefault(frame, []).append(serial)
+        prev = -1
+        ordered_ok = True
+        for frame in sorted(by_frame):
+            for serial in sorted(by_frame[frame]):
+                if serial <= prev:
+                    ordered_ok = False
+                    break
+                prev = serial
+            if not ordered_ok:
+                break
+        if not ordered_ok:
+            problems.append("serial order violation (not submission order)")
     if args.diag:
         if args.edges:
             if not snaps_valid:
@@ -400,10 +462,40 @@ def validate_rundir(rundir, args):
         else:
             if not snaps_valid and not snaps_pilot:
                 problems.append("no pilot snapshots produced")
-    if args.config:
+    if args.config and args.diag:
+        # Coverage gates diagnostic ON runs ONLY: OFF legs (diag=False)
+        # produce no shadow snapshots by design, so requiring coverage
+        # there would fail every quartet at R_OFF. OFF legs validate
+        # exit/frame/image/timing/parity separately (see run_quartet).
         cov = check_coverage(args.config, snaps_valid + snaps_pilot)
         problems.extend("coverage: " + c for c in cov)
     return problems, len(snaps_valid), len(snaps_pilot)
+
+
+def check_off_parity(blockdir, on_name, off_name):
+    """OFF-leg timing presence + ON/OFF image parity for one build.
+
+    Returns (timing_result, image_result), each "complete" or a FAIL
+    string. Both are hard gates: missing timing records or any pixel
+    difference fails the block."""
+    timing, image = "complete", "complete"
+    logpath = os.path.join(blockdir, off_name, "run.log")
+    try:
+        with open(logpath) as f:
+            timed = sum(1 for line in f if "[HeadlessTiming]" in line)
+    except OSError:
+        timed = 0
+    if timed == 0:
+        timing = "FAIL (no timing records in %s)" % off_name
+    try:
+        from PIL import Image
+        a = Image.open(os.path.join(blockdir, on_name, "frame.png")).convert("RGB")
+        b = Image.open(os.path.join(blockdir, off_name, "frame.png")).convert("RGB")
+        if a.size != b.size or list(a.getdata()) != list(b.getdata()):
+            image = "FAIL (ON/OFF image mismatch %s vs %s)" % (on_name, off_name)
+    except Exception as e:
+        image = "FAIL (image compare error: %s)" % e
+    return timing, image
 
 
 def run_quartet(args, run_fn=None, deadline_min=0):
@@ -427,15 +519,30 @@ def run_quartet(args, run_fn=None, deadline_min=0):
         if deadline is not None and time.monotonic() > deadline:
             results[sub] = "INCOMPLETE (deadline)"
             continue
+        extra = list(args.extra_args)
+        if not diag:
+            # OFF legs carry benchmark timings so their dispatch/frame
+            # timing parity is checkable (validated below); they carry
+            # no shadow snapshots and no coverage requirement by design.
+            extra = extra + ["--benchmark-timings"]
         sub_args = argparse.Namespace(
             exe=exe, scene=args.scene, out_root=blockdir, name=sub,
             frames=args.frames, spp=args.spp, width=args.width,
             height=args.height, edges=edges, diag=diag, control=control,
-            config=args.config, extra_args=args.extra_args)
+            config=args.config if diag else "", extra_args=extra)
         rc = run_capture(sub_args, run_fn=run_fn)
         results[sub] = "complete" if rc == 0 else "FAIL"
         if rc != 0:
             break
+    # OFF-leg timing parity + ON/OFF image parity (per build). OFF legs
+    # must each contain timing records; ON/OFF frame images must be
+    # pixel-identical (instrumentation must not change the image).
+    if all(results.get(k) == "complete" for k in ("R_ON", "R_OFF")):
+        results["R_timing_parity"], results["R_image_parity"] = \
+            check_off_parity(blockdir, "R_ON", "R_OFF")
+    if all(results.get(k) == "complete" for k in ("C_ON", "C_OFF")):
+        results["C_timing_parity"], results["C_image_parity"] = \
+            check_off_parity(blockdir, "C_ON", "C_OFF")
     manifest = {"block": args.name, "order": [o[0] for o in order],
                 "results": results,
                 "complete": all(v == "complete" for v in results.values())}
@@ -448,6 +555,217 @@ def run_quartet(args, run_fn=None, deadline_min=0):
         print("BLOCK %s: %s" % (args.name, results))
         return 2 if any("INCOMPLETE" in v for v in results.values()) else 1
     print("BLOCK %s complete" % args.name)
+    return 0
+
+
+# PAIRED GOLDENS (generated into goldens.py, inlined below verbatim).
+# Paired with RT2Tests ShadowTailBinsTests snapshot-JSON golden
+# outputs (same strings the C++ test pins by prefix/markers). If
+# the C++ goldens change, update these in the same commit.
+TEST_GOLDEN_PILOT_JSON = (
+    '{"schema":"rt2.shadow-tail.v1","frame":41,"slot":0,"serial":7,"valid":false,"pilot":true,"mode":1,"reason":"pilot-only: no manifest staged","head":[1397245015,1,41,1,0,0,1,0],"data":[0,100,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}'
+)
+TEST_GOLDEN_CONTROL_JSON = (
+    '{"schema":"rt2.shadow-tail.v1","frame":42,"slot":1,"serial":9,"valid":false,"pilot":false,"mode":2,"reason":"positive-control mode","head":[1397245015,1,42,2,5,3,1,1],"data":[0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+    ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,305]}'
+)
+
+
+T95_B4 = 2.35336343  # one-sided 95% t, df=3 (B=4 fixed by contract)
+
+
+def paired_t_bound(xs):
+    """One-sided 95% paired-t upper bound on exp(mean) of log-ratios.
+
+    B must be exactly 4 (contract); anything else is INCONCLUSIVE, never
+    silently generalized. Returns (bound, None) or (None, reason)."""
+    import math
+    if len(xs) != 4:
+        return None, "need exactly 4 blocks, got %d" % len(xs)
+    for x in xs:
+        if not math.isfinite(x):
+            return None, "non-finite log-ratio"
+    mean = sum(xs) / 4.0
+    var = sum((x - mean) ** 2 for x in xs) / 3.0
+    return math.exp(mean + T95_B4 * math.sqrt(var / 4.0)), None
+
+
+def cmd_analyze(args):
+    """Paired 4-block t-bound + observer analysis over block dirs.
+
+    Each --block-dirs entry must hold a complete quartet block.json for
+    the SAME fixture/config. Fails closed (INCONCLUSIVE, exit 2) on any
+    structural deviation; FAIL (exit 1) on a bound violation."""
+    import math
+    with open(args.manifest) as f:
+        manifest = json.load(f)
+    try:
+        edgesRT, edgesGI = validate_manifest_edges(manifest)
+    except ValueError as e:
+        print("FAIL analyze: bad manifest: %s" % e)
+        return 1
+    if args.config not in FAMILY_REQUIRED:
+        print("FAIL analyze: unknown config %s" % args.config)
+        return 1
+    req_fams = FAMILY_REQUIRED[args.config]
+    blocks = []
+    for bdir in args.block_dirs:
+        try:
+            with open(os.path.join(bdir, "block.json")) as f:
+                block = json.load(f)
+        except (OSError, ValueError) as e:
+            print("FAIL analyze: bad block %s: %s" % (bdir, e))
+            return 1
+        if not block.get("complete"):
+            print("FAIL analyze: block incomplete: %s" % bdir)
+            return 1
+        for k in ("R_image_parity", "C_image_parity",
+                  "R_timing_parity", "C_timing_parity"):
+            if block.get("results", {}).get(k) != "complete":
+                print("FAIL analyze: parity gate %s not complete in %s"
+                      % (k, bdir))
+                return 1
+        subs = {}
+        for sub in ("R_ON", "R_OFF", "C_ON", "C_OFF"):
+            sdir = os.path.join(bdir, sub)
+            try:
+                with open(os.path.join(sdir, "run.log")) as f:
+                    lines = f.readlines()
+            except OSError as e:
+                print("FAIL analyze: unreadable run %s: %s" % (sdir, e))
+                return 1
+            snaps, timings = [], {}
+            for line in lines:
+                if "[ShadowTail]" in line:
+                    try:
+                        snaps.append(validate_snapshot_line(
+                            json.loads(line.split("[ShadowTail]", 1)[1])))
+                    except ValueError as e:
+                        print("FAIL analyze: %s" % e)
+                        return 1
+                if "[HeadlessTiming]" in line:
+                    try:
+                        timings.setdefault("frames", []).append(json.loads(
+                            line.split("[HeadlessTiming]", 1)[1]))
+                    except ValueError:
+                        pass
+            subs[sub] = (snaps, timings)
+        blocks.append(subs)
+    if len(blocks) != 4:
+        print("INCONCLUSIVE analyze: need exactly 4 blocks, got %d"
+              % len(blocks))
+        return 2
+    failures, inconclusive = [], []
+
+    def p95bracket(snaps, fam, edges):
+        pooled = [0] * 226
+        for _, slot, _, _, data in snaps:
+            base = slot * (2 * 298 + 2) + fam * 298
+            for i in range(len(edges) - 1):
+                pooled[i] += data[base + 34 + i]
+        n = sum(pooled)
+        if n == 0:
+            return None, "empty"
+        rank = (n * 95 + 99) // 100
+        acc = 0
+        for i in range(len(edges) - 1):
+            acc += pooled[i]
+            if rank <= acc:
+                return (edges[i], edges[i + 1]), None
+        return None, "unbounded"
+
+    for fam, edges in ((0, edgesRT), (1, edgesGI)):
+        if fam not in req_fams:
+            continue
+        # Endpoint-conservative block log-ratios: candidate UPPER over
+        # reference LOWER, per block; paired-t bound over the 4 blocks.
+        xs = []
+        bad = False
+        for b in blocks:
+            (rslow, rsup), _ = p95bracket(b["R_ON"][0], fam, edges)
+            (cslow, csup), _ = p95bracket(b["C_ON"][0], fam, edges)
+            if rslow is None or cslow is None or rslow <= 0 or cslow <= 0:
+                inconclusive.append("family %d block bracket invalid" % fam)
+                bad = True
+                break
+            xs.append(math.log(csup / rslow))
+        if bad:
+            continue
+        bound, err = paired_t_bound(xs)
+        if err is not None:
+            inconclusive.append("family %d: %s" % (fam, err))
+        elif bound > 1.05:
+            failures.append("family %d C/R p95 bound %.4f > 1.05"
+                            % (fam, bound))
+        else:
+            print("family %d C/R p95 bound %.4f PASS" % (fam, bound))
+
+    # Observer bounds per build per dispatch (RT shading + GI temporal).
+    for build in ("R", "C"):
+        for region in ("RT Shading", "ReSTIR GI Temporal"):
+            ys = []
+            bad = False
+            for b in blocks:
+                on = [f["regions_ms"].get(region) for f in b[build + "_ON"][1].get("frames", [])]
+                off = [f["regions_ms"].get(region) for f in b[build + "_OFF"][1].get("frames", [])]
+                on = sorted(v for v in on if isinstance(v, (int, float)) and v > 0)
+                off = sorted(v for v in off if isinstance(v, (int, float)) and v > 0)
+                if not on or not off:
+                    # GI temporal absent on non-GI configs: not applicable,
+                    # never a pass; RT shading must always be present.
+                    if region == "RT Shading":
+                        inconclusive.append(
+                            "%s %s: missing dispatch timings" % (build, region))
+                        bad = True
+                    break
+                import statistics
+                ys.append(math.log(statistics.median(on) / statistics.median(off)))
+            if bad:
+                continue
+            if not ys:
+                continue
+            bound, err = paired_t_bound(ys)
+            if err is not None:
+                inconclusive.append("%s %s: %s" % (build, region, err))
+            elif bound > 1.05:
+                failures.append("%s %s observer bound %.4f > 1.05"
+                                % (build, region, bound))
+            else:
+                print("%s %s observer bound %.4f PASS" % (build, region, bound))
+    if inconclusive:
+        print("ANALYZE INCONCLUSIVE:")
+        for f in inconclusive:
+            print("  - %s" % f)
+        return 2
+    if failures:
+        print("ANALYZE FAILURES:")
+        for f in failures:
+            print("  - %s" % f)
+        return 1
+    print("ANALYZE PASS")
     return 0
 
 
@@ -469,32 +787,61 @@ The driver executes quartet/capture commands; nothing here runs implicitly.
 
 
 def cmd_derive_freeze(args):
-    """Reference-only edge derivation from pilot trial snapshots."""
+    """Reference-only edge derivation from pilot trial snapshots.
+
+    Each --trial-dir must be a completed reference trial rundir
+    (completion.json complete:true, provenance exe hash == --ref-exe).
+    Anything else (hand-assembled dirs, candidate builds, incomplete
+    runs) fails closed — a hand-authored edge file is not evidence."""
+    if not args.ref_exe:
+        print("FAIL derive-freeze: --ref-exe required (trial identity)")
+        return 1
+    try:
+        ref_hash = sha256_file(args.ref_exe)
+    except OSError as e:
+        print("FAIL derive-freeze: cannot hash ref exe: %s" % e)
+        return 1
     pilot = [[0] * 34, [0] * 34]
-    counts = [0, 0]
     nfiles = 0
-    for root, _, files in os.walk(args.pilot_dir):
-        for fn in sorted(files):
-            if not fn.endswith(".jsonl") and fn != "run.log":
+    for trial in args.trial_dirs:
+        try:
+            with open(os.path.join(trial, "completion.json")) as f:
+                completion = json.load(f)
+            with open(os.path.join(trial, "provenance.json")) as f:
+                prov = json.load(f)
+        except (OSError, ValueError) as e:
+            print("FAIL derive-freeze: bad trial dir %s: %s" % (trial, e))
+            return 1
+        if not completion.get("complete"):
+            print("FAIL derive-freeze: trial incomplete: %s" % trial)
+            return 1
+        if prov.get("exe_sha256") != ref_hash:
+            print("FAIL derive-freeze: trial exe mismatch: %s" % trial)
+            return 1
+        logpath = os.path.join(trial, "run.log")
+        try:
+            with open(logpath) as f:
+                lines = [l for l in f if "[ShadowTail]" in l]
+        except OSError as e:
+            print("FAIL derive-freeze: unreadable run.log %s: %s" % (trial, e))
+            return 1
+        if not lines:
+            print("FAIL derive-freeze: no pilot snapshots: %s" % trial)
+            return 1
+        for line in lines:
+            try:
+                obj = json.loads(line.split("[ShadowTail]", 1)[1])
+            except ValueError:
                 continue
-            with open(os.path.join(root, fn)) as f:
-                for line in f:
-                    if "[ShadowTail]" not in line:
-                        continue
-                    try:
-                        obj = json.loads(line.split("[ShadowTail]", 1)[1])
-                    except ValueError:
-                        continue
-                    try:
-                        _, slot, _, data = parse_snapshot_data(obj)
-                    except ValueError:
-                        continue
-                    base = slot * (2 * 298 + 2)
-                    for fam in (0, 1):
-                        for i in range(34):
-                            pilot[fam][i] += data[base + fam * 298 + i]
-                    counts[0] += 1
-                    nfiles += 1
+            try:
+                _, slot, _, _, data = parse_snapshot_data(obj)
+            except ValueError:
+                continue
+            base = slot * (2 * 298 + 2)
+            for fam in (0, 1):
+                for i in range(34):
+                    pilot[fam][i] += data[base + fam * 298 + i]
+            nfiles += 1
     if nfiles == 0:
         print("FAIL derive-freeze: no pilot snapshots found")
         return 1
@@ -504,7 +851,9 @@ def cmd_derive_freeze(args):
         print("FAIL derive-freeze: %s" % e)
         return 1
     manifest["meta"] = {"derived": "reference-only pilot",
-                        "pilot_snapshots": nfiles}
+                        "pilot_snapshots": nfiles,
+                        "trials": args.trial_dirs,
+                        "ref_exe_sha256": ref_hash}
     err = write_text_checked(args.out, json.dumps(manifest, indent=1) + "\n")
     if err:
         print("ERROR: %s" % err)
@@ -527,7 +876,7 @@ def derive_freeze_edges(pilot):
 
 
 def cmd_check_freeze(args):
-    """Confirmation gate on a directory of snapshots + manifest."""
+    """Confirmation gate on explicit confirmation rundirs + manifest."""
     with open(args.manifest) as f:
         manifest = json.load(f)
     try:
@@ -535,21 +884,43 @@ def cmd_check_freeze(args):
     except ValueError as e:
         print("FAIL check-freeze: bad manifest: %s" % e)
         return 1
+    try:
+        ref_hash = sha256_file(args.ref_exe)
+    except OSError as e:
+        print("FAIL check-freeze: cannot hash ref exe: %s" % e)
+        return 1
     snaps = []
-    for root, _, files in os.walk(args.dir):
-        for fn in sorted(files):
-            if not fn.endswith(".jsonl") and fn != "run.log":
-                continue
-            with open(os.path.join(root, fn)) as f:
-                for line in f:
-                    if "[ShadowTail]" not in line:
-                        continue
-                    try:
-                        snaps.append(validate_snapshot_line(
-                            json.loads(line.split("[ShadowTail]", 1)[1])))
-                    except ValueError as e:
-                        print("FAIL check-freeze: %s" % e)
-                        return 1
+    for rundir in args.run_dirs:
+        try:
+            with open(os.path.join(rundir, "completion.json")) as f:
+                completion = json.load(f)
+            with open(os.path.join(rundir, "provenance.json")) as f:
+                prov = json.load(f)
+        except (OSError, ValueError) as e:
+            print("FAIL check-freeze: bad run dir %s: %s" % (rundir, e))
+            return 1
+        if not completion.get("complete"):
+            print("FAIL check-freeze: run incomplete: %s" % rundir)
+            return 1
+        if prov.get("exe_sha256") != ref_hash:
+            print("FAIL check-freeze: exe mismatch: %s" % rundir)
+            return 1
+        try:
+            with open(os.path.join(rundir, "run.log")) as f:
+                lines = [l for l in f if "[ShadowTail]" in l]
+        except OSError as e:
+            print("FAIL check-freeze: unreadable run.log %s: %s" % (rundir, e))
+            return 1
+        if not lines:
+            print("FAIL check-freeze: no snapshots: %s" % rundir)
+            return 1
+        for line in lines:
+            try:
+                snaps.append(validate_snapshot_line(
+                    json.loads(line.split("[ShadowTail]", 1)[1])))
+            except ValueError as e:
+                print("FAIL check-freeze: %s" % e)
+                return 1
     if not snaps:
         print("FAIL check-freeze: no valid snapshots")
         return 1
@@ -557,7 +928,7 @@ def cmd_check_freeze(args):
     pooled = [[0] * 226, [0] * 226]
     overflow = [0, 0]
     totals = [0, 0]
-    for _, slot, head, data in snaps:
+    for _, slot, _, head, data in snaps:
         if head[4] != len(edgesRT) or head[5] != len(edgesGI):
             failures.append("edge-count/header mismatch")
             continue
@@ -574,8 +945,14 @@ def cmd_check_freeze(args):
                 if data[off + 34 + i] != 0:
                     failures.append(
                         "family %d counts beyond manifest edges" % fam)
+    required_fams = FAMILY_REQUIRED.get(args.config)
+    if required_fams is None:
+        print("FAIL check-freeze: --config required (one of C1..C4)")
+        return 1
     for fam, edges in ((0, edgesRT), (1, edgesGI)):
         n = totals[fam]
+        if fam not in required_fams:
+            continue  # N/A family: validated sums only, no minimums
         if n < FAMILY_MIN:
             failures.append("family %d N=%d < %d" % (fam, n, FAMILY_MIN))
             continue
@@ -595,9 +972,8 @@ def cmd_check_freeze(args):
         if overflow[fam] / n >= 0.005:
             failures.append("family %d overflow %.4f >= 0.5%%"
                             % (fam, overflow[fam] / n))
-    if args.config:
-        failures.extend("coverage: " + c for c in check_coverage(
-            args.config, snaps))
+    failures.extend("coverage: " + c for c in check_coverage(
+        args.config, snaps))
     if failures:
         print("CHECK-FREEZE FAILURES:")
         for f in failures:
@@ -651,6 +1027,50 @@ def self_test():
     e = build_edges(1 << 20, 1 << 21)
     check("edges Q=2^20 shape", len(e) == 226 and e[-1] == 1 << 22)
 
+    # Golden serialized outputs (paired with the C++ SnapshotJson test):
+    # the derive/control integration below consumes these ACTUAL strings,
+    # so a format drift breaks here instead of silently passing on
+    # hand-written JSON.
+    gp = json.loads(TEST_GOLDEN_PILOT_JSON)
+    check("golden pilot prefix/schema",
+          TEST_GOLDEN_PILOT_JSON.startswith(
+              '{"schema":"rt2.shadow-tail.v1","frame":41,'
+              '"slot":0,"serial":7,"valid":false,'
+              '"pilot":true,"mode":1,'
+              '"reason":"pilot-only: no manifest staged",'
+              '"head":[1397245015,1,41,1,0,0,1,0],"data":['))
+    try:
+        frame, slot, _, _, data = parse_snapshot_data(gp)
+        pilot = [[0] * 34, [0] * 34]
+        base = slot * (2 * 298 + 2)
+        for fam in (0, 1):
+            for i in range(34):
+                pilot[fam][i] += data[base + fam * 298 + i]
+        code, lo, hi = pilot_bracket(pilot[0])
+        check("golden pilot RT bracket",
+              code == 0 and lo == 1 and hi == 2)
+        check("golden pilot GI empty",
+              pilot_bracket(pilot[1])[0] == "empty")
+        ert = build_edges(lo, hi)
+        check("golden pilot RT edges",
+              len(ert) == 5 and ert[0] == 0 and ert[-1] == 4)
+    except (ValueError, KeyError, IndexError):
+        check("golden pilot derives edges", False)
+    gc = json.loads(TEST_GOLDEN_CONTROL_JSON)
+    check("golden control prefix/schema",
+          TEST_GOLDEN_CONTROL_JSON.startswith(
+              '{"schema":"rt2.shadow-tail.v1","frame":42,'
+              '"slot":1,"serial":9,"valid":false,'
+              '"pilot":false,"mode":2,'
+              '"reason":"positive-control mode",'
+              '"head":[1397245015,1,42,2,5,3,1,1],"data":['))
+    try:
+        frame, slot, _, _, data = parse_snapshot_data(gc)
+        ctl = data[slot * (2 * 298 + 2) + 596 + 1]
+        check("golden control checksum readable", ctl == 305)
+    except (ValueError, KeyError, IndexError):
+        check("golden control checksum readable", False)
+
     # Snapshot schema validation (slot-aware).
     good = {"schema": SCHEMA, "frame": 41, "slot": 0, "serial": 7,
             "valid": True, "head": [0x53484457, 1, 41, 1, 5, 3, 1, 0],
@@ -664,7 +1084,7 @@ def self_test():
     good["data"][base + 264 + 4 * 2 + 0] = 70
     good["data"][base + 264 + 4 * 2 + 1] = 65
     try:
-        frame, slot, _, _ = validate_snapshot_line(good)
+        frame, slot, _, _, _ = validate_snapshot_line(good)
         check("snapshot valid slot-aware", frame == 41 and slot == 0)
     except ValueError:
         check("snapshot valid slot-aware", False)
@@ -676,33 +1096,36 @@ def self_test():
         check("snapshot invalid rejected", True)
 
     # Coverage matrix on synthetic pooled data.
-    fails_cov = check_coverage("C1", [(41, 0, good["head"], good["data"])])
+    fails_cov = check_coverage("C1", [(41, 0, 7, good["head"], good["data"])])
     check("C1 coverage passes", fails_cov == [])
-    fails_cov2 = check_coverage("C4", [(41, 0, good["head"], good["data"])])
+    fails_cov2 = check_coverage("C4", [(41, 0, 7, good["head"], good["data"])])
     check("C4 coverage fails honestly", len(fails_cov2) > 0)
     check("unknown config fails", check_coverage("CX", []) != [])
 
     # Fake-process orchestration: end-to-end run_capture without GPU.
     def fake_run(exe_, cmd, cwd, logpath, snaps_fn, png=True, rc=0):
+        from PIL import Image
         idx = cmd.index("--output-display") + 1
         if png:
-            with open(cmd[idx], "wb") as pf:
-                pf.write(b"fakepng")
+            Image.new("RGB", (8, 8), (10, 20, 30)).save(cmd[idx])
         with open(logpath, "w") as lf:
             for line in snaps_fn():
                 lf.write(line)
+            if "--benchmark-timings" in cmd:
+                lf.write('[HeadlessTiming] {"frame":60,"regions_ms":'
+                         '{"RT Shading":0.5,"GPU Frame":1.0}}\n')
         return rc
 
     def snap_lines(n=20, start=41, valid=True, oob=False, empty=False):
         lines = []
         for f in range(start, start + n):
-            s = dict(good, frame=f)
+            s = dict(good, frame=f, serial=f)
             if not valid:
                 s = dict(s, valid=False, reason="pilot-only")
             if oob:
                 s = dict(s, data=[0] * 10)
             if empty:
-                s = dict(s, data=[0] * 1200)
+                s = dict(s, data=[0] * 1196)
             lines.append("[ShadowTail] %s\n" % json.dumps(s))
         return lines
 
@@ -710,6 +1133,12 @@ def self_test():
         exe = os.path.join(tmp, "RT2App.exe")
         with open(exe, "wb") as f:
             f.write(b"fake-exe")
+        for spv in ("closesthit.spv", "secondary_raygen.spv",
+                    "restir_gi_temporal.spv", "closesthit_tail.spv",
+                    "secondary_raygen_tail.spv",
+                    "restir_gi_temporal_tail.spv"):
+            with open(os.path.join(tmp, spv), "wb") as f:
+                f.write(b"fake-spv")
         scene = os.path.join(tmp, "s.rt2scene")
         with open(scene, "w") as f:
             f.write("{}")
@@ -773,7 +1202,8 @@ def self_test():
               run_capture(a8, run_fn=lambda e, c, w, l: fake_run(
                   e, c, w, l, lambda: snap_lines())) != 0)
 
-        # derive-freeze on synthetic pilot data (golden edges).
+        # derive-freeze on synthetic pilot trial rundirs (golden edges).
+        # Each trial dir carries completion + provenance (ref-exe matched).
         pdir = os.path.join(tmp, "pilot")
         os.makedirs(pdir)
         pilot_counts = [0] * 34
@@ -784,18 +1214,35 @@ def self_test():
                  "data": [0] * 1196}
         pline["data"][0 + 0 * 298 + 14] = 100000
         pline["data"][0 + 1 * 298 + 14] = 100000
-        with open(os.path.join(pdir, "pilot.jsonl"), "w") as f:
-            f.write("[ShadowTail] %s\n" % json.dumps(pline))
+        trial_dirs = []
+        for t in range(2):
+            tdir = os.path.join(pdir, "T%d" % (t + 1))
+            os.makedirs(tdir)
+            with open(os.path.join(tdir, "run.log"), "w") as f:
+                f.write("[ShadowTail] %s\n" % json.dumps(pline))
+            with open(os.path.join(tdir, "completion.json"), "w") as f:
+                json.dump({"complete": True}, f)
+            with open(os.path.join(tdir, "provenance.json"), "w") as f:
+                json.dump({"exe_sha256": sha256_file(exe)}, f)
+            trial_dirs.append(tdir)
         mout = os.path.join(tmp, "frozen.json")
-        da = argparse.Namespace(pilot_dir=pdir, out=mout)
+        da = argparse.Namespace(trial_dirs=trial_dirs, ref_exe=exe, out=mout)
         check("fake derive-freeze", cmd_derive_freeze(da) == 0)
         with open(mout) as f:
             frozen = json.load(f)
         check("frozen edges golden",
               len(frozen["edgesRT"]) == 226 and frozen["edgesRT"][1] == 4096
               and frozen["edgesRT"][-1] == 32768)
+        # Wrong-exe trial fails closed.
+        other = os.path.join(tmp, "other.exe")
+        with open(other, "wb") as f:
+            f.write(b"other")
+        da_bad = argparse.Namespace(trial_dirs=trial_dirs, ref_exe=other,
+                                    out=os.path.join(tmp, "frozen-bad.json"))
+        check("fake derive-freeze exe mismatch fails",
+              cmd_derive_freeze(da_bad) == 1)
 
-        # check-freeze pass + fail paths.
+        # check-freeze pass + fail paths on explicit confirmation rundirs.
         cdir = os.path.join(tmp, "confirm")
         os.makedirs(cdir)
         cline = {"schema": SCHEMA, "frame": 45, "slot": 0, "serial": 9,
@@ -813,9 +1260,21 @@ def self_test():
         cline["data"][0 + 1 * 298 + 34 + big] = 20000
         cline["data"][0 + 1 * 298 + 260] = 20000
         cline["data"][0 + 1 * 298 + 261] = 20000
+        # C3 strata: RT tri primary/recursive + punctual, GI tri fresh/replay.
+        cline["data"][0 + 0 * 298 + 264 + 1 * 2 + 0] = 120
+        cline["data"][0 + 0 * 298 + 264 + 1 * 2 + 1] = 110
+        cline["data"][0 + 0 * 298 + 264 + 4 * 2 + 0] = 100
+        cline["data"][0 + 0 * 298 + 264 + 4 * 2 + 1] = 100
+        cline["data"][0 + 1 * 298 + 264 + 0 * 2 + 0] = 110
+        cline["data"][0 + 1 * 298 + 264 + 0 * 2 + 1] = 105
         with open(os.path.join(cdir, "run.log"), "w") as f:
             f.write("[ShadowTail] %s\n" % json.dumps(cline))
-        ca = argparse.Namespace(dir=cdir, manifest=mout, config="")
+        with open(os.path.join(cdir, "completion.json"), "w") as f:
+            json.dump({"complete": True}, f)
+        with open(os.path.join(cdir, "provenance.json"), "w") as f:
+            json.dump({"exe_sha256": sha256_file(exe)}, f)
+        ca = argparse.Namespace(run_dirs=[cdir], manifest=mout,
+                               config="C3", ref_exe=exe)
         check("fake check-freeze passes", cmd_check_freeze(ca) == 0)
         ovf = dict(cline)
         ovf["data"] = list(cline["data"])
@@ -852,6 +1311,112 @@ def self_test():
                       deadline_min=1) == 2)
         finally:
             time.monotonic = real_mono
+
+        # Analyze: fake 4-block campaign (C1, identical R/C → PASS).
+        from PIL import Image as _PILImage
+        adir = os.path.join(tmp, "campaign")
+        os.makedirs(adir)
+        er = frozen["edgesRT"]
+        birt_a = bisect.bisect_right(er, 10000) - 1
+
+        def make_block(bname, slow_cand=False):
+            bdir = os.path.join(adir, bname)
+            os.makedirs(bdir)
+            for sub, shift in (("R_ON", 0), ("R_OFF", 0),
+                               ("C_ON", 1 if slow_cand else 0),
+                               ("C_OFF", 0)):
+                sdir = os.path.join(bdir, sub)
+                os.makedirs(sdir)
+                lines = []
+                for f in range(41, 61):
+                    s = {"schema": SCHEMA, "frame": f, "slot": 0,
+                         "serial": f, "valid": True,
+                         "head": [0x53484457, 1, f, 1, 226, 226, 1, 0],
+                         "data": [0] * 1196}
+                    b = birt_a + (20 if (shift and sub == "C_ON") else 0)
+                    s["data"][0 + 0 * 298 + 34 + b] = 1000
+                    s["data"][0 + 0 * 298 + 260] = 1000
+                    s["data"][0 + 0 * 298 + 261] = 1000
+                    s["data"][0 + 0 * 298 + 264 + 1 * 2 + 0] = 600
+                    s["data"][0 + 0 * 298 + 264 + 1 * 2 + 1] = 550
+                    s["data"][0 + 0 * 298 + 264 + 4 * 2 + 0] = 700
+                    s["data"][0 + 0 * 298 + 264 + 4 * 2 + 1] = 650
+                    lines.append("[ShadowTail] %s" % json.dumps(s))
+                    lines.append('[HeadlessTiming] {"frame":%d,'
+                                 '"regions_ms":{"RT Shading":0.5,'
+                                 '"GPU Frame":1.0}}' % f)
+                with open(os.path.join(sdir, "run.log"), "w") as lf:
+                    lf.write("\n".join(lines) + "\n")
+                with open(os.path.join(sdir, "completion.json"), "w") as cf:
+                    json.dump({"complete": True}, cf)
+                with open(os.path.join(sdir, "provenance.json"), "w") as pf:
+                    json.dump({"exe_sha256": "x"}, pf)
+                _PILImage.new("RGB", (8, 8), (10, 20, 30)).save(
+                    os.path.join(sdir, "frame.png"))
+            with open(os.path.join(bdir, "block.json"), "w") as bf:
+                json.dump({"block": bname, "complete": True, "results": {
+                    "R_ON": "complete", "R_OFF": "complete",
+                    "C_ON": "complete", "C_OFF": "complete",
+                    "R_timing_parity": "complete",
+                    "C_timing_parity": "complete",
+                    "R_image_parity": "complete",
+                    "C_image_parity": "complete"}}, bf)
+
+        for bname in ("k1", "k2", "k3", "k4"):
+            make_block(bname)
+        ana = argparse.Namespace(
+            block_dirs=[os.path.join(adir, b) for b in
+                        ("k1", "k2", "k3", "k4")],
+            manifest=mout, config="C1")
+        check("fake analyze passes", cmd_analyze(ana) == 0)
+        for bname in ("j1", "j2", "j3", "j4"):
+            make_block(bname, slow_cand=True)
+        ana2 = argparse.Namespace(
+            block_dirs=[os.path.join(adir, b) for b in
+                        ("j1", "j2", "j3", "j4")],
+            manifest=mout, config="C1")
+        check("fake analyze slow-candidate fails",
+              cmd_analyze(ana2) == 1)
+        ana3 = argparse.Namespace(
+            block_dirs=[os.path.join(adir, b) for b in ("k1", "k2", "k3")],
+            manifest=mout, config="C1")
+        check("fake analyze 3-block inconclusive",
+              cmd_analyze(ana3) == 2)
+
+        # Quartet WITH config: OFF legs must skip coverage (they carry
+        # none by design) while ON legs enforce it. snap_lines carries
+        # C1 strata; C1 ON legs pass, OFF legs pass without coverage.
+        def c1_lines():
+            return snap_lines()
+        qa3 = argparse.Namespace(
+            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+            name="b3", frames=60, spp=1, width=64, height=64,
+            edges=mf, control=False, config="C1", extra_args=[])
+        # good[] carries C1 RT tri/punctual strata (>=50 each) — reuse it.
+        check("fake quartet with config passes OFF legs",
+              run_quartet(qa3, run_fn=lambda e, c, w, l: fake_run(
+                  e, c, w, l, c1_lines)) == 0)
+
+        # Missing tail SPVs fail diag captures loudly.
+        bare = os.path.join(tmp, "bare")
+        os.makedirs(bare)
+        bare_exe = os.path.join(bare, "RT2App.exe")
+        with open(bare_exe, "wb") as f:
+            f.write(b"fake-exe")
+        a9 = mkargs("nospv")
+        a9.exe = bare_exe
+        check("fake missing tail SPVs fail",
+              run_capture(a9, run_fn=lambda e, c, w, l: fake_run(
+                  e, c, w, l, lambda: snap_lines())) == 1)
+
+        # Measured-window rule: frames 41..60 must all be present.
+        def gap_lines():
+            return [l for l in snap_lines()
+                    if json.loads(l.split("[ShadowTail]", 1)[1])["frame"] != 55]
+        a10 = mkargs("gap")
+        check("fake window gap fails",
+              run_capture(a10, run_fn=lambda e, c, w, l: fake_run(
+                  e, c, w, l, gap_lines)) == 1)
 
     print("SELF-TEST", "ALL PASS" if not fails else "FAILURES: %s" % fails)
     return 0 if not fails else 1
@@ -891,12 +1456,18 @@ def main():
     q.add_argument("--deadline-min", type=float, default=0)
     q.add_argument("extra_args", nargs=argparse.REMAINDER, default=[])
     df = sub.add_parser("derive-freeze")
-    df.add_argument("--pilot-dir", required=True)
+    df.add_argument("--trial-dirs", nargs="+", required=True)
+    df.add_argument("--ref-exe", required=True)
     df.add_argument("--out", required=True)
     cf = sub.add_parser("check-freeze")
-    cf.add_argument("--dir", required=True)
+    cf.add_argument("--run-dirs", nargs="+", required=True)
     cf.add_argument("--manifest", required=True)
-    cf.add_argument("--config", default="")
+    cf.add_argument("--config", required=True)
+    cf.add_argument("--ref-exe", required=True)
+    an = sub.add_parser("analyze")
+    an.add_argument("--block-dirs", nargs="+", required=True)
+    an.add_argument("--manifest", required=True)
+    an.add_argument("--config", required=True)
     sub.add_parser("plan")
     args = ap.parse_args()
     if args.self_test:
@@ -908,6 +1479,8 @@ def main():
         return cmd_derive_freeze(args)
     if args.cmd == "check-freeze":
         return cmd_check_freeze(args)
+    if args.cmd == "analyze":
+        return cmd_analyze(args)
     if args.cmd == "quartet":
         qa = argparse.Namespace(
             ref_exe=args.ref_exe, cand_exe=args.cand_exe, scene=args.scene,
