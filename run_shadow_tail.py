@@ -194,7 +194,7 @@ def seal_path_for(freeze_path):
     return freeze_path + ".calibration.json"
 
 
-def seal_calibration(freeze_path, campdir):
+def seal_calibration(freeze_path, campdir, legacy_exe):
     """Seal a campaign-derived freeze with full calibration evidence.
 
     Called by a COMPLETED calib campaign on its own freeze file. The
@@ -204,9 +204,13 @@ def seal_calibration(freeze_path, campdir):
     byte. The sidecar binds the freeze hash to the reread campaign
     record (complete, mode calib, within cap) with the full gate
     families (4 check-freeze-*, 4 parity-*, 4 headroom-*, 2
-    response-* all complete) plus every evidence directory. A
-    trials-only freeze has no sidecar and can never unlock acceptance.
-    Returns '' or FAIL (and never writes on failure)."""
+    response-* all complete) plus every evidence directory. The legacy
+    authority comes from the ACTUAL campaign input binary (path +
+    current file hash + SPV set) — never from copies of each run's
+    self-designated hash; all four legacy runs must already use
+    exactly that binary or sealing fails. A trials-only freeze has no
+    sidecar and can never unlock acceptance. Returns '' or FAIL (and
+    never writes on failure)."""
     try:
         with open(os.path.join(campdir, "campaign.json")) as f:
             camp = json.load(f)
@@ -228,20 +232,36 @@ def seal_calibration(freeze_path, campdir):
         freeze_hash = sha256_file(freeze_path)
     except OSError as e:
         return "cannot hash freeze file: %s" % e
-    # Designated production executables per fixture (read from the
-    # retained legacy provenance): revalidation requires legacy runs
-    # to use THESE binaries — provably not the reference.
-    legacys_exe = {}
+    # Explicit legacy authority from the ACTUAL campaign input —
+    # path, current file hash and SPV set. Every legacy run must
+    # already use exactly this binary (same path AND same hashes);
+    # four arbitrary different binaries, or runs disagreeing with the
+    # input, fail sealing here. Byte-identical binaries at other
+    # paths do not satisfy the designated-path requirement.
+    legacy_abs = os.path.abspath(legacy_exe)
+    try:
+        authority = {"path": legacy_abs,
+                     "sha256": sha256_file(legacy_abs),
+                     "spvs": hash_exe_spvs(legacy_abs)}
+    except OSError as e:
+        return "cannot hash designated legacy exe: %s" % e
     for cfg in CONFIGS:
         try:
             with open(os.path.join(os.path.abspath(campdir),
                                    "legacy-%s" % cfg,
                                    "provenance.json")) as f:
-                legacys_exe[cfg] = json.load(f).get("exe_sha256", "")
+                leg_prov = json.load(f)
         except (OSError, ValueError) as e:
             return "cannot read legacy provenance %s: %s" % (cfg, e)
-        if not legacys_exe[cfg]:
-            return "legacy run has no exe identity: %s" % cfg
+        if os.path.abspath(leg_prov.get("exe", "")) != legacy_abs:
+            return ("legacy run %s uses a different binary than the "
+                    "designated production exe" % cfg)
+        if leg_prov.get("exe_sha256") != authority["sha256"]:
+            return ("legacy run %s exe hash differs from designated "
+                    "production exe" % cfg)
+        if leg_prov.get("spvs", {}) != authority["spvs"]:
+            return ("legacy run %s SPV set differs from designated "
+                    "production set" % cfg)
     sidecar = {
         "sealed": True,
         "freeze_sha256": freeze_hash,
@@ -249,7 +269,7 @@ def seal_calibration(freeze_path, campdir):
         "campaign_sha256": sha256_file(
             os.path.join(campdir, "campaign.json")),
         "stages": {k: stages[k] for k in required},
-        "legacys_exe": legacys_exe,
+        "legacy_authority": authority,
         "confirms": {c: os.path.join(os.path.abspath(campdir),
                                      "confirm-%s" % c) for c in CONFIGS},
         "offs": {c: os.path.join(os.path.abspath(campdir), "off-%s" % c)
@@ -370,20 +390,26 @@ def revalidate_calibration(manifest, freeze_path, ref_exe):
         ref_hash = sha256_file(ref_exe)
     except OSError as e:
         return "cannot hash reference exe: %s" % e
+    ref_exe_abs = os.path.abspath(ref_exe)
     if manifest.get("lineage", {}).get("ref_exe_sha256") != ref_hash:
         return "freeze lineage exe differs from current reference"
+    # Legacy authority: the designated production binary recorded at
+    # seal time — re-hash the CURRENT file (a post-seal swap fails)
+    # and require its SPV set unchanged.
+    authority = cal.get("legacy_authority", {})
+    if not isinstance(authority, dict) or not authority.get("path"):
+        return "calibration seal has no legacy authority"
+    try:
+        if sha256_file(authority["path"]) != authority.get("sha256", ""):
+            return ("designated legacy exe changed since sealing: %s"
+                    % authority.get("path", ""))
+        if hash_exe_spvs(authority["path"]) != authority.get("spvs", {}):
+            return "designated legacy SPV set changed since sealing"
+    except OSError as e:
+        return "designated legacy exe unreadable: %s" % e
     # Phase 1 — identity/mode/window per ROLE, before any gate math.
-    for cfg in CONFIGS:
-        confirm = canonical["confirm-%s" % cfg]
-        cargs = argparse.Namespace(run_dirs=[confirm],
-                                   manifest=freeze_path,
-                                   config=cfg, ref_exe=ref_exe)
-        if cmd_check_freeze(cargs) != 0:
-            return "calibration confirmation revalidation failed: %s" % cfg
-    for cfg in CONFIGS:
-        err = validate_off_run(canonical["off-%s" % cfg], ref_hash, cfg)
-        if err:
-            return err
+    # Trial scenes come from the canonical trial provenance records
+    # (source, not sidecar strings).
     trial_scenes = {}
     try:
         for cfg in CONFIGS:
@@ -392,15 +418,30 @@ def revalidate_calibration(manifest, freeze_path, ref_exe):
                 trial_scenes[cfg] = json.load(f).get("scene_sha256", "")
     except (OSError, ValueError) as e:
         return "calibration trial provenance unreadable: %s" % e
+    if not all(trial_scenes.values()):
+        return "calibration trial scenes unhashed"
+    for cfg in CONFIGS:
+        confirm = canonical["confirm-%s" % cfg]
+        cargs = argparse.Namespace(run_dirs=[confirm],
+                                   manifest=freeze_path,
+                                   config=cfg, ref_exe=ref_exe)
+        if cmd_check_freeze(cargs) != 0:
+            return "calibration confirmation revalidation failed: %s" % cfg
+    for cfg in CONFIGS:
+        err = validate_off_run(canonical["off-%s" % cfg], ref_exe_abs,
+                               ref_hash, cfg, trial_scenes[cfg])
+        if err:
+            return err
     for cfg in CONFIGS:
         err = validate_legacy_run(canonical["legacy-%s" % cfg],
-                                  cal.get("legacys_exe", {}).get(cfg, ""),
-                                  ref_hash, cfg, trial_scenes[cfg])
+                                  authority, ref_hash, cfg,
+                                  trial_scenes[cfg])
         if err:
             return err
     controls_cfg = {"control-RT": "C1", "control-GI": "C3"}
     for tag, cfg in controls_cfg.items():
-        err = validate_control_run(canonical[tag], ref_hash, cfg)
+        err = validate_control_run(canonical[tag], ref_exe_abs, ref_hash,
+                                   cfg, trial_scenes[cfg])
         if err:
             return err
     # Phase 2 — gate recomputation on validated evidence only.
@@ -470,9 +511,72 @@ def expected_calib_runs():
     return runs
 
 
-def validate_off_run(off_dir, ref_hash, cfg):
-    """OFF-leg identity: completed, diagnostic-OFF, reference exe,
-    frozen config/workload, effective backend. Returns '' or FAIL."""
+def check_run_fixture(prov, completion, rundir, role, cfg,
+                      trial_scene_hash, expected_exe_abs):
+    """Central immutable RunSpec check for ONE calibration run.
+
+    Every role (trial/confirm/OFF/legacy/control) must satisfy the
+    SAME fixture contract — validators may add role-specific mode
+    checks but must never skip these or trust editable provenance
+    for them:
+    - prov declares EXACTLY FRAMES_REQUIRED (60); the window checks
+      always run against the fixed constant, never a prov value.
+    - frozen config/workload seal matches (check_workload).
+    - scene hash equals the role's trial fixture hash AND the scene
+      file at the provenance path re-hashes to it now.
+    - executable path equals the expected authority binary.
+    - completion complete; frame.png present and, when the completion
+      records frame_sha256, byte-identical to it.
+    - run.log present with NGX/Denoiser evidence (and EnvMap Loaded
+      when the provenance extras request --env).
+    Returns '' or FAIL."""
+    if prov.get("frames") != FRAMES_REQUIRED:
+        return ("%s run %s declares frames=%r, contract requires %d"
+                % (role, cfg, prov.get("frames"), FRAMES_REQUIRED))
+    w_err = check_workload(prov, cfg)
+    if w_err:
+        return "%s run %s: %s" % (role, cfg, w_err)
+    if not trial_scene_hash or \
+            prov.get("scene_sha256") != trial_scene_hash:
+        return ("%s run %s scene differs from calibration fixture"
+                % (role, cfg))
+    scene_path = prov.get("scene", "")
+    if not scene_path:
+        return "%s run %s has no scene path" % (role, cfg)
+    try:
+        if sha256_file(scene_path) != trial_scene_hash:
+            return ("%s run %s scene file changed since calibration"
+                    % (role, cfg))
+    except OSError as e:
+        return "%s run %s scene unreadable: %s" % (role, cfg, e)
+    if os.path.abspath(prov.get("exe", "")) != \
+            os.path.abspath(expected_exe_abs):
+        return ("%s run %s exe is not the designated binary: %r"
+                % (role, cfg, prov.get("exe", "")))
+    if completion.get("complete") is not True:
+        return "%s run %s incomplete" % (role, cfg)
+    frame_png = os.path.join(rundir, "frame.png")
+    try:
+        frame_hash = sha256_file(frame_png)
+    except OSError as e:
+        return "%s run %s frame unreadable: %s" % (role, cfg, e)
+    if "frame_sha256" in completion and \
+            completion["frame_sha256"] != frame_hash:
+        return "%s run %s frame differs from retained evidence" \
+            % (role, cfg)
+    ngx, den, env = read_effective_mode(rundir)
+    if ngx is None or den is None:
+        return "%s run %s lacks backend/mode evidence" % (role, cfg)
+    if ("--env" in prov.get("extra", []) or
+            "-e" in prov.get("extra", [])) and env is None:
+        return "%s run %s lacks loaded-env evidence" % (role, cfg)
+    return ""
+
+
+def validate_off_run(off_dir, ref_exe_abs, ref_hash, cfg, trial_scene_hash):
+    """OFF-leg identity: central fixture contract plus true-OFF mode
+    (diagnostic flags clear) and the reference executable.
+    Returns '' or FAIL."""
     try:
         with open(os.path.join(off_dir, "completion.json")) as f:
             completion = json.load(f)
@@ -480,28 +584,27 @@ def validate_off_run(off_dir, ref_hash, cfg):
             prov = json.load(f)
     except (OSError, ValueError) as e:
         return "unreadable OFF run %s: %s" % (off_dir, e)
-    if not completion.get("complete"):
-        return "OFF run incomplete: %s" % off_dir
+    spec_err = check_run_fixture(prov, completion, off_dir, "OFF", cfg,
+                                 trial_scene_hash, ref_exe_abs)
+    if spec_err:
+        return spec_err
     if prov.get("diag"):
         return "OFF run is diagnostic-ON, not OFF: %s" % off_dir
     if prov.get("control"):
         return "OFF run carries control flag: %s" % off_dir
     if prov.get("exe_sha256") != ref_hash:
         return "OFF run exe is not the reference: %s" % off_dir
-    w_err = check_workload(prov, cfg)
-    if w_err:
-        return "OFF run %s: %s" % (off_dir, w_err)
-    if not completion.get("ngx_effective"):
-        return "OFF run lacks backend evidence: %s" % off_dir
     return ""
 
 
-def validate_legacy_run(legacy_dir, legacy_hash, ref_hash, cfg,
-                        trial_scene_hash):
-    """Legacy-run identity: completed, plain (diag OFF), the DESIGNATED
-    production executable (recorded at seal time, provably not the
-    reference), same fixture scene as the calibration trial.
-    Returns '' or FAIL."""
+def validate_legacy_run(legacy_dir, authority, ref_hash,
+                        cfg, trial_scene_hash):
+    """Legacy-run identity: central fixture contract plus the EXPLICIT
+    production authority sealed from the campaign input (same path AND
+    same current file hash — provably the designated binary, provably
+    not the reference) and its recorded SPV identity. Byte-identical
+    binaries at other paths do not satisfy the designated-path
+    requirement. Returns '' or FAIL."""
     try:
         with open(os.path.join(legacy_dir, "completion.json")) as f:
             completion = json.load(f)
@@ -509,32 +612,33 @@ def validate_legacy_run(legacy_dir, legacy_hash, ref_hash, cfg,
             prov = json.load(f)
     except (OSError, ValueError) as e:
         return "unreadable legacy run %s: %s" % (legacy_dir, e)
-    if not completion.get("complete"):
-        return "legacy run incomplete: %s" % legacy_dir
+    spec_err = check_run_fixture(prov, completion, legacy_dir, "legacy",
+                                 cfg, trial_scene_hash,
+                                 authority.get("path", ""))
+    if spec_err:
+        return spec_err
     if prov.get("diag"):
         return "legacy run is diagnostic-ON: %s" % legacy_dir
-    if prov.get("exe_sha256") != legacy_hash:
-        return "legacy run exe differs from sealed production exe: %s" \
+    if prov.get("exe_sha256") != authority.get("sha256", ""):
+        return "legacy run exe differs from designated production exe: %s" \
             % legacy_dir
     if prov.get("exe_sha256") == ref_hash:
         return "legacy run uses the reference exe, not production: %s" \
             % legacy_dir
-    if prov.get("scene_sha256") != trial_scene_hash:
-        return "legacy run scene differs from calibration fixture: %s" \
+    if prov.get("spvs", {}) != authority.get("spvs", {}):
+        return "legacy run SPV identity differs from designated set: %s" \
             % legacy_dir
-    w_err = check_workload(prov, cfg)
-    if w_err:
-        return "legacy run %s: %s" % (legacy_dir, w_err)
-    if not completion.get("ngx_effective"):
-        return "legacy run lacks backend evidence: %s" % legacy_dir
     return ""
 
 
-def validate_control_run(control_dir, ref_hash, cfg):
-    """Control-run identity: completed, diagnostic control mode, frozen
-    config/workload, exact measured mode-2 window. The histogram SHIFT
-    itself is checked separately by check_control_response; this gate
-    establishes the run IS a control run. Returns '' or FAIL."""
+def validate_control_run(control_dir, ref_exe_abs, ref_hash, cfg,
+                         trial_scene_hash):
+    """Control-run identity: central fixture contract plus diagnostic
+    control mode and the exact measured mode-2 window (against the
+    FIXED contract frame count, never an editable prov value). The
+    histogram SHIFT itself is checked separately by
+    check_control_response; this gate establishes the run IS a control
+    run on the calibration fixture. Returns '' or FAIL."""
     try:
         with open(os.path.join(control_dir, "completion.json")) as f:
             completion = json.load(f)
@@ -542,18 +646,16 @@ def validate_control_run(control_dir, ref_hash, cfg):
             prov = json.load(f)
     except (OSError, ValueError) as e:
         return "unreadable control run %s: %s" % (control_dir, e)
-    if not completion.get("complete"):
-        return "control run incomplete: %s" % control_dir
+    spec_err = check_run_fixture(prov, completion, control_dir,
+                                 "control", cfg, trial_scene_hash,
+                                 ref_exe_abs)
+    if spec_err:
+        return spec_err
     if not prov.get("diag") or not prov.get("control"):
         return "control run lacks control mode flags: %s" % control_dir
     if prov.get("exe_sha256") != ref_hash:
         return "control run exe is not the reference: %s" % control_dir
-    w_err = check_workload(prov, cfg)
-    if w_err:
-        return "control run %s: %s" % (control_dir, w_err)
-    if not completion.get("ngx_effective"):
-        return "control run lacks backend evidence: %s" % control_dir
-    reval = argparse.Namespace(frames=prov.get("frames", 60),
+    reval = argparse.Namespace(frames=FRAMES_REQUIRED,
                                diag=True, edges="manifest",
                                control=True, config=cfg,
                                extra_args=prov.get("extra", []))
@@ -626,6 +728,13 @@ def revalidate_freeze_lineage(manifest, ref_exe):
             return "lineage trial no longer complete: %s" % cfg
         if prov.get("exe_sha256") != ref_hash:
             return "lineage trial exe mismatch: %s" % cfg
+        if os.path.abspath(prov.get("exe", "")) != \
+                os.path.abspath(ref_exe):
+            return "lineage trial exe is not the reference binary: %s" % cfg
+        if prov.get("frames") != FRAMES_REQUIRED:
+            return ("lineage trial declares frames=%r, contract "
+                    "requires %d: %s"
+                    % (prov.get("frames"), FRAMES_REQUIRED, cfg))
         scene_path = rec.get("scene", "") or prov.get("scene", "")
         if not scene_path:
             return "lineage trial has no scene path: %s" % cfg
@@ -640,7 +749,7 @@ def revalidate_freeze_lineage(manifest, ref_exe):
             return "lineage trial %s: %s" % (cfg, w_err)
         if not completion.get("ngx_effective"):
             return "lineage trial lacks backend evidence: %s" % cfg
-        reval = argparse.Namespace(frames=prov.get("frames", 60),
+        reval = argparse.Namespace(frames=FRAMES_REQUIRED,
                                    diag=True, edges="", control=False,
                                    config=cfg,
                                    extra_args=prov.get("extra", []))
@@ -1995,6 +2104,10 @@ freeze gating and legacy parity enforced (never implicit runs).
 CALIB_CAP_MIN = 90
 ACCEPT_CAP_MIN = 150
 CONFIGS = ("C1", "C2", "C3", "C4")
+# Fixed contract frame count (plan §9: 60-frame runs, frames 41..60
+# measured). Revalidation ALWAYS uses this constant — an editable
+# prov.frames must never decide whether exact-window checks run.
+FRAMES_REQUIRED = 60
 
 
 def check_legacy_parity(off_dir, legacy_dir):
@@ -2309,7 +2422,7 @@ def run_campaign(args, run_fn=None):
         # Seal the campaign freeze with the full calibration evidence:
         # without this seal the freeze is trials-only and can never
         # unlock acceptance, no matter what its edges say.
-        seal_err = seal_calibration(freeze_out, campdir)
+        seal_err = seal_calibration(freeze_out, campdir, args.legacy_exe)
         if seal_err:
             print("ERROR: calibration seal failed: %s" % seal_err)
             return 1
@@ -2361,6 +2474,16 @@ def cmd_derive_freeze(args):
         if prov.get("exe_sha256") != ref_hash:
             print("FAIL derive-freeze: trial exe mismatch: %s" % trial)
             return 1
+        if os.path.abspath(prov.get("exe", "")) != \
+                os.path.abspath(args.ref_exe):
+            print("FAIL derive-freeze: trial exe is not the reference "
+                  "binary: %s" % trial)
+            return 1
+        if prov.get("frames") != FRAMES_REQUIRED:
+            print("FAIL derive-freeze: trial declares frames=%r, contract "
+                  "requires %d: %s"
+                  % (prov.get("frames"), FRAMES_REQUIRED, trial))
+            return 1
         cfg = prov.get("config", "")
         if cfg not in CONFIGS:
             print("FAIL derive-freeze: trial has no frozen config: %s"
@@ -2380,8 +2503,9 @@ def cmd_derive_freeze(args):
         # Re-validate the trial as pilot-complete: the completion flag
         # alone is not lineage — the window, mode and coverage must hold.
         # Provenance extras travel along so the env-loaded gate applies
-        # to C2 trials exactly as at capture time.
-        reval = argparse.Namespace(frames=prov.get("frames", 60),
+        # to C2 trials exactly as at capture time. Frame count is the
+        # FIXED contract constant, never the editable prov value.
+        reval = argparse.Namespace(frames=FRAMES_REQUIRED,
                                    diag=True, edges="", control=False,
                                    config=cfg,
                                    extra_args=prov.get("extra", []))
@@ -2542,9 +2666,28 @@ def cmd_check_freeze(args):
         if prov.get("exe_sha256") != ref_hash:
             print("FAIL check-freeze: exe mismatch: %s" % rundir)
             return 1
+        if os.path.abspath(prov.get("exe", "")) != \
+                os.path.abspath(args.ref_exe):
+            print("FAIL check-freeze: run exe is not the reference "
+                  "binary: %s" % rundir)
+            return 1
+        if prov.get("frames") != FRAMES_REQUIRED:
+            print("FAIL check-freeze: run declares frames=%r, contract "
+                  "requires %d: %s"
+                  % (prov.get("frames"), FRAMES_REQUIRED, rundir))
+            return 1
         w_err = check_workload(prov, required_cfg)
         if w_err:
             print("FAIL check-freeze: %s: %s" % (rundir, w_err))
+            return 1
+        # Same-fixture binding: confirmations must run the trial
+        # fixture for their config (a valid run on another scene is
+        # not confirmation evidence for this one).
+        trial_scene = manifest.get("lineage", {}).get(
+            "trials", {}).get(required_cfg, {}).get("scene_sha256", "")
+        if not trial_scene or prov.get("scene_sha256") != trial_scene:
+            print("FAIL check-freeze: run scene differs from %s trial "
+                  "fixture: %s" % (required_cfg, rundir))
             return 1
         if prov.get("edges_sha256") != sha256_file(args.manifest):
             print("FAIL check-freeze: run staged different edges: %s"
@@ -2555,7 +2698,7 @@ def cmd_check_freeze(args):
                   % rundir)
             return 1
         # Re-validate: the completion flag alone is not lineage.
-        reval = argparse.Namespace(frames=prov.get("frames", 60),
+        reval = argparse.Namespace(frames=FRAMES_REQUIRED,
                                    diag=True, edges="manifest",
                                    control=False, config=required_cfg,
                                    extra_args=prov.get("extra", []))
@@ -2956,7 +3099,8 @@ def self_test():
                            "ngx_effective": "[NGX] fake",
                            "denoiser_effective": "[Denoiser] fake"}, f)
             with open(os.path.join(tdir, "provenance.json"), "w") as f:
-                json.dump({"exe_sha256": sha256_file(exe),
+                json.dump({"exe": os.path.abspath(exe),
+                           "exe_sha256": sha256_file(exe),
                            "scene": os.path.abspath(scene_file),
                            "scene_sha256": sha256_file(scene_file),
                            "frames": 60, "config": cfg,
@@ -3212,8 +3356,9 @@ def self_test():
                        "ngx_effective": "[NGX] fake",
                        "denoiser_effective": "[Denoiser] fake"}, f)
         with open(os.path.join(cdir, "provenance.json"), "w") as f:
-            json.dump({"exe_sha256": sha256_file(exe),
-                       "scene_sha256": sha256_file(scene),
+            json.dump({"exe": os.path.abspath(exe),
+                       "exe_sha256": sha256_file(exe),
+                       "scene_sha256": sha256_file(scenes["C3"]),
                        "frames": 60, "config": "C3",
                        "workload": WORKLOADS["C3"],
                        "edges_sha256": sha256_file(sealed)}, f)
@@ -3839,6 +3984,112 @@ def self_test():
         # Restored evidence revalidates clean (proves the mutations,
         # not the fixture, caused each rejection above).
         check("fake restored evidence revalidates",
+              revalidate_calibration(sealed_for_alias, sealed, exe) == "")
+
+        # --- Round-6b exact-mutation battery (each review repro, each
+        # through the production revalidator AND an accept/analyze
+        # entry; every mutation restored with revalidate-clean proof).
+        cal1 = os.path.join(tmp, "calib1")
+
+        def write_calib_prov(role_dir, text):
+            with open(os.path.join(cal1, role_dir,
+                                   "provenance.json"), "w") as f:
+                f.write(text)
+
+        # Earlier adversarial tests left k1/R_ON provenance tampered
+        # (scene zeros, then workload spp=1). Rewrite it pristine so
+        # the analyze-entry rejections below are caused by the new
+        # mutations, not stale fixture damage.
+        with open(os.path.join(adir, "k1", "R_ON",
+                               "provenance.json"), "w") as f:
+            json.dump({"exe": os.path.abspath(exe),
+                       "exe_sha256": sha256_file(exe),
+                       "scene_sha256": sha256_file(scene),
+                       "frames": 60, "config": "C1",
+                       "workload": WORKLOADS["C1"],
+                       "edges_sha256": sha256_file(sealed)}, f)
+
+        def mutate_prov_field(role_dir, **fields):
+            with open(os.path.join(cal1, role_dir,
+                                   "provenance.json")) as f:
+                prov = json.load(f)
+            original = json.dumps(prov)
+            prov.update(fields)
+            with open(os.path.join(cal1, role_dir,
+                                   "provenance.json"), "w") as f:
+                json.dump(prov, f)
+            return original
+
+        # Wrong scene hash (zeros) in off-C1, confirm-C1, control-RT.
+        for role in ("off-C1", "confirm-C1", "control-RT"):
+            orig = mutate_prov_field(role, scene_sha256="0" * 64)
+            check("fake wrong-scene %s rejected" % role,
+                  revalidate_calibration(sealed_for_alias, sealed, exe)
+                  != "")
+            write_calib_prov(role, orig)
+        # Confirm-C1 wrong scene also fails through the analyze entry.
+        orig = mutate_prov_field("confirm-C1", scene_sha256="0" * 64)
+        check("fake analyze wrong-scene confirm rejected",
+              cmd_analyze(ana) == 1)
+        write_calib_prov("confirm-C1", orig)
+        # 12-frame declarations in the same three roles.
+        for role in ("off-C1", "confirm-C1", "control-RT"):
+            orig = mutate_prov_field(role, frames=12)
+            check("fake 12-frame %s rejected" % role,
+                  revalidate_calibration(sealed_for_alias, sealed, exe)
+                  != "")
+            write_calib_prov(role, orig)
+        # Off-C1 12-frame also fails through the analyze entry.
+        orig = mutate_prov_field("off-C1", frames=12)
+        check("fake analyze 12-frame OFF rejected",
+              cmd_analyze(ana) == 1)
+        write_calib_prov("off-C1", orig)
+        # Deleted legacy run.log fails (evidence reread, not assumed).
+        leg1_log = os.path.join(cal1, "legacy-C1", "run.log")
+        with open(leg1_log, "rb") as f:
+            leg1_log_bytes = f.read()
+        os.remove(leg1_log)
+        check("fake missing legacy log rejected",
+              revalidate_calibration(sealed_for_alias, sealed, exe) != "")
+        with open(leg1_log, "wb") as f:
+            f.write(leg1_log_bytes)
+        check("fake mutations restored revalidate clean",
+              revalidate_calibration(sealed_for_alias, sealed, exe) == "")
+
+        # Legacy authority: four arbitrary different binaries fail
+        # sealing AND revalidation (seal binds the campaign input, not
+        # per-run self-designations).
+        alt_exes = []
+        for i in range(4):
+            alt = os.path.join(tmp, "alt-legacy-%d.exe" % i)
+            with open(alt, "wb") as f:
+                f.write(b"alt-legacy-%d" % i)
+            alt_exes.append(alt)
+        leg_origs = {}
+        for cfg, alt in zip(CONFIGS, alt_exes):
+            role = "legacy-%s" % cfg
+            with open(os.path.join(cal1, role,
+                                   "provenance.json")) as f:
+                leg_origs[role] = f.read()
+            mutate_prov_field(role, exe=os.path.abspath(alt),
+                              exe_sha256=sha256_file(alt))
+        check("fake four-legacy-binaries seal rejected",
+              seal_calibration(sealed, cal1, legacy_exe) != "")
+        check("fake four-legacy-binaries revalidate rejected",
+              revalidate_calibration(sealed_for_alias, sealed, exe) != "")
+        for role, original in leg_origs.items():
+            write_calib_prov(role, original)
+        # Byte-identical copy at another path: same hash, but NOT the
+        # designated path — still rejected (path binding, not hash
+        # inequality alone).
+        twin = os.path.join(tmp, "legacy-twin.exe")
+        shutil.copy(legacy_exe, twin)
+        twin_orig = mutate_prov_field(
+            "legacy-C2", exe=os.path.abspath(twin))
+        check("fake legacy twin-path rejected",
+              revalidate_calibration(sealed_for_alias, sealed, exe) != "")
+        write_calib_prov("legacy-C2", twin_orig)
+        check("fake authority mutations restored",
               revalidate_calibration(sealed_for_alias, sealed, exe) == "")
 
         # Relative exe under a nested directory: cmd[0] must be the
