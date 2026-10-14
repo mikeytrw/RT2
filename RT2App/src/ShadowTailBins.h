@@ -446,6 +446,16 @@ inline bool ValidateSnapshotWords(const uint32_t* words, uint32_t nwords,
         reasonOut = "short buffer";
         return false;
     }
+    if (dataCap < kTotalU32)
+    {
+        reasonOut = "data capacity short";
+        return false;
+    }
+    // Bounded initialized payload: zero the output first so EVERY failure
+    // below serializes explicit zeros, never uninitialized stack words.
+    // (SnapshotFrom assigns this buffer unconditionally.)
+    for (uint32_t i = 0; i < kTotalU32; ++i)
+        dataOut[i] = 0u;
     for (uint32_t i = 0; i < kHeaderU32; ++i)
         headOut[i] = words[i];
     if (headOut[0] != 0x53484457u) { reasonOut = "bad magic"; return false; }
@@ -461,13 +471,9 @@ inline bool ValidateSnapshotWords(const uint32_t* words, uint32_t nwords,
         return false;
     }
     if (headOut[6] != 1u) { reasonOut = "variant tag mismatch"; return false; }
-    // Data words are ALWAYS recoverable past this point (pilot + control
-    // carry real counters); only acceptance validity is still open.
-    if (dataCap < kTotalU32)
-    {
-        reasonOut = "data capacity short";
-        return false;
-    }
+    // Data words are ALWAYS recoverable past this point (dataCap proven
+    // above; pilot + control carry real counters); only acceptance
+    // validity is still open.
     for (uint32_t i = 0; i < kTotalU32; ++i)
         dataOut[i] = words[i];
     if (headOut[4] < 2u || headOut[4] > kAcceptanceEdgesMax ||
@@ -533,6 +539,17 @@ inline std::string SnapshotJson(uint64_t frameIndex, uint32_t slot,
     }
     out += "]}";
     return out;
+}
+
+// Device opt-in predicate (mirrors Walnut CreateLogicalDevice, which cannot
+// link into CPU tests: same truth table — enable if and only if the driver
+// reports support AND the host requested before device creation AND the
+// extension is present. Walnut additionally zeroes a queried-TRUE request
+// bit when the path is not taken, so ordinary launches never request the
+// feature without the extension.)
+inline bool ShaderClockEnable(bool supported, bool requested, bool extPresent)
+{
+    return supported && requested && extPresent;
 }
 
 } // namespace shadowtail

@@ -227,7 +227,10 @@ ShadowTailDiag::Snapshot ShadowTailDiag::SnapshotFrom(const uint32_t* words,
         snapshot.invalidReason = "null buffer";
         return snapshot;
     }
-    uint32_t data[shadowtail::kTotalU32];
+    uint32_t data[shadowtail::kTotalU32] = {};
+    // Belt and braces with ValidateSnapshotWords (which zeroes dataOut on
+    // entry): even a future early return above the validator cannot leak
+    // uninitialized stack words into snapshot.data / SnapshotToJson.
     std::string reason;
     const bool ok = shadowtail::ValidateSnapshotWords(
         words, shadowtail::kTotalU32, frameIndex, expEdgeRT, expEdgeGI,

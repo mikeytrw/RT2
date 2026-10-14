@@ -15,6 +15,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <vector>
@@ -314,43 +316,233 @@ TEST_CASE("ShadowTailBins snapshot validation separates pilot/control/acceptance
     CHECK(reason == "frame mismatch");
 }
 
-TEST_CASE("ShadowTailBins snapshot JSON golden outputs")
+TEST_CASE("ShadowTailBins snapshot JSON golden file roundtrip")
 {
-    // PAIRED WITH run_shadow_tail.py TEST_GOLDEN_PILOT_JSON /
-    // TEST_GOLDEN_CONTROL_JSON: these exact strings are embedded there so
-    // the python derive/control integration tests exercise the ACTUAL
-    // serialized path, not hand-written JSON. If this test's goldens
-    // change, update the python file in the same commit.
-    uint32_t head[shadowtail::kHeaderU32] = {
-        0x53484457u, 1u, 41u, 1u, 0u, 0u, 1u, 0u
+    // Paired with run_shadow_tail.py, which READS these files (no embedded
+    // literals): the python derive/control integration tests consume the
+    // ACTUAL serialized output of SnapshotJson. Regenerate with
+    // ST_WRITE_GOLDENS=1 (writes RT2Tests/src/shadowtail_golden_*.json
+    // relative to the repo-root CWD the suite runs from); the committed
+    // files are then compared byte-for-byte here. A format change fails
+    // this test until goldens are explicitly regenerated AND the python
+    // consumer re-verified in the same commit.
+    auto buildPilot = []() {
+        uint32_t head[shadowtail::kHeaderU32] = {
+            0x53484457u, 1u, 41u, 1u, 0u, 0u, 1u, 0u
+        };
+        uint32_t data[shadowtail::kTotalU32] = {};
+        data[460u + 260u] = 100u; // slot 0 RT eligible
+        data[460u + 261u] = 100u; // slot 0 RT recorded
+        data[460u + 1u] = 100u;   // slot 0 RT pilot bin
+        return shadowtail::SnapshotJson(
+            41u, 0u, 7u, false, "pilot-only: no manifest staged", head, data);
     };
-    uint32_t data[shadowtail::kTotalU32] = {};
-    data[460u + 260u] = 100u; // slot 0 RT eligible
-    data[460u + 261u] = 100u; // slot 0 RT recorded
-    data[460u + 1u] = 100u;   // slot 0 RT pilot bin
-    const std::string pilotJson = shadowtail::SnapshotJson(
-        41u, 0u, 7u, false, "pilot-only: no manifest staged", head, data);
-    CHECK(pilotJson.rfind("{\"schema\":\"rt2.shadow-tail.v1\",\"frame\":41,"
-                          "\"slot\":0,\"serial\":7,\"valid\":false,"
-                          "\"pilot\":true,\"mode\":1,"
-                          "\"reason\":\"pilot-only: no manifest staged\","
-                          "\"head\":[1397245015,1,41,1,0,0,1,0],\"data\":[",
-                          0) == 0);
-    CHECK(pilotJson.find(",100,100,0,") != std::string::npos); // eligible/recorded + zeros
+    auto buildControl = []() {
+        uint32_t chead[shadowtail::kHeaderU32] = {
+            0x53484457u, 1u, 42u, 2u, 5u, 3u, 1u, 1u
+        };
+        uint32_t cdata[shadowtail::kTotalU32] = {};
+        cdata[460u + 598u + 596u + 1u] = 305u; // slot 1 GI control word
+        return shadowtail::SnapshotJson(
+            42u, 1u, 9u, false, "positive-control mode", chead, cdata);
+    };
+    const char* genDir = std::getenv("ST_WRITE_GOLDENS");
+    if (genDir != nullptr)
+    {
+        // Generation mode: write the goldens called out above. This path
+        // is for explicit regeneration only, never for passing silently.
+        std::string pilotPath = std::string(genDir) + "/shadowtail_golden_pilot.json";
+        std::string ctlPath = std::string(genDir) + "/shadowtail_golden_control.json";
+        std::ofstream pilotOut(pilotPath, std::ios::binary | std::ios::trunc);
+        std::ofstream ctlOut(ctlPath, std::ios::binary | std::ios::trunc);
+        REQUIRE_MESSAGE(pilotOut.good(), "cannot write golden pilot file");
+        REQUIRE_MESSAGE(ctlOut.good(), "cannot write golden control file");
+        pilotOut << buildPilot();
+        ctlOut << buildControl();
+        pilotOut.flush();
+        ctlOut.flush();
+        CHECK(pilotOut.good());
+        CHECK(ctlOut.good());
+        return;
+    }
+    // Verification mode: byte-compare live output against committed goldens
+    // (repo-root CWD, same as fixture resolution for the whole suite).
+    auto readFile = [](const char* path, std::string& out) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in.good())
+            return false;
+        out.assign(std::istreambuf_iterator<char>(in),
+                   std::istreambuf_iterator<char>());
+        return true;
+    };
+    std::string pilotGold, ctlGold;
+    CHECK_MESSAGE(readFile("RT2Tests/src/shadowtail_golden_pilot.json", pilotGold),
+                  "missing golden pilot JSON — regenerate with ST_WRITE_GOLDENS=1 "
+                  "pointing at RT2Tests/src (suite runs from the repo root)");
+    CHECK_MESSAGE(readFile("RT2Tests/src/shadowtail_golden_control.json", ctlGold),
+                  "missing golden control JSON — regenerate as above");
+    if (!pilotGold.empty())
+        CHECK(buildPilot() == pilotGold);
+    if (!ctlGold.empty())
+        CHECK(buildControl() == ctlGold);
+}
 
-    uint32_t chead[shadowtail::kHeaderU32] = {
-        0x53484457u, 1u, 42u, 2u, 5u, 3u, 1u, 1u
+TEST_CASE("ShadowTailBins shader-clock opt-in truth table")
+{
+    // Mirrors the Walnut device-create decision (untestable there — no
+    // Vulkan in this closure): enable iff supported && requested &&
+    // extension present. In particular supported-but-unrequested and
+    // requested-but-unsupported must both stay off (ordinary launches
+    // never request the feature, with or without the extension).
+    CHECK(shadowtail::ShaderClockEnable(true, true, true));
+    CHECK_FALSE(shadowtail::ShaderClockEnable(true, true, false));
+    CHECK_FALSE(shadowtail::ShaderClockEnable(true, false, true));
+    CHECK_FALSE(shadowtail::ShaderClockEnable(true, false, false));
+    CHECK_FALSE(shadowtail::ShaderClockEnable(false, true, true));
+    CHECK_FALSE(shadowtail::ShaderClockEnable(false, true, false));
+    CHECK_FALSE(shadowtail::ShaderClockEnable(false, false, true));
+    CHECK_FALSE(shadowtail::ShaderClockEnable(false, false, false));
+}
+
+TEST_CASE("ShadowTailBins wrapper invalid readbacks emit bounded JSON")
+{
+    // End-to-end composition of the two thin wrappers in
+    // ShadowTailDiag.cpp (SnapshotFrom = ValidateSnapshotWords + assign;
+    // SnapshotToJson = SnapshotJson with zero-fill for short payloads).
+    // ShadowTailDiag.cpp itself needs Vulkan and cannot link into this
+    // CPU-only suite, so this test executes the EXACT same call sequence
+    // on the shared header core and asserts EVERY serialized field —
+    // schema/frame/slot/serial/valid/pilot/mode/reason/head/full data.
+    // Structural failures must serialize explicit zeros, never
+    // uninitialized words; pilot/control failures must keep real data.
+    auto wrapperJson = [](const uint32_t* words, uint32_t nwords,
+                          uint64_t frame, uint32_t slot, uint64_t serial,
+                          uint32_t expRT, uint32_t expGI) {
+        uint32_t head[shadowtail::kHeaderU32] = {};
+        uint32_t data[shadowtail::kTotalU32] = {};
+        std::string reason = "no snapshot read yet";
+        bool valid = false;
+        if (words != nullptr && nwords >= shadowtail::kTotalU32)
+        {
+            valid = shadowtail::ValidateSnapshotWords(
+                words, nwords, frame, expRT, expGI, head, data,
+                shadowtail::kTotalU32, reason);
+        }
+        else if (words == nullptr)
+        {
+            reason = "null buffer";
+        }
+        else
+        {
+            reason = "short buffer";
+        }
+        return shadowtail::SnapshotJson(frame, slot, serial, valid, reason,
+                                        head, data);
     };
-    uint32_t cdata[shadowtail::kTotalU32] = {};
-    cdata[460u + 598u + 596u + 1u] = 305u; // slot 1 GI control checksum word
-    const std::string ctlJson = shadowtail::SnapshotJson(
-        42u, 1u, 9u, false, "positive-control mode", chead, cdata);
-    CHECK(ctlJson.rfind("{\"schema\":\"rt2.shadow-tail.v1\",\"frame\":42,"
-                        "\"slot\":1,\"serial\":9,\"valid\":false,"
-                        "\"pilot\":false,\"mode\":2,"
-                        "\"reason\":\"positive-control mode\","
-                        "\"head\":[1397245015,1,42,2,5,3,1,1],\"data\":[",
-                        0) == 0);
+    auto dataAllZero = [](const std::string& json) {
+        const std::string key = "\"data\":[";
+        const size_t at = json.find(key);
+        if (at == std::string::npos)
+            return false;
+        const size_t end = json.find(']', at);
+        if (end == std::string::npos)
+            return false;
+        const std::string body =
+            json.substr(at + key.size(), end - at - key.size());
+        size_t pos = 0;
+        size_t count = 0;
+        while (pos <= body.size())
+        {
+            const size_t comma = body.find(',', pos);
+            const std::string tok = body.substr(
+                pos, comma == std::string::npos ? comma : comma - pos);
+            if (tok != "0")
+                return false;
+            ++count;
+            if (comma == std::string::npos)
+                break;
+            pos = comma + 1;
+        }
+        return count == 1196u; // full counter region, bounded payload
+    };
+    auto headField = [](const std::string& json, uint32_t idx) {
+        const std::string key = "\"head\":[";
+        const size_t at = json.find(key);
+        REQUIRE_MESSAGE(at != std::string::npos, "head array missing");
+        const size_t end = json.find(']', at);
+        REQUIRE_MESSAGE(end != std::string::npos, "head array unterminated");
+        std::string body =
+            json.substr(at + key.size(), end - at - key.size()) + ",";
+        for (uint32_t i = 0; i < idx; ++i)
+        {
+            const size_t comma = body.find(',');
+            REQUIRE_MESSAGE(comma != std::string::npos, "head field missing");
+            body = body.substr(comma + 1);
+        }
+        return body.substr(0, body.find(','));
+    };
+
+    std::vector<uint32_t> words(shadowtail::kTotalU32, 0u);
+    words[0] = 0x53484457u; words[1] = 1u; words[2] = 41u;
+    words[3] = 1u; words[4] = 5u; words[5] = 3u; words[6] = 1u;
+    words[460u + 260u] = 100u; // eligible behind every case below
+    words[460u + 261u] = 100u; // recorded behind every case below
+
+    // Bad magic: head echoes the corrupt word, data is all zeros.
+    words[0] = 0xDEADBEEFu;
+    std::string badMagic =
+        wrapperJson(words.data(), shadowtail::kTotalU32, 41u, 0u, 7u, 5u, 3u);
+    CHECK(badMagic.find("\"valid\":false") != std::string::npos);
+    CHECK(badMagic.find("\"reason\":\"bad magic\"") != std::string::npos);
+    CHECK(headField(badMagic, 0) == "3735928559"); // echoed 0xDEADBEEF
+    CHECK(dataAllZero(badMagic));
+    words[0] = 0x53484457u;
+
+    // Version mismatch, frame mismatch, bad mode: same bounded shape.
+    words[1] = 2u;
+    std::string badVer =
+        wrapperJson(words.data(), shadowtail::kTotalU32, 41u, 0u, 7u, 5u, 3u);
+    CHECK(badVer.find("\"reason\":\"version mismatch\"") != std::string::npos);
+    CHECK(dataAllZero(badVer));
+    words[1] = 1u;
+    std::string badFrame =
+        wrapperJson(words.data(), shadowtail::kTotalU32, 99u, 0u, 7u, 5u, 3u);
+    CHECK(badFrame.find("\"reason\":\"frame mismatch\"") != std::string::npos);
+    CHECK(dataAllZero(badFrame));
+    words[3] = 0u;
+    std::string badMode =
+        wrapperJson(words.data(), shadowtail::kTotalU32, 41u, 0u, 7u, 5u, 3u);
+    CHECK(badMode.find("\"reason\":\"mode is not ON\"") != std::string::npos);
+    CHECK(badMode.find("\"mode\":0") != std::string::npos);
+    CHECK(dataAllZero(badMode));
+    words[3] = 1u;
+
+    // Short buffer and null buffer: bounded zeros, loud reason.
+    std::string shortBuf =
+        wrapperJson(words.data(), 100u, 41u, 0u, 7u, 5u, 3u);
+    CHECK(shortBuf.find("\"reason\":\"short buffer\"") != std::string::npos);
+    CHECK(dataAllZero(shortBuf));
+    std::string nullBuf = wrapperJson(nullptr, 0u, 41u, 0u, 7u, 5u, 3u);
+    CHECK(nullBuf.find("\"reason\":\"null buffer\"") != std::string::npos);
+    CHECK(dataAllZero(nullBuf));
+
+    // Pilot failure keeps REAL counters (data-bearing, never valid).
+    words[4] = 0u; words[5] = 0u;
+    std::string pilot =
+        wrapperJson(words.data(), shadowtail::kTotalU32, 41u, 0u, 7u, 5u, 3u);
+    CHECK(pilot.find("\"pilot\":true") != std::string::npos);
+    CHECK(pilot.find("\"reason\":\"pilot-only: no manifest staged\"") !=
+          std::string::npos);
+    CHECK_FALSE(dataAllZero(pilot));
+    CHECK(pilot.find(",100,100,0,") != std::string::npos);
+
+    // Control failure keeps REAL counters with mode 2.
+    words[4] = 5u; words[5] = 3u; words[3] = 2u;
+    std::string ctl =
+        wrapperJson(words.data(), shadowtail::kTotalU32, 41u, 0u, 7u, 5u, 3u);
+    CHECK(ctl.find("\"mode\":2") != std::string::npos);
+    CHECK(ctl.find("\"reason\":\"positive-control mode\"") != std::string::npos);
+    CHECK_FALSE(dataAllZero(ctl));
 }
 
 TEST_CASE("ShadowTailBins SSBO layout constants match the frozen map")
