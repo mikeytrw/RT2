@@ -319,7 +319,15 @@ bool PathTracePass::BuildPipelineAndSBT(const GpuDevice& dev,
 	}
 
 	void* mapped = nullptr;
-	vkMapMemory(m_Device, sbtOut->memory, 0, sbtSize, 0, &mapped);
+	if (vkMapMemory(m_Device, sbtOut->memory, 0, sbtSize, 0, &mapped) != VK_SUCCESS ||
+	    mapped == nullptr)
+	{
+		RT_LOG("[PathTracePass] SBT map failed; destroying temporaries, live pipeline kept");
+		vkDestroyPipeline(m_Device, *pipeOut, nullptr);
+		*pipeOut = VK_NULL_HANDLE;
+		GpuResources::DestroyBuffer(dev, *sbtOut);
+		return false;
+	}
 	std::memset(mapped, 0, (size_t)sbtSize);
 	uint8_t* dst = static_cast<uint8_t*>(mapped);
 	std::memcpy(dst + 0, handles.data() + 0 * handleSize, handleSize);

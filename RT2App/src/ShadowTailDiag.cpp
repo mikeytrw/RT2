@@ -49,7 +49,7 @@ bool ShadowTailDiag::Init(const GpuDevice& device, uint32_t frameSlotCount)
     m_Staged[1] = kVersion;
     m_Staged[3] = 1u; // mode ON
     m_Staged[6] = kVariantTag; // staged ON tag (see SnapshotFrom)
-    m_Staged[6] = kVariantTag; // staged ON tag (see SnapshotFrom)
+    m_Mode = 1u;
 
     RT_LOG("[ShadowTail] enabled (%u bytes, %u frame slots)", (unsigned)kBytesTotal,
            frameSlotCount);
@@ -62,7 +62,10 @@ void ShadowTailDiag::Destroy(const GpuDevice& device)
         GpuResources::DestroyBuffer(device, buffer);
     GpuResources::DestroyBuffer(device, m_DeviceBuffer);
     m_Slots = {};
-    m_Latest = Snapshot{};
+    m_SlotSnaps = {};
+    m_SlotHasData = {};
+    m_SubmitSerial = 1;
+    m_DeliveredSerial = 0;
     m_FrameSlotCount = 0;
 }
 
@@ -95,6 +98,16 @@ bool ShadowTailDiag::SetEdges(uint32_t edgeCountRT, const uint32_t* edgesRT,
     return true;
 }
 
+bool ShadowTailDiag::SetMode(uint32_t mode)
+{
+    // Only the two specified modes exist (1 normal, 2 positive-control);
+    // anything else is a loud error, never a silent default.
+    if (mode != 1u && mode != 2u)
+        return false;
+    m_Mode = mode;
+    return true;
+}
+
 void ShadowTailDiag::BeginFrame(VkCommandBuffer cmd, uint32_t frameSlot,
                                 uint64_t frameIndex)
 {
@@ -105,6 +118,12 @@ void ShadowTailDiag::BeginFrame(VkCommandBuffer cmd, uint32_t frameSlot,
     // then zero the counter region. Both TRANSFER_DST writes precede the
     // transfer->RT/compute barrier below.
     m_Staged[2] = static_cast<uint32_t>(frameIndex & 0xFFFFFFFFull);
+    m_Staged[3] = m_Mode;
+    // Slot authority: the CPU-staged slot id selects this frame's fixed
+    // counter segment. Shaders read ONLY this word (never the camera
+    // clock), and readback validates this same segment — one authority
+    // end to end, immune to frame-index resets or negative clocks.
+    m_Staged[7] = frameSlot & 1u;
     vkCmdUpdateBuffer(cmd, m_DeviceBuffer.buffer, 0, kHeaderEdgesBytes,
                       m_Staged.data());
     vkCmdFillBuffer(cmd, m_DeviceBuffer.buffer, kHeaderEdgesBytes,
@@ -169,6 +188,9 @@ void ShadowTailDiag::EndFrame(VkCommandBuffer cmd, uint32_t frameSlot)
                          0, 0, nullptr, 1, &toHost, 0, nullptr);
 
     m_Slots[frameSlot].submitted = true;
+    // Diagnostic-owned monotonic submit serial: submission order, never
+    // reset (unlike renderer frame ids, which resets can move backwards).
+    m_Slots[frameSlot].serial = m_SubmitSerial++;
 }
 
 ShadowTailDiag::Snapshot ShadowTailDiag::SnapshotFrom(const uint32_t* words,
@@ -273,12 +295,15 @@ void ShadowTailDiag::ReadCompletedSlot(const GpuDevice& device, uint32_t frameSl
         return;
     slot.submitted = false;
 
-    // A failed map/readback INVALIDATES the latest snapshot (with the
-    // slot's frame id and a reason) instead of retaining an older valid
-    // one — a previous frame must never stand in for a failed later frame.
+    // A failed map/readback INVALIDATES this slot's snapshot (with the
+    // slot's frame id, serial and a reason) instead of retaining an older
+    // valid one — a previous frame must never stand in for a failed
+    // later frame. Other slots are untouched.
     Snapshot failed;
     failed.frameIndex = slot.frameIndex;
     failed.valid = false;
+    failed.slot = frameSlot;
+    failed.serial = slot.serial;
 
     void* mapped = nullptr;
     if (vkMapMemory(device.device, m_ReadbackBuffers[frameSlot].memory,
@@ -286,34 +311,83 @@ void ShadowTailDiag::ReadCompletedSlot(const GpuDevice& device, uint32_t frameSl
     {
         RT_LOG("[ShadowTail] failed to map completed frame slot %u", frameSlot);
         failed.invalidReason = "readback map failure";
-        m_Latest = failed;
+        m_SlotSnaps[frameSlot] = failed;
+        m_SlotHasData[frameSlot] = true;
         return;
     }
     Snapshot snapshot = SnapshotFrom(static_cast<const uint32_t*>(mapped),
                                      slot.frameIndex, m_Staged[4], m_Staged[5]);
     vkUnmapMemory(device.device, m_ReadbackBuffers[frameSlot].memory);
-    if (snapshot.valid && !ValidateSlot(snapshot, frameSlot))
-    {
-        RT_LOG("[ShadowTail] invalid snapshot (frame %llu: %s)",
-               static_cast<unsigned long long>(slot.frameIndex),
-               snapshot.invalidReason.c_str());
-    }
+    snapshot.slot = frameSlot;
+    snapshot.serial = slot.serial;
+    if (snapshot.valid)
+        ValidateSlot(snapshot, frameSlot);
     if (!snapshot.valid)
     {
         RT_LOG("[ShadowTail] invalid snapshot (frame %llu: %s)",
                static_cast<unsigned long long>(slot.frameIndex),
                snapshot.invalidReason.c_str());
     }
-    // Monotonic replacement only: never let an older slot overwrite newer
-    // data, but a failed newer frame MUST replace an older valid one.
-    if (!m_Latest.valid || snapshot.frameIndex >= m_Latest.frameIndex)
-        m_Latest = snapshot;
+    // Per-slot store only: this slot's fence proves THIS slot's data.
+    // No cross-slot comparison (frame ids can reset; serials order).
+    m_SlotSnaps[frameSlot] = snapshot;
+    m_SlotHasData[frameSlot] = true;
+}
+
+const ShadowTailDiag::Snapshot& ShadowTailDiag::GetLatest() const
+{
+    // Newest by diagnostic submit serial across slots with data.
+    // Referenced storage: m_SlotSnaps entries (stable member array).
+    size_t best = 0;
+    bool have = false;
+    for (size_t i = 0; i < m_SlotSnaps.size(); ++i)
+    {
+        if (!m_SlotHasData[i])
+            continue;
+        if (!have || m_SlotSnaps[i].serial > m_SlotSnaps[best].serial)
+        {
+            best = i;
+            have = true;
+        }
+    }
+    // Callers must check IsShadowTail-style availability separately; with
+    // no data yet this returns slot 0's default ("no snapshot read yet").
+    (void)have;
+    return m_SlotSnaps[best];
+}
+
+std::vector<ShadowTailDiag::Snapshot> ShadowTailDiag::DrainNewSnapshots()
+{
+    // Submission order across slots; each snapshot delivered exactly once
+    // (watermark advances past the max delivered serial). Invalid
+    // snapshots are delivered too — the analysis gate treats them as
+    // inconclusive evidence, never as silent absence.
+    std::vector<Snapshot> out;
+    for (uint32_t i = 0; i < kMaxFrameSlots; ++i)
+    {
+        if (m_SlotHasData[i] && m_SlotSnaps[i].serial > m_DeliveredSerial)
+            out.push_back(m_SlotSnaps[i]);
+    }
+    // Insertion order above is slot order, not serial order.
+    for (size_t i = 0; i < out.size(); ++i)
+        for (size_t j = i + 1u; j < out.size(); ++j)
+            if (out[j].serial < out[i].serial)
+            {
+                Snapshot tmp = out[i];
+                out[i] = out[j];
+                out[j] = tmp;
+            }
+    for (size_t i = 0; i < out.size(); ++i)
+        if (out[i].serial > m_DeliveredSerial)
+            m_DeliveredSerial = out[i].serial;
+    return out;
 }
 
 std::string ShadowTailDiag::SnapshotToJson(const Snapshot& snapshot)
 {
     std::ostringstream out;
     out << "{\"schema\":\"rt2.shadow-tail.v1\",\"frame\":" << snapshot.frameIndex
+        << ",\"slot\":" << snapshot.slot << ",\"serial\":" << snapshot.serial
         << ",\"valid\":" << (snapshot.valid ? "true" : "false");
     if (!snapshot.valid)
     {

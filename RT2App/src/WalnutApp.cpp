@@ -3766,6 +3766,8 @@ private:
 			m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 		if (g_CLI.shadowTail)
 			m_Settings.shadowTailDiag = true;
+		if (g_CLI.shadowTailControl)
+			m_Settings.shadowTailControl = true;
 		m_Settings.sceneSeed = g_CLI.sceneSeed;
 
 		if (Walnut::Application::IsRayTracingSupported() && !m_RendererGPU.IsAvailable())
@@ -3790,6 +3792,7 @@ private:
 				if (g_CLI.restirGICandidates > 0) m_Settings.restirGIFreshCandidates = (uint32_t)g_CLI.restirGICandidates;
 				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 				if (g_CLI.shadowTail) m_Settings.shadowTailDiag = true;
+				if (g_CLI.shadowTailControl) m_Settings.shadowTailControl = true;
 				m_Settings.sceneSeed = g_CLI.sceneSeed;
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
@@ -4114,19 +4117,17 @@ private:
 			benchmarkTimings.push_back(timings);
 			lastBenchmarkTimingFrame = timings.frameIndex;
 		};
-		// Shadow-tail snapshots (RT4-T4): collected whenever requested,
-		// valid or not — an invalid snapshot carries its reason and the
+		// Shadow-tail snapshots (RT4-T4): drained in submission order
+		// (valid or not) — an invalid snapshot carries its reason and the
 		// analysis gate treats it as inconclusive, never as silent zeros.
+		// Drain delivers each snapshot exactly once, so both in-flight
+		// slots are emitted, never just the newest.
 		std::vector<std::string> shadowTailSnapshots;
-		uint64_t lastShadowTailFrame = UINT64_MAX;
 		auto collectShadowTail = [&]() {
 			if (!g_CLI.shadowTail || !m_RendererGPU.IsAvailable())
 				return;
-			const uint64_t frame = m_RendererGPU.GetShadowTailFrame();
-			if (frame == lastShadowTailFrame)
-				return;
-			shadowTailSnapshots.push_back(m_RendererGPU.GetShadowTailJson());
-			lastShadowTailFrame = frame;
+			for (auto& json : m_RendererGPU.DrainShadowTailJsons())
+				shadowTailSnapshots.push_back(json);
 		};
 
 		for (int i = 0; i < g_CLI.frames; i++)

@@ -364,14 +364,12 @@ bool RendererGPU::IsShadowTailAvailable() const
 	    && m_ShadowTailDiag.IsAvailable();
 }
 
-std::string RendererGPU::GetShadowTailJson()
+std::vector<std::string> RendererGPU::DrainShadowTailJsons()
 {
-	return ShadowTailDiag::SnapshotToJson(m_ShadowTailDiag.GetLatest());
-}
-
-uint64_t RendererGPU::GetShadowTailFrame() const
-{
-	return m_ShadowTailDiag.GetLatest().frameIndex;
+	std::vector<std::string> out;
+	for (const auto& snap : m_ShadowTailDiag.DrainNewSnapshots())
+		out.push_back(ShadowTailDiag::SnapshotToJson(snap));
+	return out;
 }
 
 void RendererGPU::CreateOutputImage()
@@ -1138,11 +1136,17 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.restirGINormalThreshold != newSettings.restirGINormalThreshold ||
 	    m_Settings.restirGIWorldPosThreshold != newSettings.restirGIWorldPosThreshold ||
 	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode ||
-	    m_Settings.shadowTailDiag != newSettings.shadowTailDiag)
+	    m_Settings.shadowTailDiag != newSettings.shadowTailDiag ||
+	    m_Settings.shadowTailControl != newSettings.shadowTailControl)
 	{
 		m_Settings.dirty = true;
 	}
 	m_Settings = newSettings;
+
+	// Shadow-tail control mode (RT4-T4): staged into the SSBO header for
+	// the next BeginFrame. Mode 2 runs dependent work inside brackets
+	// (validation only); mode 1 is the acceptance configuration.
+	m_ShadowTailDiag.SetMode(m_Settings.shadowTailControl ? 2u : 1u);
 
 	// Shadow-tail variant toggle (RT4-T4): rebuild the RT pipeline+SBT and
 	// use the ON GI temporal pipeline. Hard failure here is loud (the

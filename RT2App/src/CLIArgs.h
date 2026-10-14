@@ -126,6 +126,7 @@ struct CLIArgs
 	bool rasterFirst = false;      // raster-first hybrid path
 	bool shadowTail = false;       // shadow-tail diagnostic (ON-variant pipelines + set-1 binding 11)
 	std::string shadowTailEdges;   // frozen edge manifest JSON for --shadow-tail (empty = pilot-only, never acceptance-valid)
+	bool shadowTailControl = false; // positive-control mode (dependent work inside brackets; validation only)
 	bool ris = false;              // enable ReSTIR DI (backward compat alias)
 	bool restir = false;           // enable ReSTIR DI
 	int restirCandidates = 0;     // ReSTIR fresh candidate count override (0 = use default)
@@ -354,6 +355,10 @@ struct CLIArgs
 		{
 			if (const char* v = next()) args.shadowTailEdges = v;
 		}
+		else if (strcmp(a, "--shadow-tail-control") == 0)
+		{
+			args.shadowTailControl = true;
+		}
 		else if (strcmp(a, "--ris") == 0)
 		{
 			args.ris = true;  // backward compat
@@ -468,6 +473,7 @@ struct CLIArgs
 				printf("  --raster-first       Enable raster-first hybrid path\n");
 				printf("  --shadow-tail        Enable shadow-tail diagnostic (ON-variant pipelines; fails loud if unavailable)\n");
 				printf("  --shadow-tail-edges <path>  Frozen edge manifest JSON (required for acceptance snapshots; absent = pilot-only)\n");
+				printf("  --shadow-tail-control    Positive-control mode (dependent work inside brackets; validation only, requires --shadow-tail)\n");
 				printf("  --ris                Enable ReSTIR DI (alias for --restir, requires raster-first)\n");
 			printf("  --restir             Enable ReSTIR DI\n");
 		printf("  --restir-candidates <N>  ReSTIR fresh candidate count\n");

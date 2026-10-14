@@ -89,6 +89,10 @@ struct RenderSettings
 	// 11. Opt-in, default off; production behavior unchanged when off.
 	// Init-time/rebuild-on-toggle only (see RendererGPU::ApplySettings).
 	bool  shadowTailDiag  = false;
+	// Positive-control mode (validation only): header mode 2 runs the
+	// dependent-work multiplier inside timed brackets. Requires
+	// shadowTailDiag; default off.
+	bool  shadowTailControl = false;
 
 	// Dirty flag — set true by SetSettings() when any field changes.
 	// RendererGPU::Render() checks this, calls ResetAccumulation, clears it.

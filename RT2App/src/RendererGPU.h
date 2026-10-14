@@ -255,8 +255,11 @@ public:
 	// A requested-but-unavailable diagnostic fails loud at the caller
 	// (RendererGPU::Render outcome / headless exit), never silent zeros.
 	bool IsShadowTailAvailable() const;
-	std::string GetShadowTailJson();
-	uint64_t GetShadowTailFrame() const;
+	// All snapshots with serials newer than the last drain, in submission
+	// order (valid or not). Each snapshot is delivered exactly once —
+	// the headless loop calls this per frame AND after the final fence,
+	// so both in-flight slots are emitted, never just the newest.
+	std::vector<std::string> DrainShadowTailJsons();
 	// Stage a frozen edge manifest (validated, staged for upload).
 	// Loud false on any violation; call before the measured frames.
 	bool SetShadowTailEdges(const std::vector<uint32_t>& edgesRT,

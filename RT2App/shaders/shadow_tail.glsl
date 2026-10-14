@@ -19,12 +19,13 @@
 //
 // Layout contract (frozen; MUST match ShadowTailDiag.h + manifest):
 //   header[8]: magic, version, frameIndex, mode, edgeCountRT,
-//     edgeCountGI, variantTag, reserved.
+//     edgeCountGI, variantTag, slotSelect.
 //   edgesRT[226], edgesGI[226]: frozen acceptance edges (u32 ticks).
-//   per slot (camera.position.w & 1) per family (RT=0, GI=1):
+//   per slot (stHead[7], CPU-staged per frame) per family (RT=0, GI=1):
 //     pilot[34], hist[226], eligible, recorded, blocked, visible,
-//     strata[16], ord[16], reserved[2]  => 298 u32 per family-slot;
-//     plus 2 positive-control checksums per slot.
+//     strata[16], ord[16], reserved[2]  => 298 u32 per family;
+//     contiguous per-slot blocks (slot*598 + fam*298) plus 2
+//     positive-control checksums per slot.
 //     (1656 u32 = 6624 bytes total with header/edges).
 // SSBO writes are the ONLY observer effect: no rngState, payload, or
 // shading input is touched, and OFF emits no clock/SSBO code at all.
@@ -73,17 +74,24 @@ uint gGISite;
 
 uint stSlot()
 {
-    return uint(camera.position.w) & 1u;
+    // Slot authority is the CPU-staged header word (set per frame in
+    // BeginFrame, before any dispatch of that frame): the single fixed
+    // counter segment for this frame. camera.position.w is NOT used:
+    // it disagrees with the fence slot (initial values, resets,
+    // negative without accumulation) and cannot be an authority.
+    return stHead[7] & 1u;
 }
 
 uint stFamBase(uint fam)
 {
-    return 460u + (stSlot() * 2u + fam) * 298u;
+    // Contiguous per-slot blocks: slot*598 + fam*298. Matches the CPU
+    // authority StSlotOffset exactly (same formula, verified by test).
+    return stSlot() * 598u + fam * 298u;
 }
 
 uint stCtlBase()
 {
-    return 460u + 2u * 2u * 298u + stSlot() * 2u;
+    return stSlot() * 598u + 596u;
 }
 
 // Bin a two-word delta. High word nonzero ALWAYS routes to overflow
@@ -123,7 +131,7 @@ uint stPilotIndex(uint lo, uint hi)
 // payloads or RNG). The trip count is fixed; a responsive timer shifts
 // the measured bracket upward with larger... (single fixed level here;
 // the shift is verified against the zero-work baseline).
-uint stPositiveControl()
+uint stPositiveWork()
 {
     uint acc = 0u;
     for (uint i = 0u; i < ST_CONTROL_ITERS; i++)
@@ -155,32 +163,31 @@ void stRecord(uint fam, uint stratum, uint outcome, uint ord, uvec2 t0, uvec2 t1
     atomicAdd(stSlots[base + 280u + min(ord, 15u)], 1u);
 }
 
-// Control tail clock: runs the dependent-work multiplier INSIDE the timed
-// bracket when header mode == 2 (positive-control runs), else a plain
-// clock read. The checksum is consumed into the control counter — never
-// into lighting payloads or RNG. Ordinary ON runs (mode 1) pay one
-// uniform header read and nothing else.
-uvec2 stTailClock(uint fam)
+// Control-aware tail clock: the dependent work runs INSIDE the timed
+// bracket (between trace and this read) when header mode == 2
+// (positive-control runs); the checksum is consumed OUTSIDE the bracket
+// by the caller (stRecord never sees it). Ordinary ON runs (mode 1) pay
+// one uniform header read and nothing else.
+#define ST_CTL_TAIL(fam) (stHead[3] == 2u ? stCtlTail(fam) : clockRealtime2x32EXT())
+uvec2 stCtlTail(uint fam)
 {
-    if (stHead[3] == 2u)
-    {
-        uint acc = stPositiveControl();
-        atomicAdd(stSlots[stCtlBase() + fam], acc);
-    }
-    return clockRealtime2x32EXT();
+    uint acc = stPositiveWork();
+    uvec2 t = clockRealtime2x32EXT();
+    atomicAdd(stSlots[stCtlBase() + fam], acc);
+    return t;
 }
 
 // RT bracket: site 0 env, 1 tri, 2 res-tri, 3 res-env, 4 punctual.
 // shadowVisible + gShadowDepth + gCallOrd are in scope at every call site.
 #define ST_RT_BEGIN(var) uvec2 var = clockRealtime2x32EXT()
-#define ST_RT_END(var, site) stRecord(0u, (site) * 2u + min(gShadowDepth, 1u), (shadowVisible < 0.5) ? 0u : 1u, (gCallOrd++), var, stTailClock(0u))
+#define ST_RT_END(var, site) stRecord(0u, (site) * 2u + min(gShadowDepth, 1u), (shadowVisible < 0.5) ? 0u : 1u, (gCallOrd++), var, ST_CTL_TAIL(0u))
 #define ST_SET_DEPTH(d) gShadowDepth = (d)
 #define ST_RESET_ORD() gCallOrd = 0u
 
 // GI bracket: outcome from committedType (gl_RayQueryCommittedIntersectionNoneEXT
 // = unoccluded = visible). Site/provenance/ordinal from ON-only globals.
 #define ST_GI_BEGIN(var) uvec2 var = clockRealtime2x32EXT()
-#define ST_GI_END(var) stRecord(1u, gGISite * 2u + min(gGIProv, 1u), (committedType == gl_RayQueryCommittedIntersectionNoneEXT) ? 1u : 0u, gGICand, var, stTailClock(1u))
+#define ST_GI_END(var) stRecord(1u, gGISite * 2u + min(gGIProv, 1u), (committedType == gl_RayQueryCommittedIntersectionNoneEXT) ? 1u : 0u, gGICand, var, ST_CTL_TAIL(1u))
 #define ST_SET_GIPROV(p, c) gGIProv = (p); gGICand = (c)
 #define ST_SET_GISITE(s) gGISite = (s)
 

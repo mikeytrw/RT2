@@ -58,6 +58,8 @@ public:
         std::string invalidReason = "no snapshot read yet";
         std::array<uint32_t, kHeaderU32> head = {};
         std::vector<uint32_t> data; // kTotalU32 words when valid
+        uint32_t slot = 0;      // fence slot this snapshot was read from
+        uint64_t serial = 0;    // diagnostic-owned monotonic submit serial
     };
 
     ShadowTailDiag() = default;
@@ -77,12 +79,26 @@ public:
     bool SetEdges(uint32_t edgeCountRT, const uint32_t* edgesRT,
                   uint32_t edgeCountGI, const uint32_t* edgesGI);
 
+    // Stage the header mode: 1 = normal ON, 2 = positive-control ON
+    // (dependent work inside brackets). Anything else is rejected.
+    // Takes effect on the next BeginFrame.
+    bool SetMode(uint32_t mode);
+
     void BeginFrame(VkCommandBuffer cmd, uint32_t frameSlot, uint64_t frameIndex);
     void EndFrame(VkCommandBuffer cmd, uint32_t frameSlot);
 
     // Read only after the matching frame fence has signalled.
     void ReadCompletedSlot(const GpuDevice& device, uint32_t frameSlot);
-    const Snapshot& GetLatest() const { return m_Latest; }
+    // Newest snapshot by diagnostic submit serial (not by renderer frame
+    // id, which can reset — serials never go backwards).
+    const Snapshot& GetLatest() const;
+    // All snapshots with serials newer than the last drain, in submission
+    // order (valid or not — invalid ones carry reasons). Advances the
+    // delivered watermark so each snapshot is delivered exactly once.
+    // This is the drain primitive the headless loop calls per frame and
+    // after the final fence: BOTH pending slots are emitted, never just
+    // the newest (which would overwrite/drop the other).
+    std::vector<Snapshot> DrainNewSnapshots();
 
     // RendererGPU calls this when --shadow-tail-edges supplies a frozen
     // manifest (validated here, staged for upload). No manifest staged
@@ -105,18 +121,26 @@ private:
     {
         uint64_t frameIndex = 0;
         bool submitted = false;
+        uint64_t serial = 0; // assigned at EndFrame, submission order
     };
 
     GpuBuffer m_DeviceBuffer;
     std::array<GpuBuffer, kMaxFrameSlots> m_ReadbackBuffers = {};
     std::array<Slot, kMaxFrameSlots> m_Slots = {};
-    Snapshot m_Latest;
+    // Per-slot snapshots + delivery state. A slot's snapshot is ALWAYS
+    // overwritten by its own newer read (same segment, fence-proven) and
+    // NEVER by another slot; GetLatest/Drain order by serial.
+    std::array<Snapshot, kMaxFrameSlots> m_SlotSnaps = {};
+    std::array<bool, kMaxFrameSlots> m_SlotHasData = {};
+    uint64_t m_SubmitSerial = 1; // nonzero: 0 means "no submission yet"
+    uint64_t m_DeliveredSerial = 0;
     uint32_t m_FrameSlotCount = 0;
 
     // CPU-side staged header+edges, uploaded on EVERY BeginFrame
     // (1840 B via vkCmdUpdateBuffer): no dirty-flag staleness is possible —
     // the manifest state on GPU always equals the last SetEdges call.
     std::array<uint32_t, kHeaderU32 + 2u * kEdgesPerFamily> m_Staged = {};
+    uint32_t m_Mode = 1u;
 };
 
 static_assert(ShadowTailDiag::kTotalU32 * 4u == 6624u,

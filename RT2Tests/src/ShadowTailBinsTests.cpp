@@ -178,6 +178,37 @@ TEST_CASE("ShadowTailBins paired-t 95% upper bound")
     CHECK_FALSE(shadowtail::PairedT95UpperBound(bad, 4, &out));
 }
 
+TEST_CASE("ShadowTailBins SSBO index authority covers all slots/families/controls")
+{
+    // Mirrors shaders/shadow_tail.glsl stFamBase/stCtlBase EXACTLY
+    // (contiguous per-slot blocks; relative to stSlots, no header
+    // offset). Any divergence is a hard contract break; the old +460
+    // bug and the interleaved-stride bug both fail every CHECK here.
+    CHECK(shadowtail::StSlotOffset(0u, 0u) == 0u);
+    CHECK(shadowtail::StSlotOffset(0u, 1u) == 298u);
+    CHECK(shadowtail::StSlotOffset(1u, 0u) == 598u);
+    CHECK(shadowtail::StSlotOffset(1u, 1u) == 896u);
+    CHECK(shadowtail::StCtlOffset(0u) == 596u);
+    CHECK(shadowtail::StCtlOffset(1u) == 1194u);
+    CHECK(shadowtail::StSlotCapacity() == 1196u);
+    // Every legal word index lands inside the array (no OOB by construction).
+    for (uint32_t s = 0; s < 2u; ++s)
+        for (uint32_t f = 0; f < 2u; ++f)
+        {
+            const uint32_t base = shadowtail::StSlotOffset(s, f);
+            CHECK(base + 33u < 1196u);   // pilot last
+            CHECK(base + 259u < 1196u);  // hist last (34+225)
+            CHECK(base + 263u < 1196u);  // visible
+            CHECK(base + 279u < 1196u);  // strata last
+            CHECK(base + 295u < 1196u);  // ord last
+        }
+    CHECK(shadowtail::StCtlOffset(1u) + 1u < 1196u); // control last
+    // Stride consistency with the layout constants.
+    CHECK(shadowtail::StSlotOffset(1u, 0u) - shadowtail::StSlotOffset(0u, 0u)
+          == shadowtail::kSlotStride);
+    CHECK(shadowtail::kSlotStride == 598u);
+}
+
 TEST_CASE("ShadowTailBins edge manifest strict parsing")
 {
     std::vector<uint32_t> rt, gi;

@@ -269,6 +269,27 @@ inline bool PairedT95UpperBound(const double* x, int blocks, double* out)
 }
 
 // ---------------------------------------------------------------------------
+// SSBO index authority (single formula shared conceptually with
+// shaders/shadow_tail.glsl stFamBase/stCtlBase — the GLSL spells the
+// same arithmetic; these CPU functions pin it under unit test for ALL
+// slots/families/controls, and any divergence is a hard contract break).
+// Contiguous per-slot blocks (slot*598 + fam*298); indices relative to
+// stSlots (NOT including the 460 header/edge words).
+// ---------------------------------------------------------------------------
+inline uint32_t StSlotOffset(uint32_t slot, uint32_t fam)
+{
+    return slot * kSlotStride + fam * kFamStride;
+}
+inline uint32_t StCtlOffset(uint32_t slot)
+{
+    return slot * kSlotStride + 2u * kFamStride;
+}
+inline uint32_t StSlotCapacity()
+{
+    return kSlots * kSlotStride; // 1196 u32 in stSlots
+}
+
+// ---------------------------------------------------------------------------
 // Frozen edge manifest (fixed schema, strict hand-rolled parse — zero
 // dependencies so calibration tooling and unit tests share it):
 //   {"edgesRT":[e0,e1,...],"edgesGI":[...]}
