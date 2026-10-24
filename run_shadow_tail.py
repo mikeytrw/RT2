@@ -46,6 +46,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -338,9 +339,13 @@ def revalidate_calibration(manifest, freeze_path, ref_exe):
     # Exact stage table: names in order, all complete. A mutated table
     # (even with a re-pointed hash) cannot pass.
     if camp.get("stages") != [[n, "complete"]
-                              for n in expected_calib_stages()]:
+                               for n in expected_calib_stages()]:
         return ("calibration stage table differs from the approved "
                 "18-run schedule")
+    if camp.get("environment_authorities") != {
+            cfg: manifest.get("lineage", {}).get("trials", {}).get(
+                cfg, {}).get("environment") for cfg in CONFIGS}:
+        return "calibration campaign environment authorities differ from trials"
     # Exact run census: precisely the 18 canonical run directories
     # plus the three campaign files — nothing missing, nothing extra.
     try:
@@ -421,14 +426,17 @@ def revalidate_calibration(manifest, freeze_path, ref_exe):
                 cfg, {})
             trial_scenes[cfg] = {
                 "path": trial_rec.get("scene", ""),
-                "sha256": trial_rec.get("scene_sha256", "")}
+                "sha256": trial_rec.get("scene_sha256", ""),
+                "environment": trial_rec.get("environment")}
             if (not trial_scenes[cfg]["path"] or
                     os.path.normcase(os.path.realpath(
                         trial_prov.get("scene", ""))) !=
                     os.path.normcase(os.path.realpath(
                         trial_scenes[cfg]["path"])) or
                     trial_prov.get("scene_sha256") !=
-                    trial_scenes[cfg]["sha256"]):
+                    trial_scenes[cfg]["sha256"] or
+                    trial_prov.get("environment") !=
+                    trial_scenes[cfg]["environment"]):
                 return "calibration trial fixture identity differs: %s" % cfg
     except (OSError, ValueError) as e:
         return "calibration trial provenance unreadable: %s" % e
@@ -541,8 +549,8 @@ def check_run_fixture(prov, completion, rundir, role, cfg,
     - executable path equals the expected authority binary.
     - completion complete; frame.png present with a mandatory matching
       recorded frame_sha256.
-    - run.log present with NGX/Denoiser evidence (and EnvMap Loaded
-      when the provenance extras request --env).
+    - run.log has NGX and effective environment evidence; the retained
+      native log proves submitted Off on measured frames 41..60.
     Returns '' or FAIL."""
     if prov.get("frames") != FRAMES_REQUIRED:
         return ("%s run %s declares frames=%r, contract requires %d"
@@ -566,12 +574,29 @@ def check_run_fixture(prov, completion, rundir, role, cfg,
                     % (role, cfg))
     except OSError as e:
         return "%s run %s scene unreadable: %s" % (role, cfg, e)
+    expected_env = trial_scene.get("environment")
+    recorded_env = prov.get("environment")
+    if recorded_env != expected_env:
+        return "%s run %s environment differs from calibration fixture" % (role, cfg)
+    if expected_env:
+        try:
+            if (scene_environment(scene_path, cfg, prov.get("extra", [])) !=
+                    expected_env):
+                return "%s run %s environment changed on disk" % (role, cfg)
+        except (OSError, ValueError, TypeError) as e:
+            return "%s run %s environment unreadable: %s" % (role, cfg, e)
     if os.path.abspath(prov.get("exe", "")) != \
             os.path.abspath(expected_exe_abs):
         return ("%s run %s exe is not the designated binary: %r"
                 % (role, cfg, prov.get("exe", "")))
     if completion.get("complete") is not True:
         return "%s run %s incomplete" % (role, cfg)
+    try:
+        native_hash = sha256_file(os.path.join(rundir, "native-rt2.log"))
+    except OSError as e:
+        return "%s run %s native log unreadable: %s" % (role, cfg, e)
+    if completion.get("native_log_sha256") != native_hash:
+        return "%s run %s native log differs from retained evidence" % (role, cfg)
     frame_png = os.path.join(rundir, "frame.png")
     try:
         frame_hash = sha256_file(frame_png)
@@ -582,11 +607,17 @@ def check_run_fixture(prov, completion, rundir, role, cfg,
         return "%s run %s frame differs from retained evidence" \
             % (role, cfg)
     ngx, den, env = read_effective_mode(rundir)
+    (_valid, _pilot, _control, _timings, log_problems,
+     _ngx, _den, _env) = classify_log_lines(
+         os.path.join(rundir, "run.log"))
+    if log_problems:
+        return "%s run %s log problem: %s" % (role, cfg, log_problems[0])
     if ngx is None or den is None:
         return "%s run %s lacks backend/mode evidence" % (role, cfg)
-    if ("--env" in prov.get("extra", []) or
-            "-e" in prov.get("extra", [])) and env is None:
+    if cfg in ("C2", "C4") and env is None:
         return "%s run %s lacks loaded-env evidence" % (role, cfg)
+    if cfg == "C4" and not env.startswith("[Scene] Env map:"):
+        return "%s run %s lacks effective saved-scene env/CDF" % (role, cfg)
     return ""
 
 
@@ -1078,29 +1109,119 @@ def with_abs_env(extra_args, env_abs):
     return out
 
 
+def scene_environment(scene_abs, config, extra_args):
+    """Resolve the environment the pinned standalone scene loader will use.
+
+    An explicit C2 --env is absolute at launch. A C4 saved-scene reference
+    resolves relative to the scene's parent (the no-project asset root),
+    with its sidecar identity checked as the production path fallback does.
+    C1/C3 must have no environment authority in the frozen workload.
+    """
+    explicit = extract_env_path(extra_args)
+    if config == "C2":
+        if not explicit:
+            raise ValueError("C2 requires its explicit --env workload")
+        with open(scene_abs, encoding="utf-8") as f:
+            doc = json.load(f)
+        ref = doc.get("envMap")
+        if isinstance(ref, dict) and ref.get("path"):
+            raise ValueError("C2 scene has unexpected saved environment")
+        path = resolve_launch_path(explicit)
+        kind, asset_id = "explicit", ""
+    elif config == "C4":
+        if explicit:
+            raise ValueError("C4 environment must come from its saved scene")
+        with open(scene_abs, encoding="utf-8") as f:
+            doc = json.load(f)
+        ref = doc.get("envMap")
+        if not isinstance(ref, dict) or not ref.get("path"):
+            raise ValueError("C4 scene has no saved environment reference")
+        if doc.get("metadata", {}).get("projectId"):
+            raise ValueError("C4 standalone scene unexpectedly project-bound")
+        authored = ref["path"]
+        path = os.path.realpath(authored if os.path.isabs(authored) else
+                                os.path.join(os.path.dirname(scene_abs), authored))
+        asset_id = ref.get("assetId", "")
+        if asset_id and asset_id != "00000000-0000-0000-0000-000000000000":
+            sidecar = path + ".rt2meta"
+            with open(sidecar, encoding="utf-8") as f:
+                sidecar_id = f.read().strip()
+            if sidecar_id.lower() != asset_id.lower():
+                raise ValueError("C4 environment sidecar ID conflicts with scene")
+        kind = "saved-scene"
+    else:
+        if explicit:
+            raise ValueError("%s must not request an environment" % config)
+        if config in ("C1", "C3"):
+            with open(scene_abs, encoding="utf-8") as f:
+                doc = json.load(f)
+            ref = doc.get("envMap")
+            if isinstance(ref, dict) and ref.get("path"):
+                raise ValueError("%s scene unexpectedly has environment" % config)
+        return None
+    if not os.path.isfile(path):
+        raise ValueError("environment file missing: %s" % path)
+    return {"kind": kind, "path": os.path.realpath(path),
+            "sha256": sha256_file(path), "asset_id": asset_id}
+
+
+def native_mode_evidence(native_path):
+    """Bind submitted Off to each measured frame in the fresh RT_LOG file."""
+    frames, problems, current = {}, [], None
+    try:
+        with open(native_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                match = re.search(r"\[Render\] submitting frame (\d+) ", line)
+                if match:
+                    current = int(match.group(1))
+                match = re.search(r"\[Denoiser\] submitted=([^\s]+) backend=([^\s]+)", line)
+                if match:
+                    if current is None or current in frames:
+                        problems.append("native denoiser record unpaired/duplicate")
+                    else:
+                        frames[current] = (match.group(1), line.strip())
+                    current = None
+                if ("VUID-" in line or "[Validation] ERROR" in line or
+                        "[UpdateDS] ERROR" in line):
+                    problems.append("native validation/descriptor error: %s" % line.strip()[:160])
+    except OSError as e:
+        return None, ["missing/unreadable fresh native rt2_log.txt: %s" % e]
+    bad = sorted(f for f, (mode, _) in frames.items() if mode != "Off")
+    if bad:
+        problems.append("native submitted denoiser is not Off on frames %s" % bad[:8])
+    missing = sorted(set(range(41, 61)) - set(frames))
+    if missing:
+        problems.append("native submitted Off window incomplete, missing %s" % missing[:8])
+    effective = frames[60][1] if 60 in frames else None
+    return effective, problems
+
+
 def read_effective_mode(rundir):
     """First [NGX] + [Denoiser] + [EnvMap] Loaded lines: effective
     backend/mode evidence (§10).
 
     Returns (ngx, denoiser, env_loaded), each a string or None when
-    absent. Missing NGX/Denoiser lines are completion problems (see
-    validate_rundir); a missing Loaded line fails runs whose workload
-    requests --env (C2)."""
-    ngx, den, env = None, None, None
+    absent. Missing NGX/native Off evidence is a completion problem;
+    missing effective environment evidence fails C2 and C4."""
+    ngx, den, env, scene_adopted = None, None, None, False
     try:
         with open(os.path.join(rundir, "run.log")) as f:
             for line in f:
+                if line.startswith("[OpenRt2Scene] adopting document"):
+                    scene_adopted = True
+                    env = None
                 if line.startswith("[NGX]") and ngx is None:
                     ngx = line.strip()
-                if line.startswith("[Denoiser]") and den is None:
-                    den = line.strip()
-                if line.startswith("[EnvMap] Loaded") and env is None:
+                if scene_adopted and line.startswith("[Scene] Env map:"):
+                    env = line.strip()
+                elif line.startswith("[EnvMap] Loaded") and env is None:
                     env = line.strip()
                 if (ngx is not None and den is not None and
                         env is not None):
                     break
     except OSError:
         pass
+    den, _ = native_mode_evidence(os.path.join(rundir, "native-rt2.log"))
     return ngx, den, env
 
 
@@ -1143,6 +1264,15 @@ def run_capture(args, run_fn=None, timeout_min=0):
             print("FAIL missing environment file: %s (from %s)"
                   % (env_abs, env_req))
             return 1
+    fixture_config = getattr(args, "fixture_config", args.config)
+    if not fixture_config and env_req:
+        fixture_config = "C2"
+    try:
+        env_authority = scene_environment(scene_abs, fixture_config,
+                                           args.extra_args)
+    except (OSError, ValueError, TypeError) as e:
+        print("FAIL environment authority: %s" % e)
+        return 1
     cmd = [exe_abs, "--headless", "--scene", scene_abs,
            "--output-display", os.path.join(rundir, "frame.png"),
            "--frames", str(args.frames), "--width", str(args.width),
@@ -1171,6 +1301,7 @@ def run_capture(args, run_fn=None, timeout_min=0):
             "width": args.width, "height": args.height, "spp": args.spp,
             "extra": args.extra_args, "diag": diag, "edges": edges_abs,
             "control": bool(args.control), "config": args.config,
+            "fixture_config": fixture_config,
             # Workload seal: --benchmark-timings is harness
             # instrumentation (added by quartet/campaign on every leg),
             # never part of the frozen fixture workload.
@@ -1186,6 +1317,8 @@ def run_capture(args, run_fn=None, timeout_min=0):
         if env_abs:
             prov["env_abs"] = env_abs
             prov["env_sha256"] = sha256_file(env_abs)
+        if env_authority:
+            prov["environment"] = env_authority
     except OSError as e:
         print("ERROR: provenance hash failed: %s" % e)
         return 1
@@ -1212,8 +1345,44 @@ def run_capture(args, run_fn=None, timeout_min=0):
     if err:
         print("ERROR: %s" % err)
         return 1
-    rc = run_fn(exe_abs, cmd, exe_dir, os.path.join(rundir, "run.log"),
-                timeout_min)
+    # RT_LOG writes rt2_log.txt under the executable CWD and opens it with
+    # mode 'w' on first use. Preserve any old file, then require a fresh
+    # process-created file; fake and real runs share this evidence boundary.
+    native_source = os.path.join(exe_dir, "rt2_log.txt")
+    native_copy = os.path.join(rundir, "native-rt2.log")
+    lock_path = os.path.join(exe_dir, "rt2_shadow_tail_capture.lock")
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError as e:
+        print("FAIL cannot own executable CWD native log: %s" % e)
+        return 1
+    try:
+        with os.fdopen(lock_fd, "w") as lock:
+            lock.write(run_id + "\n")
+            lock.flush()
+            os.fsync(lock.fileno())
+        if os.path.lexists(native_source):
+            os.replace(native_source,
+                       os.path.join(rundir, "prior-native-rt2.log"))
+        if os.path.lexists(native_source):
+            raise OSError("native log exists before launch")
+        rc = run_fn(exe_abs, cmd, exe_dir, os.path.join(rundir, "run.log"),
+                    timeout_min)
+        if not os.path.isfile(native_source):
+            if rc == 124:
+                native_digest = None
+            else:
+                raise OSError("process did not create rt2_log.txt")
+        else:
+            shutil.copyfile(native_source, native_copy)
+            native_digest = sha256_file(native_source)
+            if sha256_file(native_copy) != native_digest:
+                raise OSError("native log copy hash differs from source")
+    except OSError as e:
+        print("FAIL native log ownership/persistence: %s" % e)
+        return 1
+    finally:
+        os.remove(lock_path)
     err = write_text_checked(os.path.join(rundir, "exitcode.txt"), "%d\n" % rc)
     if err:
         print("ERROR: %s" % err)
@@ -1241,6 +1410,10 @@ def run_capture(args, run_fn=None, timeout_min=0):
         if env_abs and sha256_file(env_abs) != prov["env_sha256"]:
             print("FAIL env hash changed during run (tamper/race)")
             return 1
+        if env_authority and scene_environment(
+                scene_abs, fixture_config, args.extra_args) != env_authority:
+            print("FAIL environment authority changed during run")
+            return 1
         for name, digest in prov["spvs"].items():
             if sha256_file(os.path.join(exe_dir, name)) != digest:
                 print("FAIL SPV hash changed during run: %s" % name)
@@ -1251,7 +1424,7 @@ def run_capture(args, run_fn=None, timeout_min=0):
             if f.read() != " ".join(cmd) + "\n":
                 print("FAIL command line changed during run (tamper/race)")
                 return 1
-    except OSError as e:
+    except (OSError, ValueError) as e:
         print("FAIL reread hash failed: %s" % e)
         return 1
     problems, n_valid, n_pilot, n_control = validate_rundir(rundir, args)
@@ -1261,7 +1434,8 @@ def run_capture(args, run_fn=None, timeout_min=0):
                 "snapshots_valid": n_valid, "snapshots_pilot": n_pilot,
                 "snapshots_control": n_control,
                 "ngx_effective": ngx_line, "denoiser_effective": denoiser_line,
-                "env_effective": env_line,
+                 "env_effective": env_line,
+                 "native_log_sha256": native_digest,
                 "complete": not problems}
     frame_png = os.path.join(rundir, "frame.png")
     manifest["frame_sha256"] = (
@@ -1301,15 +1475,23 @@ def classify_log_lines(logpath):
     function only classifies, so every gate shares one parsing path."""
     valid, pilot, control, timings, problems = [], [], [], [], []
     ngx_line, denoiser_line, env_line = None, None, None
+    scene_adopted = False
     try:
         with open(logpath) as f:
             for line in f:
+                if line.startswith("[OpenRt2Scene] adopting document"):
+                    scene_adopted = True
+                    env_line = None
                 if line.startswith("[NGX]") and ngx_line is None:
                     ngx_line = line.strip()
-                if line.startswith("[Denoiser]") and denoiser_line is None:
-                    denoiser_line = line.strip()
-                if line.startswith("[EnvMap] Loaded") and env_line is None:
+                if scene_adopted and line.startswith("[Scene] Env map:"):
                     env_line = line.strip()
+                elif line.startswith("[EnvMap] Loaded") and env_line is None:
+                    env_line = line.strip()
+                if ("VUID-" in line or "[Validation] ERROR" in line or
+                        "[EnvMap] Failed" in line):
+                    problems.append("stdout/stderr validation or env error: %s"
+                                    % line.strip()[:160])
                 if "[HeadlessTiming]" in line:
                     try:
                         rec = json.loads(
@@ -1346,6 +1528,9 @@ def classify_log_lines(logpath):
                     problems.append("bad snapshot line: %s" % e)
     except OSError as e:
         problems.append("unreadable run.log: %s" % e)
+    denoiser_line, native_problems = native_mode_evidence(
+        os.path.join(os.path.dirname(logpath), "native-rt2.log"))
+    problems.extend(native_problems)
     return (valid, pilot, control, timings, problems, ngx_line,
             denoiser_line, env_line)
 
@@ -1396,11 +1581,16 @@ def validate_rundir(rundir, args):
     if ngx_line is None:
         problems.append("missing [NGX] effective-backend line in run.log")
     if denoiser_line is None:
-        problems.append("missing [Denoiser] effective-mode line in run.log")
+        problems.append("missing submitted Off evidence in native-rt2.log")
     extras = getattr(args, "extra_args", [])
-    if ("--env" in extras or "-e" in extras) and env_line is None:
+    fixture_config = getattr(args, "fixture_config", args.config)
+    if ("--env" in extras or "-e" in extras or
+            fixture_config == "C4") and env_line is None:
         problems.append("missing [EnvMap] Loaded line: workload requests "
                         "an environment map (not loaded or load failed)")
+    if fixture_config == "C4" and not (
+            env_line and env_line.startswith("[Scene] Env map:")):
+        problems.append("C4 lacks effective saved-scene env/CDF evidence")
     seen = set()
     for frame, slot, _, _, _ in snaps_valid + snaps_pilot + snaps_control:
         if (frame, slot) in seen:
@@ -1874,7 +2064,8 @@ def run_quartet(args, run_fn=None, deadline_min=0):
             exe=exe, scene=args.scene, out_root=blockdir, name=sub,
             frames=args.frames, spp=args.spp, width=args.width,
             height=args.height, edges=edges, diag=diag, control=control,
-            config=args.config if diag else "", extra_args=extra)
+            config=args.config if diag else "",
+            fixture_config=args.config, extra_args=extra)
         # Hard per-leg timeout via the launch gate: a "SKIP" means
         # zero/negative budget remains, so the leg is marked
         # INCOMPLETE WITHOUT spawning (spawning with timeout 0 would
@@ -2138,6 +2329,15 @@ def cmd_analyze(args):
             if not completion.get("complete"):
                 print("FAIL analyze: run incomplete: %s" % sdir)
                 return 1
+            try:
+                if (not completion.get("native_log_sha256") or
+                        sha256_file(os.path.join(sdir, "native-rt2.log")) !=
+                        completion["native_log_sha256"]):
+                    print("FAIL analyze: native log evidence changed: %s" % sdir)
+                    return 1
+            except OSError as e:
+                print("FAIL analyze: native log unreadable %s: %s" % (sdir, e))
+                return 1
             run_id = prov.get("run_id")
             if (not isinstance(run_id, str) or not run_id or
                     completion.get("run_id") != run_id or
@@ -2218,22 +2418,31 @@ def cmd_analyze(args):
                     print("FAIL analyze: OFF workload/config mismatch: %s: %s"
                           % (sdir, w_err))
                     return 1
-            if "--env" in WORKLOADS[args.config]["extra"]:
+            if args.config in ("C2", "C4"):
                 try:
-                    if (not prov.get("env_sha256") or
-                            sha256_file(prov["env_abs"]) != prov["env_sha256"]):
+                    frozen_env = fixture.get("environment")
+                    current_env = scene_environment(
+                        prov["scene"], args.config,
+                        WORKLOADS[args.config]["extra"])
+                    if (not frozen_env or
+                            prov.get("environment") != frozen_env or
+                            current_env != frozen_env):
                         print("FAIL analyze: environment identity mismatch: %s"
                               % sdir)
                         return 1
-                except (OSError, KeyError) as e:
+                except (OSError, ValueError, KeyError, TypeError) as e:
                     print("FAIL analyze: environment unreadable: %s: %s"
                           % (sdir, e))
                     return 1
+            elif prov.get("environment") is not None:
+                print("FAIL analyze: unexpected environment in %s" % sdir)
+                return 1
             expected_on = sub.endswith("_ON")
             run_args = argparse.Namespace(
                 frames=60, diag=expected_on, control=False,
                 edges=args.manifest if expected_on else "",
                 config=args.config if expected_on else "",
+                fixture_config=args.config,
                 extra_args=WORKLOADS[args.config]["extra"])
             run_problems, _, _, _ = validate_rundir(sdir, run_args)
             if run_problems:
@@ -2265,7 +2474,7 @@ def cmd_analyze(args):
                 # Environment-gated fixtures (C2) must prove the map
                 # actually loaded — NGX/Denoiser lines alone are not
                 # sufficient evidence for an env-lit scene.
-                if ("--env" in WORKLOADS[args.config]["extra"] and
+                if (args.config in ("C2", "C4") and
                         not completion.get("env_effective")):
                     print("FAIL analyze: no loaded-env evidence: %s" % sdir)
                     return 1
@@ -2509,6 +2718,14 @@ def run_campaign(args, run_fn=None):
         if not scene or not os.path.exists(scene):
             print("ERROR: missing fixture scene for %s: %s" % (cfg, scene))
             return 1
+    try:
+        campaign_envs = {
+            cfg: scene_environment(
+                resolve_launch_path(getattr(args, "scene_" + cfg)),
+                cfg, WORKLOADS[cfg]["extra"]) for cfg in CONFIGS}
+    except (OSError, ValueError, TypeError) as e:
+        print("ERROR: campaign environment preflight: %s" % e)
+        return 1
     start = time.monotonic()
     deadline = start + cap_min * 60
     stages = []
@@ -2518,6 +2735,31 @@ def run_campaign(args, run_fn=None):
 
     def expired():
         return time.monotonic() >= deadline
+
+    def campaign_env_error(cfg):
+        try:
+            current = scene_environment(
+                resolve_launch_path(getattr(args, "scene_" + cfg)),
+                cfg, WORKLOADS[cfg]["extra"])
+            if current != campaign_envs[cfg]:
+                return "campaign %s environment changed" % cfg
+        except (OSError, ValueError, TypeError) as e:
+            return "campaign %s environment unreadable: %s" % (cfg, e)
+        return ""
+
+    def capture_campaign(capture_args, timeout):
+        cfg = capture_args.fixture_config
+        err = campaign_env_error(cfg)
+        if err:
+            print("FAIL %s" % err)
+            return 1
+        rc = run_capture(capture_args, run_fn=run_fn,
+                         timeout_min=timeout)
+        err = campaign_env_error(cfg)
+        if err:
+            print("FAIL %s" % err)
+            return 1
+        return rc
 
     def pinned_error():
         if accept_authorities is None:
@@ -2544,7 +2786,7 @@ def run_campaign(args, run_fn=None):
             exe=exe, scene=scene, out_root=campdir, name=name,
             frames=frames, spp=wl["spp"], width=wl["width"],
             height=wl["height"], edges=edges, diag=diag, control=control,
-            config=cfg, extra_args=extra)
+            config=cfg, fixture_config=cfg, extra_args=extra)
 
     def stage_timeout(stages_left):
         # Launch-gate share via remaining_timeout: "SKIP" when the
@@ -2567,7 +2809,7 @@ def run_campaign(args, run_fn=None):
             if to == "SKIP":
                 stages.append((a.name, "INCOMPLETE (cap)"))
                 continue
-            rc = run_capture(a, run_fn=run_fn, timeout_min=to)
+            rc = capture_campaign(a, to)
             stages.append((a.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -2598,7 +2840,7 @@ def run_campaign(args, run_fn=None):
             if to == "SKIP":
                 stages.append((a.name, "INCOMPLETE (cap)"))
                 continue
-            rc = run_capture(a, run_fn=run_fn, timeout_min=to)
+            rc = capture_campaign(a, to)
             stages.append((a.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -2625,7 +2867,7 @@ def run_campaign(args, run_fn=None):
             if to == "SKIP":
                 stages.append((a.name, "INCOMPLETE (cap)"))
                 continue
-            rc = run_capture(a, run_fn=run_fn, timeout_min=to)
+            rc = capture_campaign(a, to)
             stages.append((a.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -2634,7 +2876,7 @@ def run_campaign(args, run_fn=None):
             if to == "SKIP":
                 stages.append((b.name, "INCOMPLETE (cap)"))
                 continue
-            rc = run_capture(b, run_fn=run_fn, timeout_min=to)
+            rc = capture_campaign(b, to)
             stages.append((b.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -2669,7 +2911,7 @@ def run_campaign(args, run_fn=None):
             if to == "SKIP":
                 stages.append((a.name, "INCOMPLETE (cap)"))
                 continue
-            rc = run_capture(a, run_fn=run_fn, timeout_min=to)
+            rc = capture_campaign(a, to)
             stages.append((a.name, stage_result(rc)))
             if rc != 0:
                 break
@@ -2779,6 +3021,8 @@ def run_campaign(args, run_fn=None):
                     stages.append((qname, "INCOMPLETE (cap)"))
                     continue
                 auth_err = pinned_error()
+                if not auth_err:
+                    auth_err = campaign_env_error(cfg)
                 if auth_err:
                     stages.append((qname, "FAIL (" + auth_err + ")"))
                     break
@@ -2800,6 +3044,8 @@ def run_campaign(args, run_fn=None):
                     continue
                 rc = run_quartet(qa, run_fn=run_fn, deadline_min=share)
                 auth_err = pinned_error()
+                if not auth_err:
+                    auth_err = campaign_env_error(cfg)
                 stages.append((qa.name,
                                "FAIL (" + auth_err + ")" if auth_err else
                                ("complete" if rc == 0 else
@@ -2825,6 +3071,10 @@ def run_campaign(args, run_fn=None):
         final_auth_err = pinned_error()
         if final_auth_err:
             stages.append(("authority-final", "FAIL (" + final_auth_err + ")"))
+    final_env_errors = [campaign_env_error(cfg) for cfg in CONFIGS]
+    final_env_errors = [err for err in final_env_errors if err]
+    if final_env_errors:
+        stages.append(("environment-final", "FAIL (" + final_env_errors[0] + ")"))
     elapsed_min = (time.monotonic() - start) / 60
     # No over-cap completion: even with all stages green, ending past
     # the cap is INCOMPLETE (the budget covers warmup, readback,
@@ -2833,6 +3083,7 @@ def run_campaign(args, run_fn=None):
     manifest = {"campaign": args.name, "mode": args.mode,
                 "stages": stages, "elapsed_min": elapsed_min,
                 "cap_min": cap_min, "over_cap": over_cap,
+                "environment_authorities": campaign_envs,
                 "complete": all(v == "complete" for _, v in stages) and
                 len(stages) > 0 and not over_cap}
     if accept_authorities is not None:
@@ -2843,6 +3094,17 @@ def run_campaign(args, run_fn=None):
     if err:
         print("ERROR: %s" % err)
         return 1
+    late_env_errors = [campaign_env_error(cfg) for cfg in CONFIGS]
+    late_env_errors = [err for err in late_env_errors if err]
+    if late_env_errors:
+        manifest["complete"] = False
+        manifest["stages"].append(
+            ("environment-postwrite", "FAIL (" + late_env_errors[0] + ")"))
+        err = write_text_checked(os.path.join(campdir, "campaign.json"),
+                                 json.dumps(manifest, indent=1) + "\n")
+        if err:
+            print("ERROR: cannot revoke campaign env completion: %s" % err)
+            return 1
     if accept_authorities is not None:
         # Catch a substitution during the final manifest write itself:
         # never leave a persisted complete:true marker for changed bytes.
@@ -2934,6 +3196,16 @@ def cmd_derive_freeze(args):
         if w_err:
             print("FAIL derive-freeze: %s: %s" % (trial, w_err))
             return 1
+        try:
+            if prov.get("environment") != scene_environment(
+                    prov.get("scene", ""), cfg, prov.get("extra", [])):
+                print("FAIL derive-freeze: trial environment mismatch: %s"
+                      % trial)
+                return 1
+        except (OSError, ValueError, TypeError) as e:
+            print("FAIL derive-freeze: trial environment unreadable: %s"
+                  % e)
+            return 1
         if not completion.get("ngx_effective"):
             print("FAIL derive-freeze: no effective-backend evidence: %s"
                   % trial)
@@ -2960,6 +3232,7 @@ def cmd_derive_freeze(args):
             "dir": trial_abs,
             "scene": prov.get("scene", ""),
             "scene_sha256": prov.get("scene_sha256", ""),
+            "environment": prov.get("environment"),
             "exe_sha256": prov.get("exe_sha256", ""),
             "workload": prov.get("workload", {}),
             "config": cfg,
@@ -3411,6 +3684,15 @@ def self_test():
     check("unknown config fails", check_coverage("CX", []) != [])
 
     # Fake-process orchestration: end-to-end run_capture without GPU.
+    def fake_native(cwd, mode="Off", present=True):
+        if not present:
+            return
+        with open(os.path.join(cwd, "rt2_log.txt"), "w") as native:
+            native.write("=== RT2 Log ===\n")
+            for fr in range(1, 61):
+                native.write("[Render] submitting frame %d (NRD=0 composeCached=0)\n" % fr)
+                native.write("[Denoiser] submitted=%s backend=none\n" % mode)
+
     def fake_run(exe_, cmd, cwd, logpath, snaps_fn, png=True, rc=0,
                  mode_lines=True, timeout_min=None, env_lines=None):
         from PIL import Image
@@ -3420,7 +3702,6 @@ def self_test():
         with open(logpath, "w") as lf:
             if mode_lines:
                 lf.write("[NGX] supported=yes backend=none (fake)\n")
-                lf.write("[Denoiser] submitted=Off backend=none (fake)\n")
             # env_lines None = emit exactly when the command requests
             # --env (mirrors a real loader); True forces, False
             # suppresses (for the missing-evidence negative test).
@@ -3436,7 +3717,8 @@ def self_test():
                 for fr in range(41, 61):
                     lf.write('[HeadlessTiming] {"frame":%d,"regions_ms":'
                              '{"RT Shading":0.5,"ReSTIR GI Temporal":0.3,'
-                             '"GPU Frame":1.0}}\n' % fr)
+                              '"GPU Frame":1.0}}\n' % fr)
+        fake_native(cwd)
         return rc
 
     def snap_lines(n=20, start=41, valid=True, oob=False, empty=False):
@@ -3492,6 +3774,52 @@ def self_test():
               run_capture(mkargs("happy"),
                           run_fn=lambda e, c, w, l, t=0: fake_run(
                               e, c, w, l, lambda: snap_lines())) == 0)
+        with open(os.path.join(tmp, "happy", "run.log")) as f:
+            happy_stdout = f.read()
+        check("explicit Off needs no stdout Denoiser line",
+              "[Denoiser]" not in happy_stdout and
+              "submitted=Off" in json.load(open(os.path.join(
+                  tmp, "happy", "completion.json")))["denoiser_effective"])
+        with open(os.path.join(tmp, "rt2_log.txt"), "w") as f:
+            f.write("old stale [Denoiser] submitted=Off backend=none\n")
+        check("stale native log archived and fresh run succeeds",
+              run_capture(mkargs("prior-native"),
+                          run_fn=lambda e, c, w, l, t=0: fake_run(
+                              e, c, w, l, lambda: snap_lines())) == 0 and
+              "old stale" in open(os.path.join(
+                  tmp, "prior-native", "prior-native-rt2.log")).read())
+
+        def no_native_fake(e, c, w, l, t=0):
+            fake_run(e, c, w, l, lambda: snap_lines())
+            os.remove(os.path.join(w, "rt2_log.txt"))
+            with open(l, "a") as f:
+                f.write("[Denoiser] submitted=Off backend=none (forged stdout)\n")
+            return 0
+
+        check("stale native and forged stdout cannot mask missing new file",
+              run_capture(mkargs("missing-native"), run_fn=no_native_fake) == 1 and
+              not os.path.exists(os.path.join(
+                  tmp, "missing-native", "completion.json")))
+
+        def wrong_native_fake(e, c, w, l, t=0):
+            fake_run(e, c, w, l, lambda: snap_lines())
+            fake_native(w, mode="NRD")
+            with open(l, "a") as f:
+                f.write("[Denoiser] submitted=Off backend=none (forged stdout)\n")
+            return 0
+
+        check("actual submitted wrong mode rejects forged stdout Off",
+              run_capture(mkargs("wrong-native"), run_fn=wrong_native_fake) == 1)
+        native_lock = os.path.join(tmp, "rt2_shadow_tail_capture.lock")
+        with open(native_lock, "w") as f:
+            f.write("other capture owns this CWD\n")
+        try:
+            check("concurrent native CWD owner rejects capture",
+                  run_capture(mkargs("locked-native"),
+                              run_fn=lambda e, c, w, l, t=0: fake_run(
+                                  e, c, w, l, lambda: snap_lines())) == 1)
+        finally:
+            os.remove(native_lock)
         check("fake nonzero exit fails",
               run_capture(mkargs("rc1"),
                           run_fn=lambda e, c, w, l, t=0: fake_run(
@@ -3548,7 +3876,11 @@ def self_test():
                 os.path.join(tdir, "frame.png"))
             with open(os.path.join(tdir, "run.log"), "w") as f:
                 f.write("[NGX] supported=yes backend=none (fake)\n")
-                f.write("[Denoiser] submitted=Off backend=none (fake)\n")
+                if cfg == "C2":
+                    f.write("[EnvMap] Loaded 4x2 EXR (fake)\n")
+                if cfg == "C4":
+                    f.write("[OpenRt2Scene] adopting document...\n")
+                    f.write("[Scene] Env map: idx=4 4x2, CDF built\n")
                 for fr in range(41, 61):
                     pl = {"schema": SCHEMA, "frame": fr, "slot": 0,
                           "serial": fr, "valid": False,
@@ -3562,16 +3894,24 @@ def self_test():
                             pl["data"][fam * 298 + 264 + site * 2 + 0] = 100
                             pl["data"][fam * 298 + 264 + site * 2 + 1] = 100
                     f.write("[ShadowTail] %s\n" % json.dumps(pl))
+            fake_native(tdir)
+            shutil.copyfile(os.path.join(tdir, "rt2_log.txt"),
+                            os.path.join(tdir, "native-rt2.log"))
             with open(os.path.join(tdir, "completion.json"), "w") as f:
                 json.dump({"complete": True,
-                           "ngx_effective": "[NGX] fake",
-                           "denoiser_effective": "[Denoiser] fake"}, f)
+                            "ngx_effective": "[NGX] fake",
+                            "denoiser_effective": "[Denoiser] submitted=Off backend=none",
+                            "native_log_sha256": sha256_file(
+                                os.path.join(tdir, "native-rt2.log"))}, f)
             with open(os.path.join(tdir, "provenance.json"), "w") as f:
                 json.dump({"exe": os.path.abspath(exe),
                            "exe_sha256": sha256_file(exe),
                            "scene": os.path.abspath(scene_file),
                            "scene_sha256": sha256_file(scene_file),
                            "frames": 60, "config": cfg,
+                           "extra": WORKLOADS[cfg]["extra"],
+                           "environment": scene_environment(
+                               scene_file, cfg, WORKLOADS[cfg]["extra"]),
                            "workload": WORKLOADS[cfg]}, f)
             return tdir
 
@@ -3589,8 +3929,15 @@ def self_test():
             else:
                 sp = os.path.join(tmp, "trial-scene-%s.rt2scene" % cfg)
                 with open(sp, "w") as f:
-                    f.write('{"fixture": "%s"}' % cfg)
+                    if cfg == "C4":
+                        json.dump({"fixture": cfg,
+                                   "envMap": {"path": "trial-c4.exr",
+                                              "assetId": ""}}, f)
+                    else:
+                        f.write('{"fixture": "%s"}' % cfg)
                 trial_scenes[cfg] = sp
+        with open(os.path.join(tmp, "trial-c4.exr"), "wb") as f:
+            f.write(b"fake trial C4 environment")
         trial_dirs = [write_trial(pdir, "T%d" % (t + 1), cfg,
                                   trial_scenes[cfg])
                       for t, cfg in enumerate(("C1", "C2", "C3", "C4"))]
@@ -3633,9 +3980,16 @@ def self_test():
             p = os.path.join(tmp, "scene-%s.rt2scene" % tag)
             if tag not in written:
                 with open(p, "w") as f:
-                    f.write('{"campaign_fixture": "%s"}' % tag)
+                    if cfg == "C4":
+                        json.dump({"campaign_fixture": tag,
+                                   "envMap": {"path": "fake-c4.exr",
+                                              "assetId": ""}}, f)
+                    else:
+                        f.write('{"campaign_fixture": "%s"}' % tag)
                 written.add(tag)
             scenes[cfg] = p
+        with open(os.path.join(tmp, "fake-c4.exr"), "wb") as f:
+            f.write(b"fake saved-scene environment")
         legacy_exe = os.path.join(tmp, "legacy.exe")
         with open(legacy_exe, "wb") as f:
             f.write(b"fake-legacy")
@@ -3712,9 +4066,11 @@ def self_test():
                 cmd[cmd.index("--output-display") + 1])
             with open(logpath, "w") as lf:
                 lf.write("[NGX] supported=yes backend=none (fake)\n")
-                lf.write("[Denoiser] submitted=Off backend=none (fake)\n")
                 if "--env" in cmd or "-e" in cmd:
                     lf.write("[EnvMap] Loaded 4x2 EXR (fake)\n")
+                if os.path.basename(cmd[cmd.index("--scene") + 1]) == "scene-C4.rt2scene":
+                    lf.write("[OpenRt2Scene] adopting document...\n")
+                    lf.write("[Scene] Env map: idx=4 4x2, CDF built\n")
                 if "--shadow-tail-control" in cmd:
                     for line in rich_control_lines():
                         lf.write(line)
@@ -3730,6 +4086,7 @@ def self_test():
                                  '"regions_ms":{"RT Shading":0.5,'
                                  '"ReSTIR GI Temporal":0.3,'
                                  '"GPU Frame":1.0}}\n' % f)
+            fake_native(cwd)
             return 0
 
         calib = argparse.Namespace(
@@ -3762,6 +4119,56 @@ def self_test():
         check("fake sealed assumption consistent", sealed_birt == birt_c)
         check("fake calibration revalidation baseline passes",
               revalidate_calibration(sealed_manifest, sealed, exe) == "")
+        c4_env_file = os.path.join(tmp, "fake-c4.exr")
+        with open(c4_env_file, "rb") as f:
+            c4_env_bytes = f.read()
+        with open(c4_env_file, "wb") as f:
+            f.write(c4_env_bytes + b"tampered")
+        check("fake C4 external env byte tamper rejects sealed calibration",
+              revalidate_calibration(sealed_manifest, sealed, exe) != "")
+        with open(c4_env_file, "wb") as f:
+            f.write(c4_env_bytes)
+        check("fake C4 external env restored revalidates",
+              revalidate_calibration(sealed_manifest, sealed, exe) == "")
+        os.rename(c4_env_file, c4_env_file + ".held")
+        missing_calib = argparse.Namespace(**{**vars(calib),
+            "name": "calib-missing-c4-env"})
+        try:
+            check("fake campaign missing C4 saved EXR fails before launch",
+                  run_campaign(missing_calib, run_fn=camp_fake) == 1 and
+                  not os.path.exists(os.path.join(
+                      tmp, missing_calib.name, "campaign.json")))
+        finally:
+            os.rename(c4_env_file + ".held", c4_env_file)
+        foreign_scene = os.path.join(tmp, "foreign-c4.rt2scene")
+        with open(foreign_scene, "w") as f:
+            json.dump({"envMap": {"path": "fake-c4.exr",
+                                  "assetId": "foreign-id"}}, f)
+        with open(c4_env_file + ".rt2meta", "w") as f:
+            f.write("actual-id\n")
+        foreign_calib = argparse.Namespace(**{**vars(calib),
+            "name": "calib-foreign-c4-env", "scene_C4": foreign_scene})
+        check("fake campaign foreign C4 sidecar ID fails before launch",
+              run_campaign(foreign_calib, run_fn=camp_fake) == 1 and
+              not os.path.exists(os.path.join(
+                  tmp, foreign_calib.name, "campaign.json")))
+        os.remove(c4_env_file + ".rt2meta")
+        c4_capture = argparse.Namespace(**{**vars(mkargs("c4-no-load")),
+            "scene": scenes["C4"], "diag": False, "edges": "",
+            "config": "C4", "fixture_config": "C4", "extra_args":
+            WORKLOADS["C4"]["extra"]})
+
+        def c4_no_load_fake(e, c, w, l, t=0):
+            camp_fake(e, c, w, l, t)
+            with open(l) as f:
+                lines = f.readlines()
+            with open(l, "w") as f:
+                f.writelines(line for line in lines
+                             if not line.startswith("[Scene] Env map:"))
+            return 0
+
+        check("fake C4 load failure cannot pass with scene label alone",
+              run_capture(c4_capture, run_fn=c4_no_load_fake) == 1)
         copied_calib_scene = os.path.join(tmp, "copied-calib-C1.rt2scene")
         shutil.copyfile(scenes["C1"], copied_calib_scene)
         for role in ("confirm-C1", "off-C1"):
@@ -3867,15 +4274,19 @@ def self_test():
 
         with open(os.path.join(cdir, "run.log"), "w") as f:
             f.write("[NGX] supported=yes backend=none (fake)\n")
-            f.write("[Denoiser] submitted=Off backend=none (fake)\n")
             for fr in range(41, 61):
                 f.write("[ShadowTail] %s\n" % json.dumps(confirm_line(fr)))
+        fake_native(cdir)
+        shutil.copyfile(os.path.join(cdir, "rt2_log.txt"),
+                        os.path.join(cdir, "native-rt2.log"))
         with open(os.path.join(cdir, "completion.json"), "w") as f:
             json.dump({"complete": True,
                        "frame_sha256": sha256_file(
                            os.path.join(cdir, "frame.png")),
                        "ngx_effective": "[NGX] fake",
-                       "denoiser_effective": "[Denoiser] fake"}, f)
+                       "denoiser_effective": "[Denoiser] submitted=Off backend=none",
+                       "native_log_sha256": sha256_file(
+                           os.path.join(cdir, "native-rt2.log"))}, f)
         with open(os.path.join(cdir, "provenance.json"), "w") as f:
             json.dump({"exe": os.path.abspath(exe),
                        "exe_sha256": sha256_file(exe),
@@ -4002,16 +4413,23 @@ def self_test():
                                  '"regions_ms":{%s}}' % (f, regions))
                 with open(os.path.join(sdir, "run.log"), "w") as lf:
                     lf.write("\n".join(lines) + "\n")
+                fake_native(sdir)
+                shutil.copyfile(os.path.join(sdir, "rt2_log.txt"),
+                                os.path.join(sdir, "native-rt2.log"))
                 with open(os.path.join(sdir, "completion.json"), "w") as cf:
                     json.dump({"complete": True, "run_id": fake_run_id,
                                "ngx_effective": "[NGX] fake",
-                               "denoiser_effective": "[Denoiser] fake"}, cf)
+                               "denoiser_effective": "[Denoiser] submitted=Off backend=none",
+                               "native_log_sha256": sha256_file(
+                                   os.path.join(sdir, "native-rt2.log"))}, cf)
                 with open(os.path.join(sdir, "provenance.json"), "w") as pf:
                     json.dump({"run_id": fake_run_id,
                                "exe": os.path.abspath(role_exe),
                                "exe_sha256": sha256_file(role_exe),
                                "scene": os.path.abspath(scenes[cfg]),
-                               "scene_sha256": sha256_file(scenes[cfg]),
+                                "scene_sha256": sha256_file(scenes[cfg]),
+                                "environment": scene_environment(
+                                    scenes[cfg], cfg, WORKLOADS[cfg]["extra"]),
                                "frames": 60, "diag": sub.endswith("_ON"),
                                "control": False,
                                "spp": WORKLOADS[cfg]["spp"],
@@ -4444,6 +4862,9 @@ def self_test():
                 f.write("[Denoiser] submitted=Off backend=none (fake)\n")
                 for line in lines:
                     f.write(line)
+            fake_native(rdir)
+            shutil.copyfile(os.path.join(rdir, "rt2_log.txt"),
+                            os.path.join(rdir, "native-rt2.log"))
             with open(os.path.join(rdir, "completion.json"), "w") as f:
                 json.dump({"complete": True,
                            "ngx_effective": "[NGX] fake",
