@@ -48,6 +48,7 @@ import json
 import os
 import shutil
 import subprocess
+import uuid
 import sys
 import tempfile
 import time
@@ -415,10 +416,23 @@ def revalidate_calibration(manifest, freeze_path, ref_exe):
         for cfg in CONFIGS:
             with open(os.path.join(canonical["trial-%s" % cfg],
                                    "provenance.json")) as f:
-                trial_scenes[cfg] = json.load(f).get("scene_sha256", "")
+                trial_prov = json.load(f)
+            trial_rec = manifest.get("lineage", {}).get("trials", {}).get(
+                cfg, {})
+            trial_scenes[cfg] = {
+                "path": trial_rec.get("scene", ""),
+                "sha256": trial_rec.get("scene_sha256", "")}
+            if (not trial_scenes[cfg]["path"] or
+                    os.path.normcase(os.path.realpath(
+                        trial_prov.get("scene", ""))) !=
+                    os.path.normcase(os.path.realpath(
+                        trial_scenes[cfg]["path"])) or
+                    trial_prov.get("scene_sha256") !=
+                    trial_scenes[cfg]["sha256"]):
+                return "calibration trial fixture identity differs: %s" % cfg
     except (OSError, ValueError) as e:
         return "calibration trial provenance unreadable: %s" % e
-    if not all(trial_scenes.values()):
+    if not all(v["path"] and v["sha256"] for v in trial_scenes.values()):
         return "calibration trial scenes unhashed"
     for cfg in CONFIGS:
         confirm = canonical["confirm-%s" % cfg]
@@ -512,7 +526,7 @@ def expected_calib_runs():
 
 
 def check_run_fixture(prov, completion, rundir, role, cfg,
-                      trial_scene_hash, expected_exe_abs):
+                      trial_scene, expected_exe_abs):
     """Central immutable RunSpec check for ONE calibration run.
 
     Every role (trial/confirm/OFF/legacy/control) must satisfy the
@@ -522,11 +536,11 @@ def check_run_fixture(prov, completion, rundir, role, cfg,
     - prov declares EXACTLY FRAMES_REQUIRED (60); the window checks
       always run against the fixed constant, never a prov value.
     - frozen config/workload seal matches (check_workload).
-    - scene hash equals the role's trial fixture hash AND the scene
-      file at the provenance path re-hashes to it now.
+    - scene path/hash equal the frozen trial fixture, and current bytes
+      at that path re-hash to the expected digest.
     - executable path equals the expected authority binary.
-    - completion complete; frame.png present and, when the completion
-      records frame_sha256, byte-identical to it.
+    - completion complete; frame.png present with a mandatory matching
+      recorded frame_sha256.
     - run.log present with NGX/Denoiser evidence (and EnvMap Loaded
       when the provenance extras request --env).
     Returns '' or FAIL."""
@@ -536,15 +550,18 @@ def check_run_fixture(prov, completion, rundir, role, cfg,
     w_err = check_workload(prov, cfg)
     if w_err:
         return "%s run %s: %s" % (role, cfg, w_err)
-    if not trial_scene_hash or \
-            prov.get("scene_sha256") != trial_scene_hash:
+    if not trial_scene.get("sha256") or \
+            prov.get("scene_sha256") != trial_scene["sha256"]:
         return ("%s run %s scene differs from calibration fixture"
                 % (role, cfg))
     scene_path = prov.get("scene", "")
     if not scene_path:
         return "%s run %s has no scene path" % (role, cfg)
+    if (os.path.normcase(os.path.realpath(scene_path)) !=
+            os.path.normcase(os.path.realpath(trial_scene.get("path", "")))):
+        return "%s run %s scene path differs from frozen fixture" % (role, cfg)
     try:
-        if sha256_file(scene_path) != trial_scene_hash:
+        if sha256_file(scene_path) != trial_scene["sha256"]:
             return ("%s run %s scene file changed since calibration"
                     % (role, cfg))
     except OSError as e:
@@ -560,8 +577,8 @@ def check_run_fixture(prov, completion, rundir, role, cfg,
         frame_hash = sha256_file(frame_png)
     except OSError as e:
         return "%s run %s frame unreadable: %s" % (role, cfg, e)
-    if "frame_sha256" in completion and \
-            completion["frame_sha256"] != frame_hash:
+    if (not isinstance(completion.get("frame_sha256"), str) or
+            completion["frame_sha256"] != frame_hash):
         return "%s run %s frame differs from retained evidence" \
             % (role, cfg)
     ngx, den, env = read_effective_mode(rundir)
@@ -735,15 +752,25 @@ def revalidate_freeze_lineage(manifest, ref_exe):
             return ("lineage trial declares frames=%r, contract "
                     "requires %d: %s"
                     % (prov.get("frames"), FRAMES_REQUIRED, cfg))
-        scene_path = rec.get("scene", "") or prov.get("scene", "")
-        if not scene_path:
+        scene_path = rec.get("scene", "")
+        if not scene_path or not prov.get("scene"):
             return "lineage trial has no scene path: %s" % cfg
+        if (os.path.normcase(os.path.realpath(prov["scene"])) !=
+                os.path.normcase(os.path.realpath(scene_path))):
+            return "lineage trial scene path differs from freeze: %s" % cfg
         try:
             if sha256_file(scene_path) != rec.get("scene_sha256"):
                 return ("lineage trial scene changed since derivation: "
                         "%s" % cfg)
         except OSError as e:
             return "lineage trial scene unreadable %s: %s" % (cfg, e)
+        try:
+            if (not isinstance(completion.get("frame_sha256"), str) or
+                    completion["frame_sha256"] != sha256_file(
+                        os.path.join(tdir, "frame.png"))):
+                return "lineage trial frame differs from completion: %s" % cfg
+        except OSError as e:
+            return "lineage trial frame unreadable %s: %s" % (cfg, e)
         w_err = check_workload(prov, cfg)
         if w_err:
             return "lineage trial %s: %s" % (cfg, w_err)
@@ -1138,7 +1165,9 @@ def run_capture(args, run_fn=None, timeout_min=0):
     if err:
         print("ERROR: %s" % err)
         return 1
-    prov = {"exe": exe_abs, "scene": scene_abs, "frames": args.frames,
+    run_id = uuid.uuid4().hex
+    prov = {"run_id": run_id,
+            "exe": exe_abs, "scene": scene_abs, "frames": args.frames,
             "width": args.width, "height": args.height, "spp": args.spp,
             "extra": args.extra_args, "diag": diag, "edges": edges_abs,
             "control": bool(args.control), "config": args.config,
@@ -1227,7 +1256,8 @@ def run_capture(args, run_fn=None, timeout_min=0):
         return 1
     problems, n_valid, n_pilot, n_control = validate_rundir(rundir, args)
     ngx_line, denoiser_line, env_line = read_effective_mode(rundir)
-    manifest = {"name": args.name, "exit": rc, "problems": problems,
+    manifest = {"name": args.name, "run_id": run_id,
+                "exit": rc, "problems": problems,
                 "snapshots_valid": n_valid, "snapshots_pilot": n_pilot,
                 "snapshots_control": n_control,
                 "ngx_effective": ngx_line, "denoiser_effective": denoiser_line,
@@ -1732,6 +1762,21 @@ def exe_authority(exe_path):
             "spvs": hash_exe_spvs(exe_abs)}
 
 
+def campaign_authority_error(authorities):
+    """Require both roles to retain their launch-time exe/SPV bytes."""
+    for role in ("ref", "cand"):
+        recorded = authorities.get(role, {})
+        if not recorded.get("path"):
+            return "%s campaign authority missing" % role
+        try:
+            current = exe_authority(recorded["path"])
+        except OSError as e:
+            return "%s campaign authority unreadable: %s" % (role, e)
+        if current != recorded:
+            return "%s campaign executable/SPV authority changed" % role
+    return ""
+
+
 def distinct_role_paths(ref_exe, cand_exe):
     return (os.path.normcase(os.path.realpath(ref_exe)) !=
             os.path.normcase(os.path.realpath(cand_exe)))
@@ -1950,6 +1995,18 @@ def cmd_analyze(args):
     if args.config not in FAMILY_REQUIRED:
         print("FAIL analyze: unknown config %s" % args.config)
         return 1
+    if len(args.block_dirs) != 4:
+        print("INCONCLUSIVE analyze: need exactly 4 blocks, got %d"
+              % len(args.block_dirs))
+        return 2
+    block_paths = [os.path.normcase(os.path.realpath(p))
+                   for p in args.block_dirs]
+    if len(set(block_paths)) != 4:
+        print("FAIL analyze: block directories alias/reuse one run block")
+        return 1
+    expected_ids = {"block-%s-%d" % (args.config, k)
+                    for k in range(1, 5)}
+    seen_ids, seen_legs, seen_run_ids = set(), set(), set()
     req_fams = FAMILY_REQUIRED[args.config]
     try:
         manifest_hash = sha256_file(args.manifest)
@@ -1994,6 +2051,50 @@ def cmd_analyze(args):
     except OSError as e:
         print("FAIL analyze: cannot hash claimed exe: %s" % e)
         return 1
+    parents = {os.path.normcase(os.path.realpath(os.path.dirname(p)))
+               for p in args.block_dirs}
+    authority_file = getattr(args, "authority_file", "")
+    campaign_dir = next(iter(parents)) if len(parents) == 1 else ""
+    if not authority_file and campaign_dir:
+        candidate_file = os.path.join(campaign_dir,
+                                      "accept-authorities.json")
+        if os.path.exists(candidate_file):
+            authority_file = candidate_file
+    campaign_record = (os.path.join(campaign_dir, "campaign.json")
+                       if campaign_dir else "")
+    recorded_campaign = None
+    if campaign_record and os.path.exists(campaign_record):
+        try:
+            with open(campaign_record) as f:
+                recorded_campaign = json.load(f)
+        except (OSError, ValueError) as e:
+            print("FAIL analyze: campaign record unreadable: %s" % e)
+            return 1
+    if (getattr(args, "campaign_authorities", None) is not None or
+            (recorded_campaign and recorded_campaign.get("mode") == "accept")) \
+            and not authority_file:
+        print("FAIL analyze: acceptance campaign authority file missing")
+        return 1
+    if authority_file:
+        try:
+            with open(authority_file) as f:
+                pinned = json.load(f)
+            pin_hash = sha256_file(authority_file)
+        except (OSError, ValueError) as e:
+            print("FAIL analyze: campaign authority unreadable: %s" % e)
+            return 1
+        if (pinned != {"ref": claim_ref, "cand": claim_cand} or
+                (getattr(args, "campaign_authorities", None) is not None and
+                 pinned != args.campaign_authorities) or
+                campaign_authority_error(pinned)):
+            print("FAIL analyze: campaign authority differs from frozen "
+                  "reference/candidate binaries")
+            return 1
+        if (recorded_campaign and recorded_campaign.get("mode") == "accept"
+                and (recorded_campaign.get("authorities") != pinned or
+                     recorded_campaign.get("authority_sha256") != pin_hash)):
+            print("FAIL analyze: campaign record authority differs")
+            return 1
     for bdir in args.block_dirs:
         try:
             with open(os.path.join(bdir, "block.json")) as f:
@@ -2004,6 +2105,12 @@ def cmd_analyze(args):
         if not block.get("complete"):
             print("FAIL analyze: block incomplete: %s" % bdir)
             return 1
+        block_id = block.get("block")
+        if block_id not in expected_ids or block_id in seen_ids:
+            print("FAIL analyze: duplicate or unexpected block identity %r"
+                  % block_id)
+            return 1
+        seen_ids.add(block_id)
         for k in ("R_image_parity", "C_image_parity",
                   "R_timing_parity", "C_timing_parity",
                   "uniformity", "executable_identity"):
@@ -2015,6 +2122,11 @@ def cmd_analyze(args):
         provs = {}
         for sub in ("R_ON", "R_OFF", "C_ON", "C_OFF"):
             sdir = os.path.join(bdir, sub)
+            leg_path = os.path.normcase(os.path.realpath(sdir))
+            if leg_path in seen_legs:
+                print("FAIL analyze: reused/aliased leg directory: %s" % sdir)
+                return 1
+            seen_legs.add(leg_path)
             try:
                 with open(os.path.join(sdir, "completion.json")) as f:
                     completion = json.load(f)
@@ -2025,6 +2137,31 @@ def cmd_analyze(args):
                 return 1
             if not completion.get("complete"):
                 print("FAIL analyze: run incomplete: %s" % sdir)
+                return 1
+            run_id = prov.get("run_id")
+            if (not isinstance(run_id, str) or not run_id or
+                    completion.get("run_id") != run_id or
+                    run_id in seen_run_ids):
+                print("FAIL analyze: missing, mismatched or reused capture "
+                      "identity: %s" % sdir)
+                return 1
+            seen_run_ids.add(run_id)
+            # The actual capture command contains its owned output path.
+            # A copied leg directory with edited block labels is not a
+            # distinct process run, even when its frame bytes match.
+            try:
+                with open(os.path.join(sdir, "command.txt")) as f:
+                    command = f.read()
+            except OSError as e:
+                print("FAIL analyze: run command unreadable %s: %s"
+                      % (sdir, e))
+                return 1
+            output_marker = ("--output-display " +
+                             os.path.join(os.path.abspath(sdir),
+                                          "frame.png") + " --frames 60")
+            if command.count(output_marker) != 1:
+                print("FAIL analyze: run command output identity differs: %s"
+                      % sdir)
                 return 1
             # Fixture/settings identity: every analyzed run must be the
             # same 60-frame scene/config/workload with the frozen edge
@@ -2199,10 +2336,10 @@ def cmd_analyze(args):
         print("FAIL analyze: mixed OFF identity across blocks: %s"
               % sorted(off_identities))
         return 1
-    if len(blocks) != 4:
-        print("INCONCLUSIVE analyze: need exactly 4 blocks, got %d"
-              % len(blocks))
-        return 2
+    if (seen_ids != expected_ids or len(seen_legs) != 16 or
+            len(seen_run_ids) != 16):
+        print("FAIL analyze: four distinct complete block identities required")
+        return 1
     failures, inconclusive = [], []
 
     for fam, edges in ((0, edgesRT), (1, edgesGI)):
@@ -2375,9 +2512,25 @@ def run_campaign(args, run_fn=None):
     start = time.monotonic()
     deadline = start + cap_min * 60
     stages = []
+    accept_authorities = None
+    authority_file = ""
+    authority_digest = ""
 
     def expired():
         return time.monotonic() >= deadline
+
+    def pinned_error():
+        if accept_authorities is None:
+            return ""
+        err = campaign_authority_error(accept_authorities)
+        if err:
+            return err
+        try:
+            if sha256_file(authority_file) != authority_digest:
+                return "acceptance authority record changed"
+        except OSError as e:
+            return "acceptance authority record unreadable: %s" % e
+        return ""
 
     def cap_args(exe, scene, name, cfg, frames=60, diag=False, edges="",
                  control=False, timed=True):
@@ -2599,6 +2752,23 @@ def run_campaign(args, run_fn=None):
         if calib_err:
             print("ERROR: accept calibration revalidation: %s" % calib_err)
             return 1
+        try:
+            accept_authorities = {"ref": exe_authority(args.ref_exe),
+                                  "cand": exe_authority(args.cand_exe)}
+        except OSError as e:
+            print("ERROR: accept authority unreadable: %s" % e)
+            return 1
+        for role, record in accept_authorities.items():
+            if any(v is None for v in record["spvs"].values()):
+                print("ERROR: accept %s authority has missing SPVs" % role)
+                return 1
+        authority_file = os.path.join(campdir, "accept-authorities.json")
+        auth_write_err = write_text_checked(
+            authority_file, json.dumps(accept_authorities, indent=1) + "\n")
+        if auth_write_err:
+            print("ERROR: accept authority persistence: %s" % auth_write_err)
+            return 1
+        authority_digest = sha256_file(authority_file)
         order = [(c2, qn) for c2 in CONFIGS for qn in range(1, 5)]
         n_quartets = len(order)
         for cfg in CONFIGS:
@@ -2608,6 +2778,10 @@ def run_campaign(args, run_fn=None):
                 if expired():
                     stages.append((qname, "INCOMPLETE (cap)"))
                     continue
+                auth_err = pinned_error()
+                if auth_err:
+                    stages.append((qname, "FAIL (" + auth_err + ")"))
+                    break
                 qa = argparse.Namespace(
                     ref_exe=args.ref_exe, cand_exe=args.cand_exe,
                     scene=scene, out_root=campdir, name=qname,
@@ -2625,9 +2799,12 @@ def run_campaign(args, run_fn=None):
                     stages.append((qname, "INCOMPLETE (cap)"))
                     continue
                 rc = run_quartet(qa, run_fn=run_fn, deadline_min=share)
-                stages.append((qa.name, "complete" if rc == 0 else
-                               ("INCOMPLETE" if rc == 2 else "FAIL")))
-                if rc != 0:
+                auth_err = pinned_error()
+                stages.append((qa.name,
+                               "FAIL (" + auth_err + ")" if auth_err else
+                               ("complete" if rc == 0 else
+                                ("INCOMPLETE" if rc == 2 else "FAIL"))))
+                if rc != 0 or auth_err:
                     break
             mates = [os.path.join(campdir, "block-%s-%d" % (cfg, k))
                      for k in range(1, 5)]
@@ -2636,11 +2813,18 @@ def run_campaign(args, run_fn=None):
                 an = argparse.Namespace(block_dirs=mates,
                                         manifest=args.freeze, config=cfg,
                                         ref_exe=args.ref_exe,
-                                        cand_exe=args.cand_exe)
+                                        cand_exe=args.cand_exe,
+                                        authority_file=authority_file,
+                                        campaign_authorities=accept_authorities)
                 rc = cmd_analyze(an)
+                auth_err = pinned_error()
                 stages.append(("analyze-%s" % cfg,
+                               "FAIL (" + auth_err + ")" if auth_err else
                                "complete" if rc == 0 else
                                ("INCOMPLETE" if rc == 2 else "FAIL")))
+        final_auth_err = pinned_error()
+        if final_auth_err:
+            stages.append(("authority-final", "FAIL (" + final_auth_err + ")"))
     elapsed_min = (time.monotonic() - start) / 60
     # No over-cap completion: even with all stages green, ending past
     # the cap is INCOMPLETE (the budget covers warmup, readback,
@@ -2651,11 +2835,27 @@ def run_campaign(args, run_fn=None):
                 "cap_min": cap_min, "over_cap": over_cap,
                 "complete": all(v == "complete" for _, v in stages) and
                 len(stages) > 0 and not over_cap}
+    if accept_authorities is not None:
+        manifest["authorities"] = accept_authorities
+        manifest["authority_sha256"] = authority_digest
     err = write_text_checked(os.path.join(campdir, "campaign.json"),
                              json.dumps(manifest, indent=1) + "\n")
     if err:
         print("ERROR: %s" % err)
         return 1
+    if accept_authorities is not None:
+        # Catch a substitution during the final manifest write itself:
+        # never leave a persisted complete:true marker for changed bytes.
+        late_auth_err = pinned_error()
+        if late_auth_err:
+            manifest["complete"] = False
+            manifest["stages"].append(
+                ("authority-postwrite", "FAIL (" + late_auth_err + ")"))
+            err = write_text_checked(os.path.join(campdir, "campaign.json"),
+                                     json.dumps(manifest, indent=1) + "\n")
+            if err:
+                print("ERROR: cannot revoke campaign completion: %s" % err)
+                return 1
     if args.mode == "calib" and manifest["complete"]:
         # Seal the campaign freeze with the full calibration evidence:
         # without this seal the freeze is trials-only and can never
@@ -2926,6 +3126,24 @@ def cmd_check_freeze(args):
         if not trial_scene or prov.get("scene_sha256") != trial_scene:
             print("FAIL check-freeze: run scene differs from %s trial "
                   "fixture: %s" % (required_cfg, rundir))
+            return 1
+        trial_path = manifest.get("lineage", {}).get("trials", {}).get(
+            required_cfg, {}).get("scene", "")
+        if (not trial_path or not prov.get("scene") or
+                os.path.normcase(os.path.realpath(prov["scene"])) !=
+                os.path.normcase(os.path.realpath(trial_path))):
+            print("FAIL check-freeze: run scene path differs from %s "
+                  "trial fixture: %s" % (required_cfg, rundir))
+            return 1
+        try:
+            if (not isinstance(completion.get("frame_sha256"), str) or
+                    completion["frame_sha256"] != sha256_file(
+                        os.path.join(rundir, "frame.png"))):
+                print("FAIL check-freeze: frame differs from completion: %s"
+                      % rundir)
+                return 1
+        except OSError as e:
+            print("FAIL check-freeze: frame unreadable %s: %s" % (rundir, e))
             return 1
         if prov.get("edges_sha256") != sha256_file(args.manifest):
             print("FAIL check-freeze: run staged different edges: %s"
@@ -3542,6 +3760,57 @@ def self_test():
         sealed_birt = _bisect_campaign.bisect_right(
             sealed_manifest["edgesRT"], 10000) - 1
         check("fake sealed assumption consistent", sealed_birt == birt_c)
+        check("fake calibration revalidation baseline passes",
+              revalidate_calibration(sealed_manifest, sealed, exe) == "")
+        copied_calib_scene = os.path.join(tmp, "copied-calib-C1.rt2scene")
+        shutil.copyfile(scenes["C1"], copied_calib_scene)
+        for role in ("confirm-C1", "off-C1"):
+            prov_path = os.path.join(tmp, "calib1", role,
+                                     "provenance.json")
+            with open(prov_path, "rb") as f:
+                original_prov = f.read()
+            try:
+                changed = json.loads(original_prov)
+                changed["scene"] = copied_calib_scene
+                with open(prov_path, "w") as f:
+                    json.dump(changed, f)
+                check("fake %s same-bytes scene path rejected" % role,
+                      revalidate_calibration(
+                          sealed_manifest, sealed, exe) != "")
+                if role == "confirm-C1":
+                    confirm_args = argparse.Namespace(
+                        run_dirs=[os.path.join(tmp, "calib1", role)],
+                        manifest=sealed, config="C1", ref_exe=exe)
+                    check("fake check-freeze scene path rejected",
+                          cmd_check_freeze(confirm_args) == 1)
+            finally:
+                with open(prov_path, "wb") as f:
+                    f.write(original_prov)
+            check("fake %s scene path control restored" % role,
+                  revalidate_calibration(sealed_manifest, sealed, exe) == "")
+        confirm_dir = os.path.join(tmp, "calib1", "confirm-C1")
+        completion_path = os.path.join(confirm_dir, "completion.json")
+        confirm_frame = os.path.join(confirm_dir, "frame.png")
+        with open(completion_path, "rb") as f:
+            original_completion = f.read()
+        with open(confirm_frame, "rb") as f:
+            original_frame = f.read()
+        try:
+            changed = json.loads(original_completion)
+            del changed["frame_sha256"]
+            with open(completion_path, "w") as f:
+                json.dump(changed, f)
+            with open(confirm_frame, "wb") as f:
+                f.write(b"modified frame without digest")
+            check("fake confirm missing digest and changed frame rejected",
+                  revalidate_calibration(sealed_manifest, sealed, exe) != "")
+        finally:
+            with open(completion_path, "wb") as f:
+                f.write(original_completion)
+            with open(confirm_frame, "wb") as f:
+                f.write(original_frame)
+        check("fake confirm frame evidence control restored",
+              revalidate_calibration(sealed_manifest, sealed, exe) == "")
         # Legacy parity is byte identity: corrupt one legacy frame and
         # the parity gate must fail (fail-closed, never silent) — then
         # RESTORE the evidence byte-for-byte (acceptance revalidates
@@ -3603,11 +3872,14 @@ def self_test():
                 f.write("[ShadowTail] %s\n" % json.dumps(confirm_line(fr)))
         with open(os.path.join(cdir, "completion.json"), "w") as f:
             json.dump({"complete": True,
+                       "frame_sha256": sha256_file(
+                           os.path.join(cdir, "frame.png")),
                        "ngx_effective": "[NGX] fake",
                        "denoiser_effective": "[Denoiser] fake"}, f)
         with open(os.path.join(cdir, "provenance.json"), "w") as f:
             json.dump({"exe": os.path.abspath(exe),
                        "exe_sha256": sha256_file(exe),
+                       "scene": os.path.abspath(scenes["C3"]),
                        "scene_sha256": sha256_file(scenes["C3"]),
                        "frames": 60, "config": "C3",
                        "workload": WORKLOADS["C3"],
@@ -3690,6 +3962,7 @@ def self_test():
                                ("C_OFF", 0)):
                 role_exe = cand_exe if sub.startswith("C_") else exe
                 sdir = os.path.join(bdir, sub)
+                fake_run_id = uuid.uuid5(uuid.NAMESPACE_URL, sdir).hex
                 os.makedirs(sdir)
                 lines = []
                 lines.append("[NGX] supported=yes backend=none (fake)")
@@ -3730,11 +4003,12 @@ def self_test():
                 with open(os.path.join(sdir, "run.log"), "w") as lf:
                     lf.write("\n".join(lines) + "\n")
                 with open(os.path.join(sdir, "completion.json"), "w") as cf:
-                    json.dump({"complete": True,
+                    json.dump({"complete": True, "run_id": fake_run_id,
                                "ngx_effective": "[NGX] fake",
                                "denoiser_effective": "[Denoiser] fake"}, cf)
                 with open(os.path.join(sdir, "provenance.json"), "w") as pf:
-                    json.dump({"exe": os.path.abspath(role_exe),
+                    json.dump({"run_id": fake_run_id,
+                               "exe": os.path.abspath(role_exe),
                                "exe_sha256": sha256_file(role_exe),
                                "scene": os.path.abspath(scenes[cfg]),
                                "scene_sha256": sha256_file(scenes[cfg]),
@@ -3757,8 +4031,12 @@ def self_test():
                     os.path.join(sdir, "frame.png"))
                 with open(os.path.join(sdir, "completion.json"), "w") as cf:
                     json.dump(completed, cf)
+                with open(os.path.join(sdir, "command.txt"), "w") as cf:
+                    cf.write("%s --output-display %s --frames 60\n" %
+                             (role_exe, os.path.join(sdir, "frame.png")))
             with open(os.path.join(bdir, "block.json"), "w") as bf:
-                json.dump({"block": bname, "complete": True, "results": {
+                json.dump({"block": "block-%s-%s" % (cfg, bname[1:]),
+                           "complete": True, "results": {
                     "R_ON": "complete", "R_OFF": "complete",
                     "C_ON": "complete", "C_OFF": "complete",
                     "R_timing_parity": "complete",
@@ -3778,6 +4056,83 @@ def self_test():
                         ("k1", "k2", "k3", "k4")],
             manifest=sealed, ref_exe=exe, cand_exe=cand_exe, config="C1")
         check("fake analyze passes", cmd_analyze(ana) == 0)
+        same_block = argparse.Namespace(**{
+            **vars(ana), "block_dirs": [ana.block_dirs[1]] * 4})
+        check("fake analyze one completed block four times rejected",
+              cmd_analyze(same_block) == 1)
+        alias_blocks = argparse.Namespace(**{
+            **vars(ana), "block_dirs": [
+                ana.block_dirs[0], ana.block_dirs[1], ana.block_dirs[2],
+                os.path.join(adir, "k1", "..", "k1")]})
+        check("fake analyze realpath block alias rejected",
+              cmd_analyze(alias_blocks) == 1)
+        reused_leg = os.path.join(adir, "k4", "R_ON")
+        saved_leg = reused_leg + ".saved"
+        os.rename(reused_leg, saved_leg)
+        try:
+            shutil.copytree(os.path.join(adir, "k1", "R_ON"), reused_leg)
+            check("fake analyze copied leg evidence rejected",
+                  cmd_analyze(ana) == 1)
+        finally:
+            shutil.rmtree(reused_leg)
+            os.rename(saved_leg, reused_leg)
+        check("fake analyze distinct leg evidence restored",
+              cmd_analyze(ana) == 0)
+        with open(os.path.join(adir, "k1", "R_ON",
+                               "provenance.json")) as f:
+            reused_id = json.load(f)["run_id"]
+        id_files = [os.path.join(adir, "k4", "R_ON", name)
+                    for name in ("provenance.json", "completion.json")]
+        id_originals = []
+        for path in id_files:
+            with open(path, "rb") as f:
+                id_originals.append(f.read())
+        try:
+            for path, original in zip(id_files, id_originals):
+                changed = json.loads(original)
+                changed["run_id"] = reused_id
+                with open(path, "w") as f:
+                    json.dump(changed, f)
+            check("fake analyze reused capture ID rejected",
+                  cmd_analyze(ana) == 1)
+        finally:
+            for path, original in zip(id_files, id_originals):
+                with open(path, "wb") as f:
+                    f.write(original)
+        check("fake analyze capture IDs restored", cmd_analyze(ana) == 0)
+        block_id_path = os.path.join(adir, "k4", "block.json")
+        with open(block_id_path, "rb") as f:
+            original_block = f.read()
+        try:
+            duplicate_id = json.loads(original_block)
+            duplicate_id["block"] = "block-C1-1"
+            with open(block_id_path, "w") as f:
+                json.dump(duplicate_id, f)
+            check("fake analyze duplicate canonical block ID rejected",
+                  cmd_analyze(ana) == 1)
+        finally:
+            with open(block_id_path, "wb") as f:
+                f.write(original_block)
+        with open(completion_path, "rb") as f:
+            original_completion = f.read()
+        with open(confirm_frame, "rb") as f:
+            original_frame = f.read()
+        try:
+            changed = json.loads(original_completion)
+            del changed["frame_sha256"]
+            with open(completion_path, "w") as f:
+                json.dump(changed, f)
+            with open(confirm_frame, "wb") as f:
+                f.write(b"modified frame without digest")
+            check("fake analyze rejects missing calibration frame digest",
+                  cmd_analyze(ana) == 1)
+        finally:
+            with open(completion_path, "wb") as f:
+                f.write(original_completion)
+            with open(confirm_frame, "wb") as f:
+                f.write(original_frame)
+        check("fake analyze calibration evidence restored",
+              cmd_analyze(ana) == 0)
         check("fake analyze same-path roles rejected",
               cmd_analyze(argparse.Namespace(
                   **{**vars(ana), "cand_exe": exe})) == 1)
@@ -3934,6 +4289,91 @@ def self_test():
             acc = json.load(f)
         check("fake accept 64 runs + 4 analyzes staged",
               len(acc["stages"]) == 20 and acc["complete"] is True)
+        with open(os.path.join(tmp, "accept1",
+                               "accept-authorities.json")) as f:
+            frozen_accept_auth = json.load(f)
+        check("fake accept persisted one whole-campaign authority",
+              acc.get("authorities") == frozen_accept_auth and
+              acc.get("authority_sha256") == sha256_file(
+                  os.path.join(tmp, "accept1",
+                               "accept-authorities.json")))
+        persisted_analyze = argparse.Namespace(
+            block_dirs=[os.path.join(tmp, "accept1",
+                                     "block-C1-%d" % k)
+                        for k in range(1, 5)],
+            manifest=sealed, config="C1", ref_exe=exe,
+            cand_exe=cand_exe)
+        check("fake persisted campaign analysis authority passes",
+              cmd_analyze(persisted_analyze) == 0)
+        authority_path = os.path.join(tmp, "accept1",
+                                      "accept-authorities.json")
+        with open(authority_path, "rb") as f:
+            original_authority_file = f.read()
+        try:
+            tampered_authority = json.loads(original_authority_file)
+            tampered_authority["cand"]["sha256"] = "0" * 64
+            with open(authority_path, "w") as f:
+                json.dump(tampered_authority, f)
+            check("fake persisted campaign authority tamper rejected",
+                  cmd_analyze(persisted_analyze) == 1)
+        finally:
+            with open(authority_path, "wb") as f:
+                f.write(original_authority_file)
+        check("fake persisted campaign authority restored",
+              cmd_analyze(persisted_analyze) == 0)
+        for kind, target in (("exe", cand_exe),
+                             ("spv", os.path.join(
+                                 cand_dir, "closesthit_tail.spv"))):
+            with open(target, "rb") as f:
+                original_target = f.read()
+            original_analyze = cmd_analyze
+            mutated = [False]
+
+            def change_after_c1(an):
+                rc = original_analyze(an)
+                if an.config == "C1" and rc == 0 and not mutated[0]:
+                    with open(target, "wb") as f:
+                        f.write(original_target + b"-changed-between-configs")
+                    mutated[0] = True
+                return rc
+
+            globals()["cmd_analyze"] = change_after_c1
+            changed_name = "accept-changed-" + kind
+            try:
+                changed_accept = argparse.Namespace(
+                    **{**vars(accept), "name": changed_name})
+                changed_rc = run_campaign(changed_accept, run_fn=camp_fake)
+            finally:
+                globals()["cmd_analyze"] = original_analyze
+                with open(target, "wb") as f:
+                    f.write(original_target)
+            with open(os.path.join(tmp, changed_name,
+                                   "campaign.json")) as f:
+                changed_campaign = json.load(f)
+            check("fake accept %s swap between configs fails" % kind,
+                  mutated[0] and changed_rc != 0 and
+                  changed_campaign.get("complete") is False and
+                  changed_campaign.get("authorities") == frozen_accept_auth)
+        check("fake accept authority restored after swaps",
+              exe_authority(cand_exe) == frozen_accept_auth["cand"])
+        off_prov_path = os.path.join(tmp, "calib1", "off-C1",
+                                     "provenance.json")
+        with open(off_prov_path, "rb") as f:
+            off_original = f.read()
+        try:
+            changed = json.loads(off_original)
+            changed["scene"] = copied_calib_scene
+            with open(off_prov_path, "w") as f:
+                json.dump(changed, f)
+            wrong_fixture_accept = argparse.Namespace(
+                **{**vars(accept), "name": "accept-wrong-calib-path"})
+            check("fake accept rejects same-bytes wrong calibration path",
+                  run_campaign(wrong_fixture_accept, run_fn=camp_fake) == 1)
+        finally:
+            with open(off_prov_path, "wb") as f:
+                f.write(off_original)
+        check("fake accept calibration path control restored",
+              revalidate_calibration(sealed_manifest, sealed, exe) == "")
         accept_same = argparse.Namespace(
             **{**vars(accept), "name": "accept-same-path", "cand_exe": exe})
         check("fake accept same-path roles rejected",
