@@ -1448,6 +1448,8 @@ def validate_rundir(rundir, args):
                 problems.append(
                     "control emission inside pilot window: %s"
                     % sorted(window_frames(snaps_control))[:8])
+    elif snaps_valid or snaps_pilot or snaps_control:
+        problems.append("shadow-tail snapshot emitted in OFF run")
     if args.config and args.diag and not args.control:
         # Coverage gates diagnostic ON runs ONLY (never control runs:
         # their histograms carry the dependent-work shift by design)...
@@ -1719,9 +1721,80 @@ def stage_result(rc):
     return "FAIL"
 
 
+def exe_authority(exe_path):
+    """Executable authority record: absolute path + current file hash
+    + SPV set beside it. Authorities identify binaries by ROLE
+    (declared path), never by demanding numerical hash differences —
+    two distinct supplied binaries may be byte-identical."""
+    exe_abs = os.path.abspath(exe_path)
+    return {"path": exe_abs,
+            "sha256": sha256_file(exe_abs),
+            "spvs": hash_exe_spvs(exe_abs)}
+
+
+def distinct_role_paths(ref_exe, cand_exe):
+    return (os.path.normcase(os.path.realpath(ref_exe)) !=
+            os.path.normcase(os.path.realpath(cand_exe)))
+
+
+def check_leg_executable(prov, authority, role):
+    """Bind one leg's provenance to its role authority: path must equal
+    the declared binary AND the recorded hash/SPVs must match a fresh
+    reread (mid-run substitution fails). Returns '' or FAIL."""
+    if os.path.abspath(prov.get("exe", "")) != authority["path"]:
+        return ("%s leg exe %r is not the designated %s binary %r"
+                % (role, prov.get("exe", ""), role, authority["path"]))
+    try:
+        if sha256_file(authority["path"]) != authority["sha256"]:
+            return ("%s authority binary changed on disk: %s"
+                    % (role, authority["path"]))
+    except OSError as e:
+        return "%s authority binary unreadable: %s" % (role, e)
+    if prov.get("exe_sha256") != authority["sha256"]:
+        return "%s leg exe hash differs from designated binary" % role
+    if prov.get("spvs", {}) != authority["spvs"]:
+        return "%s leg SPV set differs from designated set" % role
+    if hash_exe_spvs(authority["path"]) != authority["spvs"]:
+        return "%s authority SPV set changed on disk" % role
+    return ""
+
+
+def check_block_uniformity(leg_provs):
+    """Block-wide fixture uniformity: all four legs share scene hash,
+    workload, and frame count; ON legs carry their config with
+    diagnostic mode, OFF legs carry no shadow config. `leg_provs` maps
+    sub-name to provenance. Returns '' or FAIL."""
+    scenes = {p.get("scene_sha256", "") for p in leg_provs.values()}
+    if len(scenes) != 1 or not next(iter(scenes)):
+        return "block legs span different scenes: %s" % sorted(scenes)
+    workloads = {json.dumps(p.get("workload", {}), sort_keys=True)
+                 for p in leg_provs.values()}
+    if len(workloads) != 1:
+        return "block legs span different workloads"
+    frames = {p.get("frames", -1) for p in leg_provs.values()}
+    if frames != {FRAMES_REQUIRED}:
+        return "block legs declare frames=%s, contract requires %d" \
+            % (sorted(frames), FRAMES_REQUIRED)
+    for sub, prov in leg_provs.items():
+        want_diag = sub.endswith("_ON")
+        if bool(prov.get("diag")) != want_diag:
+            return "block leg %s has wrong diagnostic mode" % sub
+        if not want_diag and prov.get("config", ""):
+            return "block leg %s OFF leg carries shadow config" % sub
+        if prov.get("control") and sub != "C_ON":
+            return "block leg %s carries unexpected control flag" % sub
+    on_cfgs = {leg_provs[s].get("config", "") for s in ("R_ON", "C_ON")}
+    if len(on_cfgs) != 1:
+        return "block ON legs span different configs: %s" % sorted(on_cfgs)
+    return ""
+
+
 def run_quartet(args, run_fn=None, deadline_min=0):
     """One block = R_ON/R_OFF/C_ON/C_OFF with block manifest + deadline."""
     blockdir = os.path.abspath(os.path.join(args.out_root, args.name))
+    if not distinct_role_paths(args.ref_exe, args.cand_exe):
+        print("ERROR: quartet requires distinct reference/candidate paths")
+        return 1
     if os.path.exists(blockdir):
         print("ERROR: blockdir exists: %s" % blockdir)
         return 1
@@ -1729,6 +1802,12 @@ def run_quartet(args, run_fn=None, deadline_min=0):
         os.makedirs(blockdir)
     except OSError as e:
         print("ERROR: cannot create blockdir: %s" % e)
+        return 1
+    try:
+        ref_auth = exe_authority(args.ref_exe)
+        cand_auth = exe_authority(args.cand_exe)
+    except OSError as e:
+        print("ERROR: cannot read designated binary: %s" % e)
         return 1
     order = [("R_ON", args.ref_exe, True, args.edges, False),
              ("R_OFF", args.ref_exe, False, "", False),
@@ -1773,8 +1852,30 @@ def run_quartet(args, run_fn=None, deadline_min=0):
     if all(results.get(k) == "complete" for k in ("C_ON", "C_OFF")):
         results["C_timing_parity"], results["C_image_parity"] = \
             check_off_parity(blockdir, "C_ON", "C_OFF", args.config)
+    if all(results.get(k) == "complete" for k in
+           ("R_ON", "R_OFF", "C_ON", "C_OFF")):
+        try:
+            provs = {}
+            for sub in ("R_ON", "R_OFF", "C_ON", "C_OFF"):
+                with open(os.path.join(blockdir, sub, "provenance.json")) as f:
+                    provs[sub] = json.load(f)
+            uniformity = check_block_uniformity(provs)
+            results["uniformity"] = ("FAIL (%s)" % uniformity if uniformity
+                                     else "complete")
+            errors = ["%s: %s" % (sub, err)
+                      for sub, auth, role in
+                      (("R_ON", ref_auth, "R"), ("R_OFF", ref_auth, "R"),
+                       ("C_ON", cand_auth, "C"), ("C_OFF", cand_auth, "C"))
+                      for err in [check_leg_executable(provs[sub], auth, role)]
+                      if err]
+            results["executable_identity"] = (
+                "FAIL (%s)" % errors[0] if errors else "complete")
+        except (OSError, ValueError) as e:
+            results["uniformity"] = "FAIL (provenance unreadable: %s)" % e
+            results["executable_identity"] = "FAIL (provenance unreadable)"
     manifest = {"block": args.name, "order": [o[0] for o in order],
                 "results": results,
+                "authorities": {"ref": ref_auth, "cand": cand_auth},
                 "complete": all(v == "complete" for v in results.values())}
     err = write_text_checked(os.path.join(blockdir, "block.json"),
                              json.dumps(manifest, indent=1) + "\n")
@@ -1878,6 +1979,21 @@ def cmd_analyze(args):
         return 1
     blocks = []
     on_identities, off_identities = set(), set()
+    # Claimed acceptance authorities from EXPLICIT inputs (rebuilt
+    # NOW): blocks must bind to these, never to dir labels or
+    # per-leg self-assertion alone.
+    if not args.cand_exe:
+        print("FAIL analyze: --cand-exe required (authority binding)")
+        return 1
+    if not distinct_role_paths(args.ref_exe, args.cand_exe):
+        print("FAIL analyze: reference and candidate resolve to one path")
+        return 1
+    try:
+        claim_ref = exe_authority(args.ref_exe)
+        claim_cand = exe_authority(args.cand_exe)
+    except OSError as e:
+        print("FAIL analyze: cannot hash claimed exe: %s" % e)
+        return 1
     for bdir in args.block_dirs:
         try:
             with open(os.path.join(bdir, "block.json")) as f:
@@ -1889,12 +2005,14 @@ def cmd_analyze(args):
             print("FAIL analyze: block incomplete: %s" % bdir)
             return 1
         for k in ("R_image_parity", "C_image_parity",
-                  "R_timing_parity", "C_timing_parity"):
+                  "R_timing_parity", "C_timing_parity",
+                  "uniformity", "executable_identity"):
             if block.get("results", {}).get(k) != "complete":
                 print("FAIL analyze: parity gate %s not complete in %s"
                       % (k, bdir))
                 return 1
         subs = {}
+        provs = {}
         for sub in ("R_ON", "R_OFF", "C_ON", "C_OFF"):
             sdir = os.path.join(bdir, sub)
             try:
@@ -1914,9 +2032,76 @@ def cmd_analyze(args):
             if prov.get("frames") != 60 or not prov.get("scene_sha256"):
                 print("FAIL analyze: run identity incomplete: %s" % sdir)
                 return 1
+            wl = WORKLOADS[args.config]
+            if (prov.get("spp") != wl["spp"] or
+                    prov.get("width") != wl["width"] or
+                    prov.get("height") != wl["height"] or
+                    prov.get("extra") != wl["extra"] +
+                    ["--benchmark-timings"] or prov.get("control") is not False):
+                print("FAIL analyze: capture settings differ from frozen "
+                      "workload: %s" % sdir)
+                return 1
+            try:
+                if completion.get("frame_sha256") != sha256_file(
+                        os.path.join(sdir, "frame.png")):
+                    print("FAIL analyze: frame changed since completion: %s"
+                          % sdir)
+                    return 1
+            except OSError as e:
+                print("FAIL analyze: frame unreadable: %s: %s" % (sdir, e))
+                return 1
+            fixture = manifest.get("lineage", {}).get("trials", {}).get(
+                args.config, {})
+            expected_scene = fixture.get("scene_sha256")
+            if prov.get("scene_sha256") != expected_scene:
+                print("FAIL analyze: run scene differs from frozen fixture: %s"
+                      % sdir)
+                return 1
+            if (os.path.normcase(os.path.realpath(prov.get("scene", ""))) !=
+                    os.path.normcase(os.path.realpath(
+                        fixture.get("scene", "")))):
+                print("FAIL analyze: run scene path differs from frozen "
+                      "fixture: %s" % sdir)
+                return 1
+            try:
+                if sha256_file(prov["scene"]) != expected_scene:
+                    print("FAIL analyze: run scene changed on disk: %s" % sdir)
+                    return 1
+            except (OSError, KeyError) as e:
+                print("FAIL analyze: run scene unreadable: %s: %s" % (sdir, e))
+                return 1
             w_err = check_workload(prov, args.config)
             if sub.endswith("_ON") and w_err:
                 print("FAIL analyze: %s: %s" % (sdir, w_err))
+                return 1
+            if not sub.endswith("_ON"):
+                off_workload = dict(prov, config=args.config)
+                w_err = check_workload(off_workload, args.config)
+                if w_err or prov.get("config", ""):
+                    print("FAIL analyze: OFF workload/config mismatch: %s: %s"
+                          % (sdir, w_err))
+                    return 1
+            if "--env" in WORKLOADS[args.config]["extra"]:
+                try:
+                    if (not prov.get("env_sha256") or
+                            sha256_file(prov["env_abs"]) != prov["env_sha256"]):
+                        print("FAIL analyze: environment identity mismatch: %s"
+                              % sdir)
+                        return 1
+                except (OSError, KeyError) as e:
+                    print("FAIL analyze: environment unreadable: %s: %s"
+                          % (sdir, e))
+                    return 1
+            expected_on = sub.endswith("_ON")
+            run_args = argparse.Namespace(
+                frames=60, diag=expected_on, control=False,
+                edges=args.manifest if expected_on else "",
+                config=args.config if expected_on else "",
+                extra_args=WORKLOADS[args.config]["extra"])
+            run_problems, _, _, _ = validate_rundir(sdir, run_args)
+            if run_problems:
+                print("FAIL analyze: run validation %s: %s"
+                      % (sdir, run_problems[0]))
                 return 1
             # ON legs bind the full shadow identity (fixture + workload
             # + frozen edges); OFF legs bind fixture + workload only —
@@ -1968,6 +2153,43 @@ def cmd_analyze(args):
                           % sdir)
                     return 1
             subs[sub] = (snaps, {"frames": window_only(timings)})
+            provs[sub] = prov
+        # Block authority verification: the persisted block record must
+        # bind to the claimed ref/cand authorities, and every leg must
+        # verifiably run its role binary with a uniform fixture. A
+        # swapped R/C, single-binary, wrong-hash/SPV or mixed block
+        # fails here with the responsible leg named.
+        recorded = block.get("authorities", {})
+        if recorded.get("ref") != claim_ref:
+            print("FAIL analyze: block ref authority differs from "
+                  "--ref-exe in %s" % bdir)
+            return 1
+        if recorded.get("cand") != claim_cand:
+            print("FAIL analyze: block cand authority differs from "
+                  "--cand-exe in %s" % bdir)
+            return 1
+        uni_err = check_block_uniformity(provs)
+        if uni_err:
+            print("FAIL analyze %s: %s" % (bdir, uni_err))
+            return 1
+        for sub, role in (("R_ON", "R"), ("R_OFF", "R"),
+                          ("C_ON", "C"), ("C_OFF", "C")):
+            auth = recorded["ref"] if role == "R" else recorded["cand"]
+            exe_err = check_leg_executable(provs[sub], auth, role)
+            if exe_err:
+                print("FAIL analyze %s %s: %s" % (bdir, sub, exe_err))
+                return 1
+        for on, off, label in (("R_ON", "R_OFF", "R"),
+                               ("C_ON", "C_OFF", "C")):
+            timing, image = check_off_parity(bdir, on, off, args.config)
+            if timing != "complete":
+                print("INCONCLUSIVE analyze: %s measured timing incomplete: %s"
+                      % (label, timing))
+                return 2
+            if image != "complete":
+                print("FAIL analyze: %s persisted image parity changed: %s"
+                      % (label, image))
+                return 1
         blocks.append(subs)
     if len(on_identities) != 1:
         print("FAIL analyze: mixed ON identity across blocks: %s"
@@ -2319,6 +2541,14 @@ def run_campaign(args, run_fn=None):
         if not args.freeze or not os.path.exists(args.freeze):
             print("ERROR: accept requires --freeze <frozen manifest>")
             return 1
+        if not args.cand_exe:
+            print("ERROR: accept requires --cand-exe <candidate build>")
+            return 1
+        if not distinct_role_paths(args.ref_exe, args.cand_exe):
+            print("ERROR: accept requires distinct reference and "
+                  "candidate builds (R/C comparison is vacuous on one "
+                  "binary)")
+            return 1
         try:
             with open(args.freeze) as f:
                 frozen_acc = json.load(f)
@@ -2344,6 +2574,13 @@ def run_campaign(args, run_fn=None):
                             cfg, {}).get("scene_sha256")):
                     print("ERROR: accept scene %s differs from calibration "
                           "fixture" % cfg)
+                    return 1
+                if (os.path.normcase(os.path.realpath(
+                        getattr(args, "scene_" + cfg))) !=
+                        os.path.normcase(os.path.realpath(
+                            freeze_lineage["trials"][cfg].get("scene", "")))):
+                    print("ERROR: accept scene %s path differs from "
+                          "calibration fixture" % cfg)
                     return 1
             if sha256_file(args.ref_exe) != freeze_lineage.get(
                     "ref_exe_sha256"):
@@ -2398,7 +2635,8 @@ def run_campaign(args, run_fn=None):
                    for m in mates):
                 an = argparse.Namespace(block_dirs=mates,
                                         manifest=args.freeze, config=cfg,
-                                        ref_exe=args.ref_exe)
+                                        ref_exe=args.ref_exe,
+                                        cand_exe=args.cand_exe)
                 rc = cmd_analyze(an)
                 stages.append(("analyze-%s" % cfg,
                                "complete" if rc == 0 else
@@ -2971,8 +3209,9 @@ def self_test():
             if env_lines or (env_lines is None and
                              ("--env" in cmd or "-e" in cmd)):
                 lf.write("[EnvMap] Loaded 4x2 EXR (fake)\n")
-            for line in snaps_fn():
-                lf.write(line)
+            if "--shadow-tail" in cmd:
+                for line in snaps_fn():
+                    lf.write(line)
             if "--benchmark-timings" in cmd:
                 # Complete measured window on every emitted dispatch:
                 # single-record timing presence proves nothing.
@@ -3004,6 +3243,17 @@ def self_test():
                     "secondary_raygen_tail.spv",
                     "restir_gi_temporal_tail.spv"):
             with open(os.path.join(tmp, spv), "wb") as f:
+                f.write(b"fake-spv")
+        cand_dir = os.path.join(tmp, "candidate")
+        os.makedirs(cand_dir)
+        cand_exe = os.path.join(cand_dir, "RT2App.exe")
+        with open(cand_exe, "wb") as f:
+            f.write(b"fake-exe")  # equal bytes, separately declared role
+        for spv in ("closesthit.spv", "secondary_raygen.spv",
+                    "restir_gi_temporal.spv", "closesthit_tail.spv",
+                    "secondary_raygen_tail.spv",
+                    "restir_gi_temporal_tail.spv"):
+            with open(os.path.join(cand_dir, spv), "wb") as f:
                 f.write(b"fake-spv")
         scene = os.path.join(tmp, "s.rt2scene")
         with open(scene, "w") as f:
@@ -3379,7 +3629,7 @@ def self_test():
 
         # Quartet happy path (fake, instant) + deadline INCOMPLETE.
         qa = argparse.Namespace(
-            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+            ref_exe=exe, cand_exe=cand_exe, scene=scene, out_root=tmp,
             name="b1", frames=60, spp=1, width=64, height=64,
             edges=mf, control=False, config="", extra_args=[])
         check("fake quartet complete",
@@ -3391,7 +3641,7 @@ def self_test():
               run_capture(mkargs("tmout"),
                           run_fn=lambda e, c, w, l, t=None: 124) == 2)
         qa_to = argparse.Namespace(
-            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+            ref_exe=exe, cand_exe=cand_exe, scene=scene, out_root=tmp,
             name="btimeout", frames=60, spp=1, width=64, height=64,
             edges=mf, control=False, config="", extra_args=[])
         check("fake quartet timeout leg incomplete",
@@ -3431,11 +3681,14 @@ def self_test():
             # cfg selects the declared workload seal + GI requirements;
             # gi_mass fills family-1 histograms (needed for C3/C4
             # minimums); gi_timings controls GI Temporal records.
+            # Distinct declared paths have equal binary/SPV hashes;
+            # role authority is the path plus current bytes.
             bdir = os.path.join(adir, bname)
             os.makedirs(bdir)
             for sub, shift in (("R_ON", 0), ("R_OFF", 0),
                                ("C_ON", 1 if slow_cand else 0),
                                ("C_OFF", 0)):
+                role_exe = cand_exe if sub.startswith("C_") else exe
                 sdir = os.path.join(bdir, sub)
                 os.makedirs(sdir)
                 lines = []
@@ -3455,6 +3708,8 @@ def self_test():
                             s["data"][0 + 1 * 298 + 34 + b] = 1000
                             s["data"][0 + 1 * 298 + 260] = 1000
                             s["data"][0 + 1 * 298 + 261] = 1000
+                            s["data"][0 + 1 * 298 + 264] = 120
+                            s["data"][0 + 1 * 298 + 265] = 110
                     else:
                         # Structurally valid but zero-mass: the analyzer
                         # must return INCONCLUSIVE, never raise TypeError.
@@ -3464,7 +3719,8 @@ def self_test():
                     s["data"][0 + 0 * 298 + 264 + 1 * 2 + 1] = 550
                     s["data"][0 + 0 * 298 + 264 + 4 * 2 + 0] = 700
                     s["data"][0 + 0 * 298 + 264 + 4 * 2 + 1] = 650
-                    lines.append("[ShadowTail] %s" % json.dumps(s))
+                    if sub.endswith("_ON"):
+                        lines.append("[ShadowTail] %s" % json.dumps(s))
                     regions = '"RT Shading":0.5,'
                     if gi_timings:
                         regions += '"ReSTIR GI Temporal":0.3,'
@@ -3478,13 +3734,29 @@ def self_test():
                                "ngx_effective": "[NGX] fake",
                                "denoiser_effective": "[Denoiser] fake"}, cf)
                 with open(os.path.join(sdir, "provenance.json"), "w") as pf:
-                    json.dump({"exe_sha256": sha256_file(exe),
-                               "scene_sha256": sha256_file(scene),
-                               "frames": 60, "config": cfg,
+                    json.dump({"exe": os.path.abspath(role_exe),
+                               "exe_sha256": sha256_file(role_exe),
+                               "scene": os.path.abspath(scenes[cfg]),
+                               "scene_sha256": sha256_file(scenes[cfg]),
+                               "frames": 60, "diag": sub.endswith("_ON"),
+                               "control": False,
+                               "spp": WORKLOADS[cfg]["spp"],
+                               "width": WORKLOADS[cfg]["width"],
+                               "height": WORKLOADS[cfg]["height"],
+                               "extra": WORKLOADS[cfg]["extra"] +
+                               ["--benchmark-timings"],
+                               "config": cfg if sub.endswith("_ON") else "",
                                "workload": WORKLOADS[cfg],
+                               "spvs": hash_exe_spvs(role_exe),
                                "edges_sha256": sha256_file(sealed)}, pf)
                 _PILImage.new("RGB", (8, 8), (10, 20, 30)).save(
                     os.path.join(sdir, "frame.png"))
+                with open(os.path.join(sdir, "completion.json")) as cf:
+                    completed = json.load(cf)
+                completed["frame_sha256"] = sha256_file(
+                    os.path.join(sdir, "frame.png"))
+                with open(os.path.join(sdir, "completion.json"), "w") as cf:
+                    json.dump(completed, cf)
             with open(os.path.join(bdir, "block.json"), "w") as bf:
                 json.dump({"block": bname, "complete": True, "results": {
                     "R_ON": "complete", "R_OFF": "complete",
@@ -3492,26 +3764,115 @@ def self_test():
                     "R_timing_parity": "complete",
                     "C_timing_parity": "complete",
                     "R_image_parity": "complete",
-                    "C_image_parity": "complete"}}, bf)
+                    "C_image_parity": "complete",
+                    "uniformity": "complete",
+                    "executable_identity": "complete"},
+                    "authorities": {
+                        "ref": exe_authority(exe),
+                        "cand": exe_authority(cand_exe)}}, bf)
 
         for bname in ("k1", "k2", "k3", "k4"):
             make_block(bname)
         ana = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("k1", "k2", "k3", "k4")],
-            manifest=sealed, ref_exe=exe, config="C1")
+            manifest=sealed, ref_exe=exe, cand_exe=cand_exe, config="C1")
         check("fake analyze passes", cmd_analyze(ana) == 0)
+        check("fake analyze same-path roles rejected",
+              cmd_analyze(argparse.Namespace(
+                  **{**vars(ana), "cand_exe": exe})) == 1)
+
+        def tamper_analyze(sub, field, value, label):
+            path = os.path.join(adir, "k1", sub, "provenance.json")
+            with open(path, "rb") as f:
+                original = f.read()
+            try:
+                prov = json.loads(original)
+                prov[field] = value
+                with open(path, "w") as f:
+                    json.dump(prov, f)
+                check(label, cmd_analyze(ana) == 1)
+            finally:
+                with open(path, "wb") as f:
+                    f.write(original)
+
+        tamper_analyze("R_ON", "exe", cand_exe,
+                       "fake analyze swapped R/C binary rejected")
+        tamper_analyze("C_ON", "exe_sha256", "0" * 64,
+                       "fake analyze wrong candidate hash rejected")
+        bad_spvs = hash_exe_spvs(cand_exe)
+        bad_spvs["closesthit_tail.spv"] = "0" * 64
+        tamper_analyze("C_ON", "spvs", bad_spvs,
+                       "fake analyze wrong candidate SPV rejected")
+        tamper_analyze("R_OFF", "workload",
+                       dict(WORKLOADS["C1"], spp=1),
+                       "fake analyze mixed OFF workload rejected")
+        tamper_analyze("C_OFF", "spp", 1,
+                       "fake analyze top-level capture settings rejected")
+        tamper_analyze("C_ON", "diag", False,
+                       "fake analyze wrong ON mode rejected")
+        tamper_analyze("C_ON", "control", True,
+                       "fake analyze control-mode leak rejected")
+        tamper_analyze("C_OFF", "frames", 12,
+                       "fake analyze short OFF run rejected")
+        copied_scene = os.path.join(tmp, "copied-C1.rt2scene")
+        shutil.copyfile(scenes["C1"], copied_scene)
+        tamper_analyze("C_ON", "scene", copied_scene,
+                       "fake analyze same-bytes wrong fixture path rejected")
+        window_log = os.path.join(adir, "k1", "R_ON", "run.log")
+        with open(window_log, "rb") as f:
+            window_original = f.read()
+        try:
+            lines = window_original.decode("utf-8").splitlines(True)
+            lines = [line for line in lines if not (
+                line.startswith("[ShadowTail]") and
+                '"frame": 55,' in line)]
+            with open(window_log, "w") as f:
+                f.writelines(lines)
+            check("fake analyze incomplete measured window rejected",
+                  cmd_analyze(ana) == 1)
+        finally:
+            with open(window_log, "wb") as f:
+                f.write(window_original)
+        off_log = os.path.join(adir, "k1", "R_OFF", "run.log")
+        with open(off_log, "rb") as f:
+            off_original = f.read()
+        try:
+            with open(off_log, "ab") as f:
+                f.write(("[ShadowTail] %s\n" % json.dumps(
+                    confirm_line(41))).encode("utf-8"))
+            check("fake analyze OFF snapshot leak rejected",
+                  cmd_analyze(ana) == 1)
+        finally:
+            with open(off_log, "wb") as f:
+                f.write(off_original)
+        frame_path = os.path.join(adir, "k1", "R_ON", "frame.png")
+        with open(frame_path, "rb") as f:
+            frame_original = f.read()
+        try:
+            with open(frame_path, "wb") as f:
+                f.write(b"tampered image")
+            check("fake analyze changed frame rejected", cmd_analyze(ana) == 1)
+        finally:
+            with open(frame_path, "wb") as f:
+                f.write(frame_original)
+        check("fake quartet same-path roles rejected",
+              run_quartet(argparse.Namespace(
+                  ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+                  name="same-roles", frames=60, spp=1, width=64, height=64,
+                  edges=mf, control=False, config="", extra_args=[]),
+                  run_fn=camp_fake) == 1)
         for bname in ("j1", "j2", "j3", "j4"):
             make_block(bname, slow_cand=True)
         ana2 = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("j1", "j2", "j3", "j4")],
-            manifest=sealed, ref_exe=exe, config="C1")
+            manifest=sealed, ref_exe=exe, cand_exe=cand_exe, config="C1")
         check("fake analyze slow-candidate fails",
               cmd_analyze(ana2) == 1)
         ana3 = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in ("k1", "k2", "k3")],
-            manifest=sealed, ref_exe=exe, config="C1")
+            manifest=sealed, ref_exe=exe, cand_exe=cand_exe, config="C1")
         check("fake analyze 3-block inconclusive",
               cmd_analyze(ana3) == 2)
         # Empty-tail campaign (Sol round-3 repro): structurally valid
@@ -3522,7 +3883,7 @@ def self_test():
         ana4 = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("e1", "e2", "e3", "e4")],
-            manifest=sealed, ref_exe=exe, config="C1")
+            manifest=sealed, ref_exe=exe, cand_exe=cand_exe, config="C1")
         try:
             rc_empty = cmd_analyze(ana4)
         except TypeError as e:
@@ -3540,6 +3901,10 @@ def self_test():
             json.dump(k1prov, pf)
         check("fake analyze mixed identity fails",
               cmd_analyze(ana) == 1)
+        k1prov["scene_sha256"] = sha256_file(scenes["C1"])
+        with open(os.path.join(adir, "k1", "R_ON",
+                               "provenance.json"), "w") as pf:
+            json.dump(k1prov, pf)
 
         # Quartet WITH config: OFF legs must skip coverage (they carry
         # none by design) while ON legs enforce it. snap_lines carries
@@ -3547,7 +3912,7 @@ def self_test():
         def c1_lines():
             return snap_lines()
         qa3 = argparse.Namespace(
-            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+            ref_exe=exe, cand_exe=cand_exe, scene=scene, out_root=tmp,
             name="b3", frames=60, spp=1, width=64, height=64,
             edges=mf, control=False, config="C1", extra_args=[])
         # good[] carries C1 RT tri/punctual strata (>=50 each) — reuse it.
@@ -3559,7 +3924,7 @@ def self_test():
         # the campaign above (same fixtures, same reference binary).
         # No separate pilot-only freeze is derived for acceptance.
         accept = argparse.Namespace(
-            mode="accept", ref_exe=exe, cand_exe=exe, legacy_exe="",
+            mode="accept", ref_exe=exe, cand_exe=cand_exe, legacy_exe="",
             scene_C1=scenes["C1"], scene_C2=scenes["C2"],
             scene_C3=scenes["C3"], scene_C4=scenes["C4"],
             out_root=tmp, name="accept1", freeze=sealed)
@@ -3569,11 +3934,15 @@ def self_test():
             acc = json.load(f)
         check("fake accept 64 runs + 4 analyzes staged",
               len(acc["stages"]) == 20 and acc["complete"] is True)
+        accept_same = argparse.Namespace(
+            **{**vars(accept), "name": "accept-same-path", "cand_exe": exe})
+        check("fake accept same-path roles rejected",
+              run_campaign(accept_same, run_fn=camp_fake) == 1)
         # Accept with a pilot-only freeze (mout: trials but no
         # calibration seal, different fixtures) must fail — a valid
         # trial-derived Q alone does not certify the calibration.
         accept_foreign = argparse.Namespace(
-            mode="accept", ref_exe=exe, cand_exe=exe, legacy_exe="",
+            mode="accept", ref_exe=exe, cand_exe=cand_exe, legacy_exe="",
             scene_C1=scenes["C1"], scene_C2=scenes["C2"],
             scene_C3=scenes["C3"], scene_C4=scenes["C4"],
             out_root=tmp, name="accept-foreign", freeze=mout)
@@ -3685,7 +4054,7 @@ def self_test():
         ana_gi = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("g1", "g2", "g3", "g4")],
-            manifest=sealed, ref_exe=exe, config="C3")
+            manifest=sealed, ref_exe=exe, cand_exe=cand_exe, config="C3")
         check("fake analyze missing-GI inconclusive",
               cmd_analyze(ana_gi) == 2)
         # C3 WITH GI records analyzes clean (gate is about evidence).
@@ -3694,7 +4063,7 @@ def self_test():
         ana_gi2 = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("h1", "h2", "h3", "h4")],
-            manifest=sealed, ref_exe=exe, config="C3")
+            manifest=sealed, ref_exe=exe, cand_exe=cand_exe, config="C3")
         check("fake analyze C3 with GI passes", cmd_analyze(ana_gi2) == 0)
 
         # Workload-tampered provenance fails analysis (frozen seal).
@@ -3717,7 +4086,7 @@ def self_test():
             block_dirs=[os.path.join(adir, b) for b in
                         ("k2", "k3", "k4",
                          "k1")],
-            manifest=hand, ref_exe=exe, config="C1")
+            manifest=hand, ref_exe=exe, cand_exe=cand_exe, config="C1")
         check("fake analyze hand-authored freeze rejected",
               cmd_analyze(ana_hand) == 1)
         ca_hand = argparse.Namespace(run_dirs=[cdir], manifest=hand,
@@ -3867,7 +4236,7 @@ def self_test():
         ana_forged = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("k1", "k2", "k3", "k4")],
-            manifest=forged_path, ref_exe=exe, config="C1")
+            manifest=forged_path, ref_exe=exe, cand_exe=cand_exe, config="C1")
         check("fake analyze forged lineage rejected",
               cmd_analyze(ana_forged) == 1)
         # Gutted trial: flip a real calibration trial's completion
@@ -3907,7 +4276,7 @@ def self_test():
         ana_alias = argparse.Namespace(
             block_dirs=[os.path.join(adir, b) for b in
                         ("k1", "k2", "k3", "k4")],
-            manifest=sealed, ref_exe=exe, config="C1")
+            manifest=sealed, ref_exe=exe, cand_exe=cand_exe, config="C1")
         check("fake analyze aliased sidecar rejected",
               cmd_analyze(ana_alias) == 1)
         with open(sidecar_path, "w") as f:
@@ -4199,7 +4568,7 @@ def self_test():
             return 0
 
         qa_thin = argparse.Namespace(
-            ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+            ref_exe=exe, cand_exe=cand_exe, scene=scene, out_root=tmp,
             name="thin1", frames=60, spp=1, width=64, height=64,
             edges=mf, control=False, config="", extra_args=[])
         check("fake quartet thin timings fail", run_quartet(qa_thin,
@@ -4332,7 +4701,7 @@ def self_test():
             # (0 < 60) then reports zero remaining at share time.
             rc_race = run_quartet(
                 argparse.Namespace(
-                    ref_exe=exe, cand_exe=exe, scene=scene, out_root=tmp,
+                    ref_exe=exe, cand_exe=cand_exe, scene=scene, out_root=tmp,
                     name="race1", frames=60, spp=1, width=64, height=64,
                     edges=mf, control=False, config="", extra_args=[]),
                 run_fn=race_fake, deadline_min=1)
@@ -4537,6 +4906,7 @@ def main():
     an.add_argument("--manifest", required=True)
     an.add_argument("--config", required=True)
     an.add_argument("--ref-exe", required=True)
+    an.add_argument("--cand-exe", required=True)
     sub.add_parser("plan")
     cp = sub.add_parser("campaign")
     cp.add_argument("--mode", choices=("calib", "accept"), required=True)
