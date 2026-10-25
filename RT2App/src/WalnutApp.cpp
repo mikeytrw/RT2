@@ -43,6 +43,7 @@
 #include "EditorSettings.h"
 #include "EditorActionQueue.h"
 #include "EditorTheme.h"
+#include "EditorFonts.h"
 #include "EditorToolbar.h"
 #include "EditorWorkspaceDocking.h"
 #include "EditorWorkspaceState.h"
@@ -770,10 +771,10 @@ public:
 		// separate OS windows on restart.
 		ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
-		// Editor workspace theme (package 2): idempotent absolute token
-		// assignment over Walnut's base setup. Runs after Walnut Init, so
-		// these tokens win; re-running converges instead of compounding.
-		rt2::ApplyEditorTheme();
+		// Editor theme: idempotent absolute token assignment over Walnut's
+		// base setup. Runs after Walnut Init, so these tokens win; metrics
+		// scale with the content scale the fonts were built at.
+		rt2::ApplyEditorTheme(rt2::EditorFonts().scale);
 
 		// Editor workspace persistence foundation: manual ImGui ini
 		// ownership established here, before the first NewFrame. Walnut
@@ -7412,6 +7413,7 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 		ngxFeaturePath = std::filesystem::path(g_CLI.ngxFeaturePath);
 	auto ngxRuntime = std::make_shared<NgxRuntime>(g_CLI.ngxProjectId, ngxFeaturePath);
 	std::weak_ptr<NgxRuntime> ngxProvider = ngxRuntime;
+	spec.fontLoader = [](float contentScale) { rt2::LoadEditorFonts(contentScale); };
 	spec.optionalVulkanFeatureProvider = [ngxProvider]() {
 		if (auto runtime = ngxProvider.lock())
 			return runtime->DiscoverInstanceRequirements();

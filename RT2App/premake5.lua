@@ -339,7 +339,8 @@ project "RT2App"
             "copy /Y \"$(ProjectDir)shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\scattercontract.spv\" \"%{cfg.targetdir}\"",
 			"copy /Y \"$(ProjectDir)shaders\\rr_guides.spv\" \"%{cfg.targetdir}\"",
-			"copy /Y \"$(ProjectDir)shaders\\picking.spv\" \"%{cfg.targetdir}\""
+			"copy /Y \"$(ProjectDir)shaders\\picking.spv\" \"%{cfg.targetdir}\"",
+			"xcopy /Y /I /Q \"$(ProjectDir)fonts\\*.ttf\" \"%{cfg.targetdir}\\fonts\""
         }
 
    filter "configurations:Debug"

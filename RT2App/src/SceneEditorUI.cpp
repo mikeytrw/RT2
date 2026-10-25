@@ -1,6 +1,7 @@
 #include "SceneEditorUI.h"
 #include "EditorOutlinerFilter.h"
 #include "EditorToolbar.h"
+#include "EditorTheme.h"
 #include "PrimitiveGeometry.h"
 #include "FileDialog.h"
 #include "ECSComponents.h"
@@ -1269,26 +1270,15 @@ void SceneEditorUI::RenderOutliner()
 			else if (rowX > 0.0f)
 				ImGui::SameLine();
 			const bool active = (m_BrowserTypeFilter & chip.second) != 0;
-			if (active)
-			{
-				ImGui::PushStyleColor(ImGuiCol_Button,
-					ImVec4(0.388f, 0.400f, 0.945f, 1.0f));
-				ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-					ImVec4(0.470f, 0.478f, 0.957f, 1.0f));
-				ImGui::PushStyleColor(ImGuiCol_Text,
-					ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
-			}
-			else
-			{
-				ImGui::PushStyleColor(ImGuiCol_Button,
-					ImVec4(0.157f, 0.157f, 0.157f, 1.0f));
-				ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-					ImVec4(0.208f, 0.208f, 0.208f, 1.0f));
-				ImGui::PushStyleColor(ImGuiCol_Text,
-					ImVec4(0.635f, 0.635f, 0.635f, 1.0f));
-			}
+			ImGui::PushStyleColor(ImGuiCol_Button,
+				active ? rt2::EditorPalette::Selection : rt2::EditorPalette::Field);
+			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rt2::EditorPalette::Hover);
+			ImGui::PushStyleColor(ImGuiCol_Text, active
+				? ImVec4(0.78f, 0.79f, 1.0f, 1.0f) : rt2::EditorPalette::TextSecondary);
+			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetFontSize());
 			if (ImGui::SmallButton(chip.first))
 				m_BrowserTypeFilter ^= chip.second;
+			ImGui::PopStyleVar();
 			ImGui::PopStyleColor(3);
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Toggle %s entities (all off shows all)", chip.first);

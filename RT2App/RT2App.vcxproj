@@ -117,7 +117,8 @@ copy /Y "$(ProjectDir)shaders\scattercontract.spv" "../bin/Debug-windows-x86_64/
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlss.dll" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlssd.dll" "../bin/Debug-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlssd.dll" "../bin/Debug-windows-x86_64/RT2App"
+xcopy /Y /I /Q "$(ProjectDir)fonts\*.ttf" "../bin/Debug-windows-x86_64/RT2App/fonts"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -169,7 +170,8 @@ copy /Y "$(ProjectDir)shaders\scattercontract.spv" "../bin/Release-windows-x86_6
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "../bin/Release-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "../bin/Release-windows-x86_64/RT2App"
+xcopy /Y /I /Q "$(ProjectDir)fonts\*.ttf" "../bin/Release-windows-x86_64/RT2App/fonts"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
@@ -219,7 +221,8 @@ copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\scattercontract.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"
+xcopy /Y /I /Q "$(ProjectDir)fonts\*.ttf" "../bin/Dist-windows-x86_64/RT2App/fonts"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -279,6 +282,8 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\EditorWorkspaceState.h" />
     <ClInclude Include="src\EditorTransformGizmo.h" />
     <ClInclude Include="src\EditorTheme.h" />
+    <ClInclude Include="src\EditorFonts.h" />
+    <ClInclude Include="src\EditorIcons.h" />
     <ClInclude Include="src\EditorToolbar.h" />
     <ClInclude Include="src\EditorViewportIcons.h" />
     <ClInclude Include="src\EditorWorkspaceDocking.h" />
@@ -645,6 +650,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorTheme.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorFonts.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

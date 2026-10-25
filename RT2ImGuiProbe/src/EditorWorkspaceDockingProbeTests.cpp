@@ -167,31 +167,28 @@ TEST_CASE("WorkspaceDockingProbe: visible browser takes focus one-shot on build"
     CHECK(focused);
 }
 
-TEST_CASE("WorkspaceThemeProbe: absolute tokens, neutral surfaces, idempotent")
+TEST_CASE("WorkspaceThemeProbe: Graphite tokens, absolute and idempotent")
 {
     DockProbeContext probe;
     rt2::ApplyEditorTheme();
     ImGuiStyle first = ImGui::GetStyle();
 
-    // Neutral grey surfaces: no blue tint anywhere on panels/borders/text.
+    // Graphite surfaces: dark and near-neutral (a slight cool cast only).
     const ImVec4& bg = first.Colors[ImGuiCol_WindowBg];
-    CHECK(bg.x == doctest::Approx(bg.y));
-    CHECK(bg.y == doctest::Approx(bg.z));
+    CHECK(bg.x < 0.12f);
+    CHECK(bg.z - bg.x < 0.03f);
     const ImVec4& text = first.Colors[ImGuiCol_Text];
-    CHECK(text.x == doctest::Approx(text.y));
-    CHECK(text.y == doctest::Approx(text.z));
     CHECK(text.x > 0.85f); // bright readable text
-    CHECK(first.Colors[ImGuiCol_TextDisabled].x > 0.55f); // readable disabled
-    // Flat dark: zero window rounding, thin neutral border.
+    CHECK(first.Colors[ImGuiCol_TextDisabled].x > 0.5f); // readable labels
     CHECK(first.WindowRounding == doctest::Approx(0.0f));
-    // Indigo primary on focus/selection/controls.
+    // Indigo on focus and selection.
     const ImVec4& nav = first.Colors[ImGuiCol_NavHighlight];
-    CHECK(nav.z > nav.x); // blue-dominant indigo
-    CHECK(first.Colors[ImGuiCol_HeaderActive].z > 0.8f);
-    // Violet secondary accent lives on selected tabs only.
-    const ImVec4& tab = first.Colors[ImGuiCol_TabActive];
-    CHECK(tab.x > tab.y); // red-dominant violet vs indigo
-    CHECK(tab.z > 0.9f);
+    CHECK(nav.z > nav.x);
+    const ImVec4& sel = first.Colors[ImGuiCol_Header];
+    CHECK(sel.z > sel.x);
+    // The active tab joins its panel; inactive tabs sink into the chrome.
+    CHECK(std::memcmp(&first.Colors[ImGuiCol_TabActive], &bg, sizeof(ImVec4)) == 0);
+    CHECK(first.Colors[ImGuiCol_Tab].x < bg.x);
 
     // Idempotent: a second application changes nothing.
     rt2::ApplyEditorTheme();
@@ -199,4 +196,12 @@ TEST_CASE("WorkspaceThemeProbe: absolute tokens, neutral surfaces, idempotent")
     CHECK(std::memcmp(first.Colors, second.Colors, sizeof(first.Colors)) == 0);
     CHECK(first.WindowRounding == doctest::Approx(second.WindowRounding));
     CHECK(first.FramePadding.x == doctest::Approx(second.FramePadding.x));
+
+    // Scaling multiplies the base metrics once and never compounds.
+    rt2::ApplyEditorTheme(1.5f);
+    const float scaledPadding = ImGui::GetStyle().FramePadding.x;
+    CHECK(scaledPadding == doctest::Approx(first.FramePadding.x * 1.5f));
+    rt2::ApplyEditorTheme(1.5f);
+    CHECK(ImGui::GetStyle().FramePadding.x == doctest::Approx(scaledPadding));
+    rt2::ApplyEditorTheme();
 }
