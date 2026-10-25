@@ -472,6 +472,7 @@ EnvSample sampleEnvMap(inout uint rngState)
 #include "surface_history_shared.glsl"
 #include "material_resolve.glsl"
 #include "restir_gi_shared.glsl"
+#include "shadow_tail.glsl"
 #include "ray_query_scene.glsl"
 
 // ---- Secondary NEE (ray-query based) ----------------------------------------
@@ -561,7 +562,7 @@ GINEEResult giSecondaryNEE(vec3 P, vec3 N, vec3 wo,
             return result;
 
         // Shadow ray query (with alpha traversal).
-        bool unoccluded = giTraceShadow(P + N * 0.001, L, dist, shadowSeed);
+        ST_SET_GISITE(0u); bool unoccluded = giTraceShadow(P + N * 0.001, L, dist, shadowSeed);
         if (!unoccluded)
             return result;
 
@@ -610,7 +611,7 @@ GINEEResult giSecondaryNEE(vec3 P, vec3 N, vec3 wo,
             return result;
 
         // Shadow ray query (with alpha traversal).
-        bool unoccluded = giTraceShadow(P + N * 0.001, L, 1e9, shadowSeed);
+        ST_SET_GISITE(1u); bool unoccluded = giTraceShadow(P + N * 0.001, L, 1e9, shadowSeed);
         if (!unoccluded)
             return result;
 

@@ -249,8 +249,9 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 
 	std::vector<BLASGeometry> geometries;
 	geometries.reserve(m_CurrentScene.meshes.size());
-	for (const auto& mesh : m_CurrentScene.meshes)
+	for (size_t meshIdx = 0; meshIdx < m_CurrentScene.meshes.size(); meshIdx++)
 	{
+		const auto& mesh = m_CurrentScene.meshes[meshIdx];
 		BLASGeometry geo;
 		geo.vertices = mesh.vertices;
 		geo.indices = mesh.indices;
@@ -259,11 +260,28 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 		geo.materialIndices = mesh.materialIndices;
 		geo.materialIndex = mesh.materialIndex;
 
-		uint32_t matIdx = mesh.materialIndex;
-		if (matIdx < m_CurrentScene.materials.size())
+		// Effective BLAS opacity (RT4-T4 repair): opaque ONLY if no
+		// triangle of this mesh can need any-hit through ANY referencing
+		// instance — per-triangle data plus each instance's override.
+		// A shared mesh used as alpha by even one instance stays
+		// non-opaque (conservative: never opaque geometry for an instance
+		// used as alpha). Per-triangle-only reading (mesh.materialIndex,
+		// always 0) silently dropped the alpha case.
+		geo.isTransparent = MeshHasAlphaTriangle(mesh, m_CurrentScene.materials);
+		if (!geo.isTransparent)
 		{
-			float alphaMode = m_CurrentScene.materials[matIdx].alphaMode;
-			geo.isTransparent = (alphaMode > 0.5f);
+			for (const auto& gpuInst : m_CurrentScene.instances)
+			{
+				if (gpuInst.meshIndex == meshIdx &&
+				    InstanceNeedsAlphaTraversal(gpuInst.materialIndex,
+				                                gpuInst.meshIndex,
+				                                m_CurrentScene.meshes,
+				                                m_CurrentScene.materials))
+				{
+					geo.isTransparent = true;
+					break;
+				}
+			}
 		}
 
 		geometries.push_back(geo);
@@ -394,8 +412,9 @@ bool SceneResources::BeginRebuildAccelerationStructures(const GpuDevice& dev,
 
 	std::vector<BLASGeometry> geometries;
 	geometries.reserve(m_CurrentScene.meshes.size());
-	for (const auto& mesh : m_CurrentScene.meshes)
+	for (size_t meshIdx = 0; meshIdx < m_CurrentScene.meshes.size(); meshIdx++)
 	{
+		const auto& mesh = m_CurrentScene.meshes[meshIdx];
 		BLASGeometry geo;
 		geo.vertices = mesh.vertices;
 		geo.indices = mesh.indices;
@@ -404,11 +423,22 @@ bool SceneResources::BeginRebuildAccelerationStructures(const GpuDevice& dev,
 		geo.materialIndices = mesh.materialIndices;
 		geo.materialIndex = mesh.materialIndex;
 
-		uint32_t matIdx = mesh.materialIndex;
-		if (matIdx < m_CurrentScene.materials.size())
+		// Same effective-opacity rule as the synchronous rebuild (RT4-T4).
+		geo.isTransparent = MeshHasAlphaTriangle(mesh, m_CurrentScene.materials);
+		if (!geo.isTransparent)
 		{
-			float alphaMode = m_CurrentScene.materials[matIdx].alphaMode;
-			geo.isTransparent = (alphaMode > 0.5f);
+			for (const auto& gpuInst : m_CurrentScene.instances)
+			{
+				if (gpuInst.meshIndex == meshIdx &&
+				    InstanceNeedsAlphaTraversal(gpuInst.materialIndex,
+				                                gpuInst.meshIndex,
+				                                m_CurrentScene.meshes,
+				                                m_CurrentScene.materials))
+				{
+					geo.isTransparent = true;
+					break;
+				}
+			}
 		}
 
 		geometries.push_back(geo);

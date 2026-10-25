@@ -5,6 +5,7 @@
 #include "Walnut/Timer.h"
 #include "RendererGPU.h"
 #include "RenderSettings.h"
+#include "ShadowTailBins.h"
 #include "SceneManager.h"
 #include "FileDialog.h"
 #include "SceneTypes.h"
@@ -3763,6 +3764,10 @@ private:
 		}
 		if (g_CLI.gbufferDebug >= 0)
 			m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
+		if (g_CLI.shadowTail)
+			m_Settings.shadowTailDiag = true;
+		if (g_CLI.shadowTailControl)
+			m_Settings.shadowTailControl = true;
 		m_Settings.sceneSeed = g_CLI.sceneSeed;
 
 		if (Walnut::Application::IsRayTracingSupported() && !m_RendererGPU.IsAvailable())
@@ -3786,6 +3791,8 @@ private:
 				if (g_CLI.restirGI) { m_Settings.restirGIEnabled = true; m_Settings.rasterFirst = true; }
 				if (g_CLI.restirGICandidates > 0) m_Settings.restirGIFreshCandidates = (uint32_t)g_CLI.restirGICandidates;
 				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
+				if (g_CLI.shadowTail) m_Settings.shadowTailDiag = true;
+				if (g_CLI.shadowTailControl) m_Settings.shadowTailControl = true;
 				m_Settings.sceneSeed = g_CLI.sceneSeed;
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
@@ -4110,9 +4117,58 @@ private:
 			benchmarkTimings.push_back(timings);
 			lastBenchmarkTimingFrame = timings.frameIndex;
 		};
+		// Shadow-tail snapshots (RT4-T4): drained in submission order
+		// (valid or not) — an invalid snapshot carries its reason and the
+		// analysis gate treats it as inconclusive, never as silent zeros.
+		// Drain delivers each snapshot exactly once, so both in-flight
+		// slots are emitted, never just the newest.
+		std::vector<std::string> shadowTailSnapshots;
+		auto collectShadowTail = [&]() {
+			if (!g_CLI.shadowTail || !m_RendererGPU.IsAvailable())
+				return;
+			for (auto& json : m_RendererGPU.DrainShadowTailJsons())
+				shadowTailSnapshots.push_back(json);
+		};
 
 		for (int i = 0; i < g_CLI.frames; i++)
 		{
+			if (i == 0 && g_CLI.shadowTail && m_RendererGPU.IsAvailable() &&
+			    !m_RendererGPU.IsShadowTailAvailable())
+			{
+				// Fast loud gate (the per-frame Render gate would also fire):
+				// do not burn GPU time on a diagnostic that cannot produce data.
+				printf("[Headless] shadow-tail diagnostic requested but unavailable; no output committed\n");
+				fflush(stdout);
+				Walnut::Application::Get().Close();
+				std::exit(EXIT_FAILURE);
+			}
+			if (i == 0 && g_CLI.shadowTail && !g_CLI.shadowTailEdges.empty() &&
+			    m_RendererGPU.IsAvailable())
+			{
+				// Frozen edge manifest (calibration output): strict parse +
+				// staged upload. Any violation fails loud before frame 1 —
+				// without it every snapshot stays pilot-only (invalid).
+				std::ifstream manifestFile(g_CLI.shadowTailEdges, std::ios::binary);
+				std::string manifestText;
+				if (manifestFile)
+					manifestText.assign(std::istreambuf_iterator<char>(manifestFile),
+					                    std::istreambuf_iterator<char>());
+				std::vector<uint32_t> manifestRT, manifestGI;
+				std::string manifestErr;
+				if (manifestText.empty() ||
+				    !shadowtail::ParseEdgeManifest(manifestText, manifestRT, manifestGI, manifestErr) ||
+				    !m_RendererGPU.SetShadowTailEdges(manifestRT, manifestGI))
+				{
+					printf("[Headless] shadow-tail manifest rejected (%s); no output committed\n",
+					       manifestText.empty() ? "unreadable file" : manifestErr.c_str());
+					fflush(stdout);
+					Walnut::Application::Get().Close();
+					std::exit(EXIT_FAILURE);
+				}
+				printf("[Headless] shadow-tail manifest staged: RT %u edges, GI %u edges\n",
+				       (unsigned)manifestRT.size(), (unsigned)manifestGI.size());
+				fflush(stdout);
+			}
 			if (g_CLI.cameraSweepAmplitude > 0.0f && i >= g_CLI.cameraSweepWarmup)
 			{
 				const int motionFrame = i - g_CLI.cameraSweepWarmup;
@@ -4187,6 +4243,7 @@ private:
 					lastRenderOutcome.failureReason.c_str());
 			}
 			collectBenchmarkTiming();
+			collectShadowTail();
 			float ms = timer.ElapsedMillis();
 			if (g_CLI.verbose || i == g_CLI.frames - 1)
 				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
@@ -4242,6 +4299,14 @@ private:
 			}
 			fflush(stdout);
 		}
+		// Shadow-tail final drain: independent of timestamp-profiler
+		// availability (the drain above is skipped without it). Collects
+		// BOTH pending slots in submission order — never just the newest.
+		if (g_CLI.shadowTail && m_RendererGPU.IsAvailable())
+		{
+			m_RendererGPU.FlushShadowTail();
+			collectShadowTail();
+		}
 
 		if (g_CLI.benchmarkTimings)
 		{
@@ -4262,6 +4327,13 @@ private:
 				}
 				printf("}}\n");
 			}
+			fflush(stdout);
+		}
+
+		if (g_CLI.shadowTail)
+		{
+			for (const auto& snapshotJson : shadowTailSnapshots)
+				printf("[ShadowTail] %s\n", snapshotJson.c_str());
 			fflush(stdout);
 		}
 
@@ -6901,6 +6973,18 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	spec.Name = "RT2";
 	spec.EnableValidation = g_CLI.validate;
 	spec.EnableSyncValidation = g_CLI.syncValidate;
+	// Shadow-tail clock opt-in (RT4-T4): the device feature can only be
+	// enabled at device creation, so a requested diagnostic must opt in
+	// BEFORE Walnut creates the device. Ordinary launches leave the
+	// variable unset and keep prior behavior exactly.
+	if (g_CLI.shadowTail)
+	{
+#ifdef _WIN32
+		_putenv("RT2_SHADOW_TAIL_DIAG=1");
+#else
+		setenv("RT2_SHADOW_TAIL_DIAG", "1", 1);
+#endif
+	}
 	std::filesystem::path ngxFeaturePath;
 	if (!g_CLI.ngxFeaturePath.empty())
 		ngxFeaturePath = std::filesystem::path(g_CLI.ngxFeaturePath);

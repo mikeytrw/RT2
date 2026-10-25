@@ -6,7 +6,8 @@
 
 bool ReSTIRGIPass::Init(const GpuDevice& dev,
                         VkDescriptorSetLayout set0Layout,
-                        VkDescriptorSetLayout set1Layout)
+                        VkDescriptorSetLayout set1Layout,
+                        bool allowDiag)
 {
 	if (m_TemporalPipeline != VK_NULL_HANDLE)
 		return true;
@@ -30,6 +31,21 @@ bool ReSTIRGIPass::Init(const GpuDevice& dev,
 		RT_LOG("[ReSTIRGIPass] Failed to load restir_gi_history.spv");
 		return false;
 	}
+
+	// Shadow-tail diagnostic (RT4-T4, ON-only temporal module). Gated by
+	// allowDiag so ordinary startup on clock-unsupported devices never
+	// touches tail modules. Soft-fail: production is unaffected; a
+	// requested diagnostic without this module fails loud at request
+	// time (IsDiagAvailable), never with silent zeros.
+	m_DiagAvailable = false;
+	if (allowDiag)
+	{
+		m_TemporalTailShader = ShaderManager::LoadShader("restir_gi_temporal_tail.spv");
+		if (!m_TemporalTailShader)
+			m_TemporalTailShader = ShaderManager::LoadShader("RT2App/shaders/restir_gi_temporal_tail.spv");
+		m_DiagAvailable = (m_TemporalTailShader != VK_NULL_HANDLE);
+	}
+	RT_LOG("[ReSTIRGIPass] shadow-tail variant %s", m_DiagAvailable ? "available" : "unavailable (tail SPV not loaded)");
 
 	VkPipelineLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -58,6 +74,29 @@ bool ReSTIRGIPass::Init(const GpuDevice& dev,
 	VK_CHECK(vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1,
 	                                  &temporalInfo, nullptr, &m_TemporalPipeline));
 
+	// Diagnostic temporal pipeline shares the layout; built only when the
+	// tail module loaded. Soft-fail (VkResult checked, never VK_CHECK
+	// abort): an ordinary startup must never abort on a diagnostic
+	// pipeline, and a requested diagnostic without it fails loud via
+	// IsDiagAvailable at request time.
+	if (m_DiagAvailable)
+	{
+		VkComputePipelineCreateInfo diagInfo = temporalInfo;
+		diagInfo.stage.module = m_TemporalTailShader;
+		VkPipeline diagPipeline = VK_NULL_HANDLE;
+		const VkResult diagErr = vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1,
+		                                                  &diagInfo, nullptr, &diagPipeline);
+		if (diagErr != VK_SUCCESS || diagPipeline == VK_NULL_HANDLE)
+		{
+			RT_LOG("[ReSTIRGIPass] diagnostic temporal pipeline build failed: %d (loud, no fallback)", (int)diagErr);
+			if (diagPipeline) { vkDestroyPipeline(m_Device, diagPipeline, nullptr); }
+			m_DiagAvailable = false;
+			if (m_TemporalTailShader) { vkDestroyShaderModule(m_Device, m_TemporalTailShader, nullptr); m_TemporalTailShader = VK_NULL_HANDLE; }
+		}
+		else
+			m_DiagTemporalPipeline = diagPipeline;
+	}
+
 	VkComputePipelineCreateInfo historyInfo = {};
 	historyInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
 	historyInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -76,21 +115,28 @@ bool ReSTIRGIPass::Init(const GpuDevice& dev,
 void ReSTIRGIPass::Destroy()
 {
 	if (m_TemporalPipeline) { vkDestroyPipeline(m_Device, m_TemporalPipeline, nullptr); m_TemporalPipeline = VK_NULL_HANDLE; }
+	if (m_DiagTemporalPipeline) { vkDestroyPipeline(m_Device, m_DiagTemporalPipeline, nullptr); m_DiagTemporalPipeline = VK_NULL_HANDLE; }
 	if (m_HistoryPipeline)  { vkDestroyPipeline(m_Device, m_HistoryPipeline,  nullptr); m_HistoryPipeline  = VK_NULL_HANDLE; }
 	if (m_PipelineLayout)   { vkDestroyPipelineLayout(m_Device, m_PipelineLayout,   nullptr); m_PipelineLayout   = VK_NULL_HANDLE; }
 	if (m_TemporalShader)   { vkDestroyShaderModule(m_Device, m_TemporalShader, nullptr); m_TemporalShader = VK_NULL_HANDLE; }
+	if (m_TemporalTailShader) { vkDestroyShaderModule(m_Device, m_TemporalTailShader, nullptr); m_TemporalTailShader = VK_NULL_HANDLE; }
 	if (m_HistoryShader)    { vkDestroyShaderModule(m_Device, m_HistoryShader,  nullptr); m_HistoryShader  = VK_NULL_HANDLE; }
+	m_DiagAvailable = false;
 }
 
 void ReSTIRGIPass::RecordTemporal(VkCommandBuffer cmd, const RenderExtent& extent,
                                   VkDescriptorSet set0, VkDescriptorSet set1,
-                                  const SIGIPushConstants& pc) const
+                                  const SIGIPushConstants& pc, bool useDiag) const
 {
 	const uint32_t width = extent.Width(); const uint32_t height = extent.Height();
-	if (!m_TemporalPipeline)
+	// No silent fallback: a requested-but-missing diag pipeline binds
+	// nothing (loud RendererGPU-level gate fires first — see
+	// RendererGPU::Render). Never render production data as diagnostic data.
+	VkPipeline pipeline = useDiag ? m_DiagTemporalPipeline : m_TemporalPipeline;
+	if (!pipeline)
 		return;
 
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_TemporalPipeline);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
 	VkDescriptorSet sets[2] = { set0, set1 };
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,

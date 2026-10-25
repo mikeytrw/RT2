@@ -99,6 +99,16 @@ project "RT2Tests"
     -- acceptance scene; no miniaudio/device imports.
     files { "src/AudioA8AcceptanceTests.cpp" }
 
+    -- RT4-T4: alpha-traversal classification tests (same rationale).
+    -- CPU-only helper contract (per-triangle + override authorities,
+    -- fail-open direction); GPUSceneData.cpp is already in the closure.
+    -- GPU visibility is proven by headless discriminators, not here.
+    files { "src/AlphaClassificationTests.cpp" }
+
+    -- RT4-T4 shadow-tail diagnostic: CPU edge/quantile/inference contract.
+    -- Header-only (RT2App/src/ShadowTailBins.h); no RT2App .cpp needed.
+    files { "src/ShadowTailBinsTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

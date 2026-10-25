@@ -39,7 +39,7 @@ void main()
     bool isMiss = (matIdxPacked == 0u);  // 0 = miss/sky sentinel
 
     // Initialize RNG from pixel coords + frame index
-    uint rngState = initRNG(pixel, camera.position.w);
+    uint rngState = initRNG(pixel, camera.position.w); ST_SET_DEPTH(0u); ST_RESET_ORD();
 
     // ---- Handle primary miss (sky) ----
     if (isMiss)

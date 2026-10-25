@@ -91,6 +91,7 @@ project "RT2App"
         "shaders/surface_history_shared.glsl",
         "shaders/material_resolve.glsl",
         "shaders/ray_query_scene.glsl",
+        "shaders/shadow_tail.glsl",
         "shaders/shader_interface.h",
     }
 
@@ -112,9 +113,9 @@ project "RT2App"
     -- Shared dependencies (relative paths for MSBuild buildinputs — premake
     -- tokens like %{wks.location} don't expand in buildinputs, so use
     -- paths relative to the .vcxproj which lives in the RT2App project dir).
-    local depShared  = { "shaders/pathtracer_shared.glsl", "shaders/scatter_shared.glsl", "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h", "shaders/rr_guide_shared.glsl" }
+    local depShared  = { "shaders/pathtracer_shared.glsl", "shaders/scatter_shared.glsl", "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h", "shaders/rr_guide_shared.glsl", "shaders/shadow_tail.glsl" }
     local depReSTIR  = { "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h" }
-    local depGI      = { "shaders/restir_gi_shared.glsl", "shaders/restir_gi_bindings.glsl", "shaders/surface_history_shared.glsl", "shaders/material_resolve.glsl", "shaders/ray_query_scene.glsl", "shaders/shader_interface.h" }
+    local depGI      = { "shaders/restir_gi_shared.glsl", "shaders/restir_gi_bindings.glsl", "shaders/surface_history_shared.glsl", "shaders/material_resolve.glsl", "shaders/ray_query_scene.glsl", "shaders/shader_interface.h", "shaders/shadow_tail.glsl" }
     local depBasic   = { "shaders/shader_interface.h" }
 
     -- Per-stage custom build rules (dependency tracking via premake)
@@ -125,9 +126,11 @@ project "RT2App"
         buildinputs { depShared }
 
     filter {"files:shaders/secondary_raygen.rgen"}
-        buildmessage "Compiling secondary_raygen.rgen"
-        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rgen " .. shaderInclude .. " " .. shaderDir .. "/secondary_raygen.rgen -o " .. shaderDir .. "/secondary_raygen.spv" }
-        buildoutputs { shaderDir .. "/secondary_raygen.spv" }
+        buildmessage "Compiling secondary_raygen.rgen (+ shadow-tail ON variant)"
+        buildcommands {
+            glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rgen " .. shaderInclude .. " " .. shaderDir .. "/secondary_raygen.rgen -o " .. shaderDir .. "/secondary_raygen.spv",
+            glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rgen -DSHADOW_TAIL_DIAG=1 " .. shaderInclude .. " " .. shaderDir .. "/secondary_raygen.rgen -o " .. shaderDir .. "/secondary_raygen_tail.spv" }
+        buildoutputs { shaderDir .. "/secondary_raygen.spv", shaderDir .. "/secondary_raygen_tail.spv" }
         buildinputs { depShared }
 
     filter {"files:shaders/miss.rmiss"}
@@ -143,9 +146,11 @@ project "RT2App"
         buildinputs { depShared }
 
     filter {"files:shaders/closesthit.rchit"}
-        buildmessage "Compiling closesthit.rchit"
-        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rchit " .. shaderInclude .. " " .. shaderDir .. "/closesthit.rchit -o " .. shaderDir .. "/closesthit.spv" }
-        buildoutputs { shaderDir .. "/closesthit.spv" }
+        buildmessage "Compiling closesthit.rchit (+ shadow-tail ON variant)"
+        buildcommands {
+            glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rchit " .. shaderInclude .. " " .. shaderDir .. "/closesthit.rchit -o " .. shaderDir .. "/closesthit.spv",
+            glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rchit -DSHADOW_TAIL_DIAG=1 " .. shaderInclude .. " " .. shaderDir .. "/closesthit.rchit -o " .. shaderDir .. "/closesthit_tail.spv" }
+        buildoutputs { shaderDir .. "/closesthit.spv", shaderDir .. "/closesthit_tail.spv" }
         buildinputs { depShared }
 
     filter {"files:shaders/anyhit.rahit"}
@@ -189,9 +194,11 @@ project "RT2App"
         buildinputs { depReSTIR }
 
     filter {"files:shaders/restir_gi_temporal.comp"}
-        buildmessage "Compiling restir_gi_temporal.comp"
-        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/restir_gi_temporal.comp -o " .. shaderDir .. "/restir_gi_temporal.spv" }
-        buildoutputs { shaderDir .. "/restir_gi_temporal.spv" }
+        buildmessage "Compiling restir_gi_temporal.comp (+ shadow-tail ON variant)"
+        buildcommands {
+            glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/restir_gi_temporal.comp -o " .. shaderDir .. "/restir_gi_temporal.spv",
+            glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp -DSHADOW_TAIL_DIAG=1 " .. shaderInclude .. " " .. shaderDir .. "/restir_gi_temporal.comp -o " .. shaderDir .. "/restir_gi_temporal_tail.spv" }
+        buildoutputs { shaderDir .. "/restir_gi_temporal.spv", shaderDir .. "/restir_gi_temporal_tail.spv" }
         buildinputs { depGI }
 
     filter {"files:shaders/restir_gi_history.comp"}
@@ -303,9 +310,11 @@ project "RT2App"
         postbuildcommands {
             "copy /Y \"$(ProjectDir)shaders\\raygen.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\secondary_raygen.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\secondary_raygen_tail.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\miss.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\shadow.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\closesthit.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\closesthit_tail.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\anyhit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\shadowhit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\compose.spv\" \"%{cfg.targetdir}\"",
@@ -314,6 +323,7 @@ project "RT2App"
             "copy /Y \"$(ProjectDir)shaders\\restir_temporal.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\restir_spatial.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\restir_gi_temporal.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\restir_gi_temporal_tail.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\restir_gi_history.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\raster.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",

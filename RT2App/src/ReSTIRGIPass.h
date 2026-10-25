@@ -33,14 +33,18 @@ public:
 
 	bool Init(const GpuDevice& dev,
 	          VkDescriptorSetLayout set0Layout,
-	          VkDescriptorSetLayout set1Layout);
+	          VkDescriptorSetLayout set1Layout,
+	          bool allowDiag);
 	void Destroy();
 
 	// Record the temporal dispatch (prev reservoir + prev history → current reservoir).
 	// G-buffer images must be in GENERAL layout with SHADER_READ access.
+	// useDiag selects the shadow-tail variant pipeline (no silent fallback:
+	// a missing diag pipeline binds nothing — the RendererGPU-level
+	// availability gate fires first).
 	void RecordTemporal(VkCommandBuffer cmd, const RenderExtent& extent,
 	                    VkDescriptorSet set0, VkDescriptorSet set1,
-	                    const SIGIPushConstants& pc) const;
+	                    const SIGIPushConstants& pc, bool useDiag = false) const;
 
 	// Record the history-write dispatch (G-buffer → current receiver history).
 	// Must run AFTER RecordTemporal finishes (caller inserts barrier).
@@ -49,14 +53,18 @@ public:
 	                         const SIGIPushConstants& pc) const;
 
 	bool IsAvailable() const { return m_TemporalPipeline != VK_NULL_HANDLE; }
+	bool IsDiagAvailable() const { return m_DiagTemporalPipeline != VK_NULL_HANDLE; }
 
 private:
 	VkDevice m_Device = VK_NULL_HANDLE;
 
 	VkPipeline       m_TemporalPipeline = VK_NULL_HANDLE;
+	VkPipeline       m_DiagTemporalPipeline = VK_NULL_HANDLE; // shadow-tail variant
 	VkPipeline       m_HistoryPipeline  = VK_NULL_HANDLE;
 	VkPipelineLayout m_PipelineLayout   = VK_NULL_HANDLE;
 
 	VkShaderModule m_TemporalShader = VK_NULL_HANDLE;
+	VkShaderModule m_TemporalTailShader = VK_NULL_HANDLE; // null when unavailable
 	VkShaderModule m_HistoryShader  = VK_NULL_HANDLE;
+	bool m_DiagAvailable = false;
 };

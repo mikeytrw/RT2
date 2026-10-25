@@ -1,0 +1,47 @@
+# RT4-T4 mixed-mesh discriminator fixture: ONE merged mesh whose triangles
+# mix OPAQUE and BLEND materials. mergeMegaMesh=true merges both groups
+# into a single BLAS entry with per-triangle materialIndices.
+mtllib rt4t4-mixed.mtl
+
+# Left quad: opaque red (2 triangles)
+o QuadOpaque
+v -2.5 -1.0 0.0
+v -0.5 -1.0 0.0
+v -0.5 1.0 0.0
+v -2.5 1.0 0.0
+vn 0.0 0.0 1.0
+vn 0.0 0.0 1.0
+vn 0.0 0.0 1.0
+vn 0.0 0.0 1.0
+usemtl OpaqueRed
+f 1//1 2//2 3//3
+f 1//1 3//3 4//4
+
+# Right quad: BLEND green, dissolve 0.35 (2 triangles)
+o QuadBlend
+v 0.5 -1.0 0.0
+v 2.5 -1.0 0.0
+v 2.5 1.0 0.0
+v 0.5 1.0 0.0
+vn 0.0 0.0 1.0
+vn 0.0 0.0 1.0
+vn 0.0 0.0 1.0
+vn 0.0 0.0 1.0
+usemtl BlendGreen
+f 5//5 6//6 7//7
+f 5//5 7//7 8//8
+
+# Floor catcher for env-sun shadows crossing the BLEND quad (opaque).
+# Lets shadow-ray any-hit differences land on visible pixels.
+o FloorCatcher
+v -6.0 -1.5 -2.0
+v 6.0 -1.5 -2.0
+v 6.0 -1.5 6.0
+v -6.0 -1.5 6.0
+vn 0.0 1.0 0.0
+vn 0.0 1.0 0.0
+vn 0.0 1.0 0.0
+vn 0.0 1.0 0.0
+usemtl OpaqueRed
+f 9//9 10//10 11//11
+f 9//9 11//11 12//12

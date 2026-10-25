@@ -109,6 +109,32 @@ Not "no material" — it means **"use the mesh's per-triangle material indices"*
 to material 0 in the acceleration-structure build, which is whatever was
 imported first. Preserve `-1` through any rebasing; never treat it as absent.
 
+### `transparent` (mesh vs instance vs per-triangle)
+
+Three different predicates, and the code says `isTransparent` for two of them.
+
+- **Per-triangle alpha** — whether triangle *t* of a mesh resolves (through
+  the instance's override or the mesh's `materialIndices`) to a material
+  with `alphaMode > 0.5`. Lives in `MeshRegistry`/`GPUSceneData` data.
+- **Instance transparency** (`GPUInstance::isTransparent`,
+  `GPUSceneData.h:97`) — whether instance SBT offset selects the alpha
+  hit group. Must mean "this instance can hit an alpha triangle", i.e. the
+  override is alpha OR (`-1` AND the mesh has an alpha triangle). An
+  override-only reading silently drops the per-triangle case.
+- **BLAS geometry opacity** (`VK_GEOMETRY_OPAQUE_BIT_KHR`,
+  `AccelerationStructure.cpp:195`) — per-MESH, shared by all its
+  instances. May be opaque only if NO triangle of the mesh can need
+  any-hit through ANY referencing instance (same per-triangle + override
+  authorities). `GPUMeshGeometry::materialIndex` is always 0 (never
+  assigned), so reading `materials[0]` decides every mesh — wrong for any
+  mesh whose alpha lives elsewhere.
+
+**Rule:** classification questions always name which of the three is meant,
+and BLAS-level answers OR over instances (conservative: never opaque
+geometry for an instance used as alpha). Found via RT4-T2A review of T4:
+mixed OBJ mega-meshes and alpha overrides on opaque meshes rendered
+opaque (any-hit skipped) under the override-only/mesh-index-0 rules.
+
 ### Legacy `projectRoot` and the Phase 7 root terms
 
 Before Phase 7 W4, one `projectRoot` setting had acquired three meanings:

@@ -134,6 +134,13 @@ public:
 		// pixels). Fed to NGX InJitterOffset; motion vectors stay
 		// unjittered and each consumer compensates exactly once.
 		glm::vec2 samplingJitter;
+
+		// Shadow-tail diagnostic (RT4-T4): selects the ON-variant RT/GI
+		// pipelines (rebuilt on toggle) and enables SSBO writes. The
+		// RendererGPU-level availability gate guarantees the variant
+		// exists whenever this is true — record paths never fall back
+		// silently (a missing variant binds nothing).
+		bool shadowTailDiag;
 	};
 
 	// Record the full frame into the given command buffer.

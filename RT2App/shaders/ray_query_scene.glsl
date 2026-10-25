@@ -27,23 +27,29 @@ bool giAlphaAcceptCandidate(rayQueryEXT query, inout uint rngState)
     if (mat.alphaMode < 0.5)
         return true;
 
-    // Reconstruct UV for this candidate to sample base alpha.
-    uvec4 meshInfo = instanceMeshInfo[instanceID];
-    uint idxBase = meshInfo.y + primitiveID * 3u;
-    uint i0 = indices[idxBase + 0u];
-    uint i1 = indices[idxBase + 1u];
-    uint i2 = indices[idxBase + 2u];
-    vec2 uv0 = uvs[meshInfo.w + i0].xy;
-    vec2 uv1 = uvs[meshInfo.w + i1].xy;
-    vec2 uv2 = uvs[meshInfo.w + i2].xy;
-    vec2 baryCand = rayQueryGetIntersectionBarycentricsEXT(query, false);
-    float u = 1.0 - baryCand.x - baryCand.y;
-    vec2 uv = u * uv0 + baryCand.x * uv1 + baryCand.y * uv2;
-
+    // Reconstruct UV for this candidate to sample base alpha — only when a
+    // base-color texture exists (same baseColorTexIdx >= 0 condition as
+    // anyhit.rahit / shadow.rahit). RT4-T4: previously unconditional;
+    // untextured candidates never consume the UV, so skipping the
+    // index/UV loads is exactly equivalent (alpha cutoff and BLEND RNG
+    // draw order below are untouched).
     float alpha = mat.baseAlpha;
     int baseColorTexIdx = mat.textureIndices.x;
     if (baseColorTexIdx >= 0)
+    {
+        uvec4 meshInfo = instanceMeshInfo[instanceID];
+        uint idxBase = meshInfo.y + primitiveID * 3u;
+        uint i0 = indices[idxBase + 0u];
+        uint i1 = indices[idxBase + 1u];
+        uint i2 = indices[idxBase + 2u];
+        vec2 uv0 = uvs[meshInfo.w + i0].xy;
+        vec2 uv1 = uvs[meshInfo.w + i1].xy;
+        vec2 uv2 = uvs[meshInfo.w + i2].xy;
+        vec2 baryCand = rayQueryGetIntersectionBarycentricsEXT(query, false);
+        float u = 1.0 - baryCand.x - baryCand.y;
+        vec2 uv = u * uv0 + baryCand.x * uv1 + baryCand.y * uv2;
         alpha *= texture(textures[nonuniformEXT(baseColorTexIdx)], uv).a;
+    }
 
     // MASK: hard cutoff.
     if (mat.alphaMode < 1.5)
@@ -78,8 +84,9 @@ struct RayQueryHit
 };
 
 // ---- Hit reconstruction from committed intersection -------------------------
-// Matches closesthit.rchit: hitTriPositions, hitBarycentric, hitFaceNormal,
-// hitUV, hitTangent, hitShadingNormal, material resolution, texture sampling.
+// Matches closesthit.rchit: loadHitAttributes, hitFaceNormalFrom,
+// hitVertexNormalFrom, hitTangentFrom/computeTangent, hitShadingNormalFrom,
+// material resolution, texture sampling.
 RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
 {
     RayQueryHit h;
@@ -102,7 +109,7 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
     h.hitT        = rayQueryGetIntersectionTEXT(query, true);
     h.worldPos    = rayOrigin + h.hitT * rayDir;
 
-    // ---- Triangle vertices (world space) — matches hitTriPositions ----
+    // ---- Triangle vertices (world space) — matches loadHitAttributes ----
     uvec4 meshInfo = instanceMeshInfo[h.instanceID];
     uint idxBase = meshInfo.y + h.primitiveID * 3u;
     uint i0 = indices[idxBase + 0u];
@@ -138,25 +145,22 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
         }
     }
 
-    // ---- UV — matches hitUV ----
+    // ---- UV — matches loadHitAttributes interpolation ----
     vec2 uv0 = uvs[meshInfo.w + i0].xy;
     vec2 uv1 = uvs[meshInfo.w + i1].xy;
     vec2 uv2 = uvs[meshInfo.w + i2].xy;
     h.uv = b0 * uv0 + b1 * uv1 + b2 * uv2;
 
-    // ---- Tangent — matches hitTangent / computeTangent ----
-    vec3 edge1 = p1 - p0;
-    vec3 edge2 = p2 - p0;
-    vec2 dUV1 = uv1 - uv0;
-    vec2 dUV2 = uv2 - uv0;
-    float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
-    if (abs(det) < 1e-8)
-        h.tangent = vec3(1.0, 0.0, 0.0);
-    else
-    {
-        float r = 1.0 / det;
-        h.tangent = normalize(r * (dUV2.y * edge1 - dUV1.y * edge2));
-    }
+    // ---- Tangent — matches hitTangentFrom / computeTangent in closesthit ----
+    // RT4-T1: lazily evaluated. The loader path above already fetched the
+    // mesh info, indices, transform and UVs once; tangent reconstruction
+    // (edges + determinant + normalize) runs only when a normal map will
+    // actually consume it below. Previously this ran unconditionally for
+    // every committed hit. h.tangent keeps a defined value on the
+    // non-normal-mapped path, but no consumer reads it there (only the
+    // normal-mapped branch below and shadingNormal/frontFace escape this
+    // function).
+    h.tangent = vec3(1.0, 0.0, 0.0);
 
     // ---- Material resolution (canonical per-triangle path) ----
     h.matIdx = resolveMaterialIndex(h.instanceID, h.primitiveID);
@@ -183,10 +187,25 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
     if (emissiveTexIdx >= 0)
         h.emissive *= texture(textures[nonuniformEXT(emissiveTexIdx)], h.uv).rgb;
 
-    // ---- Shading normal (normal-mapped or authored) — matches hitShadingNormal ----
+    // ---- Shading normal (normal-mapped or authored) — matches hitShadingNormalFrom ----
     int normalTexIdx = h.mat.textureIndices.y;
     if (normalTexIdx >= 0)
     {
+        // Tangent reconstruction on first (and only) use — verbatim the
+        // unconditional block this replaces, just deferred past the branch
+        // (including the degenerate-determinant fallback).
+        vec3 edge1 = p1 - p0;
+        vec3 edge2 = p2 - p0;
+        vec2 dUV1 = uv1 - uv0;
+        vec2 dUV2 = uv2 - uv0;
+        float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
+        if (abs(det) < 1e-8)
+            h.tangent = vec3(1.0, 0.0, 0.0);
+        else
+        {
+            float r = 1.0 / det;
+            h.tangent = normalize(r * (dUV2.y * edge1 - dUV1.y * edge2));
+        }
         vec3 tangentN = texture(textures[nonuniformEXT(normalTexIdx)], h.uv).rgb * 2.0 - 1.0;
         vec3 T = h.tangent;
         vec3 N = baseNormal;
@@ -239,7 +258,7 @@ RayQueryHit giTraceRadiance(vec3 origin, vec3 dir, float tMin, float tMax,
 // terminates the query (matches shadow.rahit "accept = blocks light").
 bool giTraceShadow(vec3 origin, vec3 dir, float dist, uint alphaSeed)
 {
-    rayQueryEXT query;
+    rayQueryEXT query; ST_GI_BEGIN(_stg);
     rayQueryInitializeEXT(query, tlas,
                           gl_RayFlagsTerminateOnFirstHitEXT,
                           0xFF,
@@ -257,7 +276,7 @@ bool giTraceShadow(vec3 origin, vec3 dir, float dist, uint alphaSeed)
         }
     }
 
-    uint committedType = rayQueryGetIntersectionTypeEXT(query, true);
+    uint committedType = rayQueryGetIntersectionTypeEXT(query, true); ST_GI_END(_stg);
     // If nothing was committed, the path is unoccluded.
     return committedType == gl_RayQueryCommittedIntersectionNoneEXT;
 }
