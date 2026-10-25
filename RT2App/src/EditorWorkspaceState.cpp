@@ -335,6 +335,16 @@ bool WorkspacePersistenceStatus::HasUnsaved() const
            visibility.state == WorkspaceFileState::SaveFailed;
 }
 
+bool WorkspacePersistenceStatus::HasFailed() const
+{
+    const auto failed = [](WorkspaceFileState state) {
+        return state == WorkspaceFileState::SaveFailed ||
+               state == WorkspaceFileState::LoadFailed ||
+               state == WorkspaceFileState::SessionOnlyProtected;
+    };
+    return failed(geometry.state) || failed(visibility.state);
+}
+
 bool WorkspacePersistenceStatus::PartiallySaved() const
 {
     const bool geometryNeeds =
@@ -349,8 +359,14 @@ bool WorkspacePersistenceStatus::PartiallySaved() const
 const char* WorkspacePersistenceStatus::SummaryMessage() const
 {
     if (headless) return "Workspace persistence disabled (headless)";
-    if (PartiallySaved()) return "workspace changes not fully saved";
-    if (HasUnsaved()) return "Workspace changes not saved";
+    // Pending debounce is "saving", not failure: only a failed side earns
+    // the not-saved wording, so routine docking work never cries wolf.
+    if (PartiallySaved())
+        return HasFailed() ? "workspace changes not fully saved"
+                           : "Saving workspace settings...";
+    if (HasUnsaved())
+        return HasFailed() ? "Workspace changes not saved"
+                           : "Saving workspace settings...";
     const bool unavailable =
         geometry.state == WorkspaceFileState::SessionOnlyProtected ||
         visibility.state == WorkspaceFileState::SessionOnlyProtected;
@@ -1017,6 +1033,45 @@ bool EditorWorkspaceState::CanResetVisibility(Error& err) const
         err = viewProbe.probeError;
         return false;
     }
+    return true;
+}
+
+bool EditorWorkspaceState::BeginGeometryReset(Clock::time_point now, Error& err)
+{
+    err = Error{};
+    if (m_Headless)
+    {
+        err.code = Error::InvalidArgument;
+        err.detail = "Reset Layout refused: headless operation never rewrites preferences";
+        return false;
+    }
+    if (!CanReset(err)) return false;
+    if (ProbeWorkspaceFile(UserIniPath()).exists &&
+        !EnsureBackup(UserIniPath(), m_Status.geometry, err))
+    {
+        NoteFailure(m_Status.geometry, err, now);
+        return false;
+    }
+    if (ProbeWorkspaceFile(ViewConfigPath()).exists &&
+        !EnsureBackup(ViewConfigPath(), m_Status.visibility, err))
+    {
+        NoteFailure(m_Status.visibility, err, now);
+        return false;
+    }
+    m_ResetPerformed = true;
+    m_Classification.userIniProtected = false;
+    m_Classification.viewConfigProtected = false;
+    {
+        std::string current;
+        Error readErr;
+        if (ReadFileBytesChecked(ViewConfigPath(), current, readErr))
+            m_PendingUnknownLines =
+                ParseWorkspaceViewConfig(
+                    current, WorkspaceVisibility::NewProfileDefaults()).unknownLines;
+    }
+    m_PendingVisibility = WorkspaceVisibility::NewProfileDefaults();
+    m_VisibilityDirtySince = now;
+    m_Status.visibility.state = WorkspaceFileState::UnsavedChanges;
     return true;
 }
 

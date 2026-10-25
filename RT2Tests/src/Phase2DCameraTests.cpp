@@ -301,3 +301,37 @@ TEST_CASE("Phase 2D camera transform authority survives native save and reload")
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
 }
+
+TEST_CASE("Phase 2D selection box projects twelve edges to viewport pixels")
+{
+    EditorSelectionBounds bounds;
+    bounds.valid = true;
+    bounds.minimum = glm::vec3(-1.0f, -1.0f, 0.0f);
+    bounds.maximum = glm::vec3(1.0f, 1.0f, 0.0f);
+    const auto segments = ProjectSelectionBoxEdges(glm::mat4(1.0f), bounds,
+        glm::vec2(10.0f, 20.0f), glm::vec2(100.0f, 50.0f));
+    REQUIRE(segments.size() == 12);
+    // Edge 0: bottom-front from left to right in pixels.
+    CHECK(segments[0].a.x == doctest::Approx(10.0f));
+    CHECK(segments[0].a.y == doctest::Approx(70.0f));
+    CHECK(segments[0].b.x == doctest::Approx(110.0f));
+    CHECK(segments[0].b.y == doctest::Approx(70.0f));
+}
+
+TEST_CASE("Phase 2D selection box behind the camera projects nothing")
+{
+    EditorSelectionBounds bounds;
+    bounds.valid = true;
+    bounds.minimum = glm::vec3(-1.0f, -1.0f, -1.0f);
+    bounds.maximum = glm::vec3(1.0f, 1.0f, 1.0f);
+    // Negated identity puts every corner at w < 0: conservative skip.
+    CHECK(ProjectSelectionBoxEdges(-glm::mat4(1.0f), bounds,
+        glm::vec2(0.0f, 0.0f), glm::vec2(100.0f, 100.0f)).empty());
+    // Invalid bounds and empty viewports project nothing either.
+    EditorSelectionBounds invalid;
+    CHECK(ProjectSelectionBoxEdges(glm::mat4(1.0f), invalid,
+        glm::vec2(0.0f, 0.0f), glm::vec2(100.0f, 100.0f)).empty());
+    EditorSelectionBounds valid = bounds;
+    CHECK(ProjectSelectionBoxEdges(glm::mat4(1.0f), valid,
+        glm::vec2(0.0f, 0.0f), glm::vec2(0.0f, 100.0f)).empty());
+}

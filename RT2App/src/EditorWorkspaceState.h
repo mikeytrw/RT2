@@ -215,6 +215,8 @@ struct WorkspacePersistenceStatus
     bool headless = false;
 
     bool HasUnsaved() const;
+    // Any side failed (or protected) since the last success.
+    bool HasFailed() const;
     // Exactly one side saved while the other still needs writing.
     bool PartiallySaved() const;
     const char* SummaryMessage() const;
@@ -333,6 +335,16 @@ public:
     // contract is NOT complete in this package.
     bool ResetVisibilityToDefaults(Clock::time_point now, Error& err);
     bool CanResetVisibility(Error& err) const;
+    // Staged geometry reset (package 2): the backup gate and visibility
+    // install happen NOW, while the geometry rebuild (DockBuilder) and its
+    // forced save happen LATER, after the rebuilt windows have submitted.
+    // Performs CanReset + checked backups of both existing files (failure
+    // blocks with path/error), installs new-profile visibility defaults
+    // (unknown lines harvested + retained, marked dirty), clears both
+    // protections, and arms the session for the host's rebuild. Writes
+    // nothing itself; the host force-saves both files (Flush) once the
+    // rebuilt layout is submitted. Never touches the portable seed.
+    bool BeginGeometryReset(Clock::time_point now, Error& err);
 
     // Restore a file from its readable paired backup through the same
     // checked replacement + error handling. The caller reloads afterwards.
@@ -341,6 +353,11 @@ public:
 
     const WorkspacePersistenceStatus& Status() const { return m_Status; }
     const WorkspaceStartupClassification& Classification() const { return m_Classification; }
+    // Pending (possibly dirty, not yet saved) snapshots. After a staged
+    // reset the host applies these to its live flags immediately while the
+    // forced save lands later through Flush.
+    const WorkspaceVisibility& PendingVisibility() const { return m_PendingVisibility; }
+    const std::vector<std::string>& PendingUnknownLines() const { return m_PendingUnknownLines; }
     const WorkspaceVisibility& LastSavedVisibility() const { return m_LastSavedVisibility; }
     const std::vector<std::string>& LastSavedUnknownLines() const { return m_LastSavedUnknownLines; }
     const std::string& LastSavedGeometry() const { return m_LastSavedGeometry; }

@@ -1,4 +1,6 @@
 #include "SceneEditorUI.h"
+#include "EditorOutlinerFilter.h"
+#include "EditorToolbar.h"
 #include "PrimitiveGeometry.h"
 #include "FileDialog.h"
 #include "ECSComponents.h"
@@ -462,6 +464,100 @@ bool SceneEditorUI::MutationSelectionAllowed(std::string& reason) const
 		return false;
 	}
 	return true;
+}
+
+rt2::core::SharedAddMenuContext SceneEditorUI::AddMenuContext() const
+{
+	rt2::core::SharedAddMenuContext context;
+	context.editable = m_Editable;
+	const auto primary = m_State.Selection().Primary();
+	context.hasParent = !primary.IsNull();
+	context.parentLocked = context.hasParent && m_State.IsLocked(primary);
+	context.parentUuid = context.hasParent ? primary.ToString() : std::string{};
+	context.queue = m_ActionQueue;
+	return context;
+}
+
+bool SceneEditorUI::ExecuteAddAction(
+	rt2::core::EditorAction action, const std::string& payload, rt2::core::Error& err)
+{
+	err = rt2::core::Error{};
+	using rt2::core::EditorAction;
+	// Baked parameters match the legacy popup items exactly (see the shared
+	// contents in EditorToolbar); only the call site moved to dispatch.
+	switch (action)
+	{
+	case EditorAction::AddEmpty:
+		CreateEmptyCommand(std::nullopt);
+		return true;
+	case EditorAction::AddChildEmpty:
+	{
+		const auto parent = rt2::core::UUID::Parse(payload);
+		if (parent.IsNull())
+		{
+			err.code = rt2::core::Error::InvalidArgument;
+			err.detail = "AddChildEmpty refused: malformed parent UUID";
+			return false;
+		}
+		CreateEmptyCommand(parent);
+		return true;
+	}
+	case EditorAction::AddLightPoint:
+		// Punctual defaults: 50 cd at a few metres reads as a normal room
+		// light through inverse-square falloff.
+		CreateLightCommand("Point Light", LightType::Point,
+		                   {0, 3, 0}, {0, 0, -1}, {1, 1, 1}, 50.0f);
+		return true;
+	case EditorAction::AddLightSpot:
+		CreateLightCommand("Spot Light", LightType::Spot,
+		                   {0, 3, 0}, {0, -1, 0}, {1, 1, 1}, 50.0f);
+		return true;
+	case EditorAction::AddLightDirectional:
+		// Directionals carry arriving radiance (no falloff): far smaller number.
+		CreateLightCommand("Directional Light", LightType::Directional,
+		                   {0, 5, 0}, {0, -1, 0}, {1, 1, 1}, 3.0f);
+		return true;
+	case EditorAction::AddLightEmissiveSphere:
+		// Not punctual: real geometry sampled as a triangle light, the only
+		// visible-area light (soft shadows).
+		CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
+		return true;
+	case EditorAction::AddCube:
+		CreatePrimitiveCommand(PrimitiveComponent::Cube, 1.0f, "Cube", {0, 0.5f, 0});
+		return true;
+	case EditorAction::AddSphere:
+		CreatePrimitiveCommand(PrimitiveComponent::Sphere, 1.0f, "Sphere", {0, 0.5f, 0});
+		return true;
+	case EditorAction::AddPlane:
+		CreatePrimitiveCommand(PrimitiveComponent::Plane, 5.0f, "Plane", {0, 0, 0});
+		return true;
+	case EditorAction::AddImportScene:
+	case EditorAction::AddLoadMesh:
+	{
+		// Blocking chooser deferred to dispatch: same UX as the inline
+		// popup flow, outside the popup drawing stack. Cancellation (empty
+		// path) is a quiet no-op, as before.
+		const bool importScene = (action == EditorAction::AddImportScene);
+		const auto initialDirectory = m_DialogInitialDirectory
+			? m_DialogInitialDirectory() : std::filesystem::path{};
+		const std::string path = FileDialog::OpenFile(
+			importScene
+			? L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0"
+			: L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
+			initialDirectory);
+		if (!path.empty() && m_OnImportWithOptions)
+		{
+			m_PendingImportPath = path;
+			m_PendingImportMergeMegaMesh = true;
+			m_ImportOptionsOpen = true;
+		}
+		return true;
+	}
+	default:
+		err.code = rt2::core::Error::InvalidArgument;
+		err.detail = "ExecuteAddAction refused: not an Add action";
+		return false;
+	}
 }
 
 void SceneEditorUI::Undo()
@@ -1023,6 +1119,39 @@ bool SceneEditorUI::MatchesSearch(SceneManager::EntityId entity) const
 	return false;
 }
 
+bool SceneEditorUI::MatchesTypeIncludingDescendants(
+	SceneManager::EntityId entity) const
+{
+	// Empty mask passes everything (documented no-stuck-empty rule).
+	const auto bits = rt2::core::ClassifyEntityForBrowser(*m_SceneMgr, entity);
+	if (m_BrowserTypeFilter == 0 || (bits & m_BrowserTypeFilter) != 0)
+		return true;
+	for (const auto child : m_SceneMgr->GetChildren(entity))
+		if (MatchesTypeIncludingDescendants(child)) return true;
+	return false;
+}
+
+void SceneEditorUI::DrawBrowserTypeGlyph(std::uint32_t typeBits) const
+{
+	// Colored type square ahead of the row label (no icon font needed;
+	// chips use the same colors as the legend). Sized from the font so it
+	// stays crisp at any DPI; the tag text is the hover tooltip.
+	const auto token = rt2::core::TokenForBrowserTypes(typeBits);
+	const float size = ImGui::GetTextLineHeight() * 0.72f;
+	ImVec2 corner = ImGui::GetCursorScreenPos();
+	corner.y += (ImGui::GetTextLineHeight() - size) * 0.5f;
+	ImGui::GetWindowDrawList()->AddRectFilled(
+		corner, ImVec2(corner.x + size, corner.y + size),
+		IM_COL32(static_cast<int>(token.r * 255.0f),
+		         static_cast<int>(token.g * 255.0f),
+		         static_cast<int>(token.b * 255.0f), 255),
+		2.0f);
+	ImGui::Dummy(ImVec2(size + 4.0f, size));
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", token.tag);
+	ImGui::SameLine();
+}
+
 SceneManager::EntityId SceneEditorUI::SelectedEntity() const
 {
 	if (!m_SceneMgr)
@@ -1057,7 +1186,11 @@ bool SceneEditorUI::IsSelected(SceneManager::EntityId entity) const
 
 void SceneEditorUI::RenderOutliner()
 {
-	ImGui::Begin("Outliner");
+	// Display name is "Scene Browser"; the ###Outliner ID suffix keeps the
+	// ImGui window identity stable for existing dock layouts (the ID hash
+	// changes once — see ticket — so this panel re-docks once on upgrade;
+	// Reset Layout rebuilds the full arrangement as needed).
+	ImGui::Begin("Scene Browser###Outliner");
 
 	if (!m_SceneMgr)
 	{
@@ -1073,89 +1206,9 @@ void SceneEditorUI::RenderOutliner()
 
 	if (ImGui::BeginPopup("AddEntity"))
 	{
-		if (ImGui::MenuItem("Empty"))
-			CreateEmptyCommand(std::nullopt);
-		const auto selectedParent = m_State.Selection().Primary();
-		ImGui::BeginDisabled(selectedParent.IsNull() || m_State.IsLocked(selectedParent));
-		if (ImGui::MenuItem("Child Empty"))
-			CreateEmptyCommand(selectedParent);
-		ImGui::EndDisabled();
-		ImGui::Separator();
-		if (ImGui::BeginMenu("Light"))
-		{
-			// Punctual defaults. Point/spot intensity is candela and goes
-			// through inverse-square falloff, so 50 cd at a few metres reads
-			// as a normal room light. A directional light has no falloff at
-			// all — its intensity is the arriving radiance — which is why it
-			// needs a far smaller number to sit at the same exposure.
-			if (ImGui::MenuItem("Point"))
-			{
-				CreateLightCommand("Point Light", LightType::Point,
-				                   {0, 3, 0}, {0, 0, -1}, {1, 1, 1}, 50.0f);
-			}
-			if (ImGui::MenuItem("Spot"))
-			{
-				CreateLightCommand("Spot Light", LightType::Spot,
-				                   {0, 3, 0}, {0, -1, 0}, {1, 1, 1}, 50.0f);
-			}
-			if (ImGui::MenuItem("Directional"))
-			{
-				CreateLightCommand("Directional Light", LightType::Directional,
-				                   {0, 5, 0}, {0, -1, 0}, {1, 1, 1}, 3.0f);
-			}
-			ImGui::Separator();
-			// Not a punctual light: an emissive sphere, which is real geometry
-			// sampled by NEE as a triangle light. Kept because it is the only
-			// light with visible area, and so the only one that casts soft
-			// shadows.
-			if (ImGui::MenuItem("Emissive Sphere"))
-			{
-				CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
-			}
-			ImGui::EndMenu();
-		}
-		ImGui::Separator();
-		if (ImGui::MenuItem("Cube"))
-		{
-			CreatePrimitiveCommand(PrimitiveComponent::Cube, 1.0f, "Cube", {0, 0.5f, 0});
-		}
-		if (ImGui::MenuItem("Sphere"))
-		{
-			CreatePrimitiveCommand(PrimitiveComponent::Sphere, 1.0f, "Sphere", {0, 0.5f, 0});
-		}
-		if (ImGui::MenuItem("Plane"))
-		{
-			CreatePrimitiveCommand(PrimitiveComponent::Plane, 5.0f, "Plane", {0, 0, 0});
-		}
-		ImGui::Separator();
-		if (ImGui::MenuItem("Import Scene..."))
-		{
-			const auto initialDirectory = m_DialogInitialDirectory
-				? m_DialogInitialDirectory() : std::filesystem::path{};
-			std::string path = FileDialog::OpenFile(
-				L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
-				initialDirectory);
-			if (!path.empty() && m_OnImportWithOptions)
-			{
-				m_PendingImportPath = path;
-				m_PendingImportMergeMegaMesh = true;
-				m_ImportOptionsOpen = true;
-			}
-		}
-		if (ImGui::MenuItem("Load Mesh File..."))
-		{
-			const auto initialDirectory = m_DialogInitialDirectory
-				? m_DialogInitialDirectory() : std::filesystem::path{};
-			std::string path = FileDialog::OpenFile(
-				L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0",
-				initialDirectory);
-			if (!path.empty() && m_OnImportWithOptions)
-			{
-				m_PendingImportPath = path;
-				m_PendingImportMergeMegaMesh = true;
-				m_ImportOptionsOpen = true;
-			}
-		}
+		// Shared Add contents; this popup keeps its own scope (the toolbar
+		// owns an identical one). Clicks enqueue; dispatch runs the effects.
+		rt2::RenderSharedAddMenuContents(AddMenuContext());
 		ImGui::EndPopup();
 	}
 	ImGui::EndDisabled();
@@ -1187,6 +1240,61 @@ void SceneEditorUI::RenderOutliner()
 	if (ImGui::InputTextWithHint("##OutlinerSearch", "Search entities...",
 		m_SearchBuffer, sizeof(m_SearchBuffer)))
 		m_State.SearchText() = m_SearchBuffer;
+
+	// Type filter chips (session-only): narrow rows to component families.
+	// Unchecking everything shows everything (no stuck-empty view). Active
+	// chips read indigo; inactive chips sit on the frame color. Chip order
+	// matches the row-glyph legend colors.
+	{
+		ImGui::TextDisabled("Type:");
+		ImGui::SameLine();
+		const std::pair<const char*, std::uint32_t> chips[] = {
+			{ "Mesh", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Mesh) },
+			{ "Light", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Light) },
+			{ "Camera", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Camera) },
+			{ "Physics", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Physics) },
+			{ "Audio", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Audio) },
+			{ "Script", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Script) },
+			{ "Motion", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Motion) },
+		};
+		float rowX = 0.0f;
+		const float availW = ImGui::GetContentRegionAvail().x;
+		const float spacing = ImGui::GetStyle().ItemSpacing.x;
+		for (const auto& chip : chips)
+		{
+			const float chipW = ImGui::CalcTextSize(chip.first).x +
+				ImGui::GetStyle().FramePadding.x * 2.0f + spacing;
+			if (rowX > 0.0f && rowX + chipW > availW)
+				rowX = 0.0f; // wrap to the next row in narrow panels
+			else if (rowX > 0.0f)
+				ImGui::SameLine();
+			const bool active = (m_BrowserTypeFilter & chip.second) != 0;
+			if (active)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button,
+					ImVec4(0.388f, 0.400f, 0.945f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+					ImVec4(0.470f, 0.478f, 0.957f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_Text,
+					ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
+			}
+			else
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button,
+					ImVec4(0.157f, 0.157f, 0.157f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+					ImVec4(0.208f, 0.208f, 0.208f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_Text,
+					ImVec4(0.635f, 0.635f, 0.635f, 1.0f));
+			}
+			if (ImGui::SmallButton(chip.first))
+				m_BrowserTypeFilter ^= chip.second;
+			ImGui::PopStyleColor(3);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Toggle %s entities (all off shows all)", chip.first);
+			rowX += chipW + spacing;
+		}
+	}
 
 	// Entity tree (root entities → children)
 	size_t count = m_SceneMgr->GetEntityCount();
@@ -1321,6 +1429,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 {
 	if (!entity.IsValid()) return;
 	if (!MatchesSearch(entity)) return;
+	if (!MatchesTypeIncludingDescendants(entity)) return;
 	const auto uuid = m_SceneMgr->GetEntityUuid(entity);
 	const bool directlyLocked = m_State.IsLocked(uuid);
 	const auto* visibleComponent = m_SceneMgr->GetECS().registry.try_get<VisibleComponent>(entity.id);
@@ -1330,13 +1439,12 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 	if (name.empty())
 		name = "Entity " + std::to_string((uint32_t)entity.id);
 
-	std::string label;
-	if (m_SceneMgr->HasCamera(entity))
-		label = "[Camera] " + name;
-	else if (m_SceneMgr->HasMeshRef(entity))
-		label = "[Mesh] " + name;
-	else
-		label = "[Entity] " + name;
+	// Type glyph carries the component family (colored square ahead of the
+	// row; chips use the same colors as the legend). The label keeps status
+	// prefixes only — selection, drag-drop, and prefab flows are unchanged.
+	const auto typeBits =
+		rt2::core::ClassifyEntityForBrowser(*m_SceneMgr, entity);
+	std::string label = name;
 	const auto prefabPresentation = rt2::core::DescribePrefabEntity(
 		m_SceneMgr->AuthoringDoc(), uuid);
 	const auto& prefabSelection = m_State.Selection().Ordered();
@@ -1355,6 +1463,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 
 	bool isSelected = IsSelected(entity);
 	bool hasChildren = m_SceneMgr->HasChildren(entity);
+	DrawBrowserTypeGlyph(typeBits);
 	auto handleDragDrop = [&]()
 	{
 		if (!m_Editable) return;
@@ -1587,7 +1696,7 @@ void SceneEditorUI::RenderInspector()
 	const auto selectedEntity = SelectedEntity();
 	if (!m_SceneMgr || !selectedEntity.IsValid() || !m_SceneMgr->IsEntityAlive(selectedEntity))
 	{
-		ImGui::TextDisabled("Select an entity in the Outliner");
+		ImGui::TextDisabled("Select an entity in the Scene Browser");
 		ImGui::End();
 		return;
 	}

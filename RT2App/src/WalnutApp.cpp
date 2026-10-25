@@ -41,6 +41,10 @@
 #include "SceneRenderBridge.h"
 #include "ECSComponents.h"
 #include "EditorSettings.h"
+#include "EditorActionQueue.h"
+#include "EditorTheme.h"
+#include "EditorToolbar.h"
+#include "EditorWorkspaceDocking.h"
 #include "EditorWorkspaceState.h"
 #include "SceneRecoveryService.h"
 #include "UnsavedChangesCoordinator.h"
@@ -415,6 +419,7 @@ public:
 
 		m_EditorUI.SetSceneMgr(&m_SceneMgr);
 		m_EditorUI.SetCommandHistory(&m_History);
+		m_EditorUI.SetActionQueue(&m_ActionQueue);
 		m_EditorUI.SetFieldRegistry(m_InspectorFieldRegistry.get());
 		m_EditorUI.SetDialogInitialDirectoryProvider([this]() {
 			return DialogInitialDirectory();
@@ -765,6 +770,11 @@ public:
 		// separate OS windows on restart.
 		ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
+		// Editor workspace theme (package 2): idempotent absolute token
+		// assignment over Walnut's base setup. Runs after Walnut Init, so
+		// these tokens win; re-running converges instead of compounding.
+		rt2::ApplyEditorTheme();
+
 		// Editor workspace persistence foundation: manual ImGui ini
 		// ownership established here, before the first NewFrame. Walnut
 		// creates the ImGui context before pushing layers, so GetIO is
@@ -804,6 +814,45 @@ public:
 			printf("[Workspace] %s\n",
 				m_Workspace.Status().visibility.lastError.Format().c_str());
 		}
+		// First-use seeding (package 2): a genuinely new profile builds the
+		// designed arrangement once, when the host has a valid content size.
+		// Readable existing layouts (even floating or tab-less) never arm
+		// this; visibility honors its own config independently above.
+		if (m_Workspace.Classification().geometrySource ==
+			rt2::core::WorkspaceGeometrySource::NewDefault)
+			m_DefaultLayoutPending = true;
+	}
+
+	// Pre-dock hook (Walnut OnDockspaceUI): runs inside the existing dock
+	// host after Begin, before DockSpace submission. Applies at most one
+	// pending default/reset arrangement per session trigger, then clears
+	// the request — never per frame, never on resize.
+	void OnDockspaceUI(uint32_t dockspaceId) override
+	{
+		if (g_CLI.headless) return;
+		// Content size before anything consumes it: the default builder
+		// fractions it, then the toolbar strip takes its row, then the
+		// DockSpace fills the remainder.
+		const ImVec2 avail = ImGui::GetContentRegionAvail();
+		if (m_DefaultLayoutPending &&
+			rt2::BuildDefaultDockLayout(
+				static_cast<ImGuiID>(dockspaceId), avail))
+		{
+			m_DefaultLayoutPending = false;
+			// The rebuilt windows submit below; the layout persists through
+			// the normal WantSave path, forced without debounce after a Reset.
+			m_Workspace.MarkGeometryDirty(
+				rt2::core::EditorWorkspaceState::Clock::now());
+			m_ContentBrowserFocusRequest = true;
+			if (m_ResetRebuildPending)
+			{
+				m_ResetRebuildPending = false;
+				m_ResetRebuildApplied = true;
+			}
+		}
+		// Persistent toolbar: same entry points as menu/transport/shortcuts
+		// (one seam), visible with Scene closed or the viewport floating.
+		rt2::RenderEditorToolbar(CurrentToolbarSnapshot(), m_ActionQueue);
 	}
 
 	virtual void OnUIRender() override
@@ -1511,69 +1560,10 @@ public:
 		ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), "Unsaved changes");
 	ImGui::Separator();
 
-	// ---- File operations ----
-	if (ImGui::Button("New"))
-		NewScene();
-	ImGui::SameLine();
-	if (ImGui::Button("Open..."))
-	{
-		std::string path = FileDialog::OpenFile(
-			L"RT2 Project, Scene and Model Files (*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj)\0*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj\0RT2 Project (*.rt2proj)\0*.rt2proj\0RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
-			DialogInitialDirectory());
-		if (!path.empty())
-			RequestOpenScene(path);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Save"))
-		SaveRt2Scene();
-	ImGui::SameLine();
-	if (ImGui::Button("Save As..."))
-		SaveRt2SceneAs();
+	// Document and transport controls live in the File menu and the
+	// persistent toolbar (one command seam); this panel keeps statistics
+	// and environment controls only.
 
-	ImGui::Separator();
-
-	// ---- Play/Pause/Step/Stop controls ----
-	{
-		auto state = m_Runtime.GetState();
-		bool playing = (state == rt2::core::SceneRunState::Playing);
-		bool paused  = (state == rt2::core::SceneRunState::Paused);
-		bool editing = (state == rt2::core::SceneRunState::Edit);
-
-		ImGui::BeginDisabled(playing);
-		if (ImGui::Button("Play"))
-		{
-			if (paused)
-				m_Runtime.Resume();
-			else
-				EnterPlay();
-		}
-		ImGui::EndDisabled();
-
-		ImGui::SameLine();
-		ImGui::BeginDisabled(!playing);
-		if (ImGui::Button("Pause"))
-			EnterPause();
-		ImGui::EndDisabled();
-
-		ImGui::SameLine();
-		ImGui::BeginDisabled(!paused);
-		if (ImGui::Button("Step"))
-			EnterStep();
-		ImGui::EndDisabled();
-
-		ImGui::SameLine();
-		ImGui::BeginDisabled(editing);
-		if (ImGui::Button("Stop"))
-			EnterStop();
-		ImGui::EndDisabled();
-
-		// State indicator
-		const char* stateStr = editing ? "Edit" : (paused ? "Paused" : "Playing");
-		ImGui::SameLine();
-		ImGui::TextDisabled("(%s)", stateStr);
-	}
-
-	ImGui::Separator();
 	ImGui::Text("Environment Map");
 	if (ImGui::Button("Load HDR..."))
 	{
@@ -1730,6 +1720,37 @@ public:
 				m_EditorUI.SelectUuid(iconOverlay.clickedEntity);
 		}
 
+		// Selection highlight (Scene Browser follow-up). Meshes have no other
+		// viewport presence (gizmo shows the pivot, icons cover lights and
+		// cameras), so selected entities get a screen-space bounds box in the
+		// theme primary color. Edit-only like the gizmo; bounds math is the
+		// CPU-tested ComputeEditorSelectionBounds/ProjectSelectionBoxEdges
+		// pair, drawn here like the icon layer (no GPU changes).
+		if (editorMode && !m_EditorUI.Selection().Empty())
+		{
+			const glm::mat4 viewProj =
+				m_Cam.GetProjection() * m_Cam.GetView();
+			const glm::vec2 viewMin{ imageMin.x, imageMin.y };
+			const glm::vec2 viewSize{ imageSize.x, imageSize.y };
+			ImDrawList* overlay = ImGui::GetWindowDrawList();
+			for (const auto& uuid : m_EditorUI.Selection().Ordered())
+			{
+				EditorSelectionBounds selectionBounds;
+				if (!ComputeEditorSelectionBounds(
+						m_SceneMgr.AuthoringDoc(), { uuid }, selectionBounds) ||
+					!selectionBounds.valid)
+					continue;
+				for (const auto& segment : ProjectSelectionBoxEdges(
+						viewProj, selectionBounds, viewMin, viewSize))
+				{
+					overlay->AddLine(
+						{ segment.a.x, segment.a.y },
+						{ segment.b.x, segment.b.y },
+						IM_COL32(99, 102, 241, 255), 2.0f);
+				}
+			}
+		}
+
 		// T8 physics debug overlay. Runtime-only: drawn while Playing/Paused
 		// from the controller's immutable CPU snapshot (never through
 		// ISceneRenderBridge). Opposite polarity to the editor icons above.
@@ -1839,6 +1860,9 @@ public:
 	// of OnUIRender so all UI consumers have run.
 	// Workspace persistence runs first: visibility flags are final only
 	// after every panel (including close buttons) has submitted.
+	// Command seam drains before it: every route enqueued above, effects
+	// land outside all popup stacks, consumed queue never replays.
+	DispatchEditorActionsNow();
 	PollWorkspacePersistence();
 	m_Input.EndFrame();
 	} // end OnUIRender
@@ -1899,6 +1923,12 @@ public:
 		if (m_Settings2 && !m_Settings2->GetRecentScenes().empty())
 		{
 			ImGui::Text("Recent Scenes");
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Clear"))
+			{
+				m_Settings2->ClearRecentScenes();
+				PersistEditorSettings("recent scenes");
+			}
 			auto recents = m_Settings2->GetRecentScenes();
 			for (size_t i = 0; i < recents.size(); ++i)
 			{
@@ -2106,6 +2136,11 @@ public:
 
 	void DrawContentBrowserPanel()
 	{
+		// One-shot first-use/reset focus: the visible Content Browser takes
+		// the bottom tab on the build frame. Skipped when hidden; the flag
+		// clears at end of frame either way.
+		if (m_ContentBrowserFocusRequest)
+			ImGui::SetNextWindowFocus();
 		ImGui::Begin("Content Browser", &m_ShowContentBrowserWindow);
 		const bool canOperate = rt2::core::CanOperateContentBrowser(
 			m_ProjectContext != nullptr);
@@ -2573,16 +2608,28 @@ public:
 			if (ImGui::Button("Cancel"))
 				m_VisibilityResetArmed = false;
 		}
-		// Full Reset Layout (geometry rebuild) is intentionally unavailable:
-		// it needs the package-2 default-arrangement builder, and offering
-		// a reset that merely re-saves current geometry would mislead.
-		// The checked backup + full-reset CPU mechanism is implemented and
-		// tested; the user-facing geometry action ships with package 2.
-		ImGui::BeginDisabled(true);
-		ImGui::Button("Reset Layout (geometry)");
-		ImGui::EndDisabled();
-		ImGui::TextWrapped("Layout geometry reset arrives with the default "
-			"arrangement package. Backups, Retry, and visibility reset work now.");
+		// Full Reset Layout (package 2): checked backups, default visibility,
+		// and the designed default arrangement rebuilt in-hook, then a
+		// forced two-file save once the rebuilt windows have submitted.
+		if (ImGui::Button("Reset Layout"))
+			m_LayoutResetArmed = true;
+		if (m_LayoutResetArmed)
+		{
+			rt2::core::Error gate;
+			const bool canReset = m_Workspace.CanReset(gate);
+			ImGui::Text("Reset backs up both files, restores default panels "
+				"and arrangement, and re-saves. Continue?");
+			if (!canReset)
+				ImGui::Text("Reset unavailable: %s", gate.Format().c_str());
+			if (ImGui::Button("Confirm Layout Reset") && canReset)
+			{
+				m_LayoutResetArmed = false;
+				ResetWorkspaceLayout();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel"))
+				m_LayoutResetArmed = false;
+		}
 		ImGui::Separator();
 		ImGui::TextDisabled("Paired backups");
 		if (!status.geometry.backupPath.empty() &&
@@ -2660,6 +2707,28 @@ public:
 		ApplyWorkspaceVisibility(m_Workspace.LastSavedVisibility());
 		m_WorkspaceUnknownLines = m_Workspace.LastSavedUnknownLines();
 		m_LastStatusMsg = "Workspace window visibility reset to defaults";
+	}
+
+	// Full Reset Layout (package 2): staged reset — backups and default
+	// visibility install now, the designed arrangement rebuilds in the
+	// pre-dock hook, and Poll force-saves both files once the rebuilt
+	// windows have submitted (no debounce wait, unsaved status kept until
+	// both writes succeed). Never touches the portable seed.
+	void ResetWorkspaceLayout()
+	{
+		rt2::core::Error err;
+		if (!m_Workspace.BeginGeometryReset(
+				rt2::core::EditorWorkspaceState::Clock::now(), err))
+		{
+			m_LastStatusMsg = std::string("Workspace reset failed: ") + err.Format();
+			printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
+			return;
+		}
+		ApplyWorkspaceVisibility(m_Workspace.PendingVisibility());
+		m_WorkspaceUnknownLines = m_Workspace.PendingUnknownLines();
+		m_DefaultLayoutPending = true;
+		m_ResetRebuildPending = true;
+		m_LastStatusMsg = "Workspace layout rebuilding to defaults";
 	}
 
 	void DrawRecoveryPrompt()
@@ -3639,9 +3708,9 @@ private:
 
 	// Phase 3A: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y. Suppressed during text entry,
 	// active widget editing, and Play (same suppression pattern as the
-	// Phase 2D camera shortcuts). Routes through the editor UI's public
-	// Undo()/Redo(), which run history and route results through the existing
-	// private ApplyMutation() sync path.
+	// Phase 2D camera shortcuts). Enqueues onto the workspace command seam;
+	// dispatch revalidates history and runs the same editor-UI path as the
+	// Edit menu, once per frame.
 	void HandleUndoRedoShortcuts()
 	{
 		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit) return;
@@ -3649,11 +3718,11 @@ private:
 		// undo is Ctrl+Z; redo is Ctrl+Y. The state machine's modifier
 		// matching ensures undo (Ctrl only) does not fire on Ctrl+Shift+Z.
 		if (m_Input.IsPressed("redo_shift_z"))
-			m_EditorUI.Redo();
+			m_ActionQueue.Push(rt2::core::EditorAction::Redo);
 		else if (m_Input.IsPressed("undo"))
-			m_EditorUI.Undo();
+			m_ActionQueue.Push(rt2::core::EditorAction::Undo);
 		else if (m_Input.IsPressed("redo"))
-			m_EditorUI.Redo();
+			m_ActionQueue.Push(rt2::core::EditorAction::Redo);
 	}
 
 	void ViewThroughCamera(const rt2::core::UUID& camera)
@@ -5698,6 +5767,96 @@ private:
 		return v;
 	}
 
+	// ---- Workspace command seam (package 3) ----
+	// One frame's enablement, mirroring today's per-route enablement
+	// exactly: Save always clickable; Undo/Redo by history alone (the
+	// shortcut path keeps its own Edit gate at emit time); transport by
+	// run state; Add by edit admission with the selection snapshot.
+	rt2::core::EditorActionAvailability CurrentActionAvailability() const
+	{
+		rt2::core::EditorActionAvailability avail;
+		const auto state = m_Runtime.GetState();
+		avail.canSave = true;
+		avail.canUndo = CanUndo();
+		avail.canRedo = CanRedo();
+		avail.canAdd = m_EditorUI.IsEditable();
+		const auto addCtx = m_EditorUI.AddMenuContext();
+		avail.canAddChild = avail.canAdd && addCtx.hasParent && !addCtx.parentLocked;
+		avail.addChildParentUuid = addCtx.parentUuid;
+		avail.canPlay = (state == rt2::core::SceneRunState::Edit);
+		avail.canResume = (state == rt2::core::SceneRunState::Paused);
+		avail.canPause = (state == rt2::core::SceneRunState::Playing);
+		avail.canStep = (state == rt2::core::SceneRunState::Paused);
+		avail.canStop = (state != rt2::core::SceneRunState::Edit);
+		return avail;
+	}
+
+	rt2::EditorToolbarSnapshot CurrentToolbarSnapshot() const
+	{
+		rt2::EditorToolbarSnapshot snapshot;
+		snapshot.availability = CurrentActionAvailability();
+		snapshot.runState = m_Runtime.GetState();
+		snapshot.documentDirty = m_SceneMgr.IsDirty();
+		const auto& sourcePath =
+			m_SceneMgr.AuthoringDoc().metadata.sourcePath;
+		snapshot.documentLabel = sourcePath.empty()
+			? "(untitled)"
+			: sourcePath.filename().u8string();
+		return snapshot;
+	}
+
+	void RunAddAction(
+		rt2::core::EditorAction action, const std::string& payload)
+	{
+		rt2::core::Error err;
+		if (m_EditorUI.ExecuteAddAction(action, payload, err))
+			return;
+		m_LastStatusMsg = std::string("Add failed: ") + err.Format();
+		printf("[Action] %s\n", m_LastStatusMsg.c_str());
+	}
+
+	// Single end-of-frame drain, after every route had its chance to
+	// enqueue (menu, hook toolbar, transport, Add popups, shortcuts) and
+	// outside every popup drawing stack. Ordered distinct requests,
+	// duplicate collapse, stale refusal, no replay next frame.
+	void DispatchEditorActionsNow()
+	{
+		if (m_ActionQueue.Empty()) return;
+		rt2::core::EditorActionCallbacks callbacks;
+		callbacks.onSave = [this]() { SaveRt2Scene(); };
+		callbacks.onUndo = [this]() { Undo(); };
+		callbacks.onRedo = [this]() { Redo(); };
+		callbacks.onAddEmpty = [this]() {
+			RunAddAction(rt2::core::EditorAction::AddEmpty, {});
+		};
+		callbacks.onAddChild = [this](const std::string& parentUuid) {
+			RunAddAction(rt2::core::EditorAction::AddChildEmpty, parentUuid);
+		};
+		callbacks.onAddKind = [this](rt2::core::EditorAction kind) {
+			RunAddAction(kind, {});
+		};
+		callbacks.onPlay = [this]() { EnterPlay(); };
+		callbacks.onResume = [this]() { m_Runtime.Resume(); };
+		callbacks.onPause = [this]() { EnterPause(); };
+		callbacks.onStep = [this]() { EnterStep(); };
+		callbacks.onStop = [this]() { EnterStop(); };
+		const auto report = rt2::core::DispatchEditorActions(
+			m_ActionQueue, CurrentActionAvailability(), callbacks);
+		if (!report.error.IsOk())
+		{
+			m_LastStatusMsg = std::string("Action dispatch fault: ") +
+				report.error.Format();
+			printf("[Action] %s\n", m_LastStatusMsg.c_str());
+		}
+		else if (report.rejectedStale > 0)
+		{
+			// State moved between emit and dispatch; nothing misfired.
+			m_LastStatusMsg = "Editor action refused (state changed)";
+			printf("[Action] %d request(s) refused as stale\n",
+				report.rejectedStale);
+		}
+	}
+
 	void ApplyWorkspaceVisibility(const rt2::core::WorkspaceVisibility& v)
 	{
 		m_PerfDetailLevel = v.perfDetail;
@@ -5771,8 +5930,23 @@ private:
 				printf("[Workspace] %s\n", m_LastStatusMsg.c_str());
 			}
 		}
-		if (m_Workspace.Status().PartiallySaved())
+		if (m_Workspace.Status().PartiallySaved() &&
+			m_Workspace.Status().HasFailed())
 			m_LastStatusMsg = m_Workspace.Status().SummaryMessage();
+		// Explicit Reset keeps unsaved status until BOTH files succeed: once
+		// the rebuilt windows have submitted, force the two-file save without
+		// waiting for debounce. Kept armed across frames until it succeeds.
+		if (m_ResetRebuildApplied && !FlushWorkspaceSettings("reset"))
+			m_LastStatusMsg = std::string("Workspace reset not yet saved: ") +
+				m_Workspace.Status().SummaryMessage();
+		else if (m_ResetRebuildApplied)
+		{
+			m_ResetRebuildApplied = false;
+			m_LastStatusMsg = "Workspace layout reset to defaults";
+		}
+		// One-shot focus request lives for a single frame: panels above had
+		// their chance to consume it.
+		m_ContentBrowserFocusRequest = false;
 	}
 
 	std::unique_ptr<rt2::core::EditorSettingsStore>      m_Settings2;
@@ -5792,6 +5966,16 @@ private:
 	// retain forward-compatible keys.
 	rt2::core::EditorWorkspaceState                    m_Workspace;
 	std::vector<std::string>                            m_WorkspaceUnknownLines;
+	// Default-arrangement requests (package 2): at most one pending build
+	// per trigger (first-use or explicit Reset). The pre-dock hook consumes
+	// them; custom layouts never arm them. Reset adds a forced two-file
+	// save once the rebuilt windows have submitted.
+	bool                                                m_DefaultLayoutPending = false;
+	bool                                                m_ResetRebuildPending = false;
+	bool                                                m_ResetRebuildApplied = false;
+	// One-shot Content Browser focus after a default/reset build, consumed
+	// at its next submission (skipped when hidden), then cleared.
+	bool                                                m_ContentBrowserFocusRequest = false;
 	rt2::core::ScriptRepairPersistenceGate                m_ScriptRepairGate;
 	rt2::core::AssetMigrationPersistenceGate              m_AssetMigrationGate;
 
@@ -6368,12 +6552,18 @@ public:
 	bool m_ShowInputBindingsWindow = false;
 	bool m_ShowContentBrowserWindow = false;
 	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
-	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
+	bool m_ShowHierarchyWindow   = true; // Scene Browser panel (SceneEditorUI)
 	// Workspace recovery UI state (View > Workspace Settings). Session-only,
 	// never persisted; public for the menubar callback like the flags above.
 	bool m_ShowWorkspaceSettingsWindow = false;
 	bool m_VisibilityResetArmed = false;
+	bool m_LayoutResetArmed = false;
 	bool m_WorkspaceReloadArmed = false;
+	// Workspace command seam (package 3): the per-frame action queue. All
+	// relocated routes (menu, transport, shortcuts, Add, toolbar) enqueue;
+	// DispatchEditorActionsNow drains exactly once at end of frame. Public
+	// for the menubar callback; consumed queue never replays.
+	rt2::core::EditorActionQueue m_ActionQueue;
 	// One-shot session fallback latch (amendment step 5): set when the
 	// renderer settles requested RR onto another backend and the session
 	// selection is mirrored once. Cleared whenever RR is (re)selected.
@@ -7262,7 +7452,9 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			}
 			if (ImGui::MenuItem("Save"))
 			{
-				layerPtr->SaveRt2Scene();
+				// Enqueue only: dispatch runs once at end of frame, outside
+				// the menu drawing stack. Same entry point as the toolbar.
+				layerPtr->m_ActionQueue.Push(rt2::core::EditorAction::Save);
 			}
 			if (ImGui::MenuItem("Save As..."))
 			{
@@ -7280,11 +7472,11 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			const std::string undoLabel = layerPtr->CanUndo()
 				? ("Undo " + layerPtr->UndoDescription()) : "Undo";
 			if (ImGui::MenuItem(undoLabel.c_str(), "Ctrl+Z", false, layerPtr->CanUndo()))
-				layerPtr->Undo();
+				layerPtr->m_ActionQueue.Push(rt2::core::EditorAction::Undo);
 			const std::string redoLabel = layerPtr->CanRedo()
 				? ("Redo " + layerPtr->RedoDescription()) : "Redo";
 			if (ImGui::MenuItem(redoLabel.c_str(), "Ctrl+Shift+Z", false, layerPtr->CanRedo()))
-				layerPtr->Redo();
+				layerPtr->m_ActionQueue.Push(rt2::core::EditorAction::Redo);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("View"))
@@ -7298,18 +7490,22 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::MenuItem("Session", nullptr, &layerPtr->m_ShowSessionWindow);
 			ImGui::MenuItem("Input Bindings", nullptr, &layerPtr->m_ShowInputBindingsWindow);
 			ImGui::MenuItem("Content Browser", nullptr, &layerPtr->m_ShowContentBrowserWindow);
-			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
+			ImGui::MenuItem("Scene Browser", nullptr, &layerPtr->m_ShowHierarchyWindow);
 			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
 			ImGui::Separator();
 			ImGui::TextDisabled("Workspace");
 			ImGui::Separator();
 			// Always reachable: manual persistence ships no recovery without
-			// this panel, which hosts the accurately named Retry / Restore /
-			// visibility-reset actions. A full geometry Reset Layout is NOT
-			// offered here: it needs the package-2 default builder, and a
-			// reset that merely re-saves current geometry would mislead.
+			// this panel, which hosts Retry / Restore / visibility-reset /
+			// full Reset Layout (the geometry rebuild now installs the
+			// designed default arrangement).
 			ImGui::MenuItem("Workspace Settings", nullptr,
 				&layerPtr->m_ShowWorkspaceSettingsWindow);
+			if (ImGui::MenuItem("Reset Layout"))
+			{
+				layerPtr->m_ShowWorkspaceSettingsWindow = true;
+				layerPtr->m_LayoutResetArmed = true;
+			}
 			ImGui::Separator();
 			ImGui::TextDisabled("Viewport");
 			ImGui::Separator();

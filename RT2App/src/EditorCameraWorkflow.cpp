@@ -407,3 +407,37 @@ bool TryFrameEditorCamera(const EditorCameraPose& current,
     framed.focusDistance = distance;
     return TryNormalizeEditorCameraPose(framed);
 }
+
+std::vector<ScreenLineSegment> ProjectSelectionBoxEdges(
+    const glm::mat4& viewProjection, const EditorSelectionBounds& bounds,
+    const glm::vec2& viewportMinPx, const glm::vec2& viewportSizePx)
+{
+    std::vector<ScreenLineSegment> segments;
+    if (!bounds.valid) return segments;
+    if (viewportSizePx.x <= 0.0f || viewportSizePx.y <= 0.0f)
+        return segments;
+    const glm::vec3& lo = bounds.minimum;
+    const glm::vec3& hi = bounds.maximum;
+    const glm::vec3 corners[8] = {
+        {lo.x, lo.y, lo.z}, {hi.x, lo.y, lo.z},
+        {hi.x, hi.y, lo.z}, {lo.x, hi.y, lo.z},
+        {lo.x, lo.y, hi.z}, {hi.x, lo.y, hi.z},
+        {hi.x, hi.y, hi.z}, {lo.x, hi.y, hi.z},
+    };
+    glm::vec2 pixels[8];
+    for (int i = 0; i < 8; ++i)
+    {
+        const glm::vec4 clip = viewProjection * glm::vec4(corners[i], 1.0f);
+        if (clip.w <= 0.0f) return segments; // behind camera: skip the box
+        const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        pixels[i] = glm::vec2(
+            viewportMinPx.x + (ndc.x * 0.5f + 0.5f) * viewportSizePx.x,
+            viewportMinPx.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * viewportSizePx.y);
+    }
+    constexpr int edges[12][2] = {
+        {0,1},{1,2},{2,3},{3,0}, {4,5},{5,6},{6,7},{7,4}, {0,4},{1,5},{2,6},{3,7},
+    };
+    for (const auto& edge : edges)
+        segments.push_back({ pixels[edge[0]], pixels[edge[1]] });
+    return segments;
+}

@@ -4,6 +4,8 @@
 #define SCENE_EDITOR_UI_H
 
 #include "SceneManager.h"
+#include "EditorActionQueue.h"
+#include "EditorOutlinerFilter.h"
 #include "EditorSceneState.h"
 #include "EditorCommandHistory.h"
 #include "EditorStructuralCommands.h"
@@ -53,6 +55,10 @@ public:
 	SceneEditorUI() = default;
 
 	void SetSceneMgr(SceneManager* mgr) { m_SceneMgr = mgr; }
+
+	// Workspace command seam: the per-frame action queue owned by the host.
+	// Shared Add contents emit into it; dispatch runs ExecuteAddAction.
+	void SetActionQueue(rt2::core::EditorActionQueue* queue) { m_ActionQueue = queue; }
 
 	// Called when the scene structure changes (add/remove entity, material change).
 	// Host should call SyncToGPU() + ResetAccumulation().
@@ -172,6 +178,14 @@ public:
 	std::string RedoDescription() const
 	{ return m_CommandHistory ? m_CommandHistory->RedoDescription() : std::string{}; }
 
+	// Workspace command seam (package 3): snapshot for the shared Add menu
+	// contents, and the single effect site for Add actions. Both the
+	// Outliner popup and the toolbar popups emit; ExecuteAddAction runs the
+	// same baked parameters and dialog flows the popup used to run inline.
+	rt2::core::SharedAddMenuContext AddMenuContext() const;
+	bool ExecuteAddAction(rt2::core::EditorAction action,
+		const std::string& payload, rt2::core::Error& err);
+
 	// Set whether authoring edits are allowed. During Play, the UI is
 	// read-only (bound to the runtime scene). Leaving editability finalizes or
 	// compensates any open live-preview session so no authored preview
@@ -282,6 +296,11 @@ private:
 	void ApplyMutation(const EditorMutationResult& result, bool selectAffected = false);
 	bool MutationSelectionAllowed(std::string& reason) const;
 	bool MatchesSearch(SceneManager::EntityId entity) const;
+	// Scene Browser type filter (package: user follow-up). Session-only;
+	// never persisted. Empty mask passes everything (no stuck-empty view).
+	bool MatchesTypeIncludingDescendants(SceneManager::EntityId entity) const;
+	// Colored type square ahead of a tree row (legend = filter chips).
+	void DrawBrowserTypeGlyph(std::uint32_t typeBits) const;
 	SceneManager::EntityId SelectedEntity() const;
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;
@@ -440,6 +459,9 @@ private:
 	std::string m_TransformEditError;
 	std::string m_MutationError;
 	char m_SearchBuffer[128]{};
+	// Scene Browser type-chip mask (session-only). All bits set = no
+	// filtering; toggling chips narrows rows to matching types.
+	std::uint32_t m_BrowserTypeFilter = rt2::core::kEntityBrowserAllTypes;
 
 	// Phase 3B2: record-on-release property edit sessions. The state
 	// machine (PropertyEditSession<T>) is a pure template; the ImGui glue
@@ -464,6 +486,7 @@ private:
 
 	EditorCommandHistory* m_CommandHistory = nullptr;
 	rt2::core::ScriptFieldRegistry* m_FieldRegistry = nullptr;
+	rt2::core::EditorActionQueue* m_ActionQueue = nullptr;
 
 	TransformPreviewSession      m_TransformPreviewSession;
 	NameSession                  m_NameSession;
