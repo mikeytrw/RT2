@@ -245,7 +245,12 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	}
 
 	void* mapped = nullptr;
-	vkMapMemory(m_Device, m_SBTBuffer.memory, 0, sbtSize, 0, &mapped);
+	err = vkMapMemory(m_Device, m_SBTBuffer.memory, 0, sbtSize, 0, &mapped);
+	if (err != VK_SUCCESS || !mapped)
+	{
+		RT_LOG("[PathTracePass] vkMapMemory for SBT failed: %d", (int)err);
+		return false;
+	}
 	std::memset(mapped, 0, (size_t)sbtSize);
 	uint8_t* dst = static_cast<uint8_t*>(mapped);
 	std::memcpy(dst + 0, handles.data() + 0 * handleSize, handleSize);

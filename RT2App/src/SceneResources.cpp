@@ -3,6 +3,7 @@
 #include "CommandUtils.h"
 #include "StagingArena.h"
 #include "RTLog.h"
+#include "VulkanUtils.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
 #include <functional>
@@ -660,7 +661,7 @@ void SceneResources::CreateMaterialBuffer(const GpuDevice& dev)
 
 	VkDevice device = dev.device;
 	void* data;
-	vkMapMemory(device, m_MaterialBufferMemory, 0, bufferSize, 0, &data);
+	VK_CHECK(vkMapMemory(device, m_MaterialBufferMemory, 0, bufferSize, 0, &data));
 	memcpy(data, m_CurrentScene.materials.data(), bufferSize);
 	vkUnmapMemory(device, m_MaterialBufferMemory);
 }
@@ -690,7 +691,7 @@ void SceneResources::CreatePunctualLightBuffer(const GpuDevice& dev)
 		       count * sizeof(GPUPunctualLight));
 
 	void* mapped = nullptr;
-	vkMapMemory(dev.device, m_PunctualLightBufferMemory, 0, bufferSize, 0, &mapped);
+	VK_CHECK(vkMapMemory(dev.device, m_PunctualLightBufferMemory, 0, bufferSize, 0, &mapped));
 	memcpy(mapped, bufData.data(), bufferSize);
 	vkUnmapMemory(dev.device, m_PunctualLightBufferMemory);
 	RT_LOG("[PunctualLights] uploaded %u lights", n);
@@ -722,7 +723,7 @@ void SceneResources::CreateLightBuffer(const GpuDevice& dev)
 
 	VkDevice device = dev.device;
 	void* data;
-	vkMapMemory(device, m_LightBufferMemory, 0, bufferSize, 0, &data);
+	VK_CHECK(vkMapMemory(device, m_LightBufferMemory, 0, bufferSize, 0, &data));
 	memcpy(data, bufData.data(), bufferSize);
 	vkUnmapMemory(device, m_LightBufferMemory);
 
@@ -756,7 +757,7 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev, bool pr
 
 	VkDevice device = dev.device;
 	void* data;
-	vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufferSize, 0, &data);
+	VK_CHECK(vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufferSize, 0, &data));
 	memcpy(data, transforms.data(), instanceCount * sizeof(glm::mat4));
 	vkUnmapMemory(device, m_InstanceTransformBufferMemory);
 
@@ -778,7 +779,7 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev, bool pr
 		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
-		vkMapMemory(device, m_InstanceTransformPrevBufferMemory, 0, bufferSize, 0, &data);
+		VK_CHECK(vkMapMemory(device, m_InstanceTransformPrevBufferMemory, 0, bufferSize, 0, &data));
 		memcpy(data, transforms.data(), instanceCount * sizeof(glm::mat4));
 		vkUnmapMemory(device, m_InstanceTransformPrevBufferMemory);
 	}
@@ -798,7 +799,7 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev, bool pr
 		matIndices[i] = (mi < m_CurrentScene.materials.size()) ? mi : 0;
 	}
 
-	vkMapMemory(device, m_InstanceMaterialIndexBufferMemory, 0, matIdxSize, 0, &data);
+	VK_CHECK(vkMapMemory(device, m_InstanceMaterialIndexBufferMemory, 0, matIdxSize, 0, &data));
 	memcpy(data, matIndices.data(), instanceCount * sizeof(uint32_t));
 	vkUnmapMemory(device, m_InstanceMaterialIndexBufferMemory);
 
@@ -1178,7 +1179,7 @@ void SceneResources::DumpInstanceTransforms() const
 		VkDeviceSize bufSize = instCount * sizeof(glm::mat4);
 		if (bufSize == 0) bufSize = sizeof(glm::mat4);
 		void* mapped;
-		vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufSize, 0, &mapped);
+		VK_CHECK(vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufSize, 0, &mapped));
 		glm::mat4* transforms = reinterpret_cast<glm::mat4*>(mapped);
 		for (size_t i = 0; i < instCount; i++)
 		{
@@ -1208,13 +1209,13 @@ void SceneResources::DumpInstanceTransforms() const
 		VkDeviceSize bufSize = instCount * sizeof(glm::mat4);
 		if (bufSize == 0) bufSize = sizeof(glm::mat4);
 		void* mapped;
-		vkMapMemory(device, m_InstanceTransformPrevBufferMemory, 0, bufSize, 0, &mapped);
+		VK_CHECK(vkMapMemory(device, m_InstanceTransformPrevBufferMemory, 0, bufSize, 0, &mapped));
 		glm::mat4* transforms = reinterpret_cast<glm::mat4*>(mapped);
 		bool allSameAsCurrent = true;
 		if (m_InstanceTransformBuffer && m_InstanceTransformBufferMemory)
 		{
 			void* curMapped;
-			vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufSize, 0, &curMapped);
+			VK_CHECK(vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufSize, 0, &curMapped));
 			glm::mat4* cur = reinterpret_cast<glm::mat4*>(curMapped);
 			for (size_t i = 0; i < instCount && allSameAsCurrent; i++)
 			{
@@ -1252,7 +1253,7 @@ void SceneResources::DumpNEEBuffers() const
 	if (m_LightBuffer && m_LightBufferMemory && m_CurrentScene.lights.size() > 0)
 	{
 		void* mapped;
-		vkMapMemory(device, m_LightBufferMemory, 0, VK_WHOLE_SIZE, 0, &mapped);
+		VK_CHECK(vkMapMemory(device, m_LightBufferMemory, 0, VK_WHOLE_SIZE, 0, &mapped));
 		GPUTriangleLight* gpuLights = reinterpret_cast<GPUTriangleLight*>((uint8_t*)mapped + 16);
 		size_t numLights = m_CurrentScene.lights.size();
 		size_t dumpCount = numLights < 10 ? numLights : 10;

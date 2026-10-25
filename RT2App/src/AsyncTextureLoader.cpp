@@ -2,6 +2,7 @@
 #include "GpuDevice.h"
 #include "CommandUtils.h"
 #include "RTLog.h"
+#include "VulkanUtils.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
 #include <algorithm>
@@ -378,7 +379,7 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			             stageBuf, stageMem);
 			void* mapped = nullptr;
-			vkMapMemory(device, stageMem, 0, imageSize, 0, &mapped);
+			VK_CHECK(vkMapMemory(device, stageMem, 0, imageSize, 0, &mapped));
 			if (isHDR)
 			{
 				uint16_t* dst = static_cast<uint16_t*>(mapped);

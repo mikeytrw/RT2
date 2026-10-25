@@ -78,7 +78,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			             stagingBuf, stagingMem);
 			void* data;
-			vkMapMemory(device, stagingMem, 0, vertexBufferSize, 0, &data);
+			VK_CHECK(vkMapMemory(device, stagingMem, 0, vertexBufferSize, 0, &data));
 			memcpy(data, mesh.vertices->data(), vertexBufferSize);
 			vkUnmapMemory(device, stagingMem);
 
@@ -101,7 +101,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			             stagingBuf, stagingMem);
 			void* data;
-			vkMapMemory(device, stagingMem, 0, indexBufferSize, 0, &data);
+			VK_CHECK(vkMapMemory(device, stagingMem, 0, indexBufferSize, 0, &data));
 			memcpy(data, mesh.indices->data(), indexBufferSize);
 			vkUnmapMemory(device, stagingMem);
 
@@ -433,7 +433,7 @@ void AccelerationStructure::BuildAttributeBuffers()
 			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			             stagingBuf, stagingMem);
 			void* mapped = nullptr;
-			vkMapMemory(device, stagingMem, 0, chunkSize, 0, &mapped);
+			VK_CHECK(vkMapMemory(device, stagingMem, 0, chunkSize, 0, &mapped));
 			glm::vec4* dst = static_cast<glm::vec4*>(mapped);
 			const float* src = srcData->data() + (size_t)off * srcStride;
 			for (uint32_t i = 0; i < thisCount; i++)
@@ -470,7 +470,7 @@ void AccelerationStructure::BuildAttributeBuffers()
 			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			             stagingBuf, stagingMem);
 			void* mapped = nullptr;
-			vkMapMemory(device, stagingMem, 0, chunkSize, 0, &mapped);
+			VK_CHECK(vkMapMemory(device, stagingMem, 0, chunkSize, 0, &mapped));
 			memcpy(mapped, srcData->data() + off, (size_t)chunkSize);
 			vkUnmapMemory(device, stagingMem);
 
@@ -604,7 +604,7 @@ void AccelerationStructure::BuildAttributeBuffers()
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             stagingBuf, stagingMem);
 		void* mapped = nullptr;
-		vkMapMemory(device, stagingMem, 0, matSize, 0, &mapped);
+		VK_CHECK(vkMapMemory(device, stagingMem, 0, matSize, 0, &mapped));
 		memcpy(mapped, matIndexData.data(), (size_t)matSize);
 		vkUnmapMemory(device, stagingMem);
 		VkBufferCopy region = {};
@@ -668,7 +668,7 @@ void AccelerationStructure::BuildAttributeBuffers()
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             m_InstanceMeshInfoBuffer, m_InstanceMeshInfoMemory);
 	void* infoMapped = nullptr;
-	vkMapMemory(device, m_InstanceMeshInfoMemory, 0, infoSize, 0, &infoMapped);
+	VK_CHECK(vkMapMemory(device, m_InstanceMeshInfoMemory, 0, infoSize, 0, &infoMapped));
 	memcpy(infoMapped, instanceMeshInfo.data(), (size_t)infoSize);
 	vkUnmapMemory(device, m_InstanceMeshInfoMemory);
 
@@ -682,7 +682,7 @@ void AccelerationStructure::BuildAttributeBuffers()
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_InstanceMatOffsetBuffer, m_InstanceMatOffsetMemory);
 		void* matOffMapped = nullptr;
-		vkMapMemory(device, m_InstanceMatOffsetMemory, 0, matOffSize, 0, &matOffMapped);
+		VK_CHECK(vkMapMemory(device, m_InstanceMatOffsetMemory, 0, matOffSize, 0, &matOffMapped));
 		memcpy(matOffMapped, instanceMatOffsets.data(), (size_t)matOffSize);
 		vkUnmapMemory(device, m_InstanceMatOffsetMemory);
 	}
@@ -743,7 +743,7 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 	}
 
 	void* instanceData;
-	vkMapMemory(device, m_InstanceMemory, 0, instanceBufferSize, 0, &instanceData);
+	VK_CHECK(vkMapMemory(device, m_InstanceMemory, 0, instanceBufferSize, 0, &instanceData));
 	if (!vkInstances.empty())
 		memcpy(instanceData, vkInstances.data(), vkInstances.size() * sizeof(VkAccelerationStructureInstanceKHR));
 	vkUnmapMemory(device, m_InstanceMemory);
@@ -878,7 +878,7 @@ bool AccelerationStructure::RebuildTLASOnly(VkCommandBuffer cmdBuffer,
 	}
 
 	void* instanceData;
-	vkMapMemory(device, m_InstanceMemory, 0, instanceBufferSize, 0, &instanceData);
+	VK_CHECK(vkMapMemory(device, m_InstanceMemory, 0, instanceBufferSize, 0, &instanceData));
 	if (!vkInstances.empty())
 		memcpy(instanceData, vkInstances.data(), vkInstances.size() * sizeof(VkAccelerationStructureInstanceKHR));
 	vkUnmapMemory(device, m_InstanceMemory);
