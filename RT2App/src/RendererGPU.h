@@ -225,6 +225,13 @@ public:
 	bool WriteRRGuideReport(const std::string& path,
 		const RRGuideReportMetadata& metadata) const;
 
+	// RR5-T0 RNG probe staging (headless discriminator only). Clear arms
+	// unwritten sentinels for the coming frame; Read waits for GPU
+	// completion, then copies the four raw consumer states. Both are
+	// no-ops returning false/empty when the probe resources are absent.
+	void ClearDiagProbeSlots();
+	bool ReadDiagProbeSlots(uint32_t outSlots[4]);
+
 	// Render settings — the only writable configuration surface.
 	// Mutate a copy, then call ApplySettings() to detect changes and
 	// auto-trigger ResetAccumulation on the next Render().
@@ -303,6 +310,7 @@ private:
 	void CreateGBufferImages();
 	void DestroyGBufferImages();
 	void CreateGBufferDescriptorSet();
+	bool CreateDiagSeedResources();
 	void UpdateGBufferDescriptorSet();
 
 	void CreateFallbackTexture();
@@ -359,6 +367,13 @@ private:
 	// NRD UBO (set 1, binding 5)
 	VkBuffer m_NRDUBO = VK_NULL_HANDLE;
 	VkDeviceMemory m_NRDUBOMemory = VK_NULL_HANDLE;
+
+	// RR5-T0 diagnostic sample-seed UBO (set 1, binding 17) + RNG probe
+	// slots (set 1, binding 18, shader-written, host-readable staging).
+	VkBuffer m_DiagSeedUBO = VK_NULL_HANDLE;
+	VkDeviceMemory m_DiagSeedUBOMemory = VK_NULL_HANDLE;
+	VkBuffer m_DiagProbeBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_DiagProbeBufferMemory = VK_NULL_HANDLE;
 
 	// Set 1 descriptor set layout + set
 	VkDescriptorSetLayout m_GBufferSetLayout = VK_NULL_HANDLE;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 
 #include "DenoiserMode.h"
@@ -27,6 +28,24 @@ struct RenderSettings
 	bool  neeOnly        = false;
 	float emissiveBoost  = 1.0f;
 	float envIntensity   = 1.0f;
+
+	// Russian-roulette tunables (RR5-T1, plumbing only — no policy change).
+	// Defaults reproduce the legacy hard-codes (depth>=3, pContinue in
+	// [0.05,0.95]) exactly. Canonicalized at the settings boundary by
+	// CanonicalizeRouletteSettings so shaders never see NaN/inf.
+	uint32_t rrStartDepth = 3;
+	float    rrMinP       = 0.05f;
+	float    rrMaxP       = 0.95f;
+
+	// Diagnostic sample seed (RR5-T0, plumbing only — no policy change).
+	// Default 0 preserves today's sampling streams exactly; nonzero seeds
+	// perturb streams (pseudorandom, never certified independent).
+	// The probe words select one pixel whose raw RNG states the consumers
+	// record for the headless discriminator; active=0 disables the probe.
+	uint32_t diagSampleSeed = 0u;
+	uint32_t diagProbeActive = 0u;
+	uint32_t diagProbeX = 0u;
+	uint32_t diagProbeY = 0u;
 
 	// Deterministic sampling seed (0 = renderer default). Set from CLI
 	// --seed; consumed by the path tracer to initialize per-pixel RNG.
@@ -98,6 +117,31 @@ struct RenderSettings
 	// RendererGPU::Render() checks this, calls ResetAccumulation, clears it.
 	bool  dirty = false;
 };
+
+// Canonical roulette defaults (match the legacy closesthit.rchit literals).
+inline constexpr uint32_t kDefaultRRStartDepth = 3;
+inline constexpr float kDefaultRRMinP = 0.05f;
+inline constexpr float kDefaultRRMaxP = 0.95f;
+
+// Settings-boundary canonicalization for the roulette tunables (RR5-T1).
+// Non-finite or out-of-(0,1) bounds fall back to defaults; an inverted or
+// degenerate [min,max] window resets to defaults; start depth floors at 1.
+// Runs once at set-time (RendererGPU::ApplySettings); shaders only ever see
+// the canonical values.
+inline void CanonicalizeRouletteSettings(RenderSettings& settings)
+{
+	if (settings.rrStartDepth < 1u)
+		settings.rrStartDepth = 1u;
+	if (!std::isfinite(settings.rrMinP) || settings.rrMinP <= 0.0f || settings.rrMinP >= 1.0f)
+		settings.rrMinP = kDefaultRRMinP;
+	if (!std::isfinite(settings.rrMaxP) || settings.rrMaxP <= 0.0f || settings.rrMaxP >= 1.0f)
+		settings.rrMaxP = kDefaultRRMaxP;
+	if (!(settings.rrMinP < settings.rrMaxP))
+	{
+		settings.rrMinP = kDefaultRRMinP;
+		settings.rrMaxP = kDefaultRRMaxP;
+	}
+}
 
 // Whether the viewport background is actually drawn this frame.
 //

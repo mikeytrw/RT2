@@ -85,6 +85,15 @@ bool RendererGPU::Init()
 	const bool allowShadowTail =
 		Walnut::Application::IsShaderDeviceClockEnabled();
 
+	// RR5-T0 review P2: mandatory diagnostic resources must exist before
+	// any descriptor write or consuming dispatch; fail the renderer loudly
+	// instead of running with null handles.
+	if (!CreateDiagSeedResources())
+	{
+		Destroy();
+		return false;
+	}
+
 	if (!m_PathTracePass.Init(m_Device, m_GBufferSetLayout, allowShadowTail))
 	{
 		RT_LOG("[RT2] GPU renderer initialization failed (pipeline creation error)");
@@ -297,6 +306,8 @@ void RendererGPU::Destroy()
 	GpuResources::DestroyImage(m_Device, m_FallbackTexture);
 	GpuResources::DestroyBuffer(m_Device, m_CameraUBO, m_CameraUBOMemory);
 	GpuResources::DestroyBuffer(m_Device, m_NRDUBO, m_NRDUBOMemory);
+	GpuResources::DestroyBuffer(m_Device, m_DiagSeedUBO, m_DiagSeedUBOMemory);
+	GpuResources::DestroyBuffer(m_Device, m_DiagProbeBuffer, m_DiagProbeBufferMemory);
 
 	if (m_GBufferPool)
 	{
@@ -1064,6 +1075,70 @@ void RendererGPU::InvalidateGIHistory()
 	m_NRDNeedsReset = true;
 }
 
+// RR5-T0 RNG probe staging (headless discriminator only). The probe
+// buffer is host-visible staging: shaders write raw consumer states
+// during the frame, the host arms unwritten sentinels before it and
+// copies the four slots out after GPU completion. ImmediateSubmit waits
+// for queue idle, so no frame-graph changes are needed; all three calls
+// are gated on the dump path and cost nothing otherwise.
+void RendererGPU::ClearDiagProbeSlots()
+{
+	if (!m_DiagProbeBuffer)
+		return;
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		vkCmdFillBuffer(cmd, m_DiagProbeBuffer, 0, sizeof(SIDiagProbeSlots), 0xFFFFFFFFu);
+		VkBufferMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.buffer = m_DiagProbeBuffer;
+		barrier.offset = 0;
+		barrier.size = sizeof(SIDiagProbeSlots);
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
+		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		                     0, 0, nullptr, 1, &barrier, 0, nullptr);
+	});
+}
+
+bool RendererGPU::ReadDiagProbeSlots(uint32_t outSlots[4])
+{
+	if (!m_DiagProbeBuffer || !outSlots)
+		return false;
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		VkBufferMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.buffer = m_DiagProbeBuffer;
+		barrier.offset = 0;
+		barrier.size = sizeof(SIDiagProbeSlots);
+		vkCmdPipelineBarrier(cmd,
+		                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
+		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		                     VK_PIPELINE_STAGE_HOST_BIT,
+		                     0, 0, nullptr, 1, &barrier, 0, nullptr);
+	});
+	// ImmediateSubmit waited for queue idle, so the barrier above makes
+	// the shader writes visible to this host-visible coherent read.
+	void* mapped = nullptr;
+	if (vkMapMemory(m_Device.device, m_DiagProbeBufferMemory, 0,
+	                sizeof(SIDiagProbeSlots), 0, &mapped) != VK_SUCCESS || !mapped)
+	{
+		RT_LOG("[DiagProbe] vkMapMemory failed");
+		return false;
+	}
+	const uint32_t* words = static_cast<const uint32_t*>(mapped);
+	for (int i = 0; i < 4; i++)
+		outSlots[i] = words[i];
+	vkUnmapMemory(m_Device.device, m_DiagProbeBufferMemory);
+	return true;
+}
+
 void RendererGPU::SetEditorPresentation(bool editorPresentation)
 {
 	if (m_EditorPresentation == editorPresentation) return;
@@ -1077,8 +1152,18 @@ void RendererGPU::SetEditorPresentation(bool editorPresentation)
 		ResetAccumulation();
 }
 
-void RendererGPU::ApplySettings(const RenderSettings& newSettings)
+void RendererGPU::ApplySettings(const RenderSettings& incomingSettings)
 {
+	// RR5-T1: canonicalize once at set-time so shaders never see NaN/inf.
+	// All comparisons and the stored copy below use the canonical values.
+	RenderSettings newSettings = incomingSettings;
+	CanonicalizeRouletteSettings(newSettings);
+	// RR5-T1 fixup (review P1): the struct assignment below replaces
+	// m_Settings wholesale, so any dirty flag computed before it would be
+	// erased. Capture pre-assignment state here; the preserved union is
+	// applied after the assignment.
+	const bool alreadyDirty = m_Settings.dirty;
+	bool settingsChanged = false;
 	bool wasRestirEnabled = m_Settings.restirEnabled;
 	bool wasGIEnabled = m_Settings.restirGIEnabled;
 	const bool wasModeOrQualityChanged =
@@ -1106,6 +1191,10 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	                       m_Settings.restirGIWorldPosThreshold != newSettings.restirGIWorldPosThreshold;
 	if (m_Settings.spp != newSettings.spp ||
 	    m_Settings.maxBounces != newSettings.maxBounces ||
+	    m_Settings.rrStartDepth != newSettings.rrStartDepth ||
+	    m_Settings.rrMinP != newSettings.rrMinP ||
+	    m_Settings.rrMaxP != newSettings.rrMaxP ||
+	    m_Settings.diagSampleSeed != newSettings.diagSampleSeed ||
 	    m_Settings.showBackground != newSettings.showBackground ||
 	    m_Settings.neeOnly != newSettings.neeOnly ||
 	    m_Settings.emissiveBoost != newSettings.emissiveBoost ||
@@ -1147,9 +1236,45 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.shadowTailDiag != newSettings.shadowTailDiag ||
 	    m_Settings.shadowTailControl != newSettings.shadowTailControl)
 	{
-		m_Settings.dirty = true;
+		settingsChanged = true;
 	}
+	const bool rouletteChanged =
+		m_Settings.rrStartDepth != newSettings.rrStartDepth ||
+		m_Settings.rrMinP != newSettings.rrMinP ||
+		m_Settings.rrMaxP != newSettings.rrMaxP;
+	const bool diagSeedChanged =
+		m_Settings.diagSampleSeed != newSettings.diagSampleSeed;
+	const uint32_t prevDiagSeed = m_Settings.diagSampleSeed;
 	m_Settings = newSettings;
+	// RR5-T1 fixup (review P1): preserve computed dirty across the
+	// assignment — incoming request, pre-existing flag, and any field
+	// change detected above (including canonicalization-induced changes).
+	m_Settings.dirty = newSettings.dirty || alreadyDirty || settingsChanged;
+
+	// RR5-T1: a roulette change resets temporal accumulation via the dirty
+	// flag above (handled in Render()). Record requested vs effective NRD
+	// mode alongside so fallback frames stay attributable in logs.
+	if (rouletteChanged)
+	{
+		RT_LOG("[Roulette] tunables changed: startDepth=%u minP=%.4f maxP=%.4f "
+		       "requestedNRD=%d effectiveNRD=%d",
+		       newSettings.rrStartDepth, (double)newSettings.rrMinP,
+		       (double)newSettings.rrMaxP,
+		       IsNrdAuthored(newSettings.denoiserMode) ? 1 : 0,
+		       EffectiveNrdEnabled(newSettings.denoiserMode, m_AutomaticNativeNrdFallback) ? 1 : 0);
+	}
+
+	// RR5-T0: a seed change resets ALL affected histories (temporal via
+	// the dirty flag above; ReSTIR DI/GI explicitly here) so no stream's
+	// history smears into another seed's frames. Probe pixel/active edits
+	// never touch rendering state and intentionally skip the reset.
+	if (diagSeedChanged)
+	{
+		RT_LOG("[DiagSeed] sample seed changed: %u -> %u; resetting temporal, ReSTIR DI/GI, NRD/RR histories",
+		       prevDiagSeed, newSettings.diagSampleSeed);
+		InvalidateReSTIRHistory();
+		InvalidateGIHistory();
+	}
 
 	// Shadow-tail control mode (RT4-T4): staged into the SSBO header for
 	// the next BeginFrame. Mode 2 runs dependent work inside brackets
@@ -1312,6 +1437,9 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 	// Check dirty flag — auto reset accumulation on settings change
 	if (m_Settings.dirty)
 	{
+		// RR5-T1 fixup (review P1): make the settings-change reset
+		// observable so production transitions are verifiable in logs.
+		RT_LOG("[Render] settings changed; temporal accumulation reset");
 		ResetAccumulation();
 		m_Settings.dirty = false;
 	}
@@ -1633,6 +1761,7 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_GBufferSet,
 		m_CameraUBO,
 		m_NRDUBO,
+		m_DiagSeedUBO,
 		m_CameraUBOData,
 		m_RenderExtent,
 		m_OutputExtent,
@@ -1667,7 +1796,14 @@ RendererGPU::RenderOutcome RendererGPU::Render(const Camera& camera)
 		m_GIFrameIndex,
 		m_GIFrameIndex & 1u,
 		m_Sampling.jitter,
-		m_Settings.shadowTailDiag
+		m_Settings.shadowTailDiag,
+		m_Settings.rrStartDepth,
+		m_Settings.rrMinP,
+		m_Settings.rrMaxP,
+		m_Settings.diagSampleSeed,
+		m_Settings.diagProbeActive,
+		m_Settings.diagProbeX,
+		m_Settings.diagProbeY
 	};
 
 	const FrameRenderer::RecordedFrameOutcome recorded = FrameRenderer::RecordFrame(cmd, ctx);
@@ -2182,12 +2318,45 @@ void RendererGPU::DestroyGBufferImages()
 	m_RRGuides.Destroy();
 }
 
+// RR5-T0 review P2: both diagnostic allocations are mandatory — every
+// consumer shader declares bindings 17/18 unconditionally, so a null
+// handle would become invalid descriptor use or a silent missing probe.
+// Check both results, roll back partial state, and fail before any
+// descriptor write (mirrors GpuPickingPass/PathTracePass handling).
+bool RendererGPU::CreateDiagSeedResources()
+{
+	if (!m_DiagSeedUBO)
+	{
+		if (!GpuResources::CreateBuffer(m_Device, sizeof(SIDiagSeedUniform),
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				m_DiagSeedUBO, m_DiagSeedUBOMemory))
+		{
+			RT_LOG("[DiagSeed] failed to create seed UBO; renderer unavailable");
+			return false;
+		}
+	}
+	if (!m_DiagProbeBuffer)
+	{
+		if (!GpuResources::CreateBuffer(m_Device, sizeof(SIDiagProbeSlots),
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				m_DiagProbeBuffer, m_DiagProbeBufferMemory))
+		{
+			RT_LOG("[DiagProbe] failed to create probe buffer; rolling back seed UBO");
+			GpuResources::DestroyBuffer(m_Device, m_DiagSeedUBO, m_DiagSeedUBOMemory);
+			return false;
+		}
+	}
+	return true;
+}
+
 void RendererGPU::CreateGBufferDescriptorSet()
 {
 	VkDevice device = m_Device.device;
 
 	// Set 1 layout: existing NRD images plus five named, RT2-owned RR guides.
-	VkDescriptorSetLayoutBinding bindings[17] = {};
+	VkDescriptorSetLayoutBinding bindings[19] = {};
 	// Bindings 0-5: storage images (gNormalRoughness, gViewZ, gMotion, gDiff, gSpec, gAlbedoF0)
 	for (int i = 0; i < 6; i++)
 	{
@@ -2242,9 +2411,23 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	bindings[16].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
 	                          VK_SHADER_STAGE_COMPUTE_BIT;
 
+	// Binding 17: RR5-T0 diagnostic sample-seed UBO (host-written).
+	bindings[17].binding = SI_BINDING_DIAG_SEED;
+	bindings[17].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[17].descriptorCount = 1;
+	bindings[17].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+	                           VK_SHADER_STAGE_COMPUTE_BIT;
+	// Binding 18: RR5-T0 RNG probe slots (shader-written when the
+	// diagnostic probe runs; host-readable staging for the readback).
+	bindings[18].binding = SI_BINDING_DIAG_PROBE;
+	bindings[18].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[18].descriptorCount = 1;
+	bindings[18].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+	                           VK_SHADER_STAGE_COMPUTE_BIT;
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 17;
+	layoutInfo.bindingCount = 19;
 	layoutInfo.pBindings = bindings;
 
 	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_GBufferSetLayout);
@@ -2254,9 +2437,9 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	poolSizes[0].descriptorCount = 15;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSizes[1].descriptorCount = 1;
+	poolSizes[1].descriptorCount = 2;
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSizes[2].descriptorCount = 1; // set-1 binding 11: shadow-tail SSBO
+	poolSizes[2].descriptorCount = 2; // set-1 binding 11 shadow-tail SSBO + binding 18 RR5 probe
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2305,7 +2488,15 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 	uboInfo.buffer = m_NRDUBO;
 	uboInfo.range = VK_WHOLE_SIZE;
 
-	VkWriteDescriptorSet writes[16] = {};
+	VkDescriptorBufferInfo diagSeedInfo = {};
+	diagSeedInfo.buffer = m_DiagSeedUBO;
+	diagSeedInfo.range = VK_WHOLE_SIZE;
+
+	VkDescriptorBufferInfo diagProbeInfo = {};
+	diagProbeInfo.buffer = m_DiagProbeBuffer;
+	diagProbeInfo.range = VK_WHOLE_SIZE;
+
+	VkWriteDescriptorSet writes[18] = {};
 	// Storage images: bindings 0-5 and 7-10
 	for (int i = 0; i < 6; i++)
 	{
@@ -2372,7 +2563,24 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 		writeCount = 16;
 	}
 
+	// RR5-T0: diag-seed UBO (binding 17) + probe slots (binding 18).
+	// Updated unconditionally in a second call so the conditional guide
+	// range above stays untouched.
+	writes[16].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[16].dstSet = m_GBufferSet;
+	writes[16].dstBinding = SI_BINDING_DIAG_SEED;
+	writes[16].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	writes[16].descriptorCount = 1;
+	writes[16].pBufferInfo = &diagSeedInfo;
+	writes[17].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[17].dstSet = m_GBufferSet;
+	writes[17].dstBinding = SI_BINDING_DIAG_PROBE;
+	writes[17].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[17].descriptorCount = 1;
+	writes[17].pBufferInfo = &diagProbeInfo;
+
 	vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
+	vkUpdateDescriptorSets(device, 2, &writes[16], 0, nullptr);
 
 	// Binding 11: shadow-tail diagnostic SSBO, separate update (its slot
 	// is outside the image/UBO packing above). Written whenever the

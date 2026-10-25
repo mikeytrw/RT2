@@ -140,15 +140,33 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 	// so fallback frames produce the NRD-branch packed radiance the denoiser
 	// consumes. When NRD is off, force lobe dither to 0 (white noise) — Bayer/IGN dithering
 	// is only needed for NRD's hit-distance reconstruction of skipped lobes.
+	// RR5-T1: trailing roulette words come from the canonicalized settings via
+	// the frame context; rrReserved stays zero. First 16 bytes unchanged.
 	uint32_t effectiveLobeDither = ctx.nrdEnabled ? (uint32_t)ctx.lobeDither : 0u;
 	SINRDUniformData nrdData = {
 		ctx.nrdEnabled ? 1u : 0u,
 		effectiveLobeDither,
 		ctx.restirGIEnabled ? 1u : 0u,
-		ctx.giReservoirIndex
+		ctx.giReservoirIndex,
+		ctx.rrStartDepth,
+		ctx.rrMinP,
+		ctx.rrMaxP,
+		0u
 	};
 	if (ctx.nrdUBO)
 		vkCmdUpdateBuffer(cmd, ctx.nrdUBO, 0, sizeof(SINRDUniformData), &nrdData);
+
+	// RR5-T0 diag-seed UBO: seed + probe selectors from the frame context
+	// (defaults keep legacy streams and the probe off). Uploaded inside
+	// this same barrier block, so uniform consumers see it consistently.
+	SIDiagSeedUniform seedData = {
+		ctx.diagSampleSeed,
+		ctx.diagProbeActive,
+		ctx.diagProbeX,
+		ctx.diagProbeY
+	};
+	if (ctx.diagSeedUBO)
+		vkCmdUpdateBuffer(cmd, ctx.diagSeedUBO, 0, sizeof(SIDiagSeedUniform), &seedData);
 
 	VkMemoryBarrier uboPostBarrier = {};
 	uboPostBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -618,8 +636,22 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 
 bool FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 {
-    if (ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugMode < 19 &&
-        ctx.gbufferDebugPass.IsAvailable())
+    // RR5-T2: kScatterContractMode (27) runs the sampling-weight contract
+    // battery through the debug pass instead of path tracing (same
+    // replacement semantics as modes 0-18; compose/NRD stay skipped and
+    // the raw output image is captured).
+    const bool contractMode =
+        ctx.gbufferDebugMode == (int)GBufferDebugPass::kScatterContractMode;
+    if (contractMode && ctx.gbufferDebugPass.IsAvailable() &&
+        !ctx.gbufferDebugPass.IsContractAvailable())
+    {
+        // Loud, not silent: the battery analysis fails coverage without
+        // contract pixels, so this can never look like a passing check.
+        RT_LOG("[Frame] contract mode requested without contract pipeline; running path tracing instead");
+    }
+    if (((ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugMode < 19) || contractMode) &&
+        ctx.gbufferDebugPass.IsAvailable() &&
+        (!contractMode || ctx.gbufferDebugPass.IsContractAvailable()))
 	{
 		ctx.gbufferDebugPass.Record(cmd, ctx.renderExtent,
 		                          ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,

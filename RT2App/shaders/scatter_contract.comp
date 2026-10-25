@@ -1,0 +1,130 @@
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// scatter_contract.comp — RR5-T2 executable sampling-weight contract.
+//
+// Invokes the CONSUMED scatterPrimaryHit implementation (not a replica)
+// on controlled matched materials and records, per invocation, the raw
+// attenuation, the selection probability actually used, the lobe outcome
+// and the unweighted factor recomputed through the exact shared helpers
+// the implementation calls (F_Schlick, computeF0, luminance, G1_Smith).
+// The CPU analysis (scripts/scatter_contract_check.py) asserts
+// attenuation * P == unweighted within a tight relative tolerance —
+// exact for delta (P == 1), few-ULP for survivors — over regular
+// specular, regular diffuse and deterministic delta branches. The
+// stochastic smooth-dielectric branch is recorded, never asserted
+// (documented legacy defect).
+//
+// Driven through GBufferDebugPass with gbufferDebugMode == 27; results
+// land in the output image (rgba32f, bit-exact) captured via --output-hdr.
+// Battery: 4 materials x 16 Bayer cells = 64 cases, 3 pixels each
+// (att.rgb / exp.rgb / P,flags,spare) at row-major positions from the
+// top-left — three pixels because PFM capture keeps RGB only (alpha is
+// dropped). Threads outside the battery write zero. Requires W*H >= 192
+// pixels; the analysis fails loudly otherwise. Frame-independent: fixed
+// rngState seed, temporalShift 0, no camera/frame inputs.
+//
+// Stage compatibility: scatter_shared.glsl also serves ray-tracing stages;
+// its five traceRayEXT shadow queries and the rayPayload declaration are
+// unavailable in compute, and none runs on this TU's executed path (only
+// scatterPrimaryHit runs here). Each site carries a small
+// SCATTER_CONTRACT_COMPUTE guard instead, so shipped ray-tracing
+// compilation (macro undefined) is bit-for-bit unaffected.
+#define SCATTER_CONTRACT_COMPUTE
+
+#include "scatter_shared.glsl"
+
+layout(set = 0, binding = SI_BINDING_OUTPUT_IMAGE, rgba32f) uniform image2D contractOut;
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 extent = imageSize(contractOut);
+    uint linear = uint(pixel.y) * uint(extent.x) + uint(pixel.x);
+
+    // 64 cases need 192 pixels; anything else writes deterministic zero.
+    if (linear >= 192u)
+    {
+        imageStore(contractOut, pixel, vec4(0.0));
+        return;
+    }
+    uint kase = linear / 3u;
+    uint sub = linear % 3u;
+    uint matIdx = kase / 16u;
+    uint cell = kase % 16u;
+
+    // ---- Matched material inputs (battery constants) ----
+    vec3 baseColor;
+    float metallic;
+    float roughness;
+    if (matIdx == 0u)      { baseColor = vec3(0.8, 0.2, 0.1); metallic = 0.0; roughness = 0.45; }
+    else if (matIdx == 1u) { baseColor = vec3(0.9, 0.65, 0.3); metallic = 1.0; roughness = 0.3; }
+    else if (matIdx == 2u) { baseColor = vec3(0.9, 0.9, 0.9); metallic = 1.0; roughness = 0.0; }
+    else                   { baseColor = vec3(0.8, 0.2, 0.1); metallic = 0.0; roughness = 0.0; }
+    float ior = 1.5;
+    vec3 n = vec3(0.0, 0.0, 1.0);
+    vec3 wo = normalize(vec3(0.2, 0.1, 0.97));
+    float NdotV = dot(wo, n);
+    vec3 rayDir = normalize(vec3(-0.2, -0.1, -0.97));
+    Material mat = Material(vec4(baseColor, metallic), vec4(0.0, 0.0, 0.0, roughness), ior,
+                            0.5, 1.0, 1.0, ivec4(-1, -1, -1, 0), ivec4(-1, 0, 0, 0));
+    uint rngState = 777u;
+    uvec2 cellCoord = uvec2(cell % 4u, cell / 4u);
+
+    // ---- Invoke the consumed implementation ----
+    ScatterResult r = scatterPrimaryHit(mat, baseColor, metallic, roughness,
+                                        ior, n, wo, NdotV, rayDir, true,
+                                        rngState, cellCoord, 1, 0.0);
+
+    // ---- Recompute the unweighted factor via the shared helpers ----
+    vec3 F0 = computeF0(baseColor, metallic);
+    vec3 F = F_Schlick(NdotV, F0);
+    float alpha = roughnessToAlpha(roughness);
+    float flags = 0.0;
+    if (!r.doScatter)
+        flags += 4.0;
+    if (r.isDelta)
+        flags += 2.0;
+    if (r.lobeType > 0.5)
+        flags += 1.0;
+    if (matIdx == 3u)
+        flags += 8.0;  // legacy record-only, never asserted
+
+    float P = 1.0;
+    vec3 expAtt = vec3(0.0);
+    // Never read attenuation when the implementation reports no scatter
+    // (it is unset there); record zeros and let the analysis fail loudly
+    // if the battery geometry ever takes that path.
+    vec3 recAtt = r.doScatter ? r.attenuation : vec3(0.0);
+    if (r.isDelta)
+    {
+        // Deterministic delta: effective selection probability 1 even
+        // though ScatterResult.P_s was computed before the delta branch.
+        P = 1.0;
+        expAtt = F;
+    }
+    else if (r.lobeType > 0.5)
+    {
+        P = r.P_s;
+        float NdotWi = max(dot(n, r.scatterDir), 0.0);
+        expAtt = F * G1_Smith(NdotWi, alpha);
+    }
+    else
+    {
+        P = r.P_d;
+        float VdotH_d = max(dot(wo, normalize(wo + r.scatterDir)), 0.0);
+        vec3 F_d = F_Schlick(VdotH_d, F0);
+        float specWeight_d = mix(luminance(F_d), 1.0, metallic);
+        expAtt = (1.0 - specWeight_d) * baseColor * (1.0 - metallic);
+    }
+
+    if (sub == 0u)
+        imageStore(contractOut, pixel, vec4(recAtt, 0.0));
+    else if (sub == 1u)
+        imageStore(contractOut, pixel, vec4(expAtt, 0.0));
+    else
+        imageStore(contractOut, pixel, vec4(P, flags, 0.0, 0.0));
+}

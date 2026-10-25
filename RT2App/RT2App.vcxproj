@@ -113,6 +113,7 @@ copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Debug-windows-x86_6
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\scattercontract.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlss.dll" "../bin/Debug-windows-x86_64/RT2App"
@@ -164,6 +165,7 @@ copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Release-windows-x86
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\scattercontract.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "../bin/Release-windows-x86_64/RT2App"
@@ -215,6 +217,7 @@ copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Dist-windows-x86_64
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\scattercontract.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
@@ -1354,6 +1357,13 @@ C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rchi
       <Outputs>$(ProjectDir)shaders/gbufferdebug.spv</Outputs>
       <Message>Compiling gbuffer_debug.comp</Message>
       <AdditionalInputs>shaders/shader_interface.h</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="shaders\scatter_contract.comp">
+      <FileType>Document</FileType>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/scatter_contract.comp -o $(ProjectDir)shaders/scattercontract.spv</Command>
+      <Outputs>$(ProjectDir)shaders/scattercontract.spv</Outputs>
+      <Message>Compiling scatter_contract.comp</Message>
+      <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h;shaders/rr_guide_shared.glsl</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\miss.rmiss">
       <FileType>Document</FileType>

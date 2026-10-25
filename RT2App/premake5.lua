@@ -82,6 +82,7 @@ project "RT2App"
         "shaders/raster.vert",
         "shaders/raster.frag",
         "shaders/gbuffer_debug.comp",
+		"shaders/scatter_contract.comp",
 		"shaders/rr_guides.comp",
 		"shaders/picking.comp",
         "shaders/pathtracer_shared.glsl",
@@ -225,6 +226,14 @@ project "RT2App"
         buildoutputs { shaderDir .. "/gbufferdebug.spv" }
         buildinputs { depBasic }
 
+    -- RR5-T2 sampling-weight contract battery (diagnostic compute driven
+    -- through GBufferDebugPass mode 27; shares the debug output image).
+    filter {"files:shaders/scatter_contract.comp"}
+        buildmessage "Compiling scatter_contract.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/scatter_contract.comp -o " .. shaderDir .. "/scattercontract.spv" }
+        buildoutputs { shaderDir .. "/scattercontract.spv" }
+        buildinputs { depShared }
+
     filter {"files:shaders/rr_guides.comp"}
         buildmessage "Compiling rr_guides.comp"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/rr_guides.comp -o " .. shaderDir .. "/rr_guides.spv" }
@@ -328,6 +337,7 @@ project "RT2App"
             "copy /Y \"$(ProjectDir)shaders\\raster.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\scattercontract.spv\" \"%{cfg.targetdir}\"",
 			"copy /Y \"$(ProjectDir)shaders\\rr_guides.spv\" \"%{cfg.targetdir}\"",
 			"copy /Y \"$(ProjectDir)shaders\\picking.spv\" \"%{cfg.targetdir}\""
         }

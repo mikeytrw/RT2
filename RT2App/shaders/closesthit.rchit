@@ -320,10 +320,14 @@ void main()
     // After a few bounces, probabilistically kill low-throughput paths and
     // compensate the survivors. Unbiased, and drastically shortens paths in
     // dark/absorbing scenes instead of always tracing to maxBounces.
-    if (depth >= 3u)
+    // RR5-T1: start depth and pContinue bounds are uniforms (set-1 NRD UBO
+    // via pathtracer_shared.glsl); defaults preserve the legacy 3 / 0.05 /
+    // 0.95 behaviour exactly. No policy change: survivors still divide by
+    // pContinue.
+    if (depth >= nrdData.rrStartDepth)
     {
         float pContinue = clamp(max(newThroughput.x, max(newThroughput.y, newThroughput.z)),
-                                0.05, 0.95);
+                                nrdData.rrMinP, nrdData.rrMaxP);
         if (randomFloat(rngState) >= pContinue)
         {
             payload.c.w = 1.0;

@@ -71,6 +71,7 @@ public:
 		VkDescriptorSet gbufferSet;
 		VkBuffer cameraUBO;
 		VkBuffer nrdUBO;
+		VkBuffer diagSeedUBO;  // RR5-T0 diagnostic sample-seed UBO (set-1 binding 17)
 		const SICameraData& cameraUBOData;
 
 		RenderExtent renderExtent;
@@ -141,6 +142,21 @@ public:
 		// exists whenever this is true — record paths never fall back
 		// silently (a missing variant binds nothing).
 		bool shadowTailDiag;
+
+		// Russian-roulette tunables (RR5-T1, canonicalized at the settings
+		// boundary). Fed to the set-1 NRD UBO in RecordUBOUpdates; defaults
+		// reproduce the legacy closesthit.rchit behaviour exactly.
+		uint32_t rrStartDepth;
+		float rrMinP;
+		float rrMaxP;
+
+		// Diagnostic sample seed + RNG probe selectors (RR5-T0). Fed to
+		// the set-1 diag-seed UBO in RecordUBOUpdates; default zero keeps
+		// today's streams and disables the probe.
+		uint32_t diagSampleSeed;
+		uint32_t diagProbeActive;
+		uint32_t diagProbeX;
+		uint32_t diagProbeY;
 	};
 
 	// Record the full frame into the given command buffer.

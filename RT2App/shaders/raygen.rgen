@@ -23,6 +23,11 @@ void main()
 
     // Initialize RNG from pixel coords + frame index
     uint rngState = initRNG(pixel, camera.position.w);
+    // RR5-T0 discriminator: raw main-RT stream state for the probe pixel.
+    // Shares slot 0 with secondary_raygen: the SBT record selects exactly
+    // one raygen entry per frame (RT-primary vs raster-first), so the slot
+    // always holds the primary stream that actually ran.
+    diagWriteProbe(0u, pixel, rngState);
 
     vec3 origin = camera.position.xyz;
 

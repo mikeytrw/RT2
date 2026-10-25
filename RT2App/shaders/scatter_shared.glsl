@@ -12,7 +12,14 @@
 #include "shadow_tail.glsl"
 
 // Shadow ray payload (location 2) — used by sampleNEE / sampleEnvNEE.
+#ifndef SCATTER_CONTRACT_COMPUTE
 layout(location = 2) rayPayloadEXT float shadowVisible;
+#else
+// Compute-TU stand-in for the contract battery (scatter_contract.comp):
+// rayPayloadEXT is unavailable in compute, and the battery never traces.
+// NEE helpers still compile (dead in that TU) against this plain global.
+float shadowVisible = 0.0;
+#endif
 
 // ---- Reservoir buffer (set 0, binding 14 — history buffer, read by shading) ----
 layout(set = 0, binding = SI_BINDING_RESERVOIR_HISTORY, std430) readonly buffer ReservoirBuffer
@@ -102,6 +109,29 @@ ScatterResult scatterPrimaryHit(
     // NRD requires a valid sample in every 3x3 neighborhood to reconstruct the
     // skipped lobe's hit distance. Without clamping, metals (P_s=1) produce
     // blocks of all-zero diffuse hitT that can't be reconstructed.
+    //
+    // RR5-T2 ACTIVE SAMPLING-WEIGHT CONTRACT (any lobe change must respect
+    // all of the following; the removed giWillSelectDiffuse predictor in
+    // restir_gi_bindings.glsl is NOT a consumer of these probabilities):
+    // - Regular specular survivors divide by the selection probability:
+    //   attenuation = F * G1_wi / P_s below. Regular diffuse survivors
+    //   divide by P_d: attenuation = (1-specW) * baseColor * (1-metallic)
+    //   / P_d below. P_s/P_d here are the probabilities the r < P_s pick
+    //   used, so each branch is unbiased for its own selection.
+    // - Deterministic delta (roughness < 0.001 && metallic >= 0.5) takes
+    //   specular with probability 1: attenuation = F, no division.
+    // - LEGACY DEFECT (documented, not corrected here): the stochastic
+    //   smooth-dielectric reflection branch stores attenuation = F WITHOUT
+    //   /P_s. Changing lobe bounds therefore changes expected reflected
+    //   energy there — bounds are NOT pure variance controls until a
+    //   separately approved correction lands. No test may require /P_s
+    //   on that branch.
+    // - Transmission uses distinct probabilities (P_reflect/refract/diffuse
+    //   above), not P_s/P_d.
+    // - Raster-first GI consumption: non-joint path divides stored diffuse
+    //   radiance by scatter.P_d (secondary_raygen.rgen); the joint path
+    //   uses the full mixture density. GI candidate generation never
+    //   predicts lobes (cosine sampling + negligible-weight skip).
     result.P_s = clamp(mix(luminance(F), 1.0, metallic), 0.25, 0.75);
     result.P_d = 1.0 - result.P_s;
 
@@ -377,10 +407,13 @@ NEEResult sampleEnvNEE(vec3 wo, vec3 N, vec3 P,
         return result;
 
     shadowVisible = 0.0; ST_RT_BEGIN(_st_env);
+#ifndef SCATTER_CONTRACT_COMPUTE
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
-                P + N * 0.001, 0.001, L, 1e9, 2); ST_RT_END(_st_env, 0u);
+                P + N * 0.001, 0.001, L, 1e9, 2);
+#endif
+    ST_RT_END(_st_env, 0u);
 
     if (shadowVisible < 0.5)
         return result;
@@ -463,10 +496,13 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
         return result;
 
     shadowVisible = 0.0; ST_RT_BEGIN(_st_tri);
+#ifndef SCATTER_CONTRACT_COMPUTE
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
-                P + N * 0.001, 0.001, L, dist - 0.002, 2); ST_RT_END(_st_tri, 1u);
+                P + N * 0.001, 0.001, L, dist - 0.002, 2);
+#endif
+    ST_RT_END(_st_tri, 1u);
 
     if (shadowVisible < 0.5)
         return result;
@@ -561,10 +597,13 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         // its visibility ray returns zero. Mark it handled before tracing so
         // the caller does not conditionally draw a second, biased NEE sample.
         shadowVisible = 0.0; ST_RT_BEGIN(_st_rtri);
+#ifndef SCATTER_CONTRACT_COMPUTE
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                     0xFF, 2, 1, 1,
-                    P + N * 0.001, 0.001, ts.L, ts.dist - 0.002, 2); ST_RT_END(_st_rtri, 2u);
+                    P + N * 0.001, 0.001, ts.L, ts.dist - 0.002, 2);
+#endif
+        ST_RT_END(_st_rtri, 2u);
 
         if (shadowVisible < 0.5)
             return result;
@@ -585,10 +624,13 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
             return result;
 
         shadowVisible = 0.0; ST_RT_BEGIN(_st_renv);
+#ifndef SCATTER_CONTRACT_COMPUTE
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                     0xFF, 2, 1, 1,
-                    P + N * 0.001, 0.001, es.dir, 1e9, 2); ST_RT_END(_st_renv, 3u);
+                    P + N * 0.001, 0.001, es.dir, 1e9, 2);
+#endif
+        ST_RT_END(_st_renv, 3u);
 
         if (shadowVisible < 0.5)
             return result;
@@ -690,10 +732,13 @@ vec3 samplePunctualNEE(
         return vec3(0.0);
 
     shadowVisible = 0.0; ST_RT_BEGIN(_st_punct);
+#ifndef SCATTER_CONTRACT_COMPUTE
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
-                P + N * 0.001, 0.001, ps.toLight, tmax, 2); ST_RT_END(_st_punct, 4u);
+                P + N * 0.001, 0.001, ps.toLight, tmax, 2);
+#endif
+    ST_RT_END(_st_punct, 4u);
 
     if (shadowVisible < 0.5)
         return vec3(0.0);

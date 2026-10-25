@@ -7,6 +7,18 @@
 #include "SceneGraph.h"
 #include <glm/glm.hpp>
 #include <cstddef>
+#include <fstream>
+#include <iterator>
+#include <string>
+
+namespace
+{
+std::string ReadShaderSource(const char* path)
+{
+	std::ifstream in(path, std::ios::binary);
+	return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+}
 
 // ============================================================================
 // shader_interface.h struct layout tests (shared C++/GLSL)
@@ -27,9 +39,311 @@ TEST_CASE("SITriangleLight is 32 bytes")
     CHECK(sizeof(SITriangleLight) == 32);
 }
 
-TEST_CASE("SINRDUniformData is 16 bytes")
+TEST_CASE("SINRDUniformData is 32 bytes (RR5-T1: 16-byte prefix + roulette words)")
 {
-    CHECK(sizeof(SINRDUniformData) == 16);
+    CHECK(sizeof(SINRDUniformData) == 32);
+    // Exact 32B transport: existing 16B prefix unchanged, then uint
+    // depth16, float min20, float max24, reserved zero28.
+    CHECK(offsetof(SINRDUniformData, nrdEnabled) == 0);
+    CHECK(offsetof(SINRDUniformData, lobeDither) == 4);
+    CHECK(offsetof(SINRDUniformData, restirGIEnabled) == 8);
+    CHECK(offsetof(SINRDUniformData, restirGIReservoirIndex) == 12);
+    CHECK(offsetof(SINRDUniformData, rrStartDepth) == 16);
+    CHECK(offsetof(SINRDUniformData, rrMinP) == 20);
+    CHECK(offsetof(SINRDUniformData, rrMaxP) == 24);
+    CHECK(offsetof(SINRDUniformData, rrReserved) == 28);
+}
+
+TEST_CASE("SINRDUniformData zero-initializes the reserved word")
+{
+    SINRDUniformData d{};
+    CHECK(d.rrReserved == 0u);
+    CHECK(d.rrStartDepth == 0u);
+}
+
+// ============================================================================
+// RR5-T0 diagnostic seed transport: 16-byte set-1 binding-17 UBO plus
+// 16-byte probe slots. First word is the seed; remaining words are the
+// probe selectors (default 0 = probe off).
+// ============================================================================
+
+TEST_CASE("SIDiagSeedUniform is 16 bytes with seed at byte 0")
+{
+    CHECK(sizeof(SIDiagSeedUniform) == 16);
+    CHECK(offsetof(SIDiagSeedUniform, diagSampleSeed) == 0);
+    CHECK(offsetof(SIDiagSeedUniform, diagProbeActive) == 4);
+    CHECK(offsetof(SIDiagSeedUniform, diagProbeX) == 8);
+    CHECK(offsetof(SIDiagSeedUniform, diagProbeY) == 12);
+    SIDiagSeedUniform d{};
+    CHECK(d.diagSampleSeed == 0u);
+    CHECK(d.diagProbeActive == 0u);
+}
+
+TEST_CASE("SIDiagProbeSlots is 16 bytes (4 consumer slots)")
+{
+    CHECK(sizeof(SIDiagProbeSlots) == 16);
+    CHECK(offsetof(SIDiagProbeSlots, slots) == 0);
+}
+
+// ============================================================================
+// RR5-T0 review P2: mandatory diagnostic resources must be checked before
+// any descriptor write, with partial-allocation rollback. CPU tests cannot
+// fault-inject Vulkan allocation (CPU-only boundary), so this test pins
+// the checked structure in the production source: checked creation,
+// rollback, and init-gating before the descriptor-write section. No fault
+// injection was performed; the success path is proven by validation-clean
+// production runs.
+// ============================================================================
+
+TEST_CASE("DiagSeed: allocation failures are checked with rollback before writes")
+{
+    const std::string renderer = ReadShaderSource("RT2App/src/RendererGPU.cpp");
+    REQUIRE(!renderer.empty());
+    const size_t seedCheck = renderer.find(
+        "if (!GpuResources::CreateBuffer(m_Device, sizeof(SIDiagSeedUniform)");
+    CHECK(seedCheck != std::string::npos);
+    const size_t probeCheck = renderer.find(
+        "if (!GpuResources::CreateBuffer(m_Device, sizeof(SIDiagProbeSlots)");
+    CHECK(probeCheck != std::string::npos);
+    CHECK(renderer.find("failed to create seed UBO", seedCheck) != std::string::npos);
+    CHECK(renderer.find("failed to create probe buffer", probeCheck) != std::string::npos);
+    CHECK(renderer.find("rolling back seed UBO", probeCheck) != std::string::npos);
+    // Initialization fails before any descriptor write can see null handles.
+    // (CreateDiagSeedResources runs in Init right after the set-1 layout;
+    // descriptor writes happen later in UpdateGBufferDescriptorSet.)
+    CHECK(renderer.find("if (!CreateDiagSeedResources())") != std::string::npos);
+}
+
+// ============================================================================
+// RR5-T0 review P1: a probe dump is a checked artifact. The production
+// host must reject out-of-extent pixels before any frame, fail readback
+// errors instead of skipping frames, and require the requested frame
+// count plus at least one live slot before writing a success file.
+// ============================================================================
+
+TEST_CASE("DiagProbe: empty evidence fails loudly instead of dumping success")
+{
+    const std::string host = ReadShaderSource("RT2App/src/WalnutApp.cpp");
+    REQUIRE(!host.empty());
+    // Out-of-extent probe pixel exits before the frame loop.
+    CHECK(host.find("outside render extent") != std::string::npos);
+    CHECK(host.find("RNG probe pixel FAILED") != std::string::npos);
+    // Readback failure is run failure, never a skipped frame.
+    CHECK(host.find("diagProbeReadFailed = true") != std::string::npos);
+    // Requested-count and any-live-sample gates precede the success write.
+    CHECK(host.find("sampledFrames") != std::string::npos);
+    CHECK(host.find("no live RNG sample") != std::string::npos);
+    CHECK(host.find("discardOutput(g_CLI.diagRngDump)") != std::string::npos);
+}
+
+// RR5-T0 re-review P1: every probe failure invalidates the explicitly
+// requested artifacts (never a stale success), the cleanup is verified
+// loud, and no broad deletion reaches beyond the requested targets.
+TEST_CASE("DiagProbe: failures discard requested artifacts with loud cleanup")
+{
+    const std::string host = ReadShaderSource("RT2App/src/WalnutApp.cpp");
+    REQUIRE(!host.empty());    // Early pixel rejection discards the requested dump AND the
+    // requested image outputs of this run (bounded window: the printf
+    // and its discards belong to the same pre-loop branch).
+    const size_t gate = host.find("outside render extent");
+    REQUIRE(gate != std::string::npos);
+    const size_t marker = host.find("RNG probe pixel FAILED", gate);
+    REQUIRE(marker != std::string::npos);
+    const std::string branch = host.substr(marker, 1200);
+    CHECK(branch.find("discardOutput(g_CLI.diagRngDump)") != std::string::npos);
+    CHECK(branch.find("discardOutput(g_CLI.outputHDRPath)") != std::string::npos);
+    CHECK(branch.find("std::exit(EXIT_FAILURE)") != std::string::npos);
+    // Checked discard on evidence, open and write failures.
+    CHECK(host.find("discardDumpChecked") != std::string::npos);
+    CHECK(host.find("stale/partial dump discarded") != std::string::npos);
+    CHECK(host.find("dump cleanup FAILED, stale file remains") != std::string::npos);
+}
+
+TEST_CASE("DiagSeed: seed term precedes pcg in all three initRNG helpers")
+{
+    for (const char* path : { "RT2App/shaders/pathtracer_shared.glsl",
+                              "RT2App/shaders/restir_bindings.glsl",
+                              "RT2App/shaders/restir_gi_bindings.glsl" })
+    {
+        const std::string source = ReadShaderSource(path);
+        REQUIRE(!source.empty());
+        const size_t term = source.find("diagSampleSeed * 2654435761u");
+        CHECK(term != std::string::npos);
+        // The mix lands on the initial state before the warm-up pcg call
+        // of that helper (unsigned add; seed 0 is exactly 0).
+        const size_t init = source.find("uint initRNG(ivec2 pixel, float frameIndex)");
+        CHECK(init != std::string::npos);
+        CHECK(init < term);
+        const size_t pcgCall = source.find("pcg(rngState);", term);
+        CHECK(pcgCall != std::string::npos);
+        CHECK(source.find("diagWriteProbe") != std::string::npos);
+        CHECK(source.find("SI_BINDING_DIAG_SEED") != std::string::npos);
+        CHECK(source.find("SI_BINDING_DIAG_PROBE") != std::string::npos);
+    }
+}
+
+// ============================================================================
+// RR5-T2 active sampling-weight contract. These checks pin the probability/
+// weight pairing in the ACTUAL consumed shader sources (not a replica):
+// each supported branch divides by the probability its pick used. A
+// single-sided edit to either side breaks the asserted pairing. The
+// stochastic smooth-dielectric branch is recorded legacy behaviour —
+// the test documents its unchanged values without asserting correctness.
+// ============================================================================
+
+TEST_CASE("LobeContract: unused predictor is gone with no callers left")
+{
+    const std::string gi = ReadShaderSource("RT2App/shaders/restir_gi_bindings.glsl");
+    REQUIRE(!gi.empty());
+    // Deleted outright (choice (a), recorded): no definition, no tunable
+    // references, tombstone pointing at the real GI skip logic.
+    CHECK(gi.find("bool giWillSelectDiffuse") == std::string::npos);
+    CHECK(gi.find("was deleted here") != std::string::npos);
+    CHECK(gi.find("restir_gi_temporal.comp") != std::string::npos);
+    // Neither including consumer references it either.
+    for (const char* path : { "RT2App/shaders/restir_gi_temporal.comp",
+                              "RT2App/shaders/restir_gi_history.comp" })
+    {
+        const std::string consumer = ReadShaderSource(path);
+        REQUIRE(!consumer.empty());
+        CHECK(consumer.find("giWillSelectDiffuse") == std::string::npos);
+    }
+}
+
+TEST_CASE("LobeContract: regular branches divide by their pick probability")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    // Probability definition both branches pick from.
+    CHECK(scatter.find("result.P_s = clamp(mix(luminance(F), 1.0, metallic), 0.25, 0.75);") != std::string::npos);
+    CHECK(scatter.find("result.P_d = 1.0 - result.P_s;") != std::string::npos);
+    // Regular specular survivor compensation uses that same P_s.
+    CHECK(scatter.find("attenuation = F * G1_wi / result.P_s;") != std::string::npos);
+    // Regular diffuse survivor compensation uses that same P_d.
+    CHECK(scatter.find("attenuation = (1.0 - specWeight_d) * baseColor * (1.0 - metallic) / result.P_d;") != std::string::npos);
+}
+
+TEST_CASE("LobeContract: deterministic delta takes specular with P=1")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    const size_t delta = scatter.find("else if (roughness < 0.001 && metallic >= 0.5)");
+    CHECK(delta != std::string::npos);
+    // The delta branch body: reflect, undivided Fresnel, delta flag, no PDF.
+    const std::string body = scatter.substr(delta, 400);
+    CHECK(body.find("attenuation = F;") != std::string::npos);
+    CHECK(body.find("isDelta = true;") != std::string::npos);
+    CHECK(body.find("nextBsdfPdf = -1.0;") != std::string::npos);
+    CHECK(body.find("/ result.P_s") == std::string::npos);
+    CHECK(body.find("/ result.P_d") == std::string::npos);
+}
+
+TEST_CASE("LobeContract: smooth-dielectric branch recorded as legacy, unchanged")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    // Stochastic smooth-dielectric reflection: selected under r < P_s but
+    // stores attenuation = F WITHOUT /P_s. Documented legacy defect — the
+    // test records the values without asserting physical correctness, and
+    // no test may require /P_s here (see ticket RR5-T2).
+    const size_t branch = scatter.find("else if (r < result.P_s)");
+    CHECK(branch != std::string::npos);
+    const size_t smooth = scatter.find("if (roughness < 0.001)", branch);
+    CHECK(smooth != std::string::npos);
+    CHECK(smooth < branch + 600);
+    const std::string body = scatter.substr(smooth, 400);
+    CHECK(body.find("attenuation = F;") != std::string::npos);
+    CHECK(body.find("isDelta = true;") != std::string::npos);
+    CHECK(body.find("/P_s") == std::string::npos);
+    CHECK(body.find("/ P_s") == std::string::npos);
+}
+
+TEST_CASE("LobeContract: transmission and F0 authorities untouched")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    // Transmission uses its own distinct probabilities, not P_s/P_d.
+    CHECK(scatter.find("float P_refract  = (1.0 - F_scalar) * transmission;") != std::string::npos);
+    CHECK(scatter.find("float P_diffuse = (1.0 - F_scalar) * (1.0 - transmission) * (1.0 - metallic);") != std::string::npos);
+    // F0 authority chain intact.
+    const std::string shared = ReadShaderSource("RT2App/shaders/pathtracer_shared.glsl");
+    REQUIRE(!shared.empty());
+    CHECK(shared.find("return RRComputeF0(baseColor, metallic);") != std::string::npos);
+    CHECK(scatter.find("vec3 F0 = computeF0(baseColor, metallic);") != std::string::npos);
+}
+
+TEST_CASE("LobeContract: raster-first GI consumption divides by P_d")
+{
+    const std::string rgen = ReadShaderSource("RT2App/shaders/secondary_raygen.rgen");
+    REQUIRE(!rgen.empty());
+    // Non-joint path compensates the consumed diffuse sample.
+    CHECK(rgen.find("indirectRad = giDiffuseRad / scatter.P_d;") != std::string::npos);
+    // Joint path uses the full mixture density over both lobe probabilities.
+    CHECK(rgen.find("float mixturePdf = evalBSDFPdf(wo, wi, n, scatter.P_s, scatter.P_d, alpha);") != std::string::npos);
+}
+
+// ============================================================================
+// RR5-T2 re-review: the numeric battery invokes the consumed
+// scatterPrimaryHit (no replica) through the debug pass mode 27 and
+// records exact values for the CPU analysis in scripts/.
+// ============================================================================
+
+TEST_CASE("LobeContract: battery invokes consumed scatter with exact helpers")
+{
+    const std::string battery = ReadShaderSource("RT2App/shaders/scatter_contract.comp");
+    REQUIRE(!battery.empty());
+    // Consumed implementation (shared file, not a copy) with matched
+    // materials across specular/diffuse/delta/legacy branches.
+    CHECK(battery.find("#include \"scatter_shared.glsl\"") != std::string::npos);
+    CHECK(battery.find("ScatterResult r = scatterPrimaryHit(") != std::string::npos);
+    // Unweighted factors recomputed through the exact shared helpers the
+    // implementation calls — the definitional restatement under test.
+    CHECK(battery.find("F_Schlick(NdotV, F0)") != std::string::npos);
+    CHECK(battery.find("G1_Smith(NdotWi, alpha)") != std::string::npos);
+    CHECK(battery.find("F_Schlick(VdotH_d, F0)") != std::string::npos);
+    // Delta effective P == 1 branch and legacy record-only flag.
+    CHECK(battery.find("P = 1.0;") != std::string::npos);
+    CHECK(battery.find("flags += 8.0;") != std::string::npos);
+}
+
+TEST_CASE("LobeContract: battery is plumbed through the debug pass mode 27")
+{
+    const std::string pass = ReadShaderSource("RT2App/src/GBufferDebugPass.cpp");
+    REQUIRE(!pass.empty());
+    CHECK(pass.find("scattercontract.spv") != std::string::npos);
+    CHECK(pass.find("kScatterContractMode") != std::string::npos);
+    CHECK(pass.find("m_ContractPipeline") != std::string::npos);
+    const std::string frame = ReadShaderSource("RT2App/src/FrameRenderer.cpp");
+    REQUIRE(!frame.empty());
+    CHECK(frame.find("kScatterContractMode") != std::string::npos);
+    const std::string premake = ReadShaderSource("RT2App/premake5.lua");
+    REQUIRE(!premake.empty());
+    CHECK(premake.find("shaders/scatter_contract.comp") != std::string::npos);
+    CHECK(premake.find("scattercontract.spv") != std::string::npos);
+}
+
+TEST_CASE("DiagSeed: four consumers record raw states at their call sites")
+{
+    // Both raygen entries share slot 0: the SBT record runs exactly one
+    // per frame (RT-primary vs raster-first), so the slot always holds the
+    // primary stream that actually ran.
+    const std::string primaryRgen = ReadShaderSource("RT2App/shaders/raygen.rgen");
+    REQUIRE(!primaryRgen.empty());
+    CHECK(primaryRgen.find("diagWriteProbe(0u, pixel, rngState)") != std::string::npos);
+    const std::string raygen = ReadShaderSource("RT2App/shaders/secondary_raygen.rgen");
+    REQUIRE(!raygen.empty());
+    CHECK(raygen.find("diagWriteProbe(0u, pixel, rngState)") != std::string::npos);
+    const std::string diTemp = ReadShaderSource("RT2App/shaders/restir_temporal.comp");
+    REQUIRE(!diTemp.empty());
+    CHECK(diTemp.find("diagWriteProbe(1u, pixel, rngState)") != std::string::npos);
+    const std::string diSpat = ReadShaderSource("RT2App/shaders/restir_spatial.comp");
+    REQUIRE(!diSpat.empty());
+    CHECK(diSpat.find("diagWriteProbe(2u, pixel, rngState)") != std::string::npos);
+    const std::string giTemp = ReadShaderSource("RT2App/shaders/restir_gi_temporal.comp");
+    REQUIRE(!giTemp.empty());
+    CHECK(giTemp.find("diagWriteProbe(3u, pixel, rngState)") != std::string::npos);
+    // The DI spatial domain split that the probe samples after is intact.
+    CHECK(diSpat.find("camera.position.w + 7777.0") != std::string::npos);
 }
 
 TEST_CASE("SIGIReservoir is 48 bytes (3 uvec4, std430)")
@@ -57,6 +371,57 @@ TEST_CASE("SIReSTIRPushConstants carries both jitter samples")
 {
     CHECK(sizeof(SIReSTIRPushConstants) == 60);
     CHECK(offsetof(SIReSTIRPushConstants, jitter) == 44);
+}
+
+// ============================================================================
+// RR5-T1 roulette plumbing contract: tunables travel host -> set-1 NRD UBO ->
+// closest-hit with identical defaults; lobe probabilities stay hard-coded.
+// These source checks run from the repository root (like the script gates).
+// ============================================================================
+
+TEST_CASE("Roulette: closest-hit consumes UBO tunables, no literals remain")
+{
+    const std::string rchit = ReadShaderSource("RT2App/shaders/closesthit.rchit");
+    REQUIRE(!rchit.empty());
+    CHECK(rchit.find("nrdData.rrStartDepth") != std::string::npos);
+    CHECK(rchit.find("nrdData.rrMinP") != std::string::npos);
+    CHECK(rchit.find("nrdData.rrMaxP") != std::string::npos);
+    // Legacy hard-codes must be gone from the roulette block.
+    CHECK(rchit.find("depth >= 3u") == std::string::npos);
+    CHECK(rchit.find("0.05, 0.95") == std::string::npos);
+    // Unbiased survivor compensation is preserved.
+    CHECK(rchit.find("newThroughput /= pContinue") != std::string::npos);
+}
+
+TEST_CASE("Roulette: GLSL NRD uniform mirrors the 32-byte C++ layout")
+{
+    const std::string shared = ReadShaderSource("RT2App/shaders/pathtracer_shared.glsl");
+    REQUIRE(!shared.empty());
+    for (const char* field : { "rrStartDepth", "rrMinP", "rrMaxP", "rrReserved" })
+        CHECK(shared.find(field) != std::string::npos);
+}
+
+TEST_CASE("Roulette: lobe clamp stays hard-coded (deferred to a later ticket)")
+{
+    const std::string scatter = ReadShaderSource("RT2App/shaders/scatter_shared.glsl");
+    REQUIRE(!scatter.empty());
+    CHECK(scatter.find("0.25, 0.75") != std::string::npos);
+    CHECK(scatter.find("rrMinP") == std::string::npos);
+    CHECK(scatter.find("rrMaxP") == std::string::npos);
+    CHECK(scatter.find("specProbMin") == std::string::npos);
+    CHECK(scatter.find("specProbMax") == std::string::npos);
+}
+
+TEST_CASE("Roulette: debug view keeps the NRD prefix, GI declares no nrdData")
+{
+    const std::string debug = ReadShaderSource("RT2App/shaders/gbuffer_debug.comp");
+    REQUIRE(!debug.empty());
+    CHECK(debug.find("nrdEnabledDebug") != std::string::npos);
+    CHECK(debug.find("restirGIReservoirIndexDebug") != std::string::npos);
+    CHECK(debug.find("rrStartDepthDebug") != std::string::npos);
+    const std::string gi = ReadShaderSource("RT2App/shaders/restir_gi_bindings.glsl");
+    REQUIRE(!gi.empty());
+    CHECK(gi.find("nrdData") == std::string::npos);
 }
 
 TEST_CASE("GPUMaterial matches SIMaterial layout")
@@ -732,4 +1097,27 @@ TEST_CASE("UpdateInstancesFromECS moves punctual lights with their transform")
     CHECK(gpu.punctualLights[0].position_range.x == doctest::Approx(-4.0f));
     CHECK(gpu.punctualLights[0].position_range.y == doctest::Approx(5.0f));
     CHECK(gpu.punctualLights[0].position_range.z == doctest::Approx(6.0f));
+}
+
+// ============================================================================
+// RR5-T2 re-review: the diagnostic GI force-off wins a conflicting
+// --restir-gi at application time. Ordering is code order in the
+// post-init startup block (GetSettings refresh, then flags); this test
+// pins that the restirGI enable precedes the diag helper call there.
+// ============================================================================
+
+TEST_CASE("DiagNoGI: force-off applies after restir-gi at post-init startup")
+{
+    const std::string host = ReadShaderSource("RT2App/src/WalnutApp.cpp");
+    REQUIRE(!host.empty());
+    // The headless post-init refresh is the last GetSettings site; the
+    // conflicting-flag order lives in the block after it.
+    const size_t refresh = host.rfind("m_Settings = m_RendererGPU.GetSettings();");
+    REQUIRE(refresh != std::string::npos);
+    const std::string site = host.substr(refresh, 2500);
+    const size_t enable = site.find("if (g_CLI.restirGI)");
+    const size_t forceOff = site.find("ApplyDiagSeedCLIOverrides(m_Settings);");
+    REQUIRE(enable != std::string::npos);
+    REQUIRE(forceOff != std::string::npos);
+    CHECK(enable < forceOff);
 }

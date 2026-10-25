@@ -40,6 +40,8 @@ void main()
 
     // Initialize RNG from pixel coords + frame index
     uint rngState = initRNG(pixel, camera.position.w); ST_SET_DEPTH(0u); ST_RESET_ORD();
+    // RR5-T0 discriminator: raw main-RT stream state for the probe pixel.
+    diagWriteProbe(0u, pixel, rngState);
 
     // ---- Handle primary miss (sky) ----
     if (isMiss)

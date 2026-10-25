@@ -5,11 +5,13 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
+#include <cerrno>
 #include <cmath>
 #include <optional>
 #include "RRGuideContract.h"
 #include "DenoiserMode.h"
 #include "CameraPresentation.h"
+#include "RenderSettings.h"
 
 // Resolved denoiser selection: the single mapping from compatibility and
 // public CLI spellings onto the authored enum. Explicit --denoiser-mode
@@ -87,6 +89,24 @@ inline std::optional<ImplicitStartupDenoiser> ResolveImplicitStartupDenoiser(
 		"implicit default: NGX supported and eligible; starting RR Quality" };
 }
 
+// Strict unsigned 32-bit token parse (RR5-T0, shared by --diag-seed and
+// --diag-rng-pixel). Full-token match, finite magnitude, no wraparound:
+// strtoull accepts a leading '-' (wrapping) and saturates on overflow,
+// so both are rejected explicitly. Base 0 permits 0x-prefixed hex for
+// seeds; pixel coordinates use base 10.
+inline bool TryParseUint32Token(const char* text, uint32_t& out, int base)
+{
+	if (!text || text[0] == '\0' || text[0] == '-')
+		return false;
+	char* end = nullptr;
+	errno = 0;
+	const unsigned long long parsed = std::strtoull(text, &end, base);
+	if (end == text || *end != '\0' || errno == ERANGE || parsed > 0xFFFFFFFFull)
+		return false;
+	out = static_cast<uint32_t>(parsed);
+	return true;
+}
+
 struct CLIArgs
 {
 	std::string scenePath;
@@ -105,6 +125,16 @@ struct CLIArgs
 	int height = 720;             // viewport height for headless mode
 	int spp = 0;                  // SPP override (0 = use default)
 	int bounces = 0;              // bounces override (0 = use default)
+	// RR5-T1 roulette overrides. Presence is explicit (hasRr*); values are
+	// only consumed when present. Malformed input sets rouletteError, which
+	// exits nonzero before any rendering/output (see CreateApplication).
+	int rrStartDepth = 0;         // roulette start-depth override
+	bool hasRrStartDepth = false;
+	float rrMinP = -1.0f;         // roulette pContinue lower-clamp override
+	bool hasRrMinP = false;
+	float rrMaxP = -1.0f;         // roulette pContinue upper-clamp override
+	bool hasRrMaxP = false;
+	std::string rouletteError;    // flag-specific diagnostic for invalid roulette CLI
 	bool nrd = false;             // enable NRD (compat: maps onto --denoiser-mode nrd)
 	std::string denoiserMode;     // public selector: off|nrd|rr (empty = default NRD)
 	std::string rrQuality;        // RR preset: quality|balanced|performance (empty = quality)
@@ -157,6 +187,24 @@ struct CLIArgs
 	int captureEvery = 0;              // save sequence frame every N frames
 	int cameraSweepCycles = 0;         // complete cycles before holding still (0 = repeat)
 	uint32_t sceneSeed = 0;            // deterministic sampling seed
+	// RR5-T0 diagnostic sample seed. 0 (default) preserves today's
+	// streams; nonzero perturbs them. Malformed input sets diagSeedError,
+	// which exits nonzero before any rendering/output (like rouletteError).
+	uint32_t diagSeed = 0;
+	bool hasDiagSeed = false;
+	// RNG probe pixel (render pixels) + headless JSON dump path. The dump
+	// requires an explicit pixel; the probe writes raw consumer states
+	// for that pixel every frame while armed.
+	bool hasDiagRngPixel = false;
+	uint32_t diagRngPixelX = 0;
+	uint32_t diagRngPixelY = 0;
+	std::string diagRngDump;
+	std::string diagSeedError;    // flag-specific diagnostic for invalid diag-seed CLI
+	// RR5-T2 diagnostic GI disable (acceptance harness only, not a
+	// product switch: no UI, headless only). Forces restirGIEnabled off
+	// through the existing ApplySettings GI-toggle lifecycle so a bounded
+	// GI-off fixed-stream pair can be captured for the T2 parity check.
+	bool diagNoGI = false;
 
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasProject() const { return !projectPath.empty(); }
@@ -237,6 +285,80 @@ struct CLIArgs
 			else if (strcmp(a, "--bounces") == 0)
 			{
 				if (const char* v = next()) args.bounces = std::max(1, std::atoi(v));
+			}
+			else if (strcmp(a, "--rr-start-depth") == 0)
+			{
+				// RR5-T1 fixup (review P2): strict full-token integer parse.
+				// atof/atoi silently accept garbage ("nan" -> 0) and ignore
+				// missing tokens; invalid input must exit before output.
+				if (const char* v = next())
+				{
+					char* end = nullptr;
+					errno = 0;
+					const long parsed = std::strtol(v, &end, 10);
+					if (end == v || *end != '\0' || errno == ERANGE || parsed < 1)
+					{
+						if (args.rouletteError.empty())
+							args.rouletteError = std::string("invalid --rr-start-depth '") + v +
+								"' (want an integer >= 1)";
+					}
+					else
+					{
+						args.rrStartDepth = (int)parsed;
+						args.hasRrStartDepth = true;
+					}
+				}
+				else if (args.rouletteError.empty())
+					args.rouletteError = "missing value for --rr-start-depth (want an integer >= 1)";
+			}
+			else if (strcmp(a, "--rr-min-p") == 0)
+			{
+				// RR5-T1 fixup (review R1): validate the narrowed
+				// destination float, not just the double token. A token
+				// like 1e-50 is finite in (0,1) as a double but narrows
+				// to float 0; a token rounding up to 1.0f is equally
+				// unusable as a survival-probability bound.
+				if (const char* v = next())
+				{
+					char* end = nullptr;
+					const float narrowed = (float)std::strtod(v, &end);
+					if (end == v || *end != '\0' || !std::isfinite(narrowed) ||
+					    narrowed <= 0.0f || narrowed >= 1.0f)
+					{
+						if (args.rouletteError.empty())
+							args.rouletteError = std::string("invalid --rr-min-p '") + v +
+								"' (want a finite number in (0,1))";
+					}
+					else
+					{
+						args.rrMinP = narrowed;
+						args.hasRrMinP = true;
+					}
+				}
+				else if (args.rouletteError.empty())
+					args.rouletteError = "missing value for --rr-min-p (want a finite number in (0,1))";
+			}
+			else if (strcmp(a, "--rr-max-p") == 0)
+			{
+				if (const char* v = next())
+				{
+					char* end = nullptr;
+					const float narrowed = (float)std::strtod(v, &end);
+					if (end == v || *end != '\0' || !std::isfinite(narrowed) ||
+					    narrowed <= 0.0f || narrowed >= 1.0f)
+					{
+						if (args.rouletteError.empty())
+							args.rouletteError = std::string("invalid --rr-max-p '") + v +
+								"' (want a finite number in (0,1))";
+					}
+					else
+					{
+						args.rrMaxP = narrowed;
+						args.hasRrMaxP = true;
+					}
+				}
+				else if (args.rouletteError.empty())
+					args.rouletteError = "missing value for --rr-max-p (want a finite number in (0,1))";
 			}
 			else if (strcmp(a, "--nrd") == 0)
 			{
@@ -342,6 +464,53 @@ struct CLIArgs
 		else if (strcmp(a, "--seed") == 0)
 		{
 			if (const char* v = next()) args.sceneSeed = static_cast<uint32_t>(std::strtoul(v, nullptr, 0));
+		}
+		else if (strcmp(a, "--diag-seed") == 0)
+		{
+			// RR5-T0: strict unsigned parse; malformed input fails loudly
+			// instead of seeding silently.
+			if (const char* v = next())
+			{
+				if (!TryParseUint32Token(v, args.diagSeed, 0))
+				{
+					if (args.diagSeedError.empty())
+						args.diagSeedError = std::string("invalid --diag-seed '") + v +
+							"' (want an unsigned 32-bit integer)";
+				}
+				else
+					args.hasDiagSeed = true;
+			}
+			else if (args.diagSeedError.empty())
+				args.diagSeedError = "missing value for --diag-seed (want an unsigned 32-bit integer)";
+		}
+		else if (strcmp(a, "--diag-rng-pixel") == 0)
+		{
+			const char* vx = next();
+			const char* vy = vx ? next() : nullptr;
+			uint32_t px = 0, py = 0;
+			if (!vx || !vy || !TryParseUint32Token(vx, px, 10) ||
+			    !TryParseUint32Token(vy, py, 10))
+			{
+				if (args.diagSeedError.empty())
+					args.diagSeedError = "invalid --diag-rng-pixel (want two non-negative integers: <x> <y>)";
+			}
+			else
+			{
+				args.diagRngPixelX = px;
+				args.diagRngPixelY = py;
+				args.hasDiagRngPixel = true;
+			}
+		}
+		else if (strcmp(a, "--diag-rng-dump") == 0)
+		{
+			if (const char* v = next())
+				args.diagRngDump = v;
+			else if (args.diagSeedError.empty())
+				args.diagSeedError = "missing value for --diag-rng-dump (want an output path)";
+		}
+		else if (strcmp(a, "--diag-no-gi") == 0)
+		{
+			args.diagNoGI = true;
 		}
 		else if (strcmp(a, "--raster-first") == 0)
 		{
@@ -460,6 +629,13 @@ struct CLIArgs
 				printf("  --height <H>         Viewport height (default 720)\n");
 				printf("  --spp <N>            Samples per pixel override\n");
 				printf("  --bounces <N>        Max bounces override\n");
+				printf("  --rr-start-depth <N>  Roulette start-depth override (default 3)\n");
+				printf("  --rr-min-p <F>        Roulette pContinue lower clamp override (default 0.05)\n");
+				printf("  --rr-max-p <F>        Roulette pContinue upper clamp override (default 0.95)\n");
+				printf("  --diag-seed <N>       Diagnostic sample-seed override (default 0 = legacy streams)\n");
+				printf("  --diag-rng-pixel <x> <y>  Probe pixel for raw RNG-state sampling (requires --diag-rng-dump)\n");
+				printf("  --diag-rng-dump <path>  Write per-frame raw RNG states (mainRT/DI-temporal/DI-spatial/GI) as JSON\n");
+				printf("  --diag-no-gi          Diagnostic: force ReSTIR GI off headless (T2 acceptance harness only; wins over --restir-gi)\n");
 				printf("  --nrd                Enable NRD denoiser\n");
 		printf("  --denoiser-mode <off|nrd|rr>  Select the denoiser path (default: RR Quality on\n");
 		printf("      supported RTX, NRD otherwise; an explicit choice always wins)\n");
@@ -517,6 +693,25 @@ struct CLIArgs
 			args.rasterFirst = true;
 			// RR-neutral validation must exercise the producer without relying on
 			// NRD's branch to populate any guide pixel.
+		}
+		// RR5-T1 fixup (review R1): validate the EFFECTIVE window, filling
+		// omitted flags with their defaults. A single --rr-min-p 0.96 is
+		// invalid against the default max 0.95 even though no --rr-max-p
+		// was given; such input must fail loudly, not silently
+		// canonicalize back to defaults.
+		if (args.rouletteError.empty() && (args.hasRrMinP || args.hasRrMaxP))
+		{
+			const float effectiveMin = args.hasRrMinP ? args.rrMinP : kDefaultRRMinP;
+			const float effectiveMax = args.hasRrMaxP ? args.rrMaxP : kDefaultRRMaxP;
+			if (!(effectiveMin < effectiveMax))
+				args.rouletteError = "invalid roulette window: --rr-min-p must be less than --rr-max-p (omitted flags use defaults 0.05/0.95)";
+		}
+		// RR5-T0: a dump without an explicit probe pixel would silently
+		// sample pixel (0,0); require the pairing instead.
+		if (args.diagSeedError.empty() && !args.diagRngDump.empty() &&
+		    !args.hasDiagRngPixel)
+		{
+			args.diagSeedError = "missing --diag-rng-pixel <x> <y> for --diag-rng-dump (the probe pixel must be explicit)";
 		}
 		if (args.headless && !args.hasOutput())
 			args.outputPath = "screenshot.png";

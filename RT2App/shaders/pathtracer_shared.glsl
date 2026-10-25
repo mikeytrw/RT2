@@ -236,7 +236,13 @@ layout(set = 0, binding = SI_BINDING_INSTANCE_MAT_OFFSETS, std430) readonly buff
 // Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];
 
+#ifndef SCATTER_CONTRACT_COMPUTE
 layout(set = 0, binding = SI_BINDING_TLAS) uniform accelerationStructureEXT topLevelAS;
+#endif
+// (Contract-TU exclusion: the accel-struct type would demand a
+// ray-tracing capability that spirv-val rejects under vulkan1.2 for a
+// compute module. Nothing on the contract battery's executed path
+// references it; ray-tracing TUs are unaffected.)
 
 // ---- NRD G-buffer outputs (set 1) -------------------------------------------
 // Storage images written by closesthit at the primary hit (depth=0) and
@@ -255,13 +261,50 @@ layout(set = 1, binding = SI_BINDING_RR_NOISY_HDR, r11f_g11f_b10f) uniform image
 layout(set = 1, binding = SI_BINDING_RR_HIT_DISTANCE, r32f) uniform image2D rrHitDistance;
 
 // NRD enable flag (1 = NRD mode, 0 = normal temporal accumulation)
+// Trailing RR5-T1 roulette tunables mirror SINRDUniformData bytes 16-31;
+// the first four words keep their existing meaning.
 layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniform
 {
     uint nrdEnabled;            // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
     uint lobeDither;            // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
     uint restirGIEnabled;       // 1 = ReSTIR GI active (consume stored GI sample in raygen)
     uint restirGIReservoirIndex;// current GI reservoir region index (frame parity)
+    uint rrStartDepth;          // first bounce depth where roulette applies (default 3)
+    float rrMinP;               // lower clamp for pContinue (default 0.05)
+    float rrMaxP;               // upper clamp for pContinue (default 0.95)
+    uint rrReserved;            // zero-initialised padding/reserved word
 } nrdData;
+
+// Diagnostic sample seed (RR5-T0): perturbs sampling streams on demand.
+// Default zero preserves today's streams exactly (the initRNG term below
+// adds 0). Probe words default to 0 (probe off). Mirrors
+// SIDiagSeedUniform bytes 0-15.
+layout(set = 1, binding = SI_BINDING_DIAG_SEED) uniform DiagSeedUniform
+{
+    uint diagSampleSeed;        // 0 = legacy streams; nonzero = perturbed streams
+    uint diagProbeActive;       // 0 = probe off; nonzero = record probe pixel states
+    uint diagProbeX;            // probe pixel x (render pixels)
+    uint diagProbeY;            // probe pixel y (render pixels)
+} diagSeedData;
+
+// RNG probe slots (RR5-T0 discriminator): raw post-init states recorded
+// by the consumers for the probe pixel only. Read back headless per
+// frame; 0xFFFFFFFF fill means no sample. Pure store, never feeds
+// rendering, so the seed-0 image is unaffected.
+layout(set = 1, binding = SI_BINDING_DIAG_PROBE) buffer DiagProbeSlots
+{
+    uint slots[];
+} diagProbeSlots;
+
+// T0 discriminator probe: records this invocation's raw post-init state
+// when the probe is armed and this is the probe pixel. Executes the
+// consumed stream's actual state — not a copy — at the call site.
+void diagWriteProbe(uint slot, ivec2 pixel, uint state)
+{
+    if (diagSeedData.diagProbeActive != 0u &&
+        pixel == ivec2(int(diagSeedData.diagProbeX), int(diagSeedData.diagProbeY)))
+        diagProbeSlots.slots[slot] = state;
+}
 
 // ---- Payload ----------------------------------------------------------------
 // Packed into explicit vec4 rows to avoid cross-stage std430 alignment
@@ -925,10 +968,14 @@ float evalTransmissionBSDFPdf(vec3 wo, vec3 wi, vec3 n,
 
 // Initialize RNG from pixel coords + frame index (camera.position.w).
 // Returns warmed-up rngState ready for randomFloat/pcg calls.
+// RR5-T0: diagSampleSeed perturbs the initial state (Knuth odd-constant
+// mix) before the first pcg call; seed 0 adds exactly 0, preserving
+// today's streams bit-for-bit. Frame conversion unchanged.
 uint initRNG(ivec2 pixel, float frameIndex)
 {
     uint seed = uint(abs(frameIndex));
     uint rngState = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + seed * 26699u;
+    rngState += diagSeedData.diagSampleSeed * 2654435761u;
     pcg(rngState);
     return rngState;
 }
