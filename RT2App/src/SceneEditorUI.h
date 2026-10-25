@@ -13,6 +13,8 @@
 #include "PropertyEditSession.h"
 #include "CompositePreviewSession.h"
 #include "PhysicsInspectorState.h"
+
+struct ImVec2;
 #include "AudioInspectorState.h"
 #include "PreviewSessionClose.h"
 #include "TransformEditing.h"
@@ -300,7 +302,9 @@ private:
 	// never persisted. Empty mask passes everything (no stuck-empty view).
 	bool MatchesTypeIncludingDescendants(SceneManager::EntityId entity) const;
 	// Colored type square ahead of a tree row (legend = filter chips).
-	void DrawBrowserTypeGlyph(std::uint32_t typeBits) const;
+	// Draws the row's type icon at labelPos (inside the space the padded
+	// label reserves); the type tag is the icon's hover tooltip.
+	void DrawBrowserTypeIcon(std::uint32_t typeBits, const ImVec2& labelPos) const;
 	SceneManager::EntityId SelectedEntity() const;
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;

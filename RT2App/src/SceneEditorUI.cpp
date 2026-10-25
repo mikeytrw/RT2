@@ -2,6 +2,8 @@
 #include "EditorOutlinerFilter.h"
 #include "EditorToolbar.h"
 #include "EditorTheme.h"
+#include "EditorIcons.h"
+#include "EditorFonts.h"
 #include "PrimitiveGeometry.h"
 #include "FileDialog.h"
 #include "ECSComponents.h"
@@ -22,7 +24,94 @@
 #include <cstdio>
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
 #include <cstring>
+
+namespace {
+
+// ---- Inspector presentation helpers (Graphite design) ----------------------
+// Presentation only: none of these own state, and the vector row keeps
+// DragFloat3's group semantics so callers' IsItemActivated /
+// IsItemDeactivatedAfterEdit checks (preview sessions) behave unchanged.
+
+// A component card's title: tinted icon and semibold title.
+void InspectorSectionHeader(const char* icon, const char* title)
+{
+	ImGui::Spacing();
+	ImFont* bold = rt2::EditorFonts().bold;
+	if (bold) ImGui::PushFont(bold);
+	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::IndigoLine);
+	ImGui::TextUnformatted(icon);
+	ImGui::PopStyleColor();
+	ImGui::SameLine(0.0f, 8.0f);
+	ImGui::TextUnformatted(title);
+	if (bold) ImGui::PopFont();
+	ImGui::Spacing();
+}
+
+// A group inside a card (physics body, shape, constraints).
+void InspectorSubHeader(const char* title)
+{
+	ImGui::Spacing();
+	ImFont* medium = rt2::EditorFonts().medium;
+	if (medium) ImGui::PushFont(medium);
+	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::TextSecondary);
+	ImGui::TextUnformatted(title);
+	ImGui::PopStyleColor();
+	if (medium) ImGui::PopFont();
+}
+
+float InspectorLabelWidth()
+{
+	return ImGui::GetFontSize() * 5.6f;
+}
+
+// Left-column property label; the next widget fills the rest of the row.
+void InspectorRowLabel(const char* label)
+{
+	ImGui::AlignTextToFramePadding();
+	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
+	ImGui::TextUnformatted(label);
+	ImGui::PopStyleColor();
+	ImGui::SameLine(InspectorLabelWidth());
+	ImGui::SetNextItemWidth(-FLT_MIN);
+}
+
+// Label-left X/Y/Z row with axis-colored tags inside each field.
+bool InspectorVec3Row(const char* label, float* v, float speed, const char* format = "%.3f")
+{
+	ImGui::AlignTextToFramePadding();
+	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
+	ImGui::TextUnformatted(label);
+	ImGui::PopStyleColor();
+	ImGui::SameLine(InspectorLabelWidth());
+
+	bool changed = false;
+	ImGui::BeginGroup();
+	ImGui::PushID(label);
+	const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
+	const float width = (ImGui::GetContentRegionAvail().x - spacing * 2.0f) / 3.0f;
+	static const char* const kAxisNames[3] = { "X", "Y", "Z" };
+	const ImVec4 axisColors[3] = { rt2::EditorPalette::AxisX,
+		rt2::EditorPalette::AxisY, rt2::EditorPalette::AxisZ };
+	for (int i = 0; i < 3; ++i)
+	{
+		ImGui::PushID(i);
+		if (i > 0) ImGui::SameLine(0.0f, spacing);
+		ImGui::SetNextItemWidth(width);
+		changed |= ImGui::DragFloat("##v", &v[i], speed, 0.0f, 0.0f, format);
+		const ImVec2 min = ImGui::GetItemRectMin();
+		ImGui::GetWindowDrawList()->AddText(
+			ImVec2(min.x + 6.0f, min.y + ImGui::GetStyle().FramePadding.y),
+			ImGui::GetColorU32(axisColors[i]), kAxisNames[i]);
+		ImGui::PopID();
+	}
+	ImGui::PopID();
+	ImGui::EndGroup();
+	return changed;
+}
+
+} // anonymous namespace
 
 void SceneEditorUI::RenderPanels()
 {
@@ -1132,25 +1221,41 @@ bool SceneEditorUI::MatchesTypeIncludingDescendants(
 	return false;
 }
 
-void SceneEditorUI::DrawBrowserTypeGlyph(std::uint32_t typeBits) const
+namespace {
+
+// Room the row label reserves for its type icon: one icon advance (the
+// Lucide glyphs are merged at GlyphMinAdvanceX == font size) plus a gap.
+constexpr const char* kBrowserIconPad = "      ";
+
+} // anonymous namespace
+
+// Primary component family as a Lucide icon and tint, in the same priority
+// order the type filter uses. Shared by Scene Browser rows and the Inspector
+// entity header.
+static void BrowserTypeIcon(std::uint32_t typeBits, const char*& icon, ImVec4& tint)
 {
-	// Colored type square ahead of the row label (no icon font needed;
-	// chips use the same colors as the legend). Sized from the font so it
-	// stays crisp at any DPI; the tag text is the hover tooltip.
+	const std::string_view tag = rt2::core::TokenForBrowserTypes(typeBits).tag;
+	icon = RT2_ICON_CIRCLE_DOT;
+	tint = rt2::EditorPalette::Label;
+	if (tag == "[Mesh]")         { icon = RT2_ICON_BOX;      tint = ImVec4(0.545f, 0.573f, 1.000f, 1.0f); }
+	else if (tag == "[Light]")   { icon = RT2_ICON_SUN;      tint = ImVec4(0.910f, 0.690f, 0.294f, 1.0f); }
+	else if (tag == "[Camera]")  { icon = RT2_ICON_VIDEO;    tint = ImVec4(0.361f, 0.784f, 0.757f, 1.0f); }
+	else if (tag == "[Physics]") { icon = RT2_ICON_ATOM;     tint = ImVec4(0.961f, 0.557f, 0.396f, 1.0f); }
+	else if (tag == "[Audio]")   { icon = RT2_ICON_VOLUME_2; tint = ImVec4(0.804f, 0.722f, 1.000f, 1.0f); }
+	else if (tag == "[Script]")  { icon = RT2_ICON_CODE;     tint = ImVec4(0.482f, 0.847f, 0.561f, 1.0f); }
+	else if (tag == "[Motion]")  { icon = RT2_ICON_MOVE;     tint = ImVec4(0.361f, 0.784f, 0.757f, 1.0f); }
+}
+
+void SceneEditorUI::DrawBrowserTypeIcon(std::uint32_t typeBits, const ImVec2& labelPos) const
+{
 	const auto token = rt2::core::TokenForBrowserTypes(typeBits);
-	const float size = ImGui::GetTextLineHeight() * 0.72f;
-	ImVec2 corner = ImGui::GetCursorScreenPos();
-	corner.y += (ImGui::GetTextLineHeight() - size) * 0.5f;
-	ImGui::GetWindowDrawList()->AddRectFilled(
-		corner, ImVec2(corner.x + size, corner.y + size),
-		IM_COL32(static_cast<int>(token.r * 255.0f),
-		         static_cast<int>(token.g * 255.0f),
-		         static_cast<int>(token.b * 255.0f), 255),
-		2.0f);
-	ImGui::Dummy(ImVec2(size + 4.0f, size));
-	if (ImGui::IsItemHovered())
+	const char* icon = nullptr;
+	ImVec4 tint;
+	BrowserTypeIcon(typeBits, icon, tint);
+	ImGui::GetWindowDrawList()->AddText(labelPos, ImGui::GetColorU32(tint), icon);
+	const float size = ImGui::GetFontSize();
+	if (ImGui::IsMouseHoveringRect(labelPos, ImVec2(labelPos.x + size, labelPos.y + size)))
 		ImGui::SetTooltip("%s", token.tag);
-	ImGui::SameLine();
 }
 
 SceneManager::EntityId SceneEditorUI::SelectedEntity() const
@@ -1200,10 +1305,20 @@ void SceneEditorUI::RenderOutliner()
 		return;
 	}
 
-	// Add menu — disabled during Play
+	// Header row: search fills the width, an icon Add button sits at the end
+	// (disabled during Play).
+	const float addWidth = ImGui::GetFrameHeight();
+	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - addWidth -
+		ImGui::GetStyle().ItemSpacing.x);
+	if (ImGui::InputTextWithHint("##OutlinerSearch", RT2_ICON_SEARCH "  Search entities",
+		m_SearchBuffer, sizeof(m_SearchBuffer)))
+		m_State.SearchText() = m_SearchBuffer;
+	ImGui::SameLine();
 	ImGui::BeginDisabled(!m_Editable);
-	if (ImGui::Button("Add"))
+	if (ImGui::Button(RT2_ICON_PLUS "##AddEntity", ImVec2(addWidth, addWidth)))
 		ImGui::OpenPopup("AddEntity");
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("Add entity or import");
 
 	if (ImGui::BeginPopup("AddEntity"))
 	{
@@ -1214,7 +1329,6 @@ void SceneEditorUI::RenderOutliner()
 	}
 	ImGui::EndDisabled();
 
-	ImGui::Separator();
 	if (!m_PrefabActionStatus.empty())
 		ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.55f, 1.0f), "%s",
 			m_PrefabActionStatus.c_str());
@@ -1238,17 +1352,12 @@ void SceneEditorUI::RenderOutliner()
 		}
 		ImGui::Separator();
 	}
-	if (ImGui::InputTextWithHint("##OutlinerSearch", "Search entities...",
-		m_SearchBuffer, sizeof(m_SearchBuffer)))
-		m_State.SearchText() = m_SearchBuffer;
 
 	// Type filter chips (session-only): narrow rows to component families.
 	// Unchecking everything shows everything (no stuck-empty view). Active
 	// chips read indigo; inactive chips sit on the frame color. Chip order
 	// matches the row-glyph legend colors.
 	{
-		ImGui::TextDisabled("Type:");
-		ImGui::SameLine();
 		const std::pair<const char*, std::uint32_t> chips[] = {
 			{ "Mesh", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Mesh) },
 			{ "Light", static_cast<std::uint32_t>(rt2::core::EntityBrowserType::Light) },
@@ -1288,18 +1397,25 @@ void SceneEditorUI::RenderOutliner()
 
 	// Entity tree (root entities → children)
 	size_t count = m_SceneMgr->GetEntityCount();
-	ImGui::Text("Entities: %d", (int)count);
 
 	if (count == 0)
 	{
-		ImGui::TextDisabled("  (empty — load a scene or add an entity)");
+		ImGui::Spacing();
+		ImGui::TextDisabled("Empty scene. Add an entity, or drop a .glb, .gltf,\n"
+			".obj or .rt2prefab here.");
 		RenderAssetDropTarget();
 		ImGui::End();
 		return;
 	}
 
-	ImGui::Separator();
-
+	// The tree scrolls on its own above a fixed footer; the whole tree area
+	// is the asset drop target.
+	const ImGuiStyle& panelStyle = ImGui::GetStyle();
+	float footerHeight = ImGui::GetFrameHeight() + panelStyle.ItemSpacing.y * 3.0f + 1.0f;
+	if (!m_MutationError.empty())
+		footerHeight += ImGui::GetTextLineHeightWithSpacing() * 2.0f;
+	ImGui::Spacing();
+	ImGui::BeginChild("##SceneTree", ImVec2(0.0f, -footerHeight), false);
 	auto roots = m_SceneMgr->GetRootEntities();
 	m_TreeDirty = false;
 	for (auto root : roots)
@@ -1308,11 +1424,30 @@ void SceneEditorUI::RenderOutliner()
 		if (m_TreeDirty)
 			break;
 	}
+	ImGui::EndChild();
+	RenderAssetDropTarget();
 
-	ImGui::Separator();
+	// Footer: selection actions as icon buttons, the entity count, and a
+	// debug menu for the GPU dump helpers.
+	{
+		const ImVec2 lineStart = ImGui::GetCursorScreenPos();
+		ImGui::GetWindowDrawList()->AddLine(
+			ImVec2(lineStart.x - panelStyle.WindowPadding.x, lineStart.y),
+			ImVec2(lineStart.x + ImGui::GetContentRegionAvail().x + panelStyle.WindowPadding.x, lineStart.y),
+			ImGui::GetColorU32(ImGuiCol_Separator));
+		ImGui::Dummy(ImVec2(0.0f, 1.0f));
+	}
+	const ImVec2 footerButton(ImGui::GetFrameHeight(), ImGui::GetFrameHeight());
+	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::TextSecondary);
+	const auto footerTooltip = [](const char* text)
+	{
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+			ImGui::SetTooltip("%s", text);
+	};
 
 	ImGui::BeginDisabled(!m_Editable);
-	if (ImGui::Button("Delete Selected"))
+	if (ImGui::Button(RT2_ICON_TRASH_2 "##DeleteSelected", footerButton))
 	{
 		std::string reason;
 		if (MutationSelectionAllowed(reason))
@@ -1320,9 +1455,10 @@ void SceneEditorUI::RenderOutliner()
 		else m_MutationError = reason;
 	}
 	ImGui::EndDisabled();
+	footerTooltip("Delete selection (Del)");
 
 	ImGui::SameLine();
-	if (ImGui::Button("Copy"))
+	if (ImGui::Button(RT2_ICON_COPY "##Copy", footerButton))
 	{
 		// Copy must not snapshot a transient preview marker/schema: admit
 		// (finalize) any open preview first, and on a PendingRetry do nothing
@@ -1336,34 +1472,62 @@ void SceneEditorUI::RenderOutliner()
 			else m_MutationError.clear();
 		}
 	}
+	footerTooltip("Copy (Ctrl+C)");
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!m_Editable || !m_State.HasClipboard());
-	if (ImGui::Button("Paste"))
+	if (ImGui::Button(RT2_ICON_CLIPBOARD_PASTE "##Paste", footerButton))
 		PasteCommand(std::nullopt);
 	ImGui::EndDisabled();
+	footerTooltip("Paste (Ctrl+V)");
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!m_Editable || m_State.Selection().Empty());
-	if (ImGui::Button("Duplicate"))
+	if (ImGui::Button(RT2_ICON_LAYERS "##Duplicate", footerButton))
 		DuplicateSelectionCommand();
 	ImGui::EndDisabled();
+	footerTooltip("Duplicate (Ctrl+D)");
 
 	ImGui::SameLine();
-	if (ImGui::Button("Dump GPU Transforms"))
 	{
-		if (m_OnDumpGPUTransforms)
-			m_OnDumpGPUTransforms();
+		char countText[48];
+		std::snprintf(countText, sizeof(countText), "%d entities", (int)count);
+		// Same line as the buttons, so ImGui aligns the text baseline itself.
+		const float lineY = ImGui::GetCursorPosY();
+		const float rightEdge = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+		const float countX = rightEdge - footerButton.x - panelStyle.ItemSpacing.x -
+			ImGui::CalcTextSize(countText).x;
+		if (countX > ImGui::GetCursorPosX())
+		{
+			ImGui::SetCursorPosX(countX);
+			ImGui::TextDisabled("%s", countText);
+			ImGui::SameLine();
+		}
+		ImGui::SetCursorPos(ImVec2(rightEdge - footerButton.x, lineY));
 	}
-
-	ImGui::SameLine();
-	if (ImGui::Button("Dump NEE Buffers"))
+	if (ImGui::Button(RT2_ICON_ELLIPSIS "##SceneDebug", footerButton))
+		ImGui::OpenPopup("SceneDebugMenu");
+	footerTooltip("Debug tools");
+	ImGui::PopStyleColor(2);
+	if (ImGui::BeginPopup("SceneDebugMenu"))
 	{
-		if (m_OnDumpNEEBuffers)
-			m_OnDumpNEEBuffers();
+		if (ImGui::MenuItem(RT2_ICON_CPU "  Dump GPU Transforms"))
+		{
+			if (m_OnDumpGPUTransforms)
+				m_OnDumpGPUTransforms();
+		}
+		if (ImGui::MenuItem(RT2_ICON_CPU "  Dump NEE Buffers"))
+		{
+			if (m_OnDumpNEEBuffers)
+				m_OnDumpNEEBuffers();
+		}
+		ImGui::EndPopup();
 	}
 
 	if (!m_MutationError.empty())
+	{
+		ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Error);
 		ImGui::TextWrapped("%s", m_MutationError.c_str());
-	RenderAssetDropTarget();
+		ImGui::PopStyleColor();
+	}
 
 	const auto& io = ImGui::GetIO();
 	if (m_Editable && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
@@ -1395,11 +1559,10 @@ void SceneEditorUI::RenderOutliner()
 	ImGui::End();
 }
 
+// Makes the last submitted item (the tree area, or the empty-scene hint)
+// accept dropped assets: .rt2prefab instantiates, .glb/.gltf/.obj import.
 void SceneEditorUI::RenderAssetDropTarget()
 {
-	ImGui::Separator();
-	ImGui::TextDisabled(
-		"Drop .rt2prefab to instantiate; .glb, .gltf or .obj to import");
 	if (!ImGui::BeginDragDropTarget())
 		return;
 	if (const ImGuiPayload* payload =
@@ -1448,12 +1611,19 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 		label = "[Warning] " + label;
 	if (!directlyVisible) label = "[Hidden] " + label;
 	if (directlyLocked) label = "[Locked] " + label;
+	label = kBrowserIconPad + label;
 
 	ImGui::PushID((int)entity.id);
 
 	bool isSelected = IsSelected(entity);
 	bool hasChildren = m_SceneMgr->HasChildren(entity);
-	DrawBrowserTypeGlyph(typeBits);
+	// The icon sits in the padded label's leading space, after the arrow.
+	const auto drawTypeIcon = [&](float labelOffsetX)
+	{
+		const ImVec2 min = ImGui::GetItemRectMin();
+		const float y = min.y + (ImGui::GetItemRectSize().y - ImGui::GetFontSize()) * 0.5f;
+		DrawBrowserTypeIcon(typeBits, ImVec2(min.x + labelOffsetX, y));
+	};
 	auto handleDragDrop = [&]()
 	{
 		if (!m_Editable) return;
@@ -1491,6 +1661,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 			ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick |
 			ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen |
 			(isSelected ? ImGuiTreeNodeFlags_Selected : 0));
+		drawTypeIcon(ImGui::GetTreeNodeToLabelSpacing());
 		handleDragDrop();
 
 		// Click on the tree node label selects it
@@ -1572,8 +1743,12 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 	}
 	else
 	{
+		// Leaves skip the arrow slot so their icons line up with siblings
+		// that have children.
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetTreeNodeToLabelSpacing());
 		if (ImGui::Selectable(label.c_str(), isSelected, ImGuiTreeNodeFlags_SpanAvailWidth))
 			SelectEntity(entity, ImGui::GetIO().KeyCtrl);
+		drawTypeIcon(0.0f);
 		handleDragDrop();
 
 		if (ImGui::BeginPopupContextItem("EntityCtx"))
@@ -1703,12 +1878,24 @@ void SceneEditorUI::RenderInspector()
 	// Name field — records on Enter or focus loss after edit (not per keystroke).
 	char nameBuf[128];
 	snprintf(nameBuf, sizeof(nameBuf), "%s", name.c_str());
-	ImGui::Text("Name:");
+	{
+		const char* entityIcon = nullptr;
+		ImVec4 entityTint;
+		BrowserTypeIcon(rt2::core::ClassifyEntityForBrowser(*m_SceneMgr, entity),
+			entityIcon, entityTint);
+		ImGui::AlignTextToFramePadding();
+		ImGui::PushStyleColor(ImGuiCol_Text, entityTint);
+		ImGui::TextUnformatted(entityIcon);
+		ImGui::PopStyleColor();
+	}
 	ImGui::SameLine();
-	ImGui::SetNextItemWidth(200.0f);
+	ImGui::SetNextItemWidth(-FLT_MIN);
 	ImGui::BeginDisabled(!m_Editable);
+	ImFont* nameFont = rt2::EditorFonts().bold;
+	if (nameFont) ImGui::PushFont(nameFont);
 	const bool nameReturned = ImGui::InputText("##EntityName", nameBuf,
 		sizeof(nameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+	if (nameFont) ImGui::PopFont();
 	const bool nameDeactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
 	if (nameReturned || nameDeactivatedAfterEdit)
 	{
@@ -1747,7 +1934,7 @@ void SceneEditorUI::RenderInspector()
 			bool hasMotion = reg.all_of<MotionComponent>(entity.id);
 			if (hasMotion)
 			{
-				ImGui::Text("Motion");
+				InspectorSectionHeader(RT2_ICON_ACTIVITY, "Motion");
 				auto& mc = reg.get<MotionComponent>(entity.id);
 				ImGui::BeginDisabled(!m_Editable);
 				glm::vec3 vel = mc.linearVelocity;
@@ -1938,7 +2125,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	}
 
 	ImGui::Separator();
-	ImGui::Text("Physics (Bullet)");
+	InspectorSectionHeader(RT2_ICON_ATOM, "Physics");
 
 	// Root rule (Play refuses parented bodies loudly; warn here, in Edit).
 	if (const auto* hier = reg.try_get<Hierarchy>(entity.id))
@@ -1973,7 +2160,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	else
 	{
 		auto& work = *m_PhysicsWork.body;
-		ImGui::Text("Body");
+		InspectorSubHeader("Body");
 		int kind = static_cast<int>(work.kind);
 		ImGui::SetNextItemWidth(140.0f);
 		if (ImGui::Combo("Kind", &kind, "Static\0Dynamic\0Kinematic\0"))
@@ -2108,7 +2295,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	else
 	{
 		auto& work = *m_PhysicsWork.shape;
-		ImGui::Text("Shape");
+		InspectorSubHeader("Collision shape");
 		int shapeKind = static_cast<int>(work.shape);
 		ImGui::SetNextItemWidth(160.0f);
 		if (ImGui::Combo("Shape", &shapeKind,
@@ -2312,7 +2499,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	else
 	{
 		auto& work = *m_PhysicsWork.hinge;
-		ImGui::Text("Hinge (owner: this entity)");
+		InspectorSubHeader("Hinge (owner: this entity)");
 		char otherBuf[64];
 		if (m_HingeOtherBodyTextActive)
 			snprintf(otherBuf, sizeof(otherBuf), "%s", m_HingeOtherBodyText.c_str());
@@ -2504,7 +2691,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 	else
 	{
 		auto& work = *m_PhysicsWork.slider;
-		ImGui::Text("Slider (owner: this entity)");
+		InspectorSubHeader("Slider (owner: this entity)");
 		char otherBuf[64];
 		if (m_SliderOtherBodyTextActive)
 			snprintf(otherBuf, sizeof(otherBuf), "%s", m_SliderOtherBodyText.c_str());
@@ -2776,7 +2963,7 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 		audioPreviewLive && audioPreviewSrc == targetUuid;
 
 	ImGui::Separator();
-	ImGui::Text("Audio Source");
+	InspectorSectionHeader(RT2_ICON_VOLUME_2, "Audio source");
 
 	// Prefab enforcement is authoritative in SetAudioSourceState (linked
 	// members refuse before mutation); the UI additionally disables editing
@@ -3108,33 +3295,41 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	bool changed = false;
 	bool cancelRequested = false;
 	ImGui::PushID("Transform");
-	ImGui::Text("Transform");
+	InspectorSectionHeader(RT2_ICON_MOVE, "Transform");
 	int space = m_TransformSpace == TransformSpace::Local ? 0 : 1;
-	ImGui::SetNextItemWidth(100.0f);
-	if (ImGui::Combo("Space", &space, "Local\0World\0"))
+	ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5.0f);
+	if (ImGui::Combo("##Space", &space, "Local\0World\0"))
 	{
 		m_TransformSpace = space == 0 ? TransformSpace::Local : TransformSpace::World;
 		m_TransformEditError.clear();
 	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Transform space");
+	ImGui::SameLine();
 	int pivot = static_cast<int>(m_TransformPivot);
-	ImGui::SetNextItemWidth(100.0f);
-	if (ImGui::Combo("Pivot", &pivot, "Primary\0Median\0Individual\0"))
+	ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
+	if (ImGui::Combo("##Pivot", &pivot, "Primary\0Median\0Individual\0"))
 		m_TransformPivot = static_cast<TransformPivot>(pivot);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Pivot for multi-selection gizmo edits");
+	ImGui::SameLine();
 	ImGui::Checkbox("Snap", &m_TransformSnap.enabled);
-	if (m_TransformSnap.enabled)
-	{
-		ImGui::SetNextItemWidth(80.0f);
-		ImGui::DragFloat("Move step", &m_TransformSnap.translation, 0.05f, 0.001f, 1000.0f, "%.3f");
-		ImGui::SetNextItemWidth(80.0f);
-		ImGui::DragFloat("Rotate step", &m_TransformSnap.rotationDegrees, 1.0f, 0.1f, 180.0f, "%.1f deg");
-		ImGui::SetNextItemWidth(80.0f);
-		ImGui::DragFloat("Scale step", &m_TransformSnap.scale, 0.01f, 0.001f, 100.0f, "%.3f");
-	}
-	ImGui::Checkbox("Uniform Scale", &m_UniformScale);
+	ImGui::SameLine();
+	ImGui::Checkbox("Uniform", &m_UniformScale);
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip(
 			"When checked, scale edits apply equally to X, Y, Z.\n"
 			"Also affects the viewport gizmo in Scale mode.");
+	if (m_TransformSnap.enabled)
+	{
+		InspectorRowLabel("Move step");
+		ImGui::DragFloat("##MoveStep", &m_TransformSnap.translation, 0.05f, 0.001f, 1000.0f, "%.3f");
+		InspectorRowLabel("Rotate step");
+		ImGui::DragFloat("##RotateStep", &m_TransformSnap.rotationDegrees, 1.0f, 0.1f, 180.0f, "%.1f deg");
+		InspectorRowLabel("Scale step");
+		ImGui::DragFloat("##ScaleStep", &m_TransformSnap.scale, 0.01f, 0.001f, 100.0f, "%.3f");
+	}
+	ImGui::Spacing();
 	ImGui::BeginDisabled(!m_Editable);
 
 	// The transform session is tokenized and begins before the first authored
@@ -3144,8 +3339,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	unsigned int pendingCloseWidgetId = 0;
 	unsigned int changedWidgetId = 0;
 
-	ImGui::SetNextItemWidth(180.0f);
-	if (ImGui::DragFloat3("Position", &pos[0], 0.1f))
+	if (InspectorVec3Row("Position", &pos[0], 0.1f))
 	{
 		if (m_TransformSnap.enabled) pos = SnapValues(pos, m_TransformSnap.translation);
 		changed = true;
@@ -3171,8 +3365,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		cancelRequested = true;
 	}
 
-	ImGui::SetNextItemWidth(180.0f);
-	const bool rotChangedThis = ImGui::DragFloat3("Rotation", &rot[0], 1.0f);
+	const bool rotChangedThis = InspectorVec3Row("Rotation", &rot[0], 1.0f, "%.1f");
 	if (rotChangedThis)
 	{
 		if (m_TransformSnap.enabled) rot = SnapValues(rot, m_TransformSnap.rotationDegrees);
@@ -3199,12 +3392,12 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		cancelRequested = true;
 	}
 
-	ImGui::SetNextItemWidth(180.0f);
 	bool scaleChangedThis = false;
 	if (m_UniformScale)
 	{
 		float uniformScale = scale.x;
-		scaleChangedThis = ImGui::DragFloat("Scale", &uniformScale, 0.05f);
+		InspectorRowLabel("Scale");
+		scaleChangedThis = ImGui::DragFloat("##Scale", &uniformScale, 0.05f);
 		if (scaleChangedThis)
 		{
 			if (m_TransformSnap.enabled) uniformScale = SnapValue(uniformScale, m_TransformSnap.scale);
@@ -3214,7 +3407,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	}
 	else
 	{
-		scaleChangedThis = ImGui::DragFloat3("Scale", &scale[0], 0.05f);
+		scaleChangedThis = InspectorVec3Row("Scale", &scale[0], 0.05f);
 		if (scaleChangedThis)
 		{
 			if (m_TransformSnap.enabled) scale = SnapValues(scale, m_TransformSnap.scale);
@@ -3322,7 +3515,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 
 void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 {
-	ImGui::Text("Material");
+	InspectorSectionHeader(RT2_ICON_IMAGE, "Material");
 
 	uint32_t meshIdx;
 	int matIdx;
@@ -3515,7 +3708,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 
 void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 {
-	ImGui::Text("Light");
+	InspectorSectionHeader(RT2_ICON_SUN, "Light");
 
 	glm::vec3 color;
 	float intensity;
@@ -3694,7 +3887,7 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 
 void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 {
-	ImGui::Text("Camera");
+	InspectorSectionHeader(RT2_ICON_VIDEO, "Camera");
 
 	auto& reg = const_cast<entt::registry&>(m_SceneMgr->GetECS().registry);
 	if (!reg.valid(entity.id)) return;
@@ -3784,7 +3977,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 			kMinCameraExposureEV, kMaxCameraExposureEV, "%.2f");
 	});
 
-	ImGui::Text("Display Look (Scene Camera)");
+	InspectorSectionHeader(RT2_ICON_SLIDERS_HORIZONTAL, "Display look (scene camera)");
 	// Discrete gesture: Combo popup opening deactivates the widget without
 	// an edit and a later selection arrives without activation, so a
 	// drag-style preview session would cancel the eventual selection. Issue
@@ -3913,7 +4106,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 {
 	ImGui::Separator();
-	ImGui::Text("Script");
+	InspectorSectionHeader(RT2_ICON_CODE, "Script");
 
 	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
 	auto scriptState = m_SceneMgr->GetScriptState(targetUuid);
