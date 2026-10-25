@@ -61,30 +61,66 @@ void InspectorSubHeader(const char* title)
 	if (medium) ImGui::PopFont();
 }
 
+// The label column: a share of the panel width, clamped so short panels keep
+// usable fields and wide ones don't strand labels far from their values.
 float InspectorLabelWidth()
 {
-	return ImGui::GetFontSize() * 5.6f;
+	const float panel = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
+	const float scale = ImGui::GetFontSize() / 15.0f;
+	return std::clamp(panel * 0.36f, 90.0f * scale, 160.0f * scale);
+}
+
+// Draws [begin, end) as the row's label, clipped to the label column (the
+// full text becomes a tooltip when clipped), and moves to the value column.
+void DrawRowLabelText(const char* begin, const char* end)
+{
+	const float column = InspectorLabelWidth();
+	const float room = column - ImGui::GetStyle().ItemSpacing.x;
+	ImGui::AlignTextToFramePadding();
+	const ImVec2 start = ImGui::GetCursorScreenPos();
+	const bool clipped = ImGui::CalcTextSize(begin, end).x > room;
+	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
+	if (clipped)
+		ImGui::PushClipRect(start, ImVec2(start.x + room, start.y + ImGui::GetFrameHeight()), true);
+	ImGui::TextUnformatted(begin, end);
+	if (clipped)
+	{
+		ImGui::PopClipRect();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%.*s", static_cast<int>(end - begin), begin);
+	}
+	ImGui::PopStyleColor();
+	ImGui::SameLine(column);
 }
 
 // Left-column property label; the next widget fills the rest of the row.
 void InspectorRowLabel(const char* label)
 {
-	ImGui::AlignTextToFramePadding();
-	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
-	ImGui::TextUnformatted(label);
-	ImGui::PopStyleColor();
-	ImGui::SameLine(InspectorLabelWidth());
+	DrawRowLabelText(label, label + std::strlen(label));
 	ImGui::SetNextItemWidth(-FLT_MIN);
 }
 
-// Label-left X/Y/Z row with axis-colored tags inside each field.
-bool InspectorVec3Row(const char* label, float* v, float speed, const char* format = "%.3f")
+// Label-left form of any labelled widget, usable inside a condition:
+//     if (ImGui::DragFloat(RowLabel("Mass"), &mass, 0.01f)) ...
+// Draws the visible label (text before any "##") in the left column, sets
+// the next item to fill the row, and returns a hidden ID ("##" + label)
+// for the widget. The returned buffer is reused by the next call; ImGui
+// only reads it during the widget call.
+const char* RowLabel(const char* label)
 {
-	ImGui::AlignTextToFramePadding();
-	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
-	ImGui::TextUnformatted(label);
-	ImGui::PopStyleColor();
-	ImGui::SameLine(InspectorLabelWidth());
+	static char hiddenId[256];
+	const char* hash = std::strstr(label, "##");
+	DrawRowLabelText(label, hash ? hash : label + std::strlen(label));
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	std::snprintf(hiddenId, sizeof(hiddenId), "##%s", label);
+	return hiddenId;
+}
+
+// Label-left X/Y/Z row with axis-colored tags inside each field.
+bool InspectorVec3Row(const char* label, float* v, float speed,
+	float vMin, float vMax, const char* format)
+{
+	DrawRowLabelText(label, label + std::strlen(label));
 
 	bool changed = false;
 	ImGui::BeginGroup();
@@ -99,7 +135,7 @@ bool InspectorVec3Row(const char* label, float* v, float speed, const char* form
 		ImGui::PushID(i);
 		if (i > 0) ImGui::SameLine(0.0f, spacing);
 		ImGui::SetNextItemWidth(width);
-		changed |= ImGui::DragFloat("##v", &v[i], speed, 0.0f, 0.0f, format);
+		changed |= ImGui::DragFloat("##v", &v[i], speed, vMin, vMax, format);
 		const ImVec2 min = ImGui::GetItemRectMin();
 		ImGui::GetWindowDrawList()->AddText(
 			ImVec2(min.x + 6.0f, min.y + ImGui::GetStyle().FramePadding.y),
@@ -109,6 +145,11 @@ bool InspectorVec3Row(const char* label, float* v, float speed, const char* form
 	ImGui::PopID();
 	ImGui::EndGroup();
 	return changed;
+}
+
+bool InspectorVec3Row(const char* label, float* v, float speed, const char* format = "%.3f")
+{
+	return InspectorVec3Row(label, v, speed, 0.0f, 0.0f, format);
 }
 
 } // anonymous namespace
@@ -1939,7 +1980,7 @@ void SceneEditorUI::RenderInspector()
 				ImGui::BeginDisabled(!m_Editable);
 				glm::vec3 vel = mc.linearVelocity;
 				bool velChanged = false;
-				if (ImGui::DragFloat3("Linear Velocity", &vel[0], 0.1f))
+				if (InspectorVec3Row("Linear Velocity", &vel[0], 0.1f))
 					velChanged = true;
 				if (ImGui::IsItemActivated() && CanBeginPreview(PreviewSessionKind::Motion, targetUuid))
 				{
@@ -2163,31 +2204,31 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		InspectorSubHeader("Body");
 		int kind = static_cast<int>(work.kind);
 		ImGui::SetNextItemWidth(140.0f);
-		if (ImGui::Combo("Kind", &kind, "Static\0Dynamic\0Kinematic\0"))
+		if (ImGui::Combo(RowLabel("Kind"), &kind, "Static\0Dynamic\0Kinematic\0"))
 		{
 			work.kind = static_cast<PhysicsBodyKind>(kind);
 			m_PhysicsWork.bodyDirty = true;
 		}
-		if (ImGui::DragFloat("Mass (kg)", &work.mass, 0.1f, 0.0f, 10000.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Mass (kg)"), &work.mass, 0.1f, 0.0f, 10000.0f, "%.3f"))
 			m_PhysicsWork.bodyDirty = true;
-		if (ImGui::DragFloat("Friction", &work.friction, 0.01f, 0.0f, 10.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Friction"), &work.friction, 0.01f, 0.0f, 10.0f, "%.3f"))
 			m_PhysicsWork.bodyDirty = true;
-		if (ImGui::DragFloat("Restitution", &work.restitution, 0.01f, 0.0f, 1.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Restitution"), &work.restitution, 0.01f, 0.0f, 1.0f, "%.3f"))
 			m_PhysicsWork.bodyDirty = true;
-		if (ImGui::DragFloat("Linear damping", &work.linearDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Linear damping"), &work.linearDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
 			m_PhysicsWork.bodyDirty = true;
-		if (ImGui::DragFloat("Angular damping", &work.angularDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Angular damping"), &work.angularDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
 			m_PhysicsWork.bodyDirty = true;
-		if (ImGui::Checkbox("CCD enabled", &work.ccdEnabled))
+		if (ImGui::Checkbox(RowLabel("CCD enabled"), &work.ccdEnabled))
 			m_PhysicsWork.bodyDirty = true;
 		if (work.ccdEnabled)
 		{
-			if (ImGui::DragFloat("CCD threshold", &work.ccdMotionThreshold, 0.01f, 0.0f, 10.0f, "%.3f"))
+			if (ImGui::DragFloat(RowLabel("CCD threshold"), &work.ccdMotionThreshold, 0.01f, 0.0f, 10.0f, "%.3f"))
 				m_PhysicsWork.bodyDirty = true;
-			if (ImGui::DragFloat("CCD swept radius", &work.ccdSweptRadius, 0.01f, 0.0f, 10.0f, "%.3f"))
+			if (ImGui::DragFloat(RowLabel("CCD swept radius"), &work.ccdSweptRadius, 0.01f, 0.0f, 10.0f, "%.3f"))
 				m_PhysicsWork.bodyDirty = true;
 		}
-		if (ImGui::Checkbox("Start asleep", &work.startAsleep))
+		if (ImGui::Checkbox(RowLabel("Start asleep"), &work.startAsleep))
 			m_PhysicsWork.bodyDirty = true;
 		int layer = 0;
 		if (work.layer == PhysicsLayer::Dynamic) layer = 0;
@@ -2195,7 +2236,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		else if (work.layer == PhysicsLayer::Mechanism) layer = 2;
 		else if (work.layer == PhysicsLayer::Trigger) layer = 3;
 		ImGui::SetNextItemWidth(140.0f);
-		if (ImGui::Combo("Layer", &layer, "Dynamic\0WorldStatic\0Mechanism\0Trigger\0"))
+		if (ImGui::Combo(RowLabel("Layer"), &layer, "Dynamic\0WorldStatic\0Mechanism\0Trigger\0"))
 		{
 			work.layer = layer == 0 ? PhysicsLayer::Dynamic
 				: layer == 1 ? PhysicsLayer::WorldStatic
@@ -2298,7 +2339,7 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		InspectorSubHeader("Collision shape");
 		int shapeKind = static_cast<int>(work.shape);
 		ImGui::SetNextItemWidth(160.0f);
-		if (ImGui::Combo("Shape", &shapeKind,
+		if (ImGui::Combo(RowLabel("Shape"), &shapeKind,
 		                  "Sphere\0Box\0ConvexHull\0StaticTriMesh\0"))
 		{
 			work.shape = static_cast<PhysicsShapeKind>(shapeKind);
@@ -2306,12 +2347,12 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		}
 		if (work.shape == PhysicsShapeKind::Sphere)
 		{
-			if (ImGui::DragFloat("Radius", &work.radius, 0.01f, 0.001f, 100.0f, "%.3f"))
+			if (ImGui::DragFloat(RowLabel("Radius"), &work.radius, 0.01f, 0.001f, 100.0f, "%.3f"))
 				m_PhysicsWork.shapeDirty = true;
 		}
 		else if (work.shape == PhysicsShapeKind::Box)
 		{
-			if (ImGui::DragFloat3("Half extents", &work.halfExtents[0], 0.01f, 0.001f, 100.0f, "%.3f"))
+			if (InspectorVec3Row("Half extents", &work.halfExtents[0], 0.01f, 0.001f, 100.0f, "%.3f"))
 				m_PhysicsWork.shapeDirty = true;
 		}
 		else
@@ -2384,11 +2425,11 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 				}
 			}
 		}
-		if (ImGui::Checkbox("Trigger (ghost)", &work.isTrigger))
+		if (ImGui::Checkbox(RowLabel("Trigger (ghost)"), &work.isTrigger))
 			m_PhysicsWork.shapeDirty = true;
 		if (work.shape == PhysicsShapeKind::Sphere)
 			ImGui::TextDisabled("Margin: spheres use radius as margin (field reserved)");
-		else if (ImGui::DragFloat("Margin", &work.collisionMargin, 0.005f, 0.0f, 1.0f, "%.3f"))
+		else if (ImGui::DragFloat(RowLabel("Margin"), &work.collisionMargin, 0.005f, 0.0f, 1.0f, "%.3f"))
 			m_PhysicsWork.shapeDirty = true;
 		if (m_PhysicsWork.shapeDirty)
 		{
@@ -2552,38 +2593,38 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		}
 		if (m_HingeOtherBodyTextActive && !m_HingeOtherBodyError.empty())
 			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_HingeOtherBodyError.c_str());
-		if (ImGui::DragFloat3("Owner pivot", &work.ownerPivot[0], 0.01f))
+		if (InspectorVec3Row("Owner pivot", &work.ownerPivot[0], 0.01f))
 			m_PhysicsWork.hingeDirty = true;
-		if (ImGui::DragFloat3("Owner axis", &work.ownerAxis[0], 0.01f))
+		if (InspectorVec3Row("Owner axis", &work.ownerAxis[0], 0.01f))
 			m_PhysicsWork.hingeDirty = true;
-		if (ImGui::DragFloat3("Other pivot", &work.otherPivot[0], 0.01f))
+		if (InspectorVec3Row("Other pivot", &work.otherPivot[0], 0.01f))
 			m_PhysicsWork.hingeDirty = true;
-		if (ImGui::DragFloat3("Other axis", &work.otherAxis[0], 0.01f))
+		if (InspectorVec3Row("Other axis", &work.otherAxis[0], 0.01f))
 			m_PhysicsWork.hingeDirty = true;
 		float minDeg = glm::degrees(work.minAngleLimit);
 		float maxDeg = glm::degrees(work.maxAngleLimit);
-		if (ImGui::DragFloat("Min angle (deg)", &minDeg, 1.0f))
+		if (ImGui::DragFloat(RowLabel("Min angle (deg)"), &minDeg, 1.0f))
 		{
 			work.minAngleLimit = glm::radians(minDeg);
 			m_PhysicsWork.hingeDirty = true;
 		}
-		if (ImGui::DragFloat("Max angle (deg)", &maxDeg, 1.0f))
+		if (ImGui::DragFloat(RowLabel("Max angle (deg)"), &maxDeg, 1.0f))
 		{
 			work.maxAngleLimit = glm::radians(maxDeg);
 			m_PhysicsWork.hingeDirty = true;
 		}
 		float restDeg = glm::degrees(work.restAngle);
-		if (ImGui::DragFloat("Rest angle (deg)", &restDeg, 1.0f))
+		if (ImGui::DragFloat(RowLabel("Rest angle (deg)"), &restDeg, 1.0f))
 		{
 			work.restAngle = glm::radians(restDeg);
 			m_PhysicsWork.hingeDirty = true;
 		}
-		if (ImGui::Checkbox("Hinge motor enabled", &work.motorEnabled))
+		if (ImGui::Checkbox(RowLabel("Hinge motor enabled"), &work.motorEnabled))
 			m_PhysicsWork.hingeDirty = true;
-		if (ImGui::DragFloat("Motor velocity (rad/s)", &work.motorTargetVelocity,
+		if (ImGui::DragFloat(RowLabel("Motor velocity (rad/s)"), &work.motorTargetVelocity,
 		                     0.1f))
 			m_PhysicsWork.hingeDirty = true;
-		if (ImGui::DragFloat("Motor max impulse", &work.motorMaxImpulse, 0.1f,
+		if (ImGui::DragFloat(RowLabel("Motor max impulse"), &work.motorMaxImpulse, 0.1f,
 		                     0.0f, 100000.0f, "%.3f"))
 			m_PhysicsWork.hingeDirty = true;
 		if (m_PhysicsWork.hingeDirty)
@@ -2744,20 +2785,20 @@ void SceneEditorUI::RenderPhysicsEditor(SceneManager::EntityId entity)
 		}
 		if (m_SliderOtherBodyTextActive && !m_SliderOtherBodyError.empty())
 			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_SliderOtherBodyError.c_str());
-		if (ImGui::DragFloat3("Axis", &work.axis[0], 0.01f))
+		if (InspectorVec3Row("Axis", &work.axis[0], 0.01f))
 			m_PhysicsWork.sliderDirty = true;
-		if (ImGui::DragFloat("Lower limit", &work.lowerLimit, 0.01f))
+		if (ImGui::DragFloat(RowLabel("Lower limit"), &work.lowerLimit, 0.01f))
 			m_PhysicsWork.sliderDirty = true;
-		if (ImGui::DragFloat("Upper limit", &work.upperLimit, 0.01f))
+		if (ImGui::DragFloat(RowLabel("Upper limit"), &work.upperLimit, 0.01f))
 			m_PhysicsWork.sliderDirty = true;
-		if (ImGui::DragFloat("Target position", &work.targetPosition, 0.01f))
+		if (ImGui::DragFloat(RowLabel("Target position"), &work.targetPosition, 0.01f))
 			m_PhysicsWork.sliderDirty = true;
-		if (ImGui::Checkbox("Slider motor enabled", &work.motorEnabled))
+		if (ImGui::Checkbox(RowLabel("Slider motor enabled"), &work.motorEnabled))
 			m_PhysicsWork.sliderDirty = true;
-		if (ImGui::DragFloat("Motor velocity (u/s)", &work.motorTargetVelocity,
+		if (ImGui::DragFloat(RowLabel("Motor velocity (u/s)"), &work.motorTargetVelocity,
 		                     0.1f, 0.0f, 1000.0f, "%.3f"))
 			m_PhysicsWork.sliderDirty = true;
-		if (ImGui::DragFloat("Motor max force", &work.motorMaxForce, 0.5f, 0.0f,
+		if (ImGui::DragFloat(RowLabel("Motor max force"), &work.motorMaxForce, 0.5f, 0.0f,
 		                     100000.0f, "%.3f"))
 			m_PhysicsWork.sliderDirty = true;
 		if (m_PhysicsWork.sliderDirty)
@@ -3100,30 +3141,30 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 		int busIndex = work.bus == AudioBus::Music ? 0
 			: work.bus == AudioBus::UI ? 2 : 1;
 		ImGui::SetNextItemWidth(140.0f);
-		if (ImGui::Combo("Bus", &busIndex, "Music\0Effects\0UI\0"))
+		if (ImGui::Combo(RowLabel("Bus"), &busIndex, "Music\0Effects\0UI\0"))
 		{
 			work.bus = busIndex == 0 ? AudioBus::Music
 				: busIndex == 2 ? AudioBus::UI : AudioBus::Effects;
 			m_AudioWork.dirty = true;
 		}
-		if (ImGui::Checkbox("Autoplay", &work.autoplay))
+		if (ImGui::Checkbox(RowLabel("Autoplay"), &work.autoplay))
 			m_AudioWork.dirty = true;
-		if (ImGui::Checkbox("Loop", &work.loop))
+		if (ImGui::Checkbox(RowLabel("Loop"), &work.loop))
 			m_AudioWork.dirty = true;
-		if (ImGui::Checkbox("Spatial", &work.spatial))
+		if (ImGui::Checkbox(RowLabel("Spatial"), &work.spatial))
 			m_AudioWork.dirty = true;
-		if (ImGui::DragFloat("Gain", &work.gain, 0.01f, 0.0f, 4.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Gain"), &work.gain, 0.01f, 0.0f, 4.0f, "%.3f"))
 			m_AudioWork.dirty = true;
-		if (ImGui::DragFloat("Pitch", &work.pitch, 0.005f, 0.25f, 4.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Pitch"), &work.pitch, 0.005f, 0.25f, 4.0f, "%.3f"))
 			m_AudioWork.dirty = true;
-		if (ImGui::DragFloat("Min distance", &work.minDistance, 0.05f, 0.001f, 1000.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Min distance"), &work.minDistance, 0.05f, 0.001f, 1000.0f, "%.3f"))
 			m_AudioWork.dirty = true;
-		if (ImGui::DragFloat("Max distance", &work.maxDistance, 0.1f, 0.001f, 10000.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Max distance"), &work.maxDistance, 0.1f, 0.001f, 10000.0f, "%.3f"))
 			m_AudioWork.dirty = true;
-		if (ImGui::DragFloat("Rolloff", &work.rolloff, 0.01f, 0.0f, 8.0f, "%.3f"))
+		if (ImGui::DragFloat(RowLabel("Rolloff"), &work.rolloff, 0.01f, 0.0f, 8.0f, "%.3f"))
 			m_AudioWork.dirty = true;
 		int priority = static_cast<int>(work.priority);
-		if (ImGui::DragInt("Priority", &priority, 1, 0, 255))
+		if (ImGui::DragInt(RowLabel("Priority"), &priority, 1, 0, 255))
 		{
 			work.priority = static_cast<uint8_t>(priority < 0 ? 0 : priority > 255 ? 255 : priority);
 			m_AudioWork.dirty = true;
@@ -3238,7 +3279,7 @@ void SceneEditorUI::RenderAudioEditor(SceneManager::EntityId entity)
 		m_Editable, live.has_value(), audioThisPreviewing));
 	{
 		const bool thisPreviewing = audioThisPreviewing;
-		if (ImGui::Checkbox("Preview Spatial", &m_AudioPreviewSpatial))
+		if (ImGui::Checkbox(RowLabel("Preview Spatial"), &m_AudioPreviewSpatial))
 		{
 			// The host rereads this flag every frame for the live mix; no
 			// command, no history, no authored change.
@@ -3533,7 +3574,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	int current = matIdx;
 	ImGui::SetNextItemWidth(180.0f);
 	bool indexChanged = false;
-	if (ImGui::Combo("Material", &current, [](void* data, int idx, const char** out_text) -> bool {
+	if (ImGui::Combo(RowLabel("Material"), &current, [](void* data, int idx, const char** out_text) -> bool {
 		auto* mats = static_cast<const std::vector<SceneMaterial>*>(data);
 		if (idx < 0 || idx >= (int)mats->size()) return false;
 		static char buf[64];
@@ -3649,22 +3690,22 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		};
 
 		drawMaterialWidget("Base Color", [&]() {
-			return ImGui::ColorEdit3("Base Color", &mat.baseColor[0]);
+			return ImGui::ColorEdit3(RowLabel("Base Color"), &mat.baseColor[0]);
 		});
 		drawMaterialWidget("Metallic", [&]() {
-			return ImGui::DragFloat("Metallic", &mat.metallic, 0.01f, 0.0f, 1.0f, "%.2f");
+			return ImGui::DragFloat(RowLabel("Metallic"), &mat.metallic, 0.01f, 0.0f, 1.0f, "%.2f");
 		});
 		drawMaterialWidget("Roughness", [&]() {
-			return ImGui::DragFloat("Roughness", &mat.roughness, 0.01f, 0.0f, 1.0f, "%.2f");
+			return ImGui::DragFloat(RowLabel("Roughness"), &mat.roughness, 0.01f, 0.0f, 1.0f, "%.2f");
 		});
 		drawMaterialWidget("IOR", [&]() {
-			return ImGui::DragFloat("IOR", &mat.ior, 0.01f, 1.0f, 3.0f, "%.2f");
+			return ImGui::DragFloat(RowLabel("IOR"), &mat.ior, 0.01f, 1.0f, 3.0f, "%.2f");
 		});
 		drawMaterialWidget("Emissive", [&]() {
-			return ImGui::ColorEdit3("Emissive", &mat.emissiveColor[0]);
+			return ImGui::ColorEdit3(RowLabel("Emissive"), &mat.emissiveColor[0]);
 		});
 		drawMaterialWidget("Emissive Intensity", [&]() {
-			return ImGui::DragFloat("Emissive Intensity", &mat.emissiveIntensity, 0.1f, 0.0f, 100.0f, "%.1f");
+			return ImGui::DragFloat(RowLabel("Emissive Intensity"), &mat.emissiveIntensity, 0.1f, 0.0f, 100.0f, "%.1f");
 		});
 
 		if (pendingCloseWidgetId != 0 && m_MaterialPropertiesSession.IsOpen() &&
@@ -3793,16 +3834,16 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	edited.type = lightType;
 
 	drawLightWidget("Color", [&]() {
-		return ImGui::ColorEdit3("Color", &color[0]);
+		return ImGui::ColorEdit3(RowLabel("Color"), &color[0]);
 	});
 	drawLightWidget("Intensity", [&]() {
-		return ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f, "%.1f");
+		return ImGui::DragFloat(RowLabel("Intensity"), &intensity, 0.1f, 0.0f, 1000.0f, "%.1f");
 	});
 	drawLightWidget("Type", [&]() {
 		// Order must match LightType's values (Point=0, Spot=1, Directional=2).
 		const char* kTypeNames[] = { "Point", "Spot", "Directional" };
 		int typeIndex = static_cast<int>(lightType);
-		if (!ImGui::Combo("Type", &typeIndex, kTypeNames, IM_ARRAYSIZE(kTypeNames)))
+		if (!ImGui::Combo(RowLabel("Type"), &typeIndex, kTypeNames, IM_ARRAYSIZE(kTypeNames)))
 			return false;
 		lightType = static_cast<LightType>(typeIndex);
 		return true;
@@ -3816,7 +3857,7 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	if (lightType != LightType::Directional)
 	{
 		drawLightWidget("Range", [&]() {
-			return ImGui::DragFloat("Range", &edited.range, 0.5f, 0.0f, 10000.0f,
+			return ImGui::DragFloat(RowLabel("Range"), &edited.range, 0.5f, 0.0f, 10000.0f,
 				edited.range <= 0.0f ? "Unbounded" : "%.1f");
 		});
 		if (ImGui::IsItemHovered())
@@ -3827,11 +3868,11 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	if (lightType == LightType::Spot)
 	{
 		drawLightWidget("InnerCone", [&]() {
-			return ImGui::DragFloat("Inner Cone", &edited.innerConeAngle, 0.5f,
+			return ImGui::DragFloat(RowLabel("Inner Cone"), &edited.innerConeAngle, 0.5f,
 				0.0f, 90.0f, "%.1f deg");
 		});
 		drawLightWidget("OuterCone", [&]() {
-			return ImGui::DragFloat("Outer Cone", &edited.outerConeAngle, 0.5f,
+			return ImGui::DragFloat(RowLabel("Outer Cone"), &edited.outerConeAngle, 0.5f,
 				0.0f, 90.0f, "%.1f deg");
 		});
 		// The GPU builder already clamps and orders these, so an inverted cone
@@ -3964,16 +4005,16 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	};
 
 	drawCameraWidget("FOV", [&]() {
-		return ImGui::DragFloat("FOV", &verticalFOV, 1.0f, 10.0f, 170.0f, "%.1f");
+		return ImGui::DragFloat(RowLabel("FOV"), &verticalFOV, 1.0f, 10.0f, 170.0f, "%.1f");
 	});
 	drawCameraWidget("Aperture", [&]() {
-		return ImGui::DragFloat("Aperture", &aperture, 0.001f, 0.0f, 5.0f, "%.3f");
+		return ImGui::DragFloat(RowLabel("Aperture"), &aperture, 0.001f, 0.0f, 5.0f, "%.3f");
 	});
 	drawCameraWidget("Focus Distance", [&]() {
-		return ImGui::DragFloat("Focus Distance", &focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
+		return ImGui::DragFloat(RowLabel("Focus Distance"), &focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
 	});
 	drawCameraWidget("Exposure (EV)", [&]() {
-		return ImGui::DragFloat("Exposure (EV)", &exposureEV, 0.05f,
+		return ImGui::DragFloat(RowLabel("Exposure (EV)"), &exposureEV, 0.05f,
 			kMinCameraExposureEV, kMaxCameraExposureEV, "%.2f");
 	});
 
@@ -3984,7 +4025,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	// a checked whole-camera command instead, after closing any prior
 	// preview (which finalizes/records it first).
 	const char* operators[] = { "AgX", "ACES Fitted", "Reinhard (Legacy)" };
-	const bool comboChanged = ImGui::Combo("Tone Mapping", &toneMapIndex, operators, IM_ARRAYSIZE(operators));
+	const bool comboChanged = ImGui::Combo(RowLabel("Tone Mapping"), &toneMapIndex, operators, IM_ARRAYSIZE(operators));
 	if (ResolveCameraDiscreteCommit(comboChanged) == CameraDiscreteCommit::Commit)
 	{
 		ToneMapOperator selected = ToneMapOperator::AgX;
@@ -4305,8 +4346,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 	for (const auto& desc : result.descriptors)
 	{
 		ImGui::PushID(desc.name.c_str());
-		ImGui::Text("%s:", desc.name.c_str());
-		ImGui::SameLine();
+		InspectorRowLabel(desc.name.c_str());
 
 		// Find the stored entry. Do NOT auto-insert defaults into the map —
 		// only insert when the widget actually changes a field, so untouched
