@@ -32,7 +32,7 @@ If you need current state rather than history, these are authoritative:
 |---|---|
 | Which tests should pass? | **Test baseline** (near the end) — supersedes every earlier figure |
 | What does the engine do today? | The `docs/` siblings: `scripting.md`, `scene-management.md`, `game-loop.md` |
-| What is being built next? | **Phase 7 — implementation plan**; W0–W3 are closed, **W4 is the next unstarted roadmap work** |
+| What is being built next? | As of 2026-10-25: the **editor UI overhaul**, then the **one-table pinball game** (brief and design doc live in the Traycer epic, not here). Phases 7–8 core, Bullet physics and audio are merged; Phases 10 (animation) and 12 (standalone runtime) are not started. See "Status as of 2026-10-25" below |
 | What does this term mean? | `docs/glossary.md` — terms that have caused a defect, and the four context boundaries indices are translated across. Unlike this file it is corrected in place. |
 
 **A number means a roadmap phase and nothing else.** Off-roadmap work gets a
@@ -81,7 +81,33 @@ grounded against the code as it stood at the time.
 | Phase 6C Hot reload, input, bindings (+ report) | implemented |
 | Phase 6 exit criteria / ordering rationale | reference |
 | **Test baseline** | **current — authoritative** |
-| **Phase 7 Project model and asset database** | **implementation plan, not started** |
+| Phase 7 Project model and asset database (W0–W8) | implemented — closure 2026-08-03 |
+| Phase 8 Prefabs | core implemented (create, instantiate, overrides, propagation, minimal UI); W5 Revert/Apply/Unpack deferred 2026-08-24 |
+| Camera-owned filmic tone mapping (off-roadmap) | implemented 2026-09-11 |
+| Bullet integration (off-roadmap; replaces the roadmap's Phase 9 Jolt recommendation) | implemented 2026-09-22 |
+| Audio integration A0–A8 (off-roadmap; covers Phase 11's core) | implemented 2026-09-26 |
+| Editor workspace overhaul (off-roadmap) | package 1 merged; packages 2–4 + Scene Browser on unmerged `editor-workspace-theme-docking` |
+| RT optimisations RT4-T1/T4, RR5-T0–T2 (off-roadmap) | merged 2026-10-25; RR5-T3 parked; tickets in the Traycer epic |
+
+## Status as of 2026-10-25
+
+Written during a tidy-up after a long period of agent-driven work. It
+summarizes the worked sections below, which remain the record.
+
+- **Merged to master:** Phases 1–7; the Phase 8 prefab core; Bullet physics
+  (rigid bodies, CCD, hinge and slider constraints, contact events, Lua
+  controls, debug draw); audio (clips, spatial playback, Lua controls); DLSS
+  Ray Reconstruction as the default denoiser; AgX tone mapping; RT4-T1 hit
+  loader; RT4-T4 opacity fix and UV guard; RR5-T0–T2 roulette controls.
+- **Not started:** Phase 10 animation, Phase 12 standalone runtime, the
+  pinball game itself, and any runtime/in-game UI layer (the pinball HUD
+  needs one).
+- **Superseded:** the Phase 9 roadmap stub's Jolt recommendation (Bullet
+  was chosen for the pinball slice); the "Phase 9 foundation" Jolt plan in
+  the Traycer epic is obsolete.
+- **Process note:** the user asked for proportionate process from here on.
+  The heavy review/statistical-gate workflow recorded in later sections is
+  history, not a template.
 
 ## Existing foundation
 
@@ -6168,6 +6194,13 @@ must be run from the repository root; from another working directory a
 handful of unrelated cases fail on missing assets.
 
 ### Test baseline (current — supersedes all earlier figures)
+
+> **Current as of 2026-10-25 (master `5f6e5e7`, after merging the RT4 and
+> RR5-T0–T2 optimisation work).** Measured from the repository root with
+> `--no-skip`: Release **1586 run / 1586 passed / 0 failed / 0 skipped;
+> 171,159 assertions**; Debug identical. `run_script_test.ps1` PASS (60
+> frames, 1 entity). This note supersedes every figure below; the notes
+> below are the period record.
 
 Established 2026-07-24 and last measured 2026-07-31 after Phase 7 W4.
 **This section is the

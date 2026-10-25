@@ -70,7 +70,7 @@ rather than returning empty/false.
 
 - `msbuild RT2App.sln -p:Configuration=Release -p:Platform=x64`. Targets:
   `RT2App`, `RT2Tests`, `RT2SliceRunner`.
-- **Release and Debug are green (1392/1392, 161,832 assertions post-A0) and must stay green** — any failure is a
+- **Release and Debug are green (1586/1586, 171,159 assertions on 2026-10-25) and must stay green** — any failure is a
   real regression, not baseline noise. See "Test baseline" in the plan
   (authoritative; it supersedes this line).
 - **Run `RT2Tests.exe` from the repository root.** It resolves some fixtures
