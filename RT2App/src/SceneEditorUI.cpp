@@ -4,6 +4,7 @@
 #include "EditorTheme.h"
 #include "EditorIcons.h"
 #include "EditorFonts.h"
+#include "EditorWidgets.h"
 #include "PrimitiveGeometry.h"
 #include "FileDialog.h"
 #include "ECSComponents.h"
@@ -27,132 +28,7 @@
 #include <cfloat>
 #include <cstring>
 
-namespace {
-
-// ---- Inspector presentation helpers (Graphite design) ----------------------
-// Presentation only: none of these own state, and the vector row keeps
-// DragFloat3's group semantics so callers' IsItemActivated /
-// IsItemDeactivatedAfterEdit checks (preview sessions) behave unchanged.
-
-// A component card's title: tinted icon and semibold title.
-void InspectorSectionHeader(const char* icon, const char* title)
-{
-	ImGui::Spacing();
-	ImFont* bold = rt2::EditorFonts().bold;
-	if (bold) ImGui::PushFont(bold);
-	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::IndigoLine);
-	ImGui::TextUnformatted(icon);
-	ImGui::PopStyleColor();
-	ImGui::SameLine(0.0f, 8.0f);
-	ImGui::TextUnformatted(title);
-	if (bold) ImGui::PopFont();
-	ImGui::Spacing();
-}
-
-// A group inside a card (physics body, shape, constraints).
-void InspectorSubHeader(const char* title)
-{
-	ImGui::Spacing();
-	ImFont* medium = rt2::EditorFonts().medium;
-	if (medium) ImGui::PushFont(medium);
-	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::TextSecondary);
-	ImGui::TextUnformatted(title);
-	ImGui::PopStyleColor();
-	if (medium) ImGui::PopFont();
-}
-
-// The label column: a share of the panel width, clamped so short panels keep
-// usable fields and wide ones don't strand labels far from their values.
-float InspectorLabelWidth()
-{
-	const float panel = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
-	const float scale = ImGui::GetFontSize() / 15.0f;
-	return std::clamp(panel * 0.36f, 90.0f * scale, 160.0f * scale);
-}
-
-// Draws [begin, end) as the row's label, clipped to the label column (the
-// full text becomes a tooltip when clipped), and moves to the value column.
-void DrawRowLabelText(const char* begin, const char* end)
-{
-	const float column = InspectorLabelWidth();
-	const float room = column - ImGui::GetStyle().ItemSpacing.x;
-	ImGui::AlignTextToFramePadding();
-	const ImVec2 start = ImGui::GetCursorScreenPos();
-	const bool clipped = ImGui::CalcTextSize(begin, end).x > room;
-	ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
-	if (clipped)
-		ImGui::PushClipRect(start, ImVec2(start.x + room, start.y + ImGui::GetFrameHeight()), true);
-	ImGui::TextUnformatted(begin, end);
-	if (clipped)
-	{
-		ImGui::PopClipRect();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("%.*s", static_cast<int>(end - begin), begin);
-	}
-	ImGui::PopStyleColor();
-	ImGui::SameLine(column);
-}
-
-// Left-column property label; the next widget fills the rest of the row.
-void InspectorRowLabel(const char* label)
-{
-	DrawRowLabelText(label, label + std::strlen(label));
-	ImGui::SetNextItemWidth(-FLT_MIN);
-}
-
-// Label-left form of any labelled widget, usable inside a condition:
-//     if (ImGui::DragFloat(RowLabel("Mass"), &mass, 0.01f)) ...
-// Draws the visible label (text before any "##") in the left column, sets
-// the next item to fill the row, and returns a hidden ID ("##" + label)
-// for the widget. The returned buffer is reused by the next call; ImGui
-// only reads it during the widget call.
-const char* RowLabel(const char* label)
-{
-	static char hiddenId[256];
-	const char* hash = std::strstr(label, "##");
-	DrawRowLabelText(label, hash ? hash : label + std::strlen(label));
-	ImGui::SetNextItemWidth(-FLT_MIN);
-	std::snprintf(hiddenId, sizeof(hiddenId), "##%s", label);
-	return hiddenId;
-}
-
-// Label-left X/Y/Z row with axis-colored tags inside each field.
-bool InspectorVec3Row(const char* label, float* v, float speed,
-	float vMin, float vMax, const char* format)
-{
-	DrawRowLabelText(label, label + std::strlen(label));
-
-	bool changed = false;
-	ImGui::BeginGroup();
-	ImGui::PushID(label);
-	const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
-	const float width = (ImGui::GetContentRegionAvail().x - spacing * 2.0f) / 3.0f;
-	static const char* const kAxisNames[3] = { "X", "Y", "Z" };
-	const ImVec4 axisColors[3] = { rt2::EditorPalette::AxisX,
-		rt2::EditorPalette::AxisY, rt2::EditorPalette::AxisZ };
-	for (int i = 0; i < 3; ++i)
-	{
-		ImGui::PushID(i);
-		if (i > 0) ImGui::SameLine(0.0f, spacing);
-		ImGui::SetNextItemWidth(width);
-		changed |= ImGui::DragFloat("##v", &v[i], speed, vMin, vMax, format);
-		const ImVec2 min = ImGui::GetItemRectMin();
-		ImGui::GetWindowDrawList()->AddText(
-			ImVec2(min.x + 6.0f, min.y + ImGui::GetStyle().FramePadding.y),
-			ImGui::GetColorU32(axisColors[i]), kAxisNames[i]);
-		ImGui::PopID();
-	}
-	ImGui::PopID();
-	ImGui::EndGroup();
-	return changed;
-}
-
-bool InspectorVec3Row(const char* label, float* v, float speed, const char* format = "%.3f")
-{
-	return InspectorVec3Row(label, v, speed, 0.0f, 0.0f, format);
-}
-
-} // anonymous namespace
+using namespace rt2::ui; // Inspector row helpers (EditorWidgets.h)
 
 void SceneEditorUI::RenderPanels()
 {

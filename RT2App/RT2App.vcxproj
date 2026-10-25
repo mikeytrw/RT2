@@ -284,6 +284,7 @@ xcopy /Y /I /Q "$(ProjectDir)fonts\*.ttf" "../bin/Dist-windows-x86_64/RT2App/fon
     <ClInclude Include="src\EditorTheme.h" />
     <ClInclude Include="src\EditorFonts.h" />
     <ClInclude Include="src\EditorIcons.h" />
+    <ClInclude Include="src\EditorWidgets.h" />
     <ClInclude Include="src\EditorToolbar.h" />
     <ClInclude Include="src\EditorViewportIcons.h" />
     <ClInclude Include="src\EditorWorkspaceDocking.h" />
@@ -655,6 +656,11 @@ xcopy /Y /I /Q "$(ProjectDir)fonts\*.ttf" "../bin/Dist-windows-x86_64/RT2App/fon
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorFonts.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorWidgets.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

@@ -45,6 +45,7 @@
 #include "EditorTheme.h"
 #include "EditorFonts.h"
 #include "EditorIcons.h"
+#include "EditorWidgets.h"
 #include "EditorToolbar.h"
 #include "EditorWorkspaceDocking.h"
 #include "EditorWorkspaceState.h"
@@ -1055,104 +1056,216 @@ public:
 	{
 	ImGui::Begin("Performance");
 	{
-		const char* levels[] = { "1 - FPS & Frametime",
-		                         "2 - Raster & ReSTIR Timings",
-		                         "3 - Everything (incl. BLAS/TLAS/BVH)" };
-		ImGui::Combo("Detail Level", &m_PerfDetailLevel, levels, IM_ARRAYSIZE(levels));
-		ImGui::Separator();
+	using namespace rt2::ui;
+	using namespace rt2::EditorPalette;
+	ImDrawList* draw = ImGui::GetWindowDrawList();
+	const float fontSize = ImGui::GetFontSize();
+	ImFont* mono = rt2::EditorFonts().mono ? rt2::EditorFonts().mono : ImGui::GetFont();
+
+	// Detail level (persisted with the workspace): Basic, Passes, All.
+	{
+		const char* levels[] = { "Basic", "Passes", "All" };
+		const float segment = (ImGui::GetContentRegionAvail().x - 4.0f) / 3.0f;
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 0.0f));
+		for (int i = 0; i < 3; ++i)
+		{
+			const bool on = m_PerfDetailLevel == i;
+			ImGui::PushStyleColor(ImGuiCol_Button, on ? Selection : Field);
+			ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(0.78f, 0.79f, 1.0f, 1.0f) : TextSecondary);
+			char id[32];
+			std::snprintf(id, sizeof(id), "%s##PerfLevel%d", levels[i], i);
+			if (ImGui::Button(id, ImVec2(segment, 0.0f)))
+				m_PerfDetailLevel = i;
+			ImGui::PopStyleColor(2);
+			if (i < 2) ImGui::SameLine();
+		}
+		ImGui::PopStyleVar();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Basic: headline numbers. Passes: raster and ReSTIR timings.\n"
+			                  "All: every GPU region, frame details and acceleration structures.");
 	}
-	ImGui::Text("Last Render: %.3fms", m_SmoothedFrameTime);
-	ImGui::Text("FPS: %.1f", m_SmoothedFPS);
-	// Completed-frame denoiser truth (amendment step 5): derived from the
-	// renderer's immutable snapshot of the latest submitted frame, never
-	// from the authored session setting.
+	ImGui::Spacing();
+
+	// Headline tiles, two per row.
+	const auto statTile = [&](const char* value, const char* label, float width)
+	{
+		const ImVec2 p = ImGui::GetCursorScreenPos();
+		const float height = fontSize * 3.3f;
+		draw->AddRectFilled(p, ImVec2(p.x + width, p.y + height), ImGui::GetColorU32(Field), 8.0f);
+		draw->AddText(mono, fontSize * 1.3f, ImVec2(p.x + 10.0f, p.y + fontSize * 0.45f),
+			ImGui::GetColorU32(Text), value);
+		draw->AddText(ImGui::GetFont(), fontSize * 0.85f, ImVec2(p.x + 10.0f, p.y + fontSize * 2.05f),
+			ImGui::GetColorU32(Label), label);
+		ImGui::Dummy(ImVec2(width, height));
+	};
+	const float tileW = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+	const bool timingsReady = m_RendererGPU.HasGpuTimings() && m_RendererGPU.GetGpuTimings().validMask != 0;
+	const uint32_t frameRegion = static_cast<uint32_t>(GpuTimestampProfiler::Region::Frame);
+	char value[64];
+	if (timingsReady && (m_RendererGPU.GetGpuTimings().validMask & (1u << frameRegion)))
+		std::snprintf(value, sizeof(value), "%.2f ms", (double)m_RendererGPU.GetGpuTimings().milliseconds[frameRegion]);
+	else
+		std::snprintf(value, sizeof(value), "%.2f ms", (double)m_SmoothedFrameTime);
+	statTile(value, timingsReady ? "GPU frame" : "frame (CPU)", tileW);
+	ImGui::SameLine();
+	std::snprintf(value, sizeof(value), "%.1f", (double)m_SmoothedFPS);
+	statTile(value, "frames per second", tileW);
+	// Completed-frame truth (amendment step 5): the renderer's immutable
+	// snapshot of the latest submitted frame, never the authored setting.
 	if (m_RendererGPU.IsAvailable())
 	{
 		const auto& completed = m_RendererGPU.GetLastCompleted();
-		ImGui::Text("Denoiser: %s", CompletedDenoiserName(completed.denoiser));
-		// Completed-frame display look (camera-owned filmic tone mapping):
-		// the operator/EV of the fence-proven capture the PNG path converts,
-		// never the live UI setting (which may already target the next frame).
-		if (m_RendererGPU.HasCompletedCapture())
-		{
-			const auto& capture = m_RendererGPU.GetLastCompletedCapture();
-			ImGui::Text("Display: %s EV %+.2f%s", ToneMapOperatorLabel(capture.presentation.toneMap),
-				(double)capture.presentation.exposureEV,
-				capture.diagnosticView ? " (diagnostic)" : "");
-		}
+		std::snprintf(value, sizeof(value), "%ux%u", completed.renderExtent.Width(), completed.renderExtent.Height());
+		statTile(value, "render resolution", tileW);
+		ImGui::SameLine();
+		std::snprintf(value, sizeof(value), "%ux%u", completed.outputExtent.Width(), completed.outputExtent.Height());
+		char outputLabel[96];
+		if (completed.denoiser == CompletedDenoiser::RayReconstruction)
+			std::snprintf(outputLabel, sizeof(outputLabel), "output, RR %s", DlssQualityModeName(completed.quality));
+		else
+			std::snprintf(outputLabel, sizeof(outputLabel), "output, %s", CompletedDenoiserName(completed.denoiser));
+		statTile(value, outputLabel, tileW);
 		if (!completed.fallbackReason.empty() &&
 			(completed.denoiser == CompletedDenoiser::NRDFallback ||
 				completed.backend == RRBackend::ActiveNativeNRD))
-			ImGui::TextWrapped("Fallback reason: %s", completed.fallbackReason.c_str());
-		if (m_PerfDetailLevel >= kPerfLevelEverything)
 		{
-			ImGui::Text("  Internal: %u x %u", completed.renderExtent.Width(),
-				completed.renderExtent.Height());
-			ImGui::Text("  Output: %u x %u", completed.outputExtent.Width(),
-				completed.outputExtent.Height());
-			if (completed.denoiser == CompletedDenoiser::RayReconstruction)
-				ImGui::Text("  RR preset: %s (feature gen %llu)",
-					DlssQualityModeName(completed.quality),
-					static_cast<unsigned long long>(completed.featureGeneration));
-			ImGui::Text("  History reset this frame: %s",
-				completed.historyResetThisFrame ? "yes" : "no");
+			ImGui::PushStyleColor(ImGuiCol_Text, Play);
+			ImGui::TextWrapped("Fallback reason: %s", completed.fallbackReason.c_str());
+			ImGui::PopStyleColor();
 		}
 	}
-	if (m_PerfDetailLevel >= kPerfLevelPasses && m_RendererGPU.HasGpuTimings())
+
+	// Where the GPU frame goes: a stacked bar and a legend.
+	if (m_PerfDetailLevel >= kPerfLevelPasses && timingsReady)
 	{
 		const auto& timings = m_RendererGPU.GetGpuTimings();
-		if (timings.validMask != 0)
+		static const ImVec4 kRegionColors[] = {
+			ImVec4(0.486f, 0.514f, 1.000f, 1.0f), ImVec4(0.361f, 0.784f, 0.757f, 1.0f),
+			ImVec4(0.910f, 0.690f, 0.294f, 1.0f), ImVec4(0.420f, 0.435f, 0.475f, 1.0f),
+			ImVec4(0.788f, 0.604f, 0.243f, 1.0f), ImVec4(0.416f, 0.651f, 1.000f, 1.0f),
+			ImVec4(0.482f, 0.847f, 0.561f, 1.0f), ImVec4(0.804f, 0.722f, 1.000f, 1.0f),
+		};
+		struct Slice { const char* name; float ms; ImVec4 color; };
+		std::vector<Slice> slices;
+		float total = 0.0f;
+		for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
 		{
-			ImGui::Separator();
-			if (m_PerfDetailLevel >= kPerfLevelEverything)
-				ImGui::Text("GPU timings (frame %llu)", static_cast<unsigned long long>(timings.frameIndex));
-			else
-				ImGui::Text("GPU timings");
-			for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
+			if (i == frameRegion || !(timings.validMask & (1u << i))) continue;
+			const auto region = static_cast<GpuTimestampProfiler::Region>(i);
+			// Passes shows the raster + ReSTIR regions; All shows every
+			// captured region, so regions added later appear with no edit.
+			if (m_PerfDetailLevel < kPerfLevelEverything && !IsPassLevelRegion(region))
+				continue;
+			const float ms = timings.milliseconds[i];
+			slices.push_back({ GpuTimestampProfiler::RegionName(region), ms,
+				kRegionColors[slices.size() % IM_ARRAYSIZE(kRegionColors)] });
+			total += ms;
+		}
+		std::sort(slices.begin(), slices.end(),
+			[](const Slice& a, const Slice& b) { return a.ms > b.ms; });
+		for (size_t i = 0; i < slices.size(); ++i)
+			slices[i].color = kRegionColors[i % IM_ARRAYSIZE(kRegionColors)];
+
+		ImGui::Spacing();
+		if (m_PerfDetailLevel >= kPerfLevelEverything)
+			ImGui::TextDisabled("Where the GPU frame goes (frame %llu)",
+				static_cast<unsigned long long>(timings.frameIndex));
+		else
+			ImGui::TextDisabled("Where the GPU frame goes");
+		const ImVec2 barMin = ImGui::GetCursorScreenPos();
+		const float barW = ImGui::GetContentRegionAvail().x;
+		const float barH = 12.0f;
+		draw->AddRectFilled(barMin, ImVec2(barMin.x + barW, barMin.y + barH), ImGui::GetColorU32(Field), barH * 0.5f);
+		if (total > 0.0f)
+		{
+			float x = barMin.x;
+			draw->PushClipRect(barMin, ImVec2(barMin.x + barW, barMin.y + barH), true);
+			for (const auto& slice : slices)
 			{
-				if (!(timings.validMask & (1u << i))) continue;
-				const auto region = static_cast<GpuTimestampProfiler::Region>(i);
-				// Level 2 shows only the raster + ReSTIR pass regions.
-				// Level 3 shows every captured region, so regions added to
-				// GpuTimestampProfiler::Region later appear here with no edit.
-				if (m_PerfDetailLevel < kPerfLevelEverything && !IsPassLevelRegion(region))
-					continue;
-				ImGui::Text("  %s: %.3f ms",
-				            GpuTimestampProfiler::RegionName(region),
-				            timings.milliseconds[i]);
+				const float w = barW * (slice.ms / total);
+				draw->AddRectFilled(ImVec2(x, barMin.y), ImVec2(x + w, barMin.y + barH),
+					ImGui::GetColorU32(slice.color));
+				x += w;
+			}
+			draw->PopClipRect();
+		}
+		ImGui::Dummy(ImVec2(barW, barH));
+		ImGui::Spacing();
+		for (const auto& slice : slices)
+		{
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			const float rowH = ImGui::GetTextLineHeight();
+			draw->AddRectFilled(ImVec2(p.x, p.y + rowH * 0.25f), ImVec2(p.x + rowH * 0.5f, p.y + rowH * 0.75f),
+				ImGui::GetColorU32(slice.color), 2.0f);
+			ImGui::SetCursorScreenPos(ImVec2(p.x + rowH * 0.5f + 8.0f, p.y));
+			ImGui::TextUnformatted(slice.name);
+			char ms[32];
+			std::snprintf(ms, sizeof(ms), "%.3f ms", (double)slice.ms);
+			const float msW = mono->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, ms).x;
+			ImGui::SameLine(ImGui::GetContentRegionMax().x - msW);
+			ImGui::PushFont(mono);
+			ImGui::TextUnformatted(ms);
+			ImGui::PopFont();
+		}
+	}
+
+	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.IsAvailable())
+	{
+		ImGui::Spacing();
+		ImGui::Separator();
+		const auto& completed = m_RendererGPU.GetLastCompleted();
+		if (CollapsibleSection("PerfFrame", RT2_ICON_INFO, "Frame details",
+				completed.historyResetThisFrame ? "history reset" : "", true))
+		{
+			ImGui::Text("Denoiser: %s", CompletedDenoiserName(completed.denoiser));
+			// Completed-frame display look (camera-owned filmic tone mapping):
+			// the operator/EV of the fence-proven capture the PNG path converts,
+			// never the live UI setting (which may already target the next frame).
+			if (m_RendererGPU.HasCompletedCapture())
+			{
+				const auto& capture = m_RendererGPU.GetLastCompletedCapture();
+				ImGui::Text("Display: %s EV %+.2f%s", ToneMapOperatorLabel(capture.presentation.toneMap),
+					(double)capture.presentation.exposureEV,
+					capture.diagnosticView ? " (diagnostic)" : "");
+			}
+			if (completed.denoiser == CompletedDenoiser::RayReconstruction)
+				ImGui::Text("RR preset: %s (feature gen %llu)",
+					DlssQualityModeName(completed.quality),
+					static_cast<unsigned long long>(completed.featureGeneration));
+			ImGui::Text("History reset this frame: %s",
+				completed.historyResetThisFrame ? "yes" : "no");
+			if (m_RendererGPU.HasOutput())
+			{
+				const auto extent = m_RendererGPU.GetRenderExtent();
+				ImGui::Text("Render resolution: %u x %u", extent.Width(), extent.Height());
+			}
+		}
+		char asSummary[64];
+		if (m_RendererGPU.GetLastAsTotalMs() < 0.0f)
+			std::snprintf(asSummary, sizeof(asSummary), "no build yet");
+		else
+			std::snprintf(asSummary, sizeof(asSummary), "%u BLAS, %.1f ms",
+				m_RendererGPU.GetBlasCount(), (double)m_RendererGPU.GetLastAsTotalMs());
+		if (CollapsibleSection("PerfAS", RT2_ICON_BOX, "Acceleration structures", asSummary))
+		{
+			if (m_RendererGPU.GetLastAsTotalMs() < 0.0f)
+				ImGui::TextDisabled("(no build yet)");
+			else
+			{
+				ImGui::Text("BLAS build:  %.3f ms", m_RendererGPU.GetLastBlasBuildMs());
+				ImGui::Text("TLAS build:  %.3f ms", m_RendererGPU.GetLastTlasBuildMs());
+				ImGui::Text("Total:       %.3f ms", m_RendererGPU.GetLastAsTotalMs());
+				ImGui::Text("BLAS count:  %u", m_RendererGPU.GetBlasCount());
 			}
 		}
 	}
-	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.HasOutput())
-	{
-		ImGui::Separator();
-		const auto extent = m_RendererGPU.GetRenderExtent();
-		ImGui::Text("Render Res: %u x %u", extent.Width(), extent.Height());
-	}
-	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.IsAvailable())
-	{
-		ImGui::Separator();
-		ImGui::Text("BLAS/TLAS Build (last rebuild)");
-		if (m_RendererGPU.GetLastAsTotalMs() < 0.0f)
-		{
-			ImGui::TextDisabled("(no build yet)");
-		}
-		else
-		{
-			ImGui::Text("  BLAS build:  %.3f ms", m_RendererGPU.GetLastBlasBuildMs());
-			ImGui::Text("  TLAS build:  %.3f ms", m_RendererGPU.GetLastTlasBuildMs());
-			ImGui::Text("  Total AS:    %.3f ms", m_RendererGPU.GetLastAsTotalMs());
-			ImGui::Text("  BLAS count:   %u", m_RendererGPU.GetBlasCount());
-		}
-	}
+
 	// Audio A7: compact audio status (review P2: backend reason, census,
 	// gains, the one observable latest failure — preview, refused Play,
 	// failed Stop/drain, deferred runtime — and cache). The snapshot fill
 	// and every line come from the shared production formatter the probe
 	// drives; this block only renders.
 	{
-		ImGui::Separator();
-		ImGui::Text("Audio");
 		AudioStatusSnapshot audioSnapshot;
 		// Re-review finding 3: production collection the probe drives
 		// (decoded-cache counters stay plain values: the concrete
@@ -1182,16 +1295,26 @@ public:
 			m_AudioBackendReady
 				? m_AudioBackend.DecodedCacheResidentBytes() : 0,
 			m_AudioClipProvider.CacheEntryCount());
-		for (const AudioStatusLine& line :
-		     FormatAudioStatusLines(audioSnapshot))
+		const auto audioLines = FormatAudioStatusLines(audioSnapshot);
+		char audioSummary[64];
+		// The section starts collapsed, so a failure must show in the summary.
+		std::snprintf(audioSummary, sizeof(audioSummary), "%s",
+			!m_LastAudioError.IsOk() ? "has an error"
+				: (m_AudioBackendReady ? "backend ready" : "backend idle"));
+		ImGui::Spacing();
+		if (CollapsibleSection("PerfAudio", RT2_ICON_VOLUME_2, "Audio", audioSummary))
 		{
-			if (line.muted)
-				ImGui::TextDisabled("%s", line.text.c_str());
-			else if (line.wrapped)
-				ImGui::TextWrapped("%s", line.text.c_str());
-			else
-				ImGui::TextUnformatted(line.text.c_str());
+			for (const AudioStatusLine& line : audioLines)
+			{
+				if (line.muted)
+					ImGui::TextDisabled("%s", line.text.c_str());
+				else if (line.wrapped)
+					ImGui::TextWrapped("%s", line.text.c_str());
+				else
+					ImGui::TextUnformatted(line.text.c_str());
+			}
 		}
+	}
 	}
 	ImGui::End();
 	}
@@ -1200,62 +1323,12 @@ public:
 	if (m_ShowRenderSettingsWin)
 	{
 	ImGui::Begin("Render Settings");
-	ImGui::Text("Samples Per Pixel");
-	ImGui::BeginDisabled(m_Settings.rasterFirst);
-	if (ImGui::DragInt("SPP", &m_Settings.spp, 1.0f, 1, 1500))
-		m_RendererGPU.ApplySettings(m_Settings);
-	ImGui::EndDisabled();
-	if (m_Settings.rasterFirst)
 	{
-		ImGui::SameLine();
-		ImGui::TextDisabled("(unused by raster-first)");
-	}
-	ImGui::Text("Sample Depth");
-	if (ImGui::DragInt("Bounces", &m_Settings.maxBounces, 1.0f, 2, 100))
-		m_RendererGPU.ApplySettings(m_Settings);
-	ImGui::Text("Russian Roulette");
-	int rrStartDepth = (int)m_Settings.rrStartDepth;
-	if (ImGui::DragInt("RR Start Depth", &rrStartDepth, 1.0f, 1, 16))
-	{
-		m_Settings.rrStartDepth = (uint32_t)rrStartDepth;
-		m_RendererGPU.ApplySettings(m_Settings);
-		m_Settings = m_RendererGPU.GetSettings();
-	}
-	if (ImGui::DragFloat("RR Min P", &m_Settings.rrMinP, 0.005f, 0.01f, 0.99f, "%.3f"))
-	{
-		m_RendererGPU.ApplySettings(m_Settings);
-		m_Settings = m_RendererGPU.GetSettings();
-	}
-	if (ImGui::DragFloat("RR Max P", &m_Settings.rrMaxP, 0.005f, 0.01f, 0.99f, "%.3f"))
-	{
-		m_RendererGPU.ApplySettings(m_Settings);
-		m_Settings = m_RendererGPU.GetSettings();
-	}
-	ImGui::Text("Diagnostic Sample Seed");
-	// RR5-T0 review P2: the seed spans the full uint32 domain, so the
-	// widget must too. DragInt truncates above INT_MAX (4294967295
-	// displays as -1 and edits back to 0); InputScalar U32 represents
-	// every accepted value faithfully, matching the CLI contract.
-	if (ImGui::InputScalar("Diag Seed", ImGuiDataType_U32, &m_Settings.diagSampleSeed, nullptr, nullptr, "%u"))
-		m_RendererGPU.ApplySettings(m_Settings);
-	bool diagProbe = m_Settings.diagProbeActive != 0u;
-	if (ImGui::Checkbox("Diag RNG Probe", &diagProbe))
-	{
-		m_Settings.diagProbeActive = diagProbe ? 1u : 0u;
-		m_RendererGPU.ApplySettings(m_Settings);
-	}
-	if (ImGui::InputScalar("Probe X", ImGuiDataType_U32, &m_Settings.diagProbeX, nullptr, nullptr, "%u"))
-		m_RendererGPU.ApplySettings(m_Settings);
-	if (ImGui::InputScalar("Probe Y", ImGuiDataType_U32, &m_Settings.diagProbeY, nullptr, nullptr, "%u"))
-		m_RendererGPU.ApplySettings(m_Settings);
-	if (ImGui::Button("Reset")) {
-		m_Settings.spp = 1;
-		m_Settings.maxBounces = 2;
-		m_RendererGPU.ApplySettings(m_Settings);
-	};
+	using namespace rt2::ui;
 
-	ImGui::Separator();
-	if (ImGui::Checkbox("Raster-First Path", &m_Settings.rasterFirst))
+	// ---- Image: what is traced, and how much ----
+	InspectorSectionHeader(RT2_ICON_IMAGE, "Image");
+	if (ImGui::Checkbox(RowLabel("Raster-first primaries"), &m_Settings.rasterFirst))
 	{
 		if (m_Settings.rasterFirst)
 		{
@@ -1265,20 +1338,29 @@ public:
 		}
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Primary visibility from a raster G-buffer instead of camera rays.\n"
+		                  "Needed by NRD and ReSTIR. Forces aperture 0 (no depth of field).");
+	ImGui::BeginDisabled(m_Settings.rasterFirst);
+	if (ImGui::DragInt(RowLabel("Samples per pixel"), &m_Settings.spp, 1.0f, 1, 1500))
+		m_RendererGPU.ApplySettings(m_Settings);
+	ImGui::EndDisabled();
+	if (m_Settings.rasterFirst && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("Unused with raster-first primaries");
+	if (ImGui::DragInt(RowLabel("Max bounces"), &m_Settings.maxBounces, 1.0f, 2, 100))
+		m_RendererGPU.ApplySettings(m_Settings);
 	ImGui::BeginDisabled(m_Settings.denoiserMode != DenoiserMode::Off);
-	if (ImGui::Checkbox("Accumulate", &m_Settings.accumulate))
+	if (ImGui::Checkbox(RowLabel("Accumulate"), &m_Settings.accumulate))
 	{
 		if (!m_Settings.accumulate)
 			m_RendererGPU.ResetAccumulation();
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	ImGui::EndDisabled();
-	if (m_Settings.rasterFirst)
-	{
-		ImGui::SameLine();
-		ImGui::TextDisabled("(aperture=0, no DOF)");
-	}
-	if (ImGui::Checkbox("Show Background", &m_Settings.showBackground))
+	if (m_Settings.denoiserMode != DenoiserMode::Off &&
+		ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("Only available with the denoiser off");
+	if (ImGui::Checkbox(RowLabel("Show background"), &m_Settings.showBackground))
 		m_RendererGPU.ApplySettings(m_Settings);
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Editor only. In Play a ray that hits nothing stays black,\n"
@@ -1290,16 +1372,43 @@ public:
 		ImGui::SameLine();
 		ImGui::TextDisabled("(hidden in Play)");
 	}
-	if (ImGui::SliderFloat("Emissive Boost", &m_Settings.emissiveBoost, 0.0f, 50.0f, "%.1f"))
+	if (ImGui::SliderFloat(RowLabel("Emissive boost"), &m_Settings.emissiveBoost, 0.0f, 50.0f, "%.1f"))
 		m_RendererGPU.ApplySettings(m_Settings);
+	if (ImGui::SmallButton(RT2_ICON_ROTATE_CCW "  Reset samples and bounces")) {
+		m_Settings.spp = 1;
+		m_Settings.maxBounces = 2;
+		m_RendererGPU.ApplySettings(m_Settings);
+	}
 
-	bool nrdAvailable = m_Settings.rasterFirst;
+	// Availability rules. They run every frame whatever is expanded below,
+	// right after the raster-first toggle they depend on: NRD and both
+	// ReSTIR paths need the raster-first G-buffer.
+	const bool nrdAvailable = m_Settings.rasterFirst;
 	if (!nrdAvailable && m_Settings.denoiserMode == DenoiserMode::NRD &&
 		!m_RendererGPU.IsFallbackRetained())
 	{
 		m_Settings.denoiserMode = DenoiserMode::Off;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
+	const bool restirAvailable = m_Settings.rasterFirst;
+	if (!restirAvailable && m_Settings.restirEnabled)
+	{
+		m_Settings.restirEnabled = false;
+		m_RendererGPU.ApplySettings(m_Settings);
+	}
+	// ReSTIR GI — one-bounce diffuse GI, temporal reuse, raster-first only.
+	// Independent of DI; requires raster-first G-buffer but not DI enabled.
+	const bool giAvailable = m_RendererGPU.IsAvailable() && m_Settings.rasterFirst;
+	if (!giAvailable && m_Settings.restirGIEnabled)
+	{
+		m_Settings.restirGIEnabled = false;
+		m_RendererGPU.ApplySettings(m_Settings);
+	}
+
+	// ---- Denoiser ----
+	ImGui::Spacing();
+	ImGui::Separator();
+	InspectorSectionHeader(RT2_ICON_SCAN, "Denoiser");
 	// One exclusive denoiser selector (amendment step 5). No independent
 	// NRD/RR flags exist: the combo writes the single authored mode.
 	// The RR item is disabled (not hidden) only while the runtime cannot
@@ -1311,7 +1420,7 @@ public:
 		const char* denoiserOptions[] = { "Off", "NRD", "DLSS Ray Reconstruction" };
 		int denoiserIndex = m_Settings.denoiserMode == DenoiserMode::NRD ? 1 :
 			(m_Settings.denoiserMode == DenoiserMode::RayReconstruction ? 2 : 0);
-		if (ImGui::BeginCombo("Denoiser", denoiserOptions[denoiserIndex]))
+		if (ImGui::BeginCombo(RowLabel("Method"), denoiserOptions[denoiserIndex]))
 		{
 			for (int i = 0; i < 3; ++i)
 			{
@@ -1320,12 +1429,12 @@ public:
 				const bool selected = (denoiserIndex == i);
 				if (disabled)
 					ImGui::BeginDisabled(true);
-			if (ImGui::Selectable(denoiserOptions[i], selected,
-				disabled ? ImGuiSelectableFlags_Disabled : 0) && !disabled)
-			{
-				denoiserIndex = i;
-				m_DenoiserUIExplicit = true; // explicit UI choice owns the session
-				m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
+				if (ImGui::Selectable(denoiserOptions[i], selected,
+					disabled ? ImGuiSelectableFlags_Disabled : 0) && !disabled)
+				{
+					denoiserIndex = i;
+					m_DenoiserUIExplicit = true; // explicit UI choice owns the session
+					m_Settings.denoiserMode = denoiserIndex == 1 ? DenoiserMode::NRD :
 						(denoiserIndex == 2 ? DenoiserMode::RayReconstruction : DenoiserMode::Off);
 					if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
 						m_RRFallbackApplied = false; // explicit (re)selection may retry
@@ -1357,7 +1466,6 @@ public:
 	}
 	if (m_Settings.denoiserMode == DenoiserMode::RayReconstruction)
 	{
-		ImGui::Indent();
 		// Quality, Balanced and Performance are ordinary selectable RR
 		// presets since the default promotion; the combo stays disabled
 		// only while the runtime cannot support RR at all.
@@ -1365,7 +1473,7 @@ public:
 		int qualityIndex = m_Settings.dlssQuality == DlssQualityMode::Balanced ? 1 :
 			(m_Settings.dlssQuality == DlssQualityMode::Performance ? 2 : 0);
 		ImGui::BeginDisabled(!rrSupported);
-		if (ImGui::BeginCombo("RR Preset", qualityOptions[qualityIndex]))
+		if (ImGui::BeginCombo(RowLabel("Quality preset"), qualityOptions[qualityIndex]))
 		{
 			for (int i = 0; i < 3; ++i)
 			{
@@ -1386,125 +1494,166 @@ public:
 		{
 			const auto render = m_RendererGPU.GetRenderExtent();
 			const auto output = m_RendererGPU.GetOutputExtent();
-			ImGui::TextDisabled("Internal %u x %u -> Output %u x %u",
+			InspectorRowLabel("Resolution");
+			ImGui::TextDisabled("%u x %u  >  %u x %u",
 				render.Width(), render.Height(), output.Width(), output.Height());
 		}
-		ImGui::Unindent();
 	}
 	if (m_RRFallbackApplied && !m_RRFallbackReason.empty())
 		ImGui::TextWrapped("RR fell back to NRD: %s", m_RRFallbackReason.c_str());
 	if (m_Settings.denoiserMode == DenoiserMode::NRD)
 	{
-	ImGui::BeginDisabled(!nrdAvailable);
-		ImGui::Indent();
-		bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
-		ImGui::BeginDisabled(restirActive);
-		if (ImGui::Checkbox("Jitter", &m_Settings.nrdJitterEnabled))
-			m_RendererGPU.ApplySettings(m_Settings);
-		ImGui::SameLine();
-		ImGui::PushID("JitterScale");
-		ImGui::SetNextItemWidth(80.0f);
-		if (ImGui::SliderFloat("Scale", &m_Settings.nrdJitterScale, 0.0f, 1.0f, "%.2f"))
-			m_RendererGPU.ApplySettings(m_Settings);
-		ImGui::PopID();
-		ImGui::EndDisabled();
-		ImGui::SliderFloat("Blur Radius", &m_Settings.nrdMaxBlurRadius, 1.0f, 50.0f, "%.1f");
-		ImGui::SliderInt("Accum Frames", &m_Settings.nrdMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
-		ImGui::SliderFloat("Responsive Roughness", &m_Settings.nrdResponsiveRoughnessThreshold, 0.0f, 1.0f, "%.3f");
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Below this roughness, REBLUR shortens history. Set to 0 to disable.");
-		ImGui::SliderInt("Responsive Min Frames", &m_Settings.nrdResponsiveMinAccumFrames, 0, 3);
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Minimum glossy-history length when responsive accumulation is active.");
-		ImGui::Checkbox("Anti-Firefly", &m_Settings.nrdAntiFirefly);
-		const char* ditherOptions[] = { "Off (white noise)", "Bayer 4x4", "Interleaved Gradient" };
-		int& dither = m_Settings.nrdLobeDither;
-		ImGui::Combo("Lobe Dither", &dither, ditherOptions, 3);
-		ImGui::SliderFloat("Split Screen", &m_Settings.nrdSplitScreen, 0.0f, 1.0f, "%.2f");
-		ImGui::Unindent();
+		ImGui::BeginDisabled(!nrdAvailable);
+		char nrdSummary[64];
+		std::snprintf(nrdSummary, sizeof(nrdSummary), "blur %.0f px, %d frames",
+			(double)m_Settings.nrdMaxBlurRadius, m_Settings.nrdMaxAccumFrames);
+		if (CollapsibleSection("NrdTuning", RT2_ICON_SLIDERS_HORIZONTAL, "NRD tuning", nrdSummary))
+		{
+			ImGui::PushID("NRD");
+			const bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
+			ImGui::BeginDisabled(restirActive);
+			if (ImGui::Checkbox(RowLabel("Jitter"), &m_Settings.nrdJitterEnabled))
+				m_RendererGPU.ApplySettings(m_Settings);
+			if (ImGui::SliderFloat(RowLabel("Jitter scale"), &m_Settings.nrdJitterScale, 0.0f, 1.0f, "%.2f"))
+				m_RendererGPU.ApplySettings(m_Settings);
+			ImGui::EndDisabled();
+			ImGui::SliderFloat(RowLabel("Max blur radius"), &m_Settings.nrdMaxBlurRadius, 1.0f, 50.0f, "%.1f");
+			ImGui::SliderInt(RowLabel("History frames"), &m_Settings.nrdMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+			ImGui::SliderFloat(RowLabel("Responsive below roughness"), &m_Settings.nrdResponsiveRoughnessThreshold, 0.0f, 1.0f, "%.3f");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Below this roughness, REBLUR shortens history. Set to 0 to disable.");
+			ImGui::SliderInt(RowLabel("Responsive min frames"), &m_Settings.nrdResponsiveMinAccumFrames, 0, 3);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Minimum glossy-history length when responsive accumulation is active.");
+			ImGui::Checkbox(RowLabel("Anti-firefly"), &m_Settings.nrdAntiFirefly);
+			const char* ditherOptions[] = { "Off (white noise)", "Bayer 4x4", "Interleaved Gradient" };
+			int& dither = m_Settings.nrdLobeDither;
+			ImGui::Combo(RowLabel("Lobe dither"), &dither, ditherOptions, 3);
+			ImGui::SliderFloat(RowLabel("Split-screen compare"), &m_Settings.nrdSplitScreen, 0.0f, 1.0f, "%.2f");
+			ImGui::PopID();
+		}
+		// Applied every frame while NRD is selected, as before, so the
+		// sliders above take effect whether or not the section is open.
 		m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::EndDisabled();
 	}
-	ImGui::Separator();
 
-	bool restirAvailable = m_Settings.rasterFirst;
-	if (!restirAvailable && m_Settings.restirEnabled)
+	// ---- Advanced: collapsed by default, one-line summary each ----
+	ImGui::Spacing();
+	ImGui::Separator();
+	char summary[96];
+
+	if (!restirAvailable)
+		std::snprintf(summary, sizeof(summary), "needs raster-first");
+	else if (!m_Settings.restirEnabled)
+		std::snprintf(summary, sizeof(summary), "off");
+	else
+		std::snprintf(summary, sizeof(summary), "%u candidates%s%s",
+			m_Settings.restirFreshCandidates,
+			m_Settings.restirTemporalReuse ? ", temporal" : "",
+			m_Settings.restirSpatialReuse ? ", spatial" : "");
+	if (CollapsibleSection("ReSTIRDI", RT2_ICON_LIGHTBULB, "Direct light reuse (ReSTIR DI)", summary))
 	{
-		m_Settings.restirEnabled = false;
-		m_RendererGPU.ApplySettings(m_Settings);
-	}
-	ImGui::BeginDisabled(!restirAvailable);
-	if (ImGui::Checkbox("ReSTIR DI", &m_Settings.restirEnabled))
-	{
+		ImGui::PushID("ReSTIRDI");
+		ImGui::BeginDisabled(!restirAvailable);
+		if (ImGui::Checkbox(RowLabel("Enabled"), &m_Settings.restirEnabled))
+		{
+			if (m_Settings.restirEnabled)
+				m_Settings.nrdJitterEnabled = false;
+			m_RendererGPU.ApplySettings(m_Settings);
+		}
 		if (m_Settings.restirEnabled)
-			m_Settings.nrdJitterEnabled = false;
-		m_RendererGPU.ApplySettings(m_Settings);
+		{
+			int m = (int)m_Settings.restirFreshCandidates;
+			if (ImGui::SliderInt(RowLabel("Candidates per pixel"), &m, 1, 32))
+			{ m_Settings.restirFreshCandidates = (uint32_t)m; m_RendererGPU.ApplySettings(m_Settings); }
+			if (ImGui::Checkbox(RowLabel("Reuse last frame"), &m_Settings.restirTemporalReuse))
+				m_RendererGPU.ApplySettings(m_Settings);
+			if (ImGui::Checkbox(RowLabel("Reuse neighbours"), &m_Settings.restirSpatialReuse))
+				m_RendererGPU.ApplySettings(m_Settings);
+			int sn = (int)m_Settings.restirSpatialNeighbors;
+			if (ImGui::SliderInt(RowLabel("Neighbour samples"), &sn, 1, 32))
+			{ m_Settings.restirSpatialNeighbors = (uint32_t)sn; m_RendererGPU.ApplySettings(m_Settings); }
+			int sr = (int)m_Settings.restirSpatialRadius;
+			if (ImGui::SliderInt(RowLabel("Neighbour radius (px)"), &sr, 5, 60))
+			{ m_Settings.restirSpatialRadius = (uint32_t)sr; m_RendererGPU.ApplySettings(m_Settings); }
+			if (ImGui::SliderFloat(RowLabel("Depth tolerance"), &m_Settings.restirDepthThreshold, 0.01f, 0.5f, "%.3f"))
+				m_RendererGPU.ApplySettings(m_Settings);
+			if (ImGui::SliderFloat(RowLabel("Normal similarity"), &m_Settings.restirNormalThreshold, 0.8f, 1.0f, "%.3f"))
+				m_RendererGPU.ApplySettings(m_Settings);
+		}
+		ImGui::EndDisabled();
+		ImGui::PopID();
 	}
-	if (m_Settings.restirEnabled)
-	{
-		ImGui::Indent();
-		int m = (int)m_Settings.restirFreshCandidates;
-		if (ImGui::SliderInt("Fresh Candidates (M)", &m, 1, 32))
-		{ m_Settings.restirFreshCandidates = (uint32_t)m; m_RendererGPU.ApplySettings(m_Settings); }
-		if (ImGui::Checkbox("Temporal Reuse", &m_Settings.restirTemporalReuse))
-			m_RendererGPU.ApplySettings(m_Settings);
-		if (ImGui::Checkbox("Spatial Reuse", &m_Settings.restirSpatialReuse))
-			m_RendererGPU.ApplySettings(m_Settings);
-		int sn = (int)m_Settings.restirSpatialNeighbors;
-		if (ImGui::SliderInt("Spatial Neighbors", &sn, 1, 32))
-		{ m_Settings.restirSpatialNeighbors = (uint32_t)sn; m_RendererGPU.ApplySettings(m_Settings); }
-		int sr = (int)m_Settings.restirSpatialRadius;
-		if (ImGui::SliderInt("Spatial Radius", &sr, 5, 60))
-		{ m_Settings.restirSpatialRadius = (uint32_t)sr; m_RendererGPU.ApplySettings(m_Settings); }
-		if (ImGui::SliderFloat("Depth Threshold", &m_Settings.restirDepthThreshold, 0.01f, 0.5f, "%.3f"))
-			m_RendererGPU.ApplySettings(m_Settings);
-		if (ImGui::SliderFloat("Normal Threshold", &m_Settings.restirNormalThreshold, 0.8f, 1.0f, "%.3f"))
-			m_RendererGPU.ApplySettings(m_Settings);
-		ImGui::Unindent();
-	}
-	ImGui::EndDisabled();
-	ImGui::Separator();
 
-	// ReSTIR GI — one-bounce diffuse GI, temporal reuse, raster-first only.
-	// Independent of DI; requires raster-first G-buffer but not DI enabled.
-	bool giAvailable = m_RendererGPU.IsAvailable() && m_Settings.rasterFirst;
-	if (!giAvailable && m_Settings.restirGIEnabled)
+	if (!giAvailable)
+		std::snprintf(summary, sizeof(summary), "needs raster-first");
+	else if (!m_Settings.restirGIEnabled)
+		std::snprintf(summary, sizeof(summary), "off");
+	else
+		std::snprintf(summary, sizeof(summary), "%u candidate%s%s",
+			m_Settings.restirGIFreshCandidates,
+			m_Settings.restirGIFreshCandidates == 1 ? "" : "s",
+			m_Settings.restirGITemporalEnabled ? ", temporal" : "");
+	if (CollapsibleSection("ReSTIRGI", RT2_ICON_LAYERS, "Indirect light reuse (ReSTIR GI)", summary))
 	{
-		m_Settings.restirGIEnabled = false;
-		m_RendererGPU.ApplySettings(m_Settings);
-	}
-	ImGui::BeginDisabled(!giAvailable);
-	if (ImGui::Checkbox("ReSTIR GI", &m_Settings.restirGIEnabled))
-	{
+		ImGui::PushID("ReSTIRGI");
+		ImGui::BeginDisabled(!giAvailable);
+		if (ImGui::Checkbox(RowLabel("Enabled"), &m_Settings.restirGIEnabled))
+		{
+			if (m_Settings.restirGIEnabled)
+				m_Settings.nrdJitterEnabled = false;
+			m_RendererGPU.ApplySettings(m_Settings);
+		}
 		if (m_Settings.restirGIEnabled)
-			m_Settings.nrdJitterEnabled = false;
-		m_RendererGPU.ApplySettings(m_Settings);
+		{
+			if (ImGui::Checkbox(RowLabel("Reuse last frame"), &m_Settings.restirGITemporalEnabled))
+				m_RendererGPU.ApplySettings(m_Settings);
+			int m = (int)m_Settings.restirGIFreshCandidates;
+			if (ImGui::SliderInt(RowLabel("Candidates per pixel"), &m, 1, 8))
+			{ m_Settings.restirGIFreshCandidates = (uint32_t)m; m_RendererGPU.ApplySettings(m_Settings); }
+			int tmc = (int)m_Settings.restirGITemporalMCap;
+			if (ImGui::SliderInt(RowLabel("History cap (M)"), &tmc, 1, 100))
+			{ m_Settings.restirGITemporalMCap = (uint32_t)tmc; m_RendererGPU.ApplySettings(m_Settings); }
+			int age = (int)m_Settings.restirGIMaxTemporalAge;
+			if (ImGui::SliderInt(RowLabel("Max history age"), &age, 0, 16))
+			{ m_Settings.restirGIMaxTemporalAge = (uint32_t)age; m_RendererGPU.ApplySettings(m_Settings); }
+			if (ImGui::SliderFloat(RowLabel("Depth tolerance"), &m_Settings.restirGIDepthThreshold, 0.01f, 0.5f, "%.3f"))
+				m_RendererGPU.ApplySettings(m_Settings);
+			if (ImGui::SliderFloat(RowLabel("Normal similarity"), &m_Settings.restirGINormalThreshold, 0.5f, 1.0f, "%.3f"))
+				m_RendererGPU.ApplySettings(m_Settings);
+			if (ImGui::SliderFloat(RowLabel("Position tolerance"), &m_Settings.restirGIWorldPosThreshold, 0.01f, 0.5f, "%.3f"))
+				m_RendererGPU.ApplySettings(m_Settings);
+		}
+		ImGui::EndDisabled();
+		ImGui::PopID();
 	}
-	if (m_Settings.restirGIEnabled)
+
+	std::snprintf(summary, sizeof(summary), "from bounce %u, p %.2f-%.2f",
+		m_Settings.rrStartDepth, (double)m_Settings.rrMinP, (double)m_Settings.rrMaxP);
+	if (CollapsibleSection("Roulette", RT2_ICON_GAUGE, "Path termination (roulette)", summary))
 	{
-		ImGui::Indent();
-		if (ImGui::Checkbox("Temporal Reuse", &m_Settings.restirGITemporalEnabled))
+		ImGui::PushID("Roulette");
+		int rrStartDepth = (int)m_Settings.rrStartDepth;
+		if (ImGui::DragInt(RowLabel("Start at bounce"), &rrStartDepth, 1.0f, 1, 16))
+		{
+			m_Settings.rrStartDepth = (uint32_t)rrStartDepth;
 			m_RendererGPU.ApplySettings(m_Settings);
-		int m = (int)m_Settings.restirGIFreshCandidates;
-		if (ImGui::SliderInt("GI Fresh Candidates (M)", &m, 1, 8))
-		{ m_Settings.restirGIFreshCandidates = (uint32_t)m; m_RendererGPU.ApplySettings(m_Settings); }
-		int tmc = (int)m_Settings.restirGITemporalMCap;
-		if (ImGui::SliderInt("GI Temporal M Cap", &tmc, 1, 100))
-		{ m_Settings.restirGITemporalMCap = (uint32_t)tmc; m_RendererGPU.ApplySettings(m_Settings); }
-		int age = (int)m_Settings.restirGIMaxTemporalAge;
-		if (ImGui::SliderInt("GI Max Temporal Age", &age, 0, 16))
-		{ m_Settings.restirGIMaxTemporalAge = (uint32_t)age; m_RendererGPU.ApplySettings(m_Settings); }
-		if (ImGui::SliderFloat("GI Depth Threshold", &m_Settings.restirGIDepthThreshold, 0.01f, 0.5f, "%.3f"))
+			m_Settings = m_RendererGPU.GetSettings();
+		}
+		if (ImGui::DragFloat(RowLabel("Min survival chance"), &m_Settings.rrMinP, 0.005f, 0.01f, 0.99f, "%.3f"))
+		{
 			m_RendererGPU.ApplySettings(m_Settings);
-		if (ImGui::SliderFloat("GI Normal Threshold", &m_Settings.restirGINormalThreshold, 0.5f, 1.0f, "%.3f"))
+			m_Settings = m_RendererGPU.GetSettings();
+		}
+		if (ImGui::DragFloat(RowLabel("Max survival chance"), &m_Settings.rrMaxP, 0.005f, 0.01f, 0.99f, "%.3f"))
+		{
 			m_RendererGPU.ApplySettings(m_Settings);
-		if (ImGui::SliderFloat("GI WorldPos Threshold", &m_Settings.restirGIWorldPosThreshold, 0.01f, 0.5f, "%.3f"))
-			m_RendererGPU.ApplySettings(m_Settings);
-		ImGui::Unindent();
+			m_Settings = m_RendererGPU.GetSettings();
+		}
+		ImGui::PopID();
 	}
-	ImGui::EndDisabled();
-	ImGui::Separator();
-	ImGui::Text("G-buffer Debug");
+
 	const char* gbufferModes[] = {
 		"Off", "Shading Normal", "Roughness", "ViewZ (depth)",
 		"Motion Vectors", "Albedo", "F0", "Direct Emission",
@@ -1517,36 +1666,58 @@ public:
 		"RR Normal + Roughness", "RR Specular Hit Distance"
 	};
 	int debugCombo = m_Settings.gbufferDebugMode + 1;
-	if (ImGui::Combo("G-buffer View", &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))
+	if (debugCombo > 0 && debugCombo < IM_ARRAYSIZE(gbufferModes))
+		std::snprintf(summary, sizeof(summary), "%s", debugCombo == 0 ? "" : gbufferModes[debugCombo]);
+	else
+		summary[0] = '\0';
+	if (CollapsibleSection("Debug", RT2_ICON_CPU, "Debug views and diagnostics", summary))
 	{
-		m_Settings.gbufferDebugMode = debugCombo - 1;
-		m_RendererGPU.ApplySettings(m_Settings);
+		ImGui::PushID("Debug");
+		if (ImGui::Combo(RowLabel("G-buffer view"), &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))
+		{
+			m_Settings.gbufferDebugMode = debugCombo - 1;
+			m_RendererGPU.ApplySettings(m_Settings);
+		}
+		// RR5-T0 review P2: the seed spans the full uint32 domain, so the
+		// widget must too. DragInt truncates above INT_MAX (4294967295
+		// displays as -1 and edits back to 0); InputScalar U32 represents
+		// every accepted value faithfully, matching the CLI contract.
+		if (ImGui::InputScalar(RowLabel("Sample seed"), ImGuiDataType_U32, &m_Settings.diagSampleSeed, nullptr, nullptr, "%u"))
+			m_RendererGPU.ApplySettings(m_Settings);
+		bool diagProbe = m_Settings.diagProbeActive != 0u;
+		if (ImGui::Checkbox(RowLabel("RNG probe"), &diagProbe))
+		{
+			m_Settings.diagProbeActive = diagProbe ? 1u : 0u;
+			m_RendererGPU.ApplySettings(m_Settings);
+		}
+		if (ImGui::InputScalar(RowLabel("Probe X"), ImGuiDataType_U32, &m_Settings.diagProbeX, nullptr, nullptr, "%u"))
+			m_RendererGPU.ApplySettings(m_Settings);
+		if (ImGui::InputScalar(RowLabel("Probe Y"), ImGuiDataType_U32, &m_Settings.diagProbeY, nullptr, nullptr, "%u"))
+			m_RendererGPU.ApplySettings(m_Settings);
+		bool logMaterials = m_RendererGPU.IsMaterialTableLogging();
+		if (ImGui::Checkbox(RowLabel("Log material table"), &logMaterials))
+			m_RendererGPU.SetMaterialTableLogging(logMaterials);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(
+				"Writes every material's metallic/roughness factors and texture\n"
+				"indices to rt2_log.txt on each full scene upload, flagging any\n"
+				"material that is fully metallic with no metallicRoughness\n"
+				"texture to modulate it (the glTF default-1.0 trap).\n"
+				"Re-emits on structural edits, not just loads.");
+		ImGui::PopID();
 	}
 
-	ImGui::Separator();
 	if (m_Ngx)
 	{
-		ImGui::Text("NGX / Ray Reconstruction support (read-only)");
 		const NgxSupportSnapshot& ngx = m_Ngx->Snapshot();
-		ImGui::Text("State: %s", NgxSupportStateName(ngx.state));
-		ImGui::TextWrapped("Reason: %s", ngx.reason.c_str());
-		ImGui::Text("SDK %s  Runtime %s", ngx.sdkVersion.c_str(), ngx.runtimeVersion.c_str());
-		ImGui::TextWrapped("GPU: %s", ngx.gpuName.c_str());
-		ImGui::TextDisabled("RR feature creation/evaluation is not part of W1.");
+		if (CollapsibleSection("Ngx", RT2_ICON_INFO, "NGX support", NgxSupportStateName(ngx.state)))
+		{
+			ImGui::TextWrapped("Reason: %s", ngx.reason.c_str());
+			ImGui::Text("SDK %s  Runtime %s", ngx.sdkVersion.c_str(), ngx.runtimeVersion.c_str());
+			ImGui::TextWrapped("GPU: %s", ngx.gpuName.c_str());
+		}
 	}
-
-	ImGui::Separator();
-	ImGui::Text("Diagnostics");
-	bool logMaterials = m_RendererGPU.IsMaterialTableLogging();
-	if (ImGui::Checkbox("Log material table on scene load", &logMaterials))
-		m_RendererGPU.SetMaterialTableLogging(logMaterials);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip(
-			"Writes every material's metallic/roughness factors and texture\n"
-			"indices to rt2_log.txt on each full scene upload, flagging any\n"
-			"material that is fully metallic with no metallicRoughness\n"
-			"texture to modulate it (the glTF default-1.0 trap).\n"
-			"Re-emits on structural edits, not just loads.");
+	}
 	ImGui::End();
 	}
 
