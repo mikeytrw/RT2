@@ -97,23 +97,8 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 	}
 	if (!m_Drag.active && selection.Empty()) return result;
 
-	// Operation toolbar. W/E/R also switch modes while the viewport is hovered.
-	const ImVec2 savedCursor = ImGui::GetCursorScreenPos();
-	ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 10.0f));
-	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 0.0f));
-	if (ImGui::Button(m_Operation == TransformGizmoOperation::Translate ? "[Z] Move" : "Z Move"))
-		m_Operation = TransformGizmoOperation::Translate;
-	result.consumesMouse |= ImGui::IsItemHovered();
-	ImGui::SameLine();
-	if (ImGui::Button(m_Operation == TransformGizmoOperation::Rotate ? "[X] Rotate" : "X Rotate"))
-		m_Operation = TransformGizmoOperation::Rotate;
-	result.consumesMouse |= ImGui::IsItemHovered();
-	ImGui::SameLine();
-	if (ImGui::Button(m_Operation == TransformGizmoOperation::Scale ? "[C] Scale" : "C Scale"))
-		m_Operation = TransformGizmoOperation::Scale;
-	result.consumesMouse |= ImGui::IsItemHovered();
-	ImGui::PopStyleVar();
-	ImGui::SetCursorScreenPos(savedCursor);
+	// Mode buttons live in the viewport overlay (WalnutApp); Z/X/C switch
+	// modes here while the viewport is hovered.
 	if (imageHovered && !m_Drag.active && !ImGui::GetIO().WantTextInput)
 	{
 		if (ImGui::IsKeyPressed(ImGuiKey_Z)) m_Operation = TransformGizmoOperation::Translate;

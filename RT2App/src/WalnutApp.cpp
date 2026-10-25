@@ -44,6 +44,7 @@
 #include "EditorActionQueue.h"
 #include "EditorTheme.h"
 #include "EditorFonts.h"
+#include "EditorIcons.h"
 #include "EditorToolbar.h"
 #include "EditorWorkspaceDocking.h"
 #include "EditorWorkspaceState.h"
@@ -1649,7 +1650,9 @@ public:
 			}
 			ImGui::EndDragDropTarget();
 		}
-		const bool imageHovered = ImGui::IsItemHovered();
+		// The overlay pills drawn on top of the image (last frame's rects)
+		// take the mouse: no picking, gizmo or camera input underneath them.
+		const bool imageHovered = ImGui::IsItemHovered() && !MouseOverViewportOverlay();
 		std::optional<EditorWorldTransformSnapshot> gizmoSnapshot;
 		if (!m_EditorUI.IsTransformGestureOpen() &&
 			!m_EditorUI.Selection().Empty())
@@ -1805,6 +1808,8 @@ public:
 		// actions for the camera).
 		m_ViewportHoveredThisFrame = imageHovered;
 		m_GizmoConsumesMouseThisFrame = gizmo.consumesMouse;
+
+		DrawViewportOverlays(imageMin, imageSize, editorMode, gizmo.active);
 	}
 	else
 	{
@@ -6604,6 +6609,258 @@ public:
 	{
 		return m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
 	}
+
+	// ---- Viewport overlay (Graphite design) ----
+	// Floating pills over the rendered image: transform tools (top-left),
+	// view options (top-right) and frame stats (bottom-right). Each pill's
+	// screen rect is kept for the NEXT frame's hit test, because the image's
+	// hover state (which drives picking, the gizmo and camera input) is
+	// decided before the pills are drawn on top of it.
+	struct OverlayRect { ImVec2 min{ 0.0f, 0.0f }, max{ 0.0f, 0.0f }; };
+	static constexpr int kViewportOverlayCount = 3;
+	OverlayRect m_ViewportOverlay[kViewportOverlayCount];
+
+	bool MouseOverViewportOverlay() const
+	{
+		const ImVec2 mouse = ImGui::GetMousePos();
+		for (const auto& r : m_ViewportOverlay)
+			if (mouse.x >= r.min.x && mouse.x < r.max.x &&
+				mouse.y >= r.min.y && mouse.y < r.max.y)
+				return true;
+		return false;
+	}
+
+	// Draws body() inside a rounded translucent pill whose top-left corner
+	// is at pos, and returns the pill rect.
+	template <typename Body>
+	OverlayRect ViewportPill(const ImVec2& pos, Body&& body)
+	{
+		const ImVec2 pad(4.0f, 4.0f);
+		ImDrawList* draw = ImGui::GetWindowDrawList();
+		draw->ChannelsSplit(2);
+		draw->ChannelsSetCurrent(1);
+		ImGui::SetCursorScreenPos(ImVec2(pos.x + pad.x, pos.y + pad.y));
+		ImGui::BeginGroup();
+		body();
+		ImGui::EndGroup();
+		OverlayRect rect;
+		rect.min = ImVec2(ImGui::GetItemRectMin().x - pad.x, ImGui::GetItemRectMin().y - pad.y);
+		rect.max = ImVec2(ImGui::GetItemRectMax().x + pad.x, ImGui::GetItemRectMax().y + pad.y);
+		draw->ChannelsSetCurrent(0);
+		draw->AddRectFilled(rect.min, rect.max, IM_COL32(18, 19, 22, 224), 9.0f);
+		draw->AddRect(rect.min, rect.max, ImGui::GetColorU32(rt2::EditorPalette::Border), 9.0f);
+		draw->ChannelsMerge();
+		return rect;
+	}
+
+	// A pill button: ghost normally, indigo-tinted when on.
+	static bool OverlayButton(const char* label, bool on, const char* tooltip,
+		const ImVec2& size = ImVec2(0.0f, 0.0f))
+	{
+		using namespace rt2::EditorPalette;
+		ImGui::PushStyleColor(ImGuiCol_Button, on ? Selection : ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? ImVec4(0.18f, 0.20f, 0.39f, 1.0f) : Hover);
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, Selection);
+		ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(0.78f, 0.79f, 1.0f, 1.0f) : TextSecondary);
+		const bool pressed = ImGui::Button(label, size);
+		ImGui::PopStyleColor(4);
+		if (tooltip && ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", tooltip);
+		return pressed;
+	}
+
+	void DrawViewportOverlays(const ImVec2& imageMin, const ImVec2& imageSize,
+		bool editorMode, bool gizmoDragging)
+	{
+		using namespace rt2::EditorPalette;
+		const ImVec2 savedCursor = ImGui::GetCursorScreenPos();
+		const float margin = 12.0f;
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7.0f, 5.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 0.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+		const float frameH = ImGui::GetFrameHeight();
+		const ImVec2 square(frameH, frameH);
+		for (auto& r : m_ViewportOverlay) r = OverlayRect{};
+
+		// Top-left: transform tools (editor only). Mode changes wait for any
+		// drag to finish so a gesture never switches operation mid-way.
+		if (editorMode)
+		{
+			m_ViewportOverlay[0] = ViewportPill(
+				ImVec2(imageMin.x + margin, imageMin.y + margin), [&]()
+			{
+				struct Mode { const char* label; const char* tip; TransformGizmoOperation op; };
+				const Mode modes[] = {
+					{ RT2_ICON_MOVE "##GizmoMove", "Move (Z)", TransformGizmoOperation::Translate },
+					{ RT2_ICON_ROTATE_CW "##GizmoRotate", "Rotate (X)", TransformGizmoOperation::Rotate },
+					{ RT2_ICON_SCALE_3D "##GizmoScale", "Scale (C)", TransformGizmoOperation::Scale },
+				};
+				ImGui::BeginDisabled(gizmoDragging);
+				for (const auto& mode : modes)
+				{
+					if (OverlayButton(mode.label, m_TransformGizmo.Operation() == mode.op, mode.tip, square))
+						m_TransformGizmo.SetOperation(mode.op);
+					ImGui::SameLine();
+				}
+				ImGui::EndDisabled();
+				ImGui::Dummy(ImVec2(6.0f, frameH));
+				ImGui::SameLine();
+				const bool gestureOpen = gizmoDragging || m_EditorUI.IsTransformGestureOpen();
+				ImGui::BeginDisabled(gestureOpen);
+				const bool world = m_EditorUI.GetTransformSpace() == TransformSpace::World;
+				if (OverlayButton(world ? RT2_ICON_GLOBE "  World##Space" : RT2_ICON_BOX "  Local##Space",
+						false, "Transform space (click to switch)"))
+					m_EditorUI.SetTransformSpace(world ? TransformSpace::Local : TransformSpace::World);
+				ImGui::SameLine();
+				const auto& snap = m_EditorUI.GetTransformSnapSettings();
+				char snapLabel[64];
+				std::snprintf(snapLabel, sizeof(snapLabel), RT2_ICON_MAGNET "  %.2f##Snap", snap.translation);
+				if (OverlayButton(snapLabel, snap.enabled,
+						"Snap (step sizes are in the Inspector's Transform card)"))
+					m_EditorUI.SetTransformSnapEnabled(!snap.enabled);
+				ImGui::EndDisabled();
+			});
+		}
+
+		// Top-right: camera and display look, then view toggles. Right-aligned
+		// from last frame's width (one frame of settling after a width change).
+		{
+			const float lastWidth = m_ViewportOverlayWidth[1];
+			const OverlayRect rect = ViewportPill(
+				ImVec2(imageMin.x + imageSize.x - margin - lastWidth, imageMin.y + margin), [&]()
+			{
+				const bool editCamera = editorMode;
+				ImGui::BeginDisabled(!editCamera);
+				if (OverlayButton(RT2_ICON_VIDEO "  Camera  " RT2_ICON_CHEVRON_DOWN "##CameraMenu",
+						false, "Editor camera"))
+					ImGui::OpenPopup("ViewportCameraMenu");
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+
+				EditorCameraPose pose = m_Cam.GetEditorPose();
+				char lookLabel[96];
+				std::snprintf(lookLabel, sizeof(lookLabel), "%s  EV %+.1f  " RT2_ICON_CHEVRON_DOWN "##DisplayMenu",
+					ToneMapOperatorLabel(pose.presentation.toneMap), (double)pose.presentation.exposureEV);
+				ImGui::BeginDisabled(!editCamera);
+				if (OverlayButton(lookLabel, false, "Display look for this view (tone mapping and exposure)"))
+					ImGui::OpenPopup("ViewportDisplayMenu");
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+				ImGui::Dummy(ImVec2(6.0f, frameH));
+				ImGui::SameLine();
+				if (OverlayButton(RT2_ICON_LIGHTBULB "##ToggleIcons", m_ShowEditorIcons,
+						"Light and camera icons", square))
+					m_ShowEditorIcons = !m_ShowEditorIcons;
+				ImGui::SameLine();
+				if (OverlayButton(RT2_ICON_ATOM "##TogglePhysics", m_ShowPhysicsDebug,
+						"Physics debug lines (while playing)", square))
+					m_ShowPhysicsDebug = !m_ShowPhysicsDebug;
+
+				// Popups keep ordinary spacing.
+				ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
+				if (ImGui::BeginPopup("ViewportCameraMenu"))
+				{
+					if (ImGui::MenuItem(RT2_ICON_SCAN "  Frame selected", "Shift+F"))
+						FrameEditorSelection(true);
+					if (ImGui::MenuItem(RT2_ICON_CIRCLE_DOT "  Focus selected", "F"))
+						FrameEditorSelection(false);
+					ImGui::Separator();
+					for (size_t slot = 0; slot < EditorSceneState::kCameraBookmarkCount; ++slot)
+					{
+						const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot);
+						char item[48];
+						std::snprintf(item, sizeof(item), RT2_ICON_HISTORY "  Bookmark %d", static_cast<int>(slot + 1));
+						if (ImGui::MenuItem(item, nullptr, false, bookmark != nullptr) && bookmark)
+							ApplyEditorCameraPose(*bookmark);
+					}
+					ImGui::Separator();
+					ImGui::MenuItem(RT2_ICON_SLIDERS_HORIZONTAL "  Camera panel", nullptr, &m_ShowInfoWindow);
+					ImGui::EndPopup();
+				}
+				if (ImGui::BeginPopup("ViewportDisplayMenu"))
+				{
+					bool poseChanged = false;
+					struct Look { const char* label; ToneMapOperator op; };
+					const Look looks[] = { { "AgX", ToneMapOperator::AgX },
+						{ "ACES Fitted", ToneMapOperator::ACESFitted },
+						{ "Reinhard (legacy)", ToneMapOperator::Reinhard } };
+					ImGui::TextDisabled("Tone mapping");
+					for (const auto& look : looks)
+						if (ImGui::MenuItem(look.label, nullptr, pose.presentation.toneMap == look.op))
+						{
+							pose.presentation.toneMap = look.op;
+							poseChanged = true;
+						}
+					ImGui::Separator();
+					ImGui::TextDisabled("Exposure");
+					ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
+					poseChanged |= ImGui::SliderFloat("##ExposureEV", &pose.presentation.exposureEV,
+						kMinCameraExposureEV, kMaxCameraExposureEV, "%+.2f EV");
+					ImGui::SameLine();
+					if (ImGui::SmallButton("0 EV"))
+					{
+						pose.presentation.exposureEV = 0.0f;
+						poseChanged = true;
+					}
+					if (poseChanged)
+						ApplyEditorCameraPose(pose);
+					ImGui::EndPopup();
+				}
+				ImGui::PopStyleVar();
+			});
+			m_ViewportOverlay[1] = rect;
+			m_ViewportOverlayWidth[1] = rect.max.x - rect.min.x;
+		}
+
+		// Bottom-right: frame stats, in the mono font.
+		{
+			char stats[192];
+			int n = std::snprintf(stats, sizeof(stats), "%.1f fps", (double)m_SmoothedFPS);
+			if (m_RendererGPU.HasGpuTimings())
+			{
+				const auto& timings = m_RendererGPU.GetGpuTimings();
+				const uint32_t frame = static_cast<uint32_t>(GpuTimestampProfiler::Region::Frame);
+				if (timings.validMask & (1u << frame))
+					n += std::snprintf(stats + n, sizeof(stats) - n, "   %.2f ms GPU",
+						(double)timings.milliseconds[frame]);
+			}
+			if (m_RendererGPU.IsAvailable() && n > 0 && n < (int)sizeof(stats))
+			{
+				const auto& completed = m_RendererGPU.GetLastCompleted();
+				n += std::snprintf(stats + n, sizeof(stats) - n, "   %ux%u",
+					completed.renderExtent.Width(), completed.renderExtent.Height());
+				if (completed.outputExtent.Width() != completed.renderExtent.Width() &&
+					n > 0 && n < (int)sizeof(stats))
+					n += std::snprintf(stats + n, sizeof(stats) - n, " > %ux%u",
+						completed.outputExtent.Width(), completed.outputExtent.Height());
+				if (completed.denoiser == CompletedDenoiser::RayReconstruction &&
+					n > 0 && n < (int)sizeof(stats))
+					std::snprintf(stats + n, sizeof(stats) - n, "   RR %s",
+						DlssQualityModeName(completed.quality));
+			}
+			ImFont* mono = rt2::EditorFonts().mono;
+			if (mono) ImGui::PushFont(mono);
+			const ImVec2 textSize = ImGui::CalcTextSize(stats);
+			const ImVec2 pillPos(imageMin.x + imageSize.x - margin - textSize.x - 16.0f,
+				imageMin.y + imageSize.y - margin - textSize.y - 12.0f);
+			m_ViewportOverlay[2] = ViewportPill(pillPos, [&]()
+			{
+				ImGui::Dummy(ImVec2(4.0f, textSize.y + 4.0f));
+				ImGui::SameLine(0.0f, 0.0f);
+				ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
+				ImGui::PushStyleColor(ImGuiCol_Text, TextSecondary);
+				ImGui::TextUnformatted(stats);
+				ImGui::PopStyleColor();
+				ImGui::SameLine(0.0f, 0.0f);
+				ImGui::Dummy(ImVec2(4.0f, textSize.y));
+			});
+			if (mono) ImGui::PopFont();
+		}
+
+		ImGui::PopStyleVar(3);
+		ImGui::SetCursorScreenPos(savedCursor);
+	}
+	float m_ViewportOverlayWidth[kViewportOverlayCount] = {};
 
 	void NewScene()
 	{

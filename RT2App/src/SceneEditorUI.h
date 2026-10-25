@@ -212,8 +212,11 @@ public:
 	bool SelectionHasDirectLock() const
 	{ return m_State.AnyDirectlyLocked(m_State.Selection().Ordered()); }
 	TransformSpace GetTransformSpace() const { return m_TransformSpace; }
+	void SetTransformSpace(TransformSpace space)
+	{ m_TransformSpace = space; m_TransformEditError.clear(); }
 	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
 	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
+	void SetTransformSnapEnabled(bool enabled) { m_TransformSnap.enabled = enabled; }
 	bool IsTransformGestureOpen() const { return m_TransformPreviewSession.IsOpen(); }
 	TransformGestureLifecycleState TransformGestureLifecycle() const
 	{
