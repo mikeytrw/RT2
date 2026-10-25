@@ -538,7 +538,7 @@ void RendererGPU::CreateFallbackTexture()
 		stagingBuf, stagingMem);
 
 	void* mapped = nullptr;
-	vkMapMemory(m_Device.device, stagingMem, 0, 4, 0, &mapped);
+	VK_CHECK(vkMapMemory(m_Device.device, stagingMem, 0, 4, 0, &mapped));
 	memcpy(mapped, white, 4);
 	vkUnmapMemory(m_Device.device, stagingMem);
 

@@ -284,7 +284,7 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 	             vertexStagingBuffer, vertexStagingMemory);
 
 	void* data;
-	vkMapMemory(dev.device, vertexStagingMemory, 0, vertexBufferSize, 0, &data);
+	VK_CHECK(vkMapMemory(dev.device, vertexStagingMemory, 0, vertexBufferSize, 0, &data));
 	memcpy(data, megaVerts.data(), vertexBufferSize);
 	vkUnmapMemory(dev.device, vertexStagingMemory);
 
@@ -299,7 +299,7 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 	             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             indexStagingBuffer, indexStagingMemory);
-	vkMapMemory(dev.device, indexStagingMemory, 0, indexBufferSize, 0, &data);
+	VK_CHECK(vkMapMemory(dev.device, indexStagingMemory, 0, indexBufferSize, 0, &data));
 	memcpy(data, megaIndices.data(), indexBufferSize);
 	vkUnmapMemory(dev.device, indexStagingMemory);
 
@@ -392,7 +392,7 @@ void RasterPass::CreateDrawData(const GpuDevice& dev, const GPUSceneData& scene)
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             buf, mem);
 		void* data;
-		vkMapMemory(dev.device, mem, 0, bufSize, 0, &data);
+		VK_CHECK(vkMapMemory(dev.device, mem, 0, bufSize, 0, &data));
 		memcpy(data, cmds.data(), bufSize);
 		vkUnmapMemory(dev.device, mem);
 	};
