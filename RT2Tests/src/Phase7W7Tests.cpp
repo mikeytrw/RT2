@@ -298,9 +298,10 @@ TEST_CASE("Phase7 W7 static check: atomic save events retain the debounce window
 TEST_CASE("Phase7 W7 static check: explicit Refresh remains available as a backstop")
 {
     const auto source = WalnutAppSource();
-    CHECK(source.find("Refresh Assets") != std::string::npos);
-    CHECK(source.find("if (ImGui::Button(\"Refresh\"))") !=
-          std::string::npos);
+    // Session panel button and the Content Browser's icon button (Graphite
+    // UI labels, 2026-10-26).
+    CHECK(source.find("\"  Refresh assets\"") != std::string::npos);
+    CHECK(source.find("\"##RefreshAssets\"") != std::string::npos);
     CHECK(source.find("Asset change queue overflowed; use Refresh") !=
           std::string::npos);
 }

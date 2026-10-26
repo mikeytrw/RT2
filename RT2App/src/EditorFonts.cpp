@@ -27,7 +27,7 @@ EditorFontSet g_Fonts;
 // Pixel sizes at content scale 1.0.
 constexpr float kBodySize = 15.0f;
 constexpr float kMonoSize = 14.0f;
-constexpr float kIconSize = 18.0f;
+constexpr float kIconSize = 28.0f; // large standalone icons (asset tiles)
 
 std::filesystem::path FontDirectory()
 {

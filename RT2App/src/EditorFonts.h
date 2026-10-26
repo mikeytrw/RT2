@@ -30,7 +30,7 @@ struct EditorFontSet
     ImFont* medium = nullptr; // Inter Medium, labels and tabs
     ImFont* bold = nullptr;   // Inter SemiBold, card headers and titles
     ImFont* mono = nullptr;   // JetBrains Mono, numeric fields and readouts
-    ImFont* icons = nullptr;  // Lucide alone at a larger size, toolbars
+    ImFont* icons = nullptr;  // Lucide alone at a larger size (asset tiles)
     float scale = 1.0f;       // content scale the sizes were built at
     bool fallback = false;    // true when the built-in font is in use
     std::string error;        // why fallback is true

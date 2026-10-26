@@ -955,14 +955,41 @@ public:
 		EditorCameraPose editorPose = m_Cam.GetEditorPose();
 		bool cameraPoseChanged = false;
 		const bool editCamera = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+		using namespace rt2::ui;
 		ImGui::BeginDisabled(!editCamera);
-		cameraPoseChanged |= ImGui::DragFloat3("Position", &editorPose.position.x,
-			0.01f, 0.0f, 0.0f, "%.6f");
-		cameraPoseChanged |= ImGui::DragFloat3("Forward", &editorPose.forward.x,
-			0.001f, -1.0f, 1.0f, "%.6f");
-		cameraPoseChanged |= ImGui::DragFloat("Vertical FOV", &editorPose.verticalFOV,
-			0.25f, 10.0f, 170.0f, "%.1f");
-		if (ImGui::Button("Copy Camera Pose"))
+		InspectorSectionHeader(RT2_ICON_VIDEO, "Editor camera");
+		cameraPoseChanged |= InspectorVec3Row("Position", &editorPose.position.x,
+			0.01f, 0.0f, 0.0f, "%.3f");
+		cameraPoseChanged |= InspectorVec3Row("Forward", &editorPose.forward.x,
+			0.001f, -1.0f, 1.0f, "%.3f");
+		cameraPoseChanged |= ImGui::DragFloat(RowLabel("Vertical FOV"), &editorPose.verticalFOV,
+			0.25f, 10.0f, 170.0f, "%.1f deg");
+		ImGui::SliderFloat(RowLabel("Move speed"), &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
+		cameraPoseChanged |= ImGui::SliderFloat(RowLabel("Far clip"), &editorPose.farClip,
+			100.0f, 100000.0f, "%.0f");
+		bool rasterFirst = m_Settings.rasterFirst;
+		ImGui::BeginDisabled(rasterFirst);
+		cameraPoseChanged |= ImGui::DragFloat(RowLabel("Aperture"), &editorPose.aperture,
+			0.001f, 0.0f, 5.0f);
+		if (rasterFirst && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+			ImGui::SetTooltip("Depth of field needs camera-ray primaries (raster-first is on)");
+		cameraPoseChanged |= ImGui::DragFloat(RowLabel("Focus distance"), &editorPose.focusDistance,
+			0.1f, 0.1f, 50.0f);
+		ImGui::EndDisabled();
+		if (rasterFirst && editorPose.aperture > 0.0f)
+		{
+			editorPose.aperture = 0.0f;
+			cameraPoseChanged = true;
+		}
+		ImGui::Dummy(ImVec2(InspectorLabelWidth() - ImGui::GetStyle().ItemSpacing.x, 0.0f));
+		ImGui::SameLine();
+		if (ImGui::Button(RT2_ICON_SCAN "  Frame")) FrameEditorSelection(true);
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Frame the selection (Shift+F)");
+		ImGui::SameLine();
+		if (ImGui::Button(RT2_ICON_CIRCLE_DOT "  Focus")) FrameEditorSelection(false);
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Focus on the selection (F)");
+		ImGui::SameLine();
+		if (ImGui::Button(RT2_ICON_COPY "  Copy pose"))
 		{
 			const glm::vec3& p = editorPose.position;
 			const glm::vec3& f = editorPose.forward;
@@ -972,25 +999,14 @@ public:
 			              p.x, p.y, p.z, f.x, f.y, f.z);
 			ImGui::SetClipboardText(pose);
 		}
-		ImGui::SliderFloat("Move Speed", &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
-		cameraPoseChanged |= ImGui::SliderFloat("Far Clip", &editorPose.farClip,
-			100.0f, 100000.0f, "%.0f");
-		bool rasterFirst = m_Settings.rasterFirst;
-		ImGui::BeginDisabled(rasterFirst);
-		cameraPoseChanged |= ImGui::DragFloat("Aperture", &editorPose.aperture,
-			0.001f, 0.0f, 5.0f);
-		cameraPoseChanged |= ImGui::DragFloat("Focus Distance", &editorPose.focusDistance,
-			0.1f, 0.1f, 50.0f);
-		ImGui::EndDisabled();
-		if (rasterFirst && editorPose.aperture > 0.0f)
-		{
-			editorPose.aperture = 0.0f;
-			cameraPoseChanged = true;
-		}
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy position and forward (full precision)");
+
 		// Camera-owned display look for this editor view (never a global
 		// render preference). Presentation-only edits apply without
 		// resetting temporal history (see ApplyEditorCameraPose).
-		ImGui::Text("Display Look (Editor View)");
+		ImGui::Spacing();
+		ImGui::Separator();
+		InspectorSectionHeader(RT2_ICON_SLIDERS_HORIZONTAL, "Display look");
 		int toneMapIndex = 0;
 		switch (editorPose.presentation.toneMap)
 		{
@@ -1000,7 +1016,7 @@ public:
 		default:                         toneMapIndex = 0; break;
 		}
 		const char* operators[] = { "AgX", "ACES Fitted", "Reinhard (Legacy)" };
-		if (ImGui::Combo("Tone Mapping (Editor View)", &toneMapIndex, operators, IM_ARRAYSIZE(operators)))
+		if (ImGui::Combo(RowLabel("Tone mapping"), &toneMapIndex, operators, IM_ARRAYSIZE(operators)))
 		{
 			switch (toneMapIndex)
 			{
@@ -1011,26 +1027,35 @@ public:
 			}
 			cameraPoseChanged = true;
 		}
-		if (ImGui::DragFloat("Exposure EV (Editor View)", &editorPose.presentation.exposureEV,
-			0.05f, kMinCameraExposureEV, kMaxCameraExposureEV, "%.2f"))
-			cameraPoseChanged = true;
-		if (ImGui::Button("Reset Exposure to 0 EV"))
 		{
-			editorPose.presentation.exposureEV = 0.0f;
-			cameraPoseChanged = true;
+			const char* exposureId = RowLabel("Exposure");
+			const float resetW = ImGui::CalcTextSize("0 EV").x +
+				ImGui::GetStyle().FramePadding.x * 2.0f;
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - resetW -
+				ImGui::GetStyle().ItemSpacing.x);
+			if (ImGui::DragFloat(exposureId, &editorPose.presentation.exposureEV,
+				0.05f, kMinCameraExposureEV, kMaxCameraExposureEV, "%+.2f EV"))
+				cameraPoseChanged = true;
+			ImGui::SameLine();
+			if (ImGui::Button("0 EV"))
+			{
+				editorPose.presentation.exposureEV = 0.0f;
+				cameraPoseChanged = true;
+			}
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reset exposure to 0 EV");
 		}
 		if (cameraPoseChanged)
 			ApplyEditorCameraPose(editorPose);
-		if (ImGui::Button("Frame Selected")) FrameEditorSelection(true);
-		ImGui::SameLine();
-		if (ImGui::Button("Focus Selected")) FrameEditorSelection(false);
 
-		ImGui::Text("Camera Bookmarks");
+		ImGui::Spacing();
+		ImGui::Separator();
+		InspectorSectionHeader(RT2_ICON_HISTORY, "Bookmarks");
 		for (size_t slot = 0; slot < EditorSceneState::kCameraBookmarkCount; ++slot)
 		{
 			ImGui::PushID(static_cast<int>(slot));
-			ImGui::Text("%d", static_cast<int>(slot + 1));
-			ImGui::SameLine();
+			char bookmarkLabel[32];
+			std::snprintf(bookmarkLabel, sizeof(bookmarkLabel), "Bookmark %d", static_cast<int>(slot + 1));
+			InspectorRowLabel(bookmarkLabel);
 			if (ImGui::SmallButton("Store"))
 				m_EditorUI.CaptureCameraBookmark(slot, m_Cam.GetEditorPose());
 			ImGui::SameLine();
@@ -1724,21 +1749,55 @@ public:
 	if (m_ShowSceneWindow)
 	{
 	ImGui::Begin("Scene");
-	ImGui::Text("Meshes: %d", (int)m_SceneMgr.GetECS().meshRegistry.GetCount());
-	ImGui::Text("Materials: %d", (int)m_SceneMgr.GetMaterials().size());
-	ImGui::Text("Lights: %d",
-	            (int)m_SceneMgr.GetECS().registry.view<const LightComponent>().size());
-	ImGui::Text("Textures: %d", (int)m_SceneMgr.GetECS().textures.size());
-	if (m_SceneMgr.IsDirty())
-		ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), "Unsaved changes");
-	ImGui::Separator();
-
+	{
+	using namespace rt2::ui;
 	// Document and transport controls live in the File menu and the
 	// persistent toolbar (one command seam); this panel keeps statistics
 	// and environment controls only.
+	InspectorSectionHeader(RT2_ICON_LAYERS, "Contents");
+	const auto countRow = [](const char* label, int count)
+	{
+		InspectorRowLabel(label);
+		ImFont* mono = rt2::EditorFonts().mono;
+		if (mono) ImGui::PushFont(mono);
+		ImGui::Text("%d", count);
+		if (mono) ImGui::PopFont();
+	};
+	countRow("Meshes", (int)m_SceneMgr.GetECS().meshRegistry.GetCount());
+	countRow("Materials", (int)m_SceneMgr.GetMaterials().size());
+	countRow("Lights", (int)m_SceneMgr.GetECS().registry.view<const LightComponent>().size());
+	countRow("Textures", (int)m_SceneMgr.GetECS().textures.size());
+	if (m_SceneMgr.IsDirty())
+	{
+		ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::IndigoLine);
+		ImGui::TextUnformatted(RT2_ICON_CIRCLE_DOT "  Unsaved changes");
+		ImGui::PopStyleColor();
+	}
 
-	ImGui::Text("Environment Map");
-	if (ImGui::Button("Load HDR..."))
+	ImGui::Spacing();
+	ImGui::Separator();
+	InspectorSectionHeader(RT2_ICON_MOUNTAIN, "Environment");
+	InspectorRowLabel("Map");
+	if (m_SceneMgr.HasEnvMap())
+	{
+		const std::string envName =
+			std::filesystem::u8path(m_SceneMgr.GetEnvMapPath()).filename().u8string();
+		ImGui::Text("%s", envName.c_str());
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s\n%d x %d", m_SceneMgr.GetEnvMapPath().c_str(),
+				m_SceneMgr.GetEnvMapWidth(), m_SceneMgr.GetEnvMapHeight());
+		InspectorRowLabel("Size");
+		ImGui::TextDisabled("%d x %d", m_SceneMgr.GetEnvMapWidth(), m_SceneMgr.GetEnvMapHeight());
+	}
+	else
+	{
+		ImGui::TextDisabled("none (sky colour)");
+	}
+	if (ImGui::SliderFloat(RowLabel("Intensity"), &m_Settings.envIntensity, 0.0f, 10.0f, "%.2f"))
+		m_RendererGPU.ApplySettings(m_Settings);
+	ImGui::Dummy(ImVec2(InspectorLabelWidth() - ImGui::GetStyle().ItemSpacing.x, 0.0f));
+	ImGui::SameLine();
+	if (ImGui::Button(RT2_ICON_FOLDER_OPEN "  Load HDR..."))
 	{
 		std::string path = FileDialog::OpenFile(
 			L"HDR Files (*.hdr;*.exr)\0*.hdr;*.exr\0HDR (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0",
@@ -1747,18 +1806,16 @@ public:
 			LoadEnvMap(path);
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Clear HDR"))
+	ImGui::BeginDisabled(!m_SceneMgr.HasEnvMap());
+	if (ImGui::Button(RT2_ICON_X "  Clear"))
 	{
 		m_SceneMgr.ClearEnvMap();
 		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
 			UploadMeshToGPU();
 		m_RendererGPU.ResetAccumulation();
 	}
-	if (m_SceneMgr.HasEnvMap())
-		ImGui::Text("Loaded: %s (%dx%d)", m_SceneMgr.GetEnvMapPath().c_str(), m_SceneMgr.GetEnvMapWidth(), m_SceneMgr.GetEnvMapHeight());
-	if (ImGui::SliderFloat("Env Intensity", &m_Settings.envIntensity, 0.0f, 10.0f, "%.2f"))
-		m_RendererGPU.ApplySettings(m_Settings);
-
+	ImGui::EndDisabled();
+	}
 	ImGui::End();
 	}
 
@@ -2049,38 +2106,64 @@ public:
 	void DrawSessionPanel()
 	{
 		ImGui::Begin("Session");
-		ImGui::Text("Dirty: %s", m_SceneMgr.IsDirty() ? "yes" : "no");
-		ImGui::Text("Revision: %llu", static_cast<unsigned long long>(m_SceneMgr.AuthoringRevision()));
-		ImGui::Text("Status: %s", m_LastStatusMsg.c_str());
-		ImGui::Text("Workspace: %s", m_Workspace.Status().SummaryMessage());
-		ImGui::Separator();
+		using namespace rt2::ui;
+		using namespace rt2::EditorPalette;
+		// A read-only, copyable path field in the value column.
+		const auto pathRow = [](const char* label, const std::string& path)
+		{
+			char buf[512];
+			std::snprintf(buf, sizeof(buf), "%s", path.c_str());
+			ImGui::InputText(RowLabel(label), buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+			if (ImGui::IsItemHovered() && !path.empty())
+				ImGui::SetTooltip("%s", path.c_str());
+		};
+
+		InspectorSectionHeader(RT2_ICON_FILE, "Document");
+		InspectorRowLabel("State");
+		if (m_SceneMgr.IsDirty())
+			ImGui::TextColored(IndigoLine, RT2_ICON_CIRCLE_DOT "  Unsaved changes");
+		else
+			ImGui::TextColored(Success, RT2_ICON_CHECK "  Saved");
+		InspectorRowLabel("Revision");
+		ImGui::Text("%llu", static_cast<unsigned long long>(m_SceneMgr.AuthoringRevision()));
+		InspectorRowLabel("Status");
+		ImGui::TextWrapped("%s", m_LastStatusMsg.empty() ? "-" : m_LastStatusMsg.c_str());
+		InspectorRowLabel("Workspace");
+		ImGui::TextWrapped("%s", m_Workspace.Status().SummaryMessage());
+
 		if (m_Settings2)
 		{
+			ImGui::Spacing();
+			ImGui::Separator();
+			InspectorSectionHeader(RT2_ICON_FOLDER, "Project");
 			if (m_ProjectContext)
 			{
-				ImGui::Text("Project: %s",
-					m_ProjectContext->project.projectFile.u8string().c_str());
-				ImGui::Text("Project ID: %s",
-					m_ProjectContext->project.projectId.ToString().c_str());
-				ImGui::Text("Asset Root: %s",
-					m_ProjectContext->project.assetRoot.u8string().c_str());
-				ImGui::Text("Cache Root: %s",
-					m_ProjectContext->project.cacheRoot.u8string().c_str());
-				if (ImGui::Button("Refresh Assets"))
+				pathRow("Project file", m_ProjectContext->project.projectFile.u8string());
+				pathRow("Project ID", m_ProjectContext->project.projectId.ToString());
+				pathRow("Asset root", m_ProjectContext->project.assetRoot.u8string());
+				pathRow("Cache root", m_ProjectContext->project.cacheRoot.u8string());
+				ImGui::Dummy(ImVec2(InspectorLabelWidth() - ImGui::GetStyle().ItemSpacing.x, 0.0f));
+				ImGui::SameLine();
+				if (ImGui::Button(RT2_ICON_REFRESH_CW "  Refresh assets"))
 					RefreshProjectAssets();
 			}
 			else
 			{
-				ImGui::Text("Project: (standalone scene)");
+				ImGui::TextDisabled("Standalone scene: no project is open.");
 			}
-			ImGui::Separator();
-			ImGui::Text("Last Browse Directory");
+
+			const float square = ImGui::GetFrameHeight();
+			const float spacing = ImGui::GetStyle().ItemSpacing.x;
 			auto pr = m_Settings2->GetLastBrowseDirectory();
 			char buf[512];
 			std::snprintf(buf, sizeof(buf), "%s", pr.empty() ? "(none)" : pr.string().c_str());
-			ImGui::InputText("##LastBrowseDirectory", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+			const char* browseId = RowLabel("Browse folder");
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - (square + spacing) * 2.0f);
+			ImGui::InputText(browseId, buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Where file pickers start. %s", pr.empty() ? "" : buf);
 			ImGui::SameLine();
-			if (ImGui::Button("Browse..."))
+			if (ImGui::Button(RT2_ICON_FOLDER_OPEN "##BrowseFolder", ImVec2(square, square)))
 			{
 				std::string folder = FileDialog::OpenFolder(DialogInitialDirectory());
 				if (!folder.empty())
@@ -2089,18 +2172,24 @@ public:
 					PersistEditorSettings("last browse directory");
 				}
 			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Choose folder...");
 			ImGui::SameLine();
-			if (ImGui::Button("Clear"))
+			if (ImGui::Button(RT2_ICON_X "##ClearBrowseFolder", ImVec2(square, square)))
 			{
 				m_Settings2->ClearLastBrowseDirectory();
 				PersistEditorSettings("last browse directory");
 			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Clear");
 		}
-		ImGui::Separator();
 		if (m_Settings2 && !m_Settings2->GetRecentScenes().empty())
 		{
-			ImGui::Text("Recent Scenes");
-			ImGui::SameLine();
+			ImGui::Spacing();
+			ImGui::Separator();
+			InspectorSectionHeader(RT2_ICON_HISTORY, "Recent scenes");
+			ImGui::SameLine(ImGui::GetContentRegionMax().x -
+				ImGui::CalcTextSize("Clear").x - ImGui::GetStyle().FramePadding.x * 2.0f);
 			if (ImGui::SmallButton("Clear"))
 			{
 				m_Settings2->ClearRecentScenes();
@@ -2111,28 +2200,36 @@ public:
 			{
 				const auto& p = recents[i];
 				bool exists = std::filesystem::exists(p);
-				std::string label = p.string();
-				if (!exists) label = "(missing) " + label;
-				if (ImGui::MenuItem(label.c_str()))
+				ImGui::PushID(static_cast<int>(i));
+				// File name first, its folder dimmed after it; the full path
+				// is the tooltip.
+				const std::string fileName = p.filename().u8string();
+				const std::string folder = p.parent_path().u8string();
+				std::string label = std::string(RT2_ICON_FILE) + "  " + fileName;
+				if (!exists) label += "  (missing)";
+				ImGui::BeginDisabled(!exists);
+				if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap))
 				{
-					if (exists)
-					{
-						rt2::core::UnsavedChangesCoordinator::PendingAction a;
-						a.kind = rt2::core::UnsavedChangesCoordinator::ActionKind::Recent;
-						a.path = p;
-						m_Unsaved.Request(a);
-					}
+					rt2::core::UnsavedChangesCoordinator::PendingAction a;
+					a.kind = rt2::core::UnsavedChangesCoordinator::ActionKind::Recent;
+					a.path = p;
+					m_Unsaved.Request(a);
 				}
+				ImGui::EndDisabled();
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+					ImGui::SetTooltip("%s", p.u8string().c_str());
+				ImGui::SameLine();
+				ImGui::TextDisabled("%s", folder.c_str());
 				if (!exists)
 				{
 					ImGui::SameLine();
-					std::string removeId = "Remove##" + std::to_string(i);
-					if (ImGui::SmallButton(removeId.c_str()))
+					if (ImGui::SmallButton("Remove"))
 					{
 						m_Settings2->RemoveRecentScene(p);
 						PersistEditorSettings("recent scenes");
 					}
 				}
+				ImGui::PopID();
 			}
 		}
 		ImGui::End();
@@ -2323,48 +2420,64 @@ public:
 			m_ProjectContext != nullptr);
 		if (!canOperate)
 		{
-			ImGui::TextDisabled("No project is open");
-			ImGui::TextWrapped("Open a project to browse and mutate project assets.");
+			ImGui::Spacing();
+			ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
+			ImGui::TextUnformatted(RT2_ICON_FOLDER_OPEN "  No project is open");
+			ImGui::PopStyleColor();
+			ImGui::TextWrapped("Open a project (File > Open Project) to browse, import and "
+				"manage its assets here. A standalone scene can still be edited.");
 			ImGui::End();
 			return;
 		}
 
-		ImGui::InputText("Search", m_ContentBrowserSearch,
-			sizeof(m_ContentBrowserSearch));
-		ImGui::SameLine();
-		if (ImGui::Button("Refresh"))
-			RefreshProjectAssets();
-		ImGui::SameLine();
-		// Audio A2 first import, usable with no drag payload: a sidecar-less
-		// clip never appears as a browser drag source (records are
-		// sidecar-backed), so this picker initiates the import. Files under
-		// the asset root import in place; external files are copied in.
-		// Inspector clip authoring and Preview remain A7 scope.
-		if (ImGui::Button("Import Audio..."))
+		// Toolbar: search fills the row, then refresh and audio import.
 		{
-			std::string picked = FileDialog::OpenFile(
-				L"Audio Clips (*.wav;*.flac;*.mp3)\0*.wav;*.flac;*.mp3\0WAV (*.wav)\0*.wav\0FLAC (*.flac)\0*.flac\0MP3 (*.mp3)\0*.mp3\0",
-				m_ProjectContext->project.assetRoot);
-			if (!picked.empty())
+			const float square = ImGui::GetFrameHeight();
+			const char* importLabel = RT2_ICON_MUSIC "  Import audio...";
+			const float importW = ImGui::CalcTextSize(importLabel).x +
+				ImGui::GetStyle().FramePadding.x * 2.0f;
+			const float spacing = ImGui::GetStyle().ItemSpacing.x;
+			ImGui::SetNextItemWidth(std::max(80.0f,
+				ImGui::GetContentRegionAvail().x - square - importW - spacing * 2.0f));
+			ImGui::InputTextWithHint("##AssetSearch", RT2_ICON_SEARCH "  Search assets",
+				m_ContentBrowserSearch, sizeof(m_ContentBrowserSearch));
+			ImGui::SameLine();
+			if (ImGui::Button(RT2_ICON_REFRESH_CW "##RefreshAssets", ImVec2(square, square)))
+				RefreshProjectAssets();
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Rescan the project's assets");
+			ImGui::SameLine();
+			// Audio A2 first import, usable with no drag payload: a sidecar-less
+			// clip never appears as a browser drag source (records are
+			// sidecar-backed), so this picker initiates the import. Files under
+			// the asset root import in place; external files are copied in.
+			// Inspector clip authoring and Preview remain A7 scope.
+			if (ImGui::Button(importLabel))
 			{
-				std::filesystem::path inProject;
-				rt2::core::Error resolveError;
-				if (!rt2::core::ResolveAudioClipImportSource(
-						std::filesystem::u8path(picked),
-						m_ProjectContext->project.assetRoot, inProject,
-						resolveError))
+				std::string picked = FileDialog::OpenFile(
+					L"Audio Clips (*.wav;*.flac;*.mp3)\0*.wav;*.flac;*.mp3\0WAV (*.wav)\0*.wav\0FLAC (*.flac)\0*.flac\0MP3 (*.mp3)\0*.mp3\0",
+					m_ProjectContext->project.assetRoot);
+				if (!picked.empty())
 				{
-					m_LastStatusMsg =
-						"Audio import failed: " + resolveError.Format();
-					printf("[Audio] %s\n", m_LastStatusMsg.c_str());
-				}
-				else
-				{
-					m_EditorUI.ImportAssetPathFromDrop(inProject.u8string());
+					std::filesystem::path inProject;
+					rt2::core::Error resolveError;
+					if (!rt2::core::ResolveAudioClipImportSource(
+							std::filesystem::u8path(picked),
+							m_ProjectContext->project.assetRoot, inProject,
+							resolveError))
+					{
+						m_LastStatusMsg =
+							"Audio import failed: " + resolveError.Format();
+						printf("[Audio] %s\n", m_LastStatusMsg.c_str());
+					}
+					else
+					{
+						m_EditorUI.ImportAssetPathFromDrop(inProject.u8string());
+					}
 				}
 			}
 		}
-		ImGui::Separator();
+		ImGui::Spacing();
 
 		const auto records = rt2::core::SearchContentBrowserAssets(
 			*m_ProjectContext->database, m_ContentBrowserSearch);
@@ -2373,6 +2486,20 @@ public:
 		bool openRename = false;
 		bool openMove = false;
 		bool openDelete = false;
+
+		// Tile grid: a type icon on a thumbnail plate, the file name and its
+		// kind. Each tile is one Selectable, so dragging it into the scene and
+		// its right-click menu work exactly as the old list rows did.
+		ImGui::BeginChild("##AssetGrid", ImVec2(0.0f, 0.0f), false);
+		const float fontSize = ImGui::GetFontSize();
+		const float tileW = fontSize * 7.2f;
+		const float tileH = fontSize * 7.4f;
+		const float tileGap = 6.0f;
+		const int columns = std::max(1, static_cast<int>(
+			(ImGui::GetContentRegionAvail().x + tileGap) / (tileW + tileGap)));
+		ImDrawList* gridDraw = ImGui::GetWindowDrawList();
+		ImFont* iconFont = rt2::EditorFonts().icons ? rt2::EditorFonts().icons : ImGui::GetFont();
+		int tileIndex = 0;
 		for (const auto& record : records)
 		{
 			ImGui::PushID(record.sourcePath.c_str());
@@ -2385,6 +2512,8 @@ public:
 					return static_cast<char>(std::tolower(c));
 				});
 			const bool isPrefab = recordExtension == ".rt2prefab";
+			ImVec4 scriptStatusColor(0.0f, 0.0f, 0.0f, 0.0f);
+			const char* scriptStatusText = nullptr;
 			if (recordExtension == ".lua" && m_InspectorFieldRegistry)
 			{
 				const auto absolute = m_ProjectContext->project.assetRoot /
@@ -2392,30 +2521,19 @@ public:
 				declarationMissing = !std::filesystem::exists(absolute);
 				declarationResult =
 					m_InspectorFieldRegistry->GetDeclaredFields(absolute);
-				const ImVec4 color = declarationMissing
+				scriptStatusColor = declarationMissing
 					? ImVec4(0.55f, 0.55f, 0.55f, 1.0f)
 					: declarationResult->parsed
 						? ImVec4(0.35f, 0.9f, 0.45f, 1.0f)
 						: ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
-				ImGui::TextColored(color, "●");
-				if (ImGui::IsItemHovered())
-				{
-					ImGui::BeginTooltip();
-					ImGui::TextUnformatted(
-						declarationMissing ? "Script file is missing" :
-						declarationResult->parsed ? "Script declarations parsed" :
-							"Script declaration parse failed");
-					if (!declarationResult->diagnostic.empty())
-						ImGui::TextWrapped("%s",
-							declarationResult->diagnostic.c_str());
-					ImGui::EndTooltip();
-				}
-				ImGui::SameLine();
+				scriptStatusText = declarationMissing ? "Script file is missing" :
+					declarationResult->parsed ? "Script declarations parsed" :
+						"Script declaration parse failed";
 			}
 			const bool selected = m_ContentBrowserPendingRecord &&
 				m_ContentBrowserPendingRecord->sourcePath == record.sourcePath;
-			// Audio A7: classify AudioClip records in the browser list, next
-			// to the existing [Prefab] marker. Rename/delete protection for
+			// Audio A7: classify AudioClip records in the browser, next to
+			// the existing prefab marker. Rename/delete protection for
 			// referenced clips rides the generic FindContentBrowserDependants
 			// path (audio clip references are collected alongside every
 			// other scene asset reference), so the label is what is new.
@@ -2426,8 +2544,36 @@ public:
 				? "[Prefab] " + record.sourcePath
 				: isAudioClip ? "[Audio] " + record.sourcePath
 				              : record.sourcePath;
-			ImGui::Selectable(displayPath.c_str(), selected,
-				ImGuiSelectableFlags_AllowDoubleClick);
+
+			// Kind, icon and tint from the extension.
+			const char* kindIcon = RT2_ICON_FILE;
+			const char* kindLabel = nullptr;
+			ImVec4 kindTint = rt2::EditorPalette::TextSecondary;
+			if (recordExtension == ".glb" || recordExtension == ".gltf" || recordExtension == ".obj")
+			{ kindIcon = RT2_ICON_BOX; kindLabel = "Model"; kindTint = ImVec4(0.545f, 0.573f, 1.0f, 1.0f); }
+			else if (isPrefab)
+			{ kindIcon = RT2_ICON_PACKAGE; kindLabel = "Prefab"; kindTint = ImVec4(0.804f, 0.722f, 1.0f, 1.0f); }
+			else if (isAudioClip)
+			{ kindIcon = RT2_ICON_MUSIC; kindLabel = "Audio clip"; kindTint = ImVec4(0.910f, 0.690f, 0.294f, 1.0f); }
+			else if (recordExtension == ".lua")
+			{ kindIcon = RT2_ICON_CODE; kindLabel = "Script"; kindTint = ImVec4(0.482f, 0.847f, 0.561f, 1.0f); }
+			else if (recordExtension == ".exr" || recordExtension == ".hdr")
+			{ kindIcon = RT2_ICON_MOUNTAIN; kindLabel = "Environment"; kindTint = ImVec4(0.361f, 0.784f, 0.757f, 1.0f); }
+			else if (recordExtension == ".png" || recordExtension == ".jpg" ||
+				recordExtension == ".jpeg" || recordExtension == ".tga" || recordExtension == ".ktx2")
+			{ kindIcon = RT2_ICON_IMAGE; kindLabel = "Texture"; kindTint = ImVec4(0.361f, 0.784f, 0.757f, 1.0f); }
+			else if (recordExtension == ".rt2scene")
+			{ kindIcon = RT2_ICON_LAYERS; kindLabel = "Scene"; }
+			std::string kindText = kindLabel ? kindLabel
+				: (recordExtension.size() > 1 ? recordExtension.substr(1) : std::string("File"));
+
+			if (tileIndex % columns != 0)
+				ImGui::SameLine(0.0f, tileGap);
+			++tileIndex;
+			const ImVec2 tileMin = ImGui::GetCursorScreenPos();
+			ImGui::Selectable("##tile", selected,
+				ImGuiSelectableFlags_AllowDoubleClick, ImVec2(tileW, tileH));
+			const bool tileHovered = ImGui::IsItemHovered();
 			if (ImGui::BeginDragDropSource())
 			{
 				const auto absolute = m_ProjectContext->project.assetRoot /
@@ -2437,6 +2583,54 @@ public:
 					payload.size() + 1);
 				ImGui::TextUnformatted(displayPath.c_str());
 				ImGui::EndDragDropSource();
+			}
+			if (tileHovered && !ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+			{
+				ImGui::BeginTooltip();
+				ImGui::TextUnformatted(record.sourcePath.c_str());
+				if (scriptStatusText)
+				{
+					ImGui::TextColored(scriptStatusColor, "%s", scriptStatusText);
+					if (declarationResult && !declarationResult->diagnostic.empty())
+						ImGui::TextWrapped("%s", declarationResult->diagnostic.c_str());
+				}
+				ImGui::EndTooltip();
+			}
+
+			// Tile visuals (draw list only, so the Selectable stays the last
+			// item for the drag source and context menu).
+			{
+				const float pad = 6.0f;
+				const ImVec2 plateMin(tileMin.x + pad, tileMin.y + pad);
+				const ImVec2 plateMax(tileMin.x + tileW - pad, tileMin.y + tileH * 0.6f);
+				gridDraw->AddRectFilled(plateMin, plateMax,
+					ImGui::GetColorU32(rt2::EditorPalette::Field), 6.0f);
+				const float iconSize = iconFont->FontSize;
+				const ImVec2 iconExtent = iconFont->CalcTextSizeA(iconSize, FLT_MAX, 0.0f, kindIcon);
+				gridDraw->AddText(iconFont, iconSize,
+					ImVec2((plateMin.x + plateMax.x - iconExtent.x) * 0.5f,
+						(plateMin.y + plateMax.y - iconExtent.y) * 0.5f),
+					ImGui::GetColorU32(kindTint), kindIcon);
+				if (scriptStatusText)
+					gridDraw->AddCircleFilled(ImVec2(plateMax.x - 8.0f, plateMin.y + 8.0f), 4.0f,
+						ImGui::GetColorU32(scriptStatusColor));
+
+				// File name, shortened with an ellipsis to fit the tile.
+				std::string name = std::filesystem::u8path(record.sourcePath).filename().u8string();
+				const float room = tileW - pad * 2.0f;
+				if (ImGui::CalcTextSize(name.c_str()).x > room)
+				{
+					while (name.size() > 1 &&
+						ImGui::CalcTextSize((name + "...").c_str()).x > room)
+						name.pop_back();
+					name += "...";
+				}
+				const float nameY = plateMax.y + 5.0f;
+				gridDraw->AddText(ImVec2(plateMin.x, nameY),
+					ImGui::GetColorU32(rt2::EditorPalette::Text), name.c_str());
+				gridDraw->AddText(ImGui::GetFont(), fontSize * 0.85f,
+					ImVec2(plateMin.x, nameY + ImGui::GetTextLineHeight() + 1.0f),
+					ImGui::GetColorU32(rt2::EditorPalette::Label), kindText.c_str());
 			}
 			if (ImGui::BeginPopupContextItem("AssetContext"))
 			{
@@ -2528,6 +2722,7 @@ public:
 			}
 			ImGui::PopID();
 		}
+		ImGui::EndChild();
 		if (openRename)
 			ImGui::OpenPopup("Rename Asset");
 		if (openMove)
