@@ -4509,19 +4509,22 @@ void SceneEditorUI::DrawImportOptionsModal()
 	bool isObj = (ext == "obj");
 
 	ImGui::OpenPopup("Import Options");
-	if (ImGui::BeginPopupModal("Import Options", nullptr,
-	                           ImGuiWindowFlags_AlwaysAutoResize))
+	if (BeginEditorModal("Import Options", RT2_ICON_IMPORT, "Import model"))
 	{
 		// Filename (basename only, for readability).
 		std::string basename = path;
 		const auto slashPos = basename.find_last_of("/\\");
 		if (slashPos != std::string::npos)
 			basename = basename.substr(slashPos + 1);
-		ImGui::Text("File: %s", basename.c_str());
+		ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::TextSecondary);
+		ImGui::TextWrapped(RT2_ICON_BOX "  %s", basename.c_str());
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", path.c_str());
+		ImGui::Spacing();
 
 		if (isObj)
 		{
-			ImGui::Separator();
 			ImGui::Checkbox("Merge shapes into single mesh",
 			                &m_PendingImportMergeMegaMesh);
 			if (ImGui::IsItemHovered())
@@ -4532,7 +4535,6 @@ void SceneEditorUI::DrawImportOptionsModal()
 		}
 		else
 		{
-			ImGui::Separator();
 			ImGui::Checkbox("Treat untextured metals as dielectric",
 			                &m_PendingImportAssumeDielectric);
 			if (ImGui::IsItemHovered())
@@ -4547,8 +4549,8 @@ void SceneEditorUI::DrawImportOptionsModal()
 					"diagnostic. Stored per asset, so it survives a reload.");
 		}
 
-		ImGui::Separator();
-		if (ImGui::Button("Import"))
+		const int choice = DialogButtons({{"Cancel"}, {"Import", ButtonTone::Primary}});
+		if (choice == 1)
 		{
 			ImportSettings settings;
 			settings.mergeMegaMesh = m_PendingImportMergeMegaMesh;
@@ -4564,13 +4566,12 @@ void SceneEditorUI::DrawImportOptionsModal()
 			m_ImportOptionsOpen = false;
 			ImGui::CloseCurrentPopup();
 		}
-		ImGui::SameLine();
-		if (ImGui::Button("Cancel"))
+		if (choice == 0)
 		{
 			m_PendingImportPath.clear();
 			m_ImportOptionsOpen = false;
 			ImGui::CloseCurrentPopup();
 		}
-		ImGui::EndPopup();
+		EndEditorModal();
 	}
 }

@@ -81,6 +81,8 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
+#include <ctime>
+#include <imgui_internal.h>
 #include <fstream>
 #include <cassert>
 #include <algorithm>
@@ -856,6 +858,143 @@ public:
 		// Persistent toolbar: same entry points as menu/transport/shortcuts
 		// (one seam), visible with Scene closed or the viewport floating.
 		rt2::RenderEditorToolbar(CurrentToolbarSnapshot(), m_ActionQueue);
+		DrawStatusBar();
+	}
+
+	// ---- Status bar ----
+	// A viewport side bar along the bottom edge: run mode and document
+	// state on the left, the latest status message after them, and the GPU,
+	// renderer and acceleration-structure summary on the right. The strip
+	// shrinks the viewport work area, so the dock host (sized from it at the
+	// start of each frame) sits above it from the second frame on.
+	std::string m_StatusBarMessage;
+	double m_StatusBarMessageTime = -1.0e9;
+	std::string m_StatusBarGpuLabel;
+
+	const std::string& StatusBarGpuLabel()
+	{
+		if (!m_StatusBarGpuLabel.empty())
+			return m_StatusBarGpuLabel;
+		VkPhysicalDevice device = Walnut::Application::GetPhysicalDevice();
+		if (device == VK_NULL_HANDLE)
+			return m_StatusBarGpuLabel;
+		VkPhysicalDeviceProperties props{};
+		vkGetPhysicalDeviceProperties(device, &props);
+		char label[384];
+		const uint32_t v = props.driverVersion;
+		if (props.vendorID == 0x10DE) // NVIDIA packs the driver as 10.8.8.6
+			std::snprintf(label, sizeof(label), "%s  \xc2\xb7  driver %u.%02u",
+				props.deviceName, (v >> 22) & 0x3ffu, (v >> 14) & 0xffu);
+		else
+			std::snprintf(label, sizeof(label), "%s  \xc2\xb7  driver %u.%u.%u",
+				props.deviceName, VK_VERSION_MAJOR(v), VK_VERSION_MINOR(v), VK_VERSION_PATCH(v));
+		m_StatusBarGpuLabel = label;
+		return m_StatusBarGpuLabel;
+	}
+
+	void DrawStatusBar()
+	{
+		using namespace rt2::EditorPalette;
+		const float scale = rt2::EditorFonts().scale;
+		const float height = std::floor(ImGui::GetFontSize() + 10.0f * scale);
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, Chrome);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+		const bool open = ImGui::BeginViewportSideBar("##RT2StatusBar",
+			ImGui::GetMainViewport(), ImGuiDir_Down, height,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
+			ImGuiWindowFlags_NoNav);
+		ImGui::PopStyleVar(2);
+		ImGui::PopStyleColor();
+		if (!open)
+		{
+			ImGui::End();
+			return;
+		}
+
+		if (m_LastStatusMsg != m_StatusBarMessage)
+		{
+			m_StatusBarMessage = m_LastStatusMsg;
+			m_StatusBarMessageTime = ImGui::GetTime();
+		}
+
+		ImDrawList* draw = ImGui::GetWindowDrawList();
+		const ImVec2 min = ImGui::GetWindowPos();
+		const ImVec2 max(min.x + ImGui::GetWindowWidth(), min.y + height);
+		draw->AddLine(ImVec2(min.x, min.y + 0.5f), ImVec2(max.x, min.y + 0.5f),
+			ImGui::GetColorU32(ImVec4(0.118f, 0.125f, 0.145f, 1.0f)));
+		const float pad = 12.0f * scale;
+		const float gap = 18.0f * scale;
+		const float textY = min.y + std::floor((height - ImGui::GetFontSize()) * 0.5f);
+
+		// Left: run mode and document state.
+		float x = min.x + pad;
+		const auto state = m_Runtime.GetState();
+		const bool editing = state == rt2::core::SceneRunState::Edit;
+		const ImVec4 modeColor = editing ? IndigoLine : Play;
+		const char* modeText = editing ? "Edit mode"
+			: (state == rt2::core::SceneRunState::Paused ? "Paused" : "Playing");
+		const float dot = 3.0f * scale;
+		draw->AddCircleFilled(ImVec2(x + dot, textY + ImGui::GetFontSize() * 0.5f), dot,
+			ImGui::GetColorU32(modeColor), 12);
+		x += dot * 2.0f + 7.0f * scale;
+		draw->AddText(ImVec2(x, textY), ImGui::GetColorU32(editing ? TextSecondary : Play), modeText);
+		x += ImGui::CalcTextSize(modeText).x + gap;
+
+		char document[96];
+		std::snprintf(document, sizeof(document), "%s  \xc2\xb7  revision %llu",
+			m_SceneMgr.IsDirty() ? "Unsaved changes" : "Saved",
+			static_cast<unsigned long long>(m_SceneMgr.AuthoringRevision()));
+		draw->AddText(ImVec2(x, textY), ImGui::GetColorU32(Label), document);
+		x += ImGui::CalcTextSize(document).x + gap;
+
+		// Right: GPU, renderer, acceleration structures (laid out right to left).
+		std::vector<std::pair<std::string, ImVec4>> right;
+		if (!m_RendererGPU.IsAvailable())
+			right.push_back({"Ray tracing unavailable", Error});
+		else
+		{
+			char as[96];
+			if (m_RendererGPU.GetLastAsTotalMs() < 0.0f)
+				std::snprintf(as, sizeof(as), "No acceleration structures yet");
+			else
+				std::snprintf(as, sizeof(as), "BLAS %u  \xc2\xb7  last AS rebuild %.0f ms",
+					m_RendererGPU.GetBlasCount(), (double)m_RendererGPU.GetLastAsTotalMs());
+			right.push_back({as, Label});
+			const bool rrSupported = m_Ngx && m_Ngx->Snapshot().IsSupported();
+			right.push_back({rrSupported ? "Vulkan ray tracing  \xc2\xb7  DLSS RR available"
+			                             : "Vulkan ray tracing", Label});
+		}
+		if (!StatusBarGpuLabel().empty())
+			right.push_back({StatusBarGpuLabel(), Label});
+		float rightX = max.x - pad;
+		for (const auto& [text, color] : right)
+		{
+			const float w = ImGui::CalcTextSize(text.c_str()).x;
+			// Drop items that would collide with the left side on narrow windows.
+			if (rightX - w < x + gap)
+				break;
+			rightX -= w;
+			draw->AddText(ImVec2(rightX, textY), ImGui::GetColorU32(color), text.c_str());
+			rightX -= gap;
+		}
+
+		// Middle: the latest status message, bright while fresh, then dim;
+		// clipped with an ellipsis, full text on hover.
+		if (!m_StatusBarMessage.empty() && rightX > x)
+		{
+			const bool fresh = ImGui::GetTime() - m_StatusBarMessageTime < 6.0;
+			const ImVec2 msgMin(x, textY);
+			const ImVec2 msgMax(rightX, textY + ImGui::GetFontSize());
+			ImGui::PushStyleColor(ImGuiCol_Text, fresh ? Text : Label);
+			ImGui::RenderTextEllipsis(draw, msgMin, msgMax, msgMax.x, msgMax.x,
+				m_StatusBarMessage.c_str(), nullptr, nullptr);
+			ImGui::PopStyleColor();
+			if (ImGui::IsMouseHoveringRect(msgMin, msgMax) && ImGui::IsWindowHovered())
+				ImGui::SetTooltip("%s", m_StatusBarMessage.c_str());
+		}
+		ImGui::End();
 	}
 
 	virtual void OnUIRender() override
@@ -896,19 +1035,21 @@ public:
 		}
 
 	// Modal popups are always rendered (not gated by window visibility).
-	if (ImGui::BeginPopupModal("GPU Init Failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+	if (rt2::ui::BeginEditorModal("GPU Init Failed", RT2_ICON_CIRCLE_X,
+			"The GPU renderer could not start", rt2::ui::ModalTone::Danger))
 	{
-		ImGui::Text("Failed to initialize GPU renderer.\nCheck that raygen.spv / miss.spv / closesthit.spv exist next to the executable.\nSee console for details.");
-		if (ImGui::Button("OK"))
+		rt2::ui::DialogText("Check that raygen.spv, miss.spv and closesthit.spv are next to the executable. The console has the details.");
+		if (rt2::ui::DialogButtons({{"OK", rt2::ui::ButtonTone::Primary}}) == 0)
 			ImGui::CloseCurrentPopup();
-		ImGui::EndPopup();
+		rt2::ui::EndEditorModal();
 	}
-	if (ImGui::BeginPopupModal("Scene Load Failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+	if (rt2::ui::BeginEditorModal("Scene Load Failed", RT2_ICON_CIRCLE_X,
+			"The scene could not be loaded", rt2::ui::ModalTone::Danger))
 	{
-		ImGui::Text("Failed to load scene file.\nCheck the file path and format.\nSee console for details.");
-		if (ImGui::Button("OK"))
+		rt2::ui::DialogText("Check the file path and format. The console has the details.");
+		if (rt2::ui::DialogButtons({{"OK", rt2::ui::ButtonTone::Primary}}) == 0)
 			ImGui::CloseCurrentPopup();
-		ImGui::EndPopup();
+		rt2::ui::EndEditorModal();
 	}
 
 	// RT init: happens once when the Info window would first show the
@@ -2235,8 +2376,21 @@ public:
 		ImGui::End();
 	}
 
+	// "move_forward" -> "Move forward" for binding rows; the raw mapping
+	// name stays available as the row's tooltip.
+	static std::string ReadableMappingName(const std::string& name)
+	{
+		std::string readable = name;
+		std::replace(readable.begin(), readable.end(), '_', ' ');
+		if (!readable.empty())
+			readable[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(readable[0])));
+		return readable;
+	}
+
 	void DrawInputBindingsPanel()
 	{
+		using namespace rt2::ui;
+		using namespace rt2::EditorPalette;
 		ImGui::Begin("Input Bindings", &m_ShowInputBindingsWindow);
 		if (!m_Settings2)
 		{
@@ -2245,11 +2399,11 @@ public:
 			return;
 		}
 
-		ImGui::TextDisabled("Edits are stored as per-user overrides.");
+		InspectorSectionHeader(RT2_ICON_KEYBOARD, "Game controls");
+		ImGui::PushStyleColor(ImGuiCol_Text, Label);
 		ImGui::TextWrapped(
-			"Runtime mappings are editable here; project input defaults are not.");
-		ImGui::Separator();
-		ImGui::Text("Runtime");
+			"Click a binding to change it. Changes are saved as your own overrides; the project's defaults are never edited.");
+		ImGui::PopStyleColor();
 
 		// Keep explicit empty overrides visible. Composition removes an
 		// inherited mapping for an unbind, but the editor must still expose
@@ -2270,16 +2424,19 @@ public:
 			}
 		}
 		bool openCapture = false;
+		if (runtimeMappings.empty())
+			ImGui::TextDisabled("This project defines no game controls.");
+		const float unbindWidth = ImGui::GetFrameHeight();
 		for (auto& [name, mapping] : runtimeMappings)
 		{
 			(void)name;
 			ImGui::PushID(mapping.name.c_str());
-			ImGui::Text("%s", mapping.name.c_str());
-			ImGui::SameLine(190.0f);
-			ImGui::TextDisabled("%s",
-				rt2::core::DescribeMapping(mapping).c_str());
-			ImGui::SameLine();
-			if (ImGui::Button("Rebind"))
+			const std::string description = rt2::core::DescribeMapping(mapping);
+			const std::string readable = ReadableMappingName(mapping.name);
+			InspectorRowLabel(readable.c_str());
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s%s", mapping.name.c_str(), mapping.isAxis ? " (axis)" : "");
+			if (BindingKeycaps("##binding", description))
 			{
 				m_InputCaptureMapping = mapping.name;
 				m_InputCaptureTemplate = mapping;
@@ -2288,8 +2445,19 @@ public:
 				m_InputCaptureActive = true;
 				openCapture = true;
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Unbind"))
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Click to rebind");
+			const bool bound = description != "Unbound";
+			ImGui::SameLine(ImGui::GetContentRegionMax().x - unbindWidth);
+			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+			ImGui::PushStyleColor(ImGuiCol_Text, TextSecondary);
+			ImGui::BeginDisabled(!bound);
+			const bool unbind = ImGui::Button(RT2_ICON_X "##Unbind", ImVec2(unbindWidth, 0.0f));
+			ImGui::EndDisabled();
+			ImGui::PopStyleColor(2);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Unbind");
+			if (unbind)
 			{
 				const auto record = mapping.isAxis
 					? rt2::core::BuildOverrideRecord(
@@ -2309,23 +2477,23 @@ public:
 			m_Settings2->GetInputOverrides());
 		if (!conflicts.empty())
 		{
-			ImGui::Separator();
-			ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
-				"Warning: duplicate input assignments");
+			ImGui::Spacing();
+			ImGui::PushStyleColor(ImGuiCol_Text, Play);
+			ImGui::TextUnformatted(RT2_ICON_TRIANGLE_ALERT "  Shared bindings");
+			ImGui::PopStyleColor();
 			for (const auto& conflict : conflicts)
-				ImGui::TextWrapped("%s: %s and %s share %s",
-					conflict.contextId.c_str(), conflict.mappingName.c_str(),
-					conflict.conflictingMappingName.c_str(),
-					conflict.bindingDescription.c_str());
+				ImGui::TextWrapped("%s and %s both use %s (%s)",
+					ReadableMappingName(conflict.mappingName).c_str(),
+					ReadableMappingName(conflict.conflictingMappingName).c_str(),
+					conflict.bindingDescription.c_str(),
+					conflict.contextId.c_str());
 		}
 
-		ImGui::Separator();
-		ImGui::Text("Editor-owned contexts (read-only)");
-		ImGui::TextWrapped(
-			"These contexts can only be overridden in the settings file; this panel never edits project defaults.");
-		const auto drawReadOnlyContext = [](const char* label,
+		// Editor-owned contexts are shown for reference only: they can be
+		// overridden in the settings file, never from this panel.
+		ImGui::Spacing();
+		const auto drawReadOnlyContext = [](const char* id, const char* title,
 			const rt2::core::InputContext& context) {
-			ImGui::Text("%s", label);
 			std::vector<const rt2::core::InputMapping*> mappings;
 			for (const auto& [name, mapping] : context.All())
 			{
@@ -2334,23 +2502,36 @@ public:
 			}
 			std::sort(mappings.begin(), mappings.end(),
 				[](const auto* a, const auto* b) { return a->name < b->name; });
+			char summary[32];
+			std::snprintf(summary, sizeof(summary), "%zu, read-only", mappings.size());
+			if (!CollapsibleSection(id, RT2_ICON_LOCK, title, summary))
+				return;
 			for (const auto* mapping : mappings)
-				ImGui::BulletText("%s: %s", mapping->name.c_str(),
-					rt2::core::DescribeMapping(*mapping).c_str());
+			{
+				ImGui::PushID(mapping->name.c_str());
+				InspectorRowLabel(ReadableMappingName(mapping->name).c_str());
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", mapping->name.c_str());
+				BindingKeycaps("##binding", rt2::core::DescribeMapping(*mapping), false);
+				ImGui::PopID();
+			}
 		};
-		drawReadOnlyContext("editor", m_Input.EditorContext());
-		drawReadOnlyContext("viewport", m_Input.ViewportContext());
-		drawReadOnlyContext("viewport.look", m_Input.ViewportLookContext());
+		drawReadOnlyContext("InputEditor", "Editor shortcuts", m_Input.EditorContext());
+		drawReadOnlyContext("InputViewport", "Viewport tools", m_Input.ViewportContext());
+		drawReadOnlyContext("InputLook", "Fly camera (right mouse held)", m_Input.ViewportLookContext());
 
 		if (m_InputCaptureActive &&
-			ImGui::BeginPopupModal("Capture Input", &m_InputCaptureActive,
-				ImGuiWindowFlags_AlwaysAutoResize))
+			BeginEditorModal("Capture Input", RT2_ICON_KEYBOARD, "Press a key",
+				ModalTone::Info, 380.0f, &m_InputCaptureActive))
 		{
-			ImGui::Text("Press a keyboard key or mouse button for %s",
-				m_InputCaptureMapping.c_str());
+			ImGui::AlignTextToFramePadding();
+			Spinner();
+			ImGui::SameLine();
+			ImGui::Text("Waiting for a key or mouse button for %s",
+				ReadableMappingName(m_InputCaptureMapping).c_str());
 			if (m_InputCaptureIsAxis)
-				ImGui::TextDisabled("For an axis, this replaces the positive key and keeps the negative key.");
-			ImGui::TextDisabled("Escape cancels this capture.");
+				DialogText("This is an axis: the key you press becomes its positive direction, and the negative key is kept.");
+			DialogText("Escape cancels.");
 			if (m_InputCaptureSkipFrame)
 				m_InputCaptureSkipFrame = false;
 			else if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
@@ -2398,18 +2579,19 @@ public:
 					}
 				}
 			}
-			if (ImGui::Button("Cancel"))
+			if (DialogButtons({{"Cancel"}}) == 0)
 			{
 				m_InputCaptureActive = false;
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::EndPopup();
+			EndEditorModal();
 		}
 		ImGui::End();
 	}
 
 	void DrawContentBrowserPanel()
 	{
+		using namespace rt2::ui;
 		// One-shot first-use/reset focus: the visible Content Browser takes
 		// the bottom tab on the build frame. Skipped when hidden; the flag
 		// clears at end of frame either way.
@@ -2730,12 +2912,17 @@ public:
 		if (openDelete)
 			ImGui::OpenPopup("Delete Asset");
 
-		if (ImGui::BeginPopupModal("Rename Asset", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize))
+		if (BeginEditorModal("Rename Asset", RT2_ICON_FILE, "Rename asset"))
 		{
-			ImGui::InputText("New name", m_ContentBrowserRenameBuffer,
-				sizeof(m_ContentBrowserRenameBuffer));
-			if (ImGui::Button("Rename") && m_ContentBrowserPendingRecord)
+			if (ImGui::IsWindowAppearing())
+				ImGui::SetKeyboardFocusHere();
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			const bool submitted = ImGui::InputText("##NewName", m_ContentBrowserRenameBuffer,
+				sizeof(m_ContentBrowserRenameBuffer), ImGuiInputTextFlags_EnterReturnsTrue);
+			const bool named = m_ContentBrowserRenameBuffer[0] != '\0';
+			const int choice = DialogButtons({{"Cancel"},
+				{"Rename", ButtonTone::Primary, named}});
+			if ((choice == 1 || (submitted && named)) && m_ContentBrowserPendingRecord)
 			{
 				rt2::core::ContentBrowserOperationReport report;
 				rt2::core::Error error;
@@ -2766,17 +2953,20 @@ public:
 					m_LastStatusMsg = "Asset rename failed: " + error.Format();
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
+			if (choice == 0) ImGui::CloseCurrentPopup();
+			EndEditorModal();
 		}
 
-		if (ImGui::BeginPopupModal("Move Asset", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize))
+		if (BeginEditorModal("Move Asset", RT2_ICON_FOLDER, "Move asset", ModalTone::Info, 480.0f))
 		{
-			ImGui::InputText("Destination folder", m_ContentBrowserMoveBuffer,
+			DialogText("Destination folder");
+			const float chooseWidth = ImGui::GetFrameHeight();
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - chooseWidth -
+				ImGui::GetStyle().ItemSpacing.x);
+			ImGui::InputText("##Destination", m_ContentBrowserMoveBuffer,
 				sizeof(m_ContentBrowserMoveBuffer));
-			if (ImGui::Button("Choose..."))
+			ImGui::SameLine();
+			if (ImGui::Button(RT2_ICON_FOLDER_OPEN "##Choose", ImVec2(chooseWidth, 0.0f)))
 			{
 				const std::string folder = FileDialog::OpenFolder(
 					m_ProjectContext->project.assetRoot);
@@ -2784,7 +2974,11 @@ public:
 					std::snprintf(m_ContentBrowserMoveBuffer,
 						sizeof(m_ContentBrowserMoveBuffer), "%s", folder.c_str());
 			}
-			if (ImGui::Button("Move") && m_ContentBrowserPendingRecord)
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Choose a folder");
+			const int choice = DialogButtons({{"Cancel"},
+				{"Move", ButtonTone::Primary, m_ContentBrowserMoveBuffer[0] != '\0'}});
+			if (choice == 1 && m_ContentBrowserPendingRecord)
 			{
 				rt2::core::ContentBrowserOperationReport report;
 				rt2::core::Error error;
@@ -2817,24 +3011,25 @@ public:
 					m_LastStatusMsg = "Asset move failed: " + error.Format();
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
+			if (choice == 0) ImGui::CloseCurrentPopup();
+			EndEditorModal();
 		}
 
-		ImGui::SetNextWindowSizeConstraints(ImVec2(420, 0),
-			ImVec2(FLT_MAX, 400));
-		if (ImGui::BeginPopupModal("Delete Asset", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize))
+		if (BeginEditorModal("Delete Asset", RT2_ICON_TRASH_2, "Delete asset?", ModalTone::Danger, 440.0f))
 		{
-			ImGui::PushTextWrapPos(400.0f);
-			ImGui::TextWrapped("Delete the source and its identity sidecar? "
-				"This does not rewrite the scene.");
-			ImGui::PopTextWrapPos();
+			if (m_ContentBrowserPendingRecord)
+			{
+				ImGui::PushFont(rt2::EditorFonts().mono);
+				ImGui::TextWrapped("%s", m_ContentBrowserPendingRecord->sourcePath.c_str());
+				ImGui::PopFont();
+			}
+			DialogText("The file and its identity sidecar are deleted. The scene is not rewritten.");
 			if (!m_ContentBrowserDeleteDependants.empty())
 			{
-				ImGui::Text("Dependants in the current scene (%zu):",
+				ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Play);
+				ImGui::TextWrapped(RT2_ICON_TRIANGLE_ALERT "  Used by %zu item(s) in this scene:",
 					m_ContentBrowserDeleteDependants.size());
+				ImGui::PopStyleColor();
 				ImGui::BeginChild("DeleteDependants", ImVec2(0, 150), true);
 				for (const auto& dependant : m_ContentBrowserDeleteDependants)
 					ImGui::BulletText("%s (%s)",
@@ -2844,10 +3039,12 @@ public:
 			}
 			ImGui::Checkbox("I understand references may become unresolved",
 				&m_ContentBrowserDeleteConfirmed);
-			if (ImGui::Button("Delete") && m_ContentBrowserPendingRecord &&
-				rt2::core::AllowDeleteContentBrowser(
-					m_ContentBrowserDeleteConfirmed,
-					m_ContentBrowserDeleteDependants.size()))
+			const bool allowDelete = rt2::core::AllowDeleteContentBrowser(
+				m_ContentBrowserDeleteConfirmed,
+				m_ContentBrowserDeleteDependants.size());
+			const int choice = DialogButtons({{"Cancel"},
+				{"Delete", ButtonTone::Danger, allowDelete}});
+			if (choice == 1 && m_ContentBrowserPendingRecord && allowDelete)
 			{
 				rt2::core::ContentBrowserOperationReport report;
 				rt2::core::Error error;
@@ -2872,9 +3069,8 @@ public:
 					m_LastStatusMsg = "Asset delete failed: " + error.Format();
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
+			if (choice == 0) ImGui::CloseCurrentPopup();
+			EndEditorModal();
 		}
 		ImGui::End();
 	}
@@ -3108,17 +3304,44 @@ public:
 		if (!m_RecoveryPromptOpen || m_PendingRecovery.empty()) return;
 		ImGui::OpenPopup("Recovery Available");
 		m_RecoveryPromptOpen = false; // we opened it; let the modal drive state
-		if (ImGui::BeginPopupModal("Recovery Available", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		using namespace rt2::ui;
+		if (BeginEditorModal("Recovery Available", RT2_ICON_HISTORY, "Recover unsaved work?",
+				ModalTone::Warning, 460.0f))
 		{
-			ImGui::Text("Unsaved work from a previous session is available.");
+			DialogText("The editor closed with unsaved changes. A recovery copy was kept.");
 			size_t idx = m_RecoveryPromptIndex < m_PendingRecovery.size() ? m_RecoveryPromptIndex : 0;
 			const auto& r = m_PendingRecovery[idx];
-			ImGui::Text("Doc: %s", r.docId.c_str());
-			ImGui::Text("Created: %lld", static_cast<long long>(r.createdAtUnix));
-			ImGui::Text("Original: %s", r.originalSourcePath.empty() ? "(untitled)" : r.originalSourcePath.string().c_str());
+			char created[64] = "unknown";
+			{
+				const std::time_t when = static_cast<std::time_t>(r.createdAtUnix);
+				std::tm local{};
+				if (localtime_s(&local, &when) == 0)
+					std::strftime(created, sizeof(created), "%d %b %Y, %H:%M", &local);
+			}
+			InspectorRowLabel("Scene");
+			ImGui::TextWrapped("%s", r.originalSourcePath.empty() ? "Untitled" : r.originalSourcePath.filename().u8string().c_str());
+			if (ImGui::IsItemHovered() && !r.originalSourcePath.empty())
+				ImGui::SetTooltip("%s", r.originalSourcePath.u8string().c_str());
+			InspectorRowLabel("Saved");
+			ImGui::TextUnformatted(created);
+			InspectorRowLabel("Document");
+			ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
+			ImGui::TextWrapped("%s", r.docId.c_str());
+			ImGui::PopStyleColor();
+			if (m_PendingRecovery.size() > 1)
+			{
+				InspectorRowLabel("Copies");
+				ImGui::Text("%zu of %zu", idx + 1, m_PendingRecovery.size());
+			}
 			if (!r.valid)
-				ImGui::TextColored({1,0.6f,0.4f,1}, "Malformed: %s", r.diagnostic.c_str());
-			if (ImGui::Button("Restore"))
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Error);
+				ImGui::TextWrapped(RT2_ICON_TRIANGLE_ALERT "  This copy is damaged: %s", r.diagnostic.c_str());
+				ImGui::PopStyleColor();
+			}
+			const int choice = DialogButtons({{"Skip"},
+				{"Discard", ButtonTone::Danger}, {"Restore", ButtonTone::Primary}});
+			if (choice == 2)
 			{
 				rt2::core::Error err;
 				std::vector<rt2::core::AssetDiagnostic> diags;
@@ -3209,8 +3432,7 @@ public:
 					printf("[Recovery] Restore failed: %s\n", err.Format().c_str());
 				}
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Discard"))
+			if (choice == 1)
 			{
 				rt2::core::Error err;
 				if (m_Recovery->Discard(r, err))
@@ -3231,8 +3453,7 @@ public:
 					printf("[Recovery] %s\n", m_LastStatusMsg.c_str());
 				}
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Skip"))
+			if (choice == 0)
 			{
 				// Leave the record intact, advance to the next or close.
 				if (m_PendingRecovery.size() > 1)
@@ -3242,7 +3463,7 @@ public:
 				}
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::EndPopup();
+			EndEditorModal();
 		}
 	}
 
@@ -3250,40 +3471,46 @@ public:
 	{
 		if (!m_Unsaved.NeedsPrompt()) return;
 		ImGui::OpenPopup("Unsaved Changes");
-		if (ImGui::BeginPopupModal("Unsaved Changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		using namespace rt2::ui;
+		if (BeginEditorModal("Unsaved Changes", RT2_ICON_SAVE, "Save changes first?", ModalTone::Warning))
 		{
 			const auto& a = m_Unsaved.Pending();
-			const char* actionName = "action";
+			const char* actionName = "continuing";
 			switch (a.kind)
 			{
-			case rt2::core::UnsavedChangesCoordinator::ActionKind::New:    actionName = "New Scene"; break;
-			case rt2::core::UnsavedChangesCoordinator::ActionKind::Open:  actionName = "Open Scene"; break;
-			case rt2::core::UnsavedChangesCoordinator::ActionKind::Recent: actionName = "Open Recent"; break;
-			case rt2::core::UnsavedChangesCoordinator::ActionKind::Exit:  actionName = "Exit"; break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::New:    actionName = "starting a new scene"; break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Open:  actionName = "opening another scene"; break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Recent: actionName = "opening a recent scene"; break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Exit:  actionName = "exiting"; break;
 			default: break;
 			}
-			ImGui::Text("You have unsaved changes.");
-			ImGui::Text("Pending: %s", actionName);
+			DialogText("This scene has unsaved changes. Save them before %s?", actionName);
 			if (!a.path.empty())
-				ImGui::Text("To: %s", a.path.string().c_str());
-			if (ImGui::Button("Save"))
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
+				ImGui::TextWrapped(RT2_ICON_FILE "  %s", a.path.filename().u8string().c_str());
+				ImGui::PopStyleColor();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", a.path.u8string().c_str());
+			}
+			const int choice = DialogButtons({{"Cancel"},
+				{"Don't save", ButtonTone::Danger}, {"Save", ButtonTone::Primary}});
+			if (choice == 2)
 			{
 				m_Unsaved.ResolveSave();
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Discard"))
+			if (choice == 1)
 			{
 				m_Unsaved.ResolveDiscard();
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel"))
+			if (choice == 0)
 			{
 				m_Unsaved.ResolveCancel();
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::EndPopup();
+			EndEditorModal();
 		}
 	}
 
@@ -3312,25 +3539,33 @@ public:
 			fflush(stdout);
 		}
 
-		if (ImGui::BeginPopupModal("Loading...", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize))
+		const float scale = rt2::EditorFonts().scale;
+		ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f * scale, 0.0f), ImVec2(520.0f * scale, FLT_MAX));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f * scale, 18.0f * scale));
+		const bool loadingOpen = ImGui::BeginPopupModal("Loading...", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar |
+			ImGuiWindowFlags_NoSavedSettings);
+		ImGui::PopStyleVar();
+		if (loadingOpen)
 		{
-			const char* spinner[] = { "|", "/", "-", "\\" };
-			const double time = ImGui::GetTime();
-			const int frame = static_cast<int>(time * 4.0) & 3;
-
 			const char* status = "Working...";
 			if (m_GpuSyncPending)
 				status = m_GpuSyncStatus.c_str();
 			else if (m_BackgroundWork)
 				status = m_BackgroundWork->GetStatus().c_str();
 
-			ImGui::Text("%s %s", spinner[frame], status);
-
-			const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(time) * 3.0f);
-			ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.3f, 0.6f, 1.0f, 1.0f));
-			ImGui::ProgressBar(pulse, ImVec2(200.0f, 6.0f), "");
+			rt2::ui::Spinner(ImGui::GetFontSize() * 0.75f);
+			ImGui::SameLine(0.0f, 12.0f * scale);
+			ImGui::BeginGroup();
+			ImGui::PushFont(rt2::EditorFonts().bold);
+			ImGui::TextUnformatted("Loading");
+			ImGui::PopFont();
+			ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::TextSecondary);
+			ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 440.0f * scale);
+			ImGui::TextWrapped("%s", status);
+			ImGui::PopTextWrapPos();
 			ImGui::PopStyleColor();
+			ImGui::EndGroup();
 
 			// All work finished on a previous frame — close from inside the
 			// popup scope, the only place CloseCurrentPopup() is valid.
@@ -6882,6 +7117,27 @@ public:
 	// Ctrl+Shift+Z/Ctrl+Y shortcuts. Each delegates to the editor UI, which
 	// runs history and routes results through the existing ApplyMutation().
 	bool CanUndo() const { return m_EditorUI.CanUndo(); }
+
+	// File > Open Recent: the Session panel's list and its unsaved-changes
+	// gate, so both entry points behave identically.
+	std::vector<std::filesystem::path> RecentScenes() const
+	{
+		return m_Settings2 ? m_Settings2->GetRecentScenes()
+		                   : std::vector<std::filesystem::path>{};
+	}
+	void RequestOpenRecent(const std::filesystem::path& path)
+	{
+		rt2::core::UnsavedChangesCoordinator::PendingAction a;
+		a.kind = rt2::core::UnsavedChangesCoordinator::ActionKind::Recent;
+		a.path = path;
+		m_Unsaved.Request(a);
+	}
+	void ClearRecentScenes()
+	{
+		if (!m_Settings2) return;
+		m_Settings2->ClearRecentScenes();
+		PersistEditorSettings("recent scenes");
+	}
 	bool CanRedo() const { return m_EditorUI.CanRedo(); }
 	std::string UndoDescription() const { return m_EditorUI.UndoDescription(); }
 	std::string RedoDescription() const { return m_EditorUI.RedoDescription(); }
@@ -8053,13 +8309,22 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	RT2Layer* layerPtr = layer.get();
 	app->SetMenubarCallback([app, layerPtr]()
 	{
+		using rt2::ui::MenuLabel;
+		// Roomier rows inside the menus than in panels.
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 8.0f));
+		const auto sectionLabel = [](const char* text) {
+			ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
+			ImGui::TextUnformatted(text);
+			ImGui::PopStyleColor();
+		};
 		if (ImGui::BeginMenu("File"))
 		{
-			if (ImGui::MenuItem("New"))
+			if (ImGui::MenuItem(MenuLabel(RT2_ICON_FILE, "New scene").c_str()))
 			{
 				layerPtr->NewScene();
 			}
-			if (ImGui::MenuItem("Open..."))
+			if (ImGui::MenuItem(MenuLabel(RT2_ICON_FOLDER_OPEN, "Open...").c_str()))
 			{
 				std::string filepath = FileDialog::OpenFile(
 					L"RT2 Project, Scene and Model Files (*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj)\0*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj\0RT2 Project (*.rt2proj)\0*.rt2proj\0RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0",
@@ -8067,7 +8332,7 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 				if (!filepath.empty())
 					layerPtr->OpenRt2Scene(filepath);
 			}
-			if (ImGui::MenuItem("Open Project..."))
+			if (ImGui::MenuItem(MenuLabel(RT2_ICON_PACKAGE, "Open project...").c_str()))
 			{
 				std::string filepath = FileDialog::OpenFile(
 					L"RT2 Project (*.rt2proj)\0*.rt2proj\0",
@@ -8075,18 +8340,38 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 				if (!filepath.empty())
 					layerPtr->OpenProject(filepath);
 			}
-			if (ImGui::MenuItem("Save"))
+			const auto recents = layerPtr->RecentScenes();
+			if (ImGui::BeginMenu(MenuLabel(RT2_ICON_HISTORY, "Open recent").c_str(), !recents.empty()))
+			{
+				for (size_t i = 0; i < recents.size(); ++i)
+				{
+					const auto& path = recents[i];
+					const bool exists = std::filesystem::exists(path);
+					ImGui::PushID(static_cast<int>(i));
+					if (ImGui::MenuItem(path.filename().u8string().c_str(), nullptr, false, exists))
+						layerPtr->RequestOpenRecent(path);
+					if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+						ImGui::SetTooltip("%s%s", path.u8string().c_str(), exists ? "" : " (missing)");
+					ImGui::PopID();
+				}
+				ImGui::Separator();
+				if (ImGui::MenuItem(MenuLabel(RT2_ICON_TRASH_2, "Clear recent").c_str()))
+					layerPtr->ClearRecentScenes();
+				ImGui::EndMenu();
+			}
+			ImGui::Separator();
+			if (ImGui::MenuItem(MenuLabel(RT2_ICON_SAVE, "Save").c_str()))
 			{
 				// Enqueue only: dispatch runs once at end of frame, outside
 				// the menu drawing stack. Same entry point as the toolbar.
 				layerPtr->m_ActionQueue.Push(rt2::core::EditorAction::Save);
 			}
-			if (ImGui::MenuItem("Save As..."))
+			if (ImGui::MenuItem(MenuLabel(RT2_ICON_COPY, "Save as...").c_str()))
 			{
 				layerPtr->SaveRt2SceneAs();
 			}
 			ImGui::Separator();
-			if (ImGui::MenuItem("Exit"))
+			if (ImGui::MenuItem(MenuLabel(RT2_ICON_X, "Exit").c_str()))
 			{
 				app->RequestClose();
 			}
@@ -8094,51 +8379,62 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 		}
 		if (ImGui::BeginMenu("Edit"))
 		{
-			const std::string undoLabel = layerPtr->CanUndo()
-				? ("Undo " + layerPtr->UndoDescription()) : "Undo";
+			const std::string undoLabel = MenuLabel(RT2_ICON_UNDO_2, layerPtr->CanUndo()
+				? ("Undo " + layerPtr->UndoDescription()).c_str() : "Undo");
 			if (ImGui::MenuItem(undoLabel.c_str(), "Ctrl+Z", false, layerPtr->CanUndo()))
 				layerPtr->m_ActionQueue.Push(rt2::core::EditorAction::Undo);
-			const std::string redoLabel = layerPtr->CanRedo()
-				? ("Redo " + layerPtr->RedoDescription()) : "Redo";
-			if (ImGui::MenuItem(redoLabel.c_str(), "Ctrl+Shift+Z", false, layerPtr->CanRedo()))
+			const std::string redoLabel = MenuLabel(RT2_ICON_REDO_2, layerPtr->CanRedo()
+				? ("Redo " + layerPtr->RedoDescription()).c_str() : "Redo");
+			if (ImGui::MenuItem(redoLabel.c_str(), "Ctrl+Y", false, layerPtr->CanRedo()))
 				layerPtr->m_ActionQueue.Push(rt2::core::EditorAction::Redo);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("View"))
 		{
-			ImGui::TextDisabled("Windows");
+			sectionLabel("Viewport");
+			ImGui::MenuItem(MenuLabel(RT2_ICON_LIGHTBULB, "Light and camera icons").c_str(), nullptr,
+				&layerPtr->m_ShowEditorIcons);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_ACTIVITY, "Physics debug lines").c_str(), nullptr,
+				&layerPtr->m_ShowPhysicsDebug);
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Window"))
+		{
+			sectionLabel("Panels");
+			ImGui::MenuItem(MenuLabel(RT2_ICON_LIST_TREE, "Scene Browser").c_str(), nullptr, &layerPtr->m_ShowHierarchyWindow);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_SLIDERS_HORIZONTAL, "Inspector").c_str(), nullptr, &layerPtr->m_ShowInspectorWindow);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_FOLDER, "Content Browser").c_str(), nullptr, &layerPtr->m_ShowContentBrowserWindow);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_SETTINGS, "Render Settings").c_str(), nullptr, &layerPtr->m_ShowRenderSettingsWin);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_GAUGE, "Performance").c_str(), nullptr, &layerPtr->m_ShowPerfWindow);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_MOUNTAIN, "Scene").c_str(), nullptr, &layerPtr->m_ShowSceneWindow);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_FILE, "Session").c_str(), nullptr, &layerPtr->m_ShowSessionWindow);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_CAMERA, "Camera").c_str(), nullptr, &layerPtr->m_ShowInfoWindow);
+			ImGui::MenuItem(MenuLabel(RT2_ICON_KEYBOARD, "Input Bindings").c_str(), nullptr, &layerPtr->m_ShowInputBindingsWindow);
+			ImGui::PushStyleColor(ImGuiCol_Text, rt2::EditorPalette::Label);
+			ImGui::TextUnformatted("The viewport is always shown.");
+			ImGui::PopStyleColor();
 			ImGui::Separator();
-			ImGui::MenuItem("Camera", nullptr, &layerPtr->m_ShowInfoWindow);
-			ImGui::MenuItem("Performance", nullptr, &layerPtr->m_ShowPerfWindow);
-			ImGui::MenuItem("Render Settings", nullptr, &layerPtr->m_ShowRenderSettingsWin);
-			ImGui::MenuItem("Scene", nullptr, &layerPtr->m_ShowSceneWindow);
-			ImGui::MenuItem("Session", nullptr, &layerPtr->m_ShowSessionWindow);
-			ImGui::MenuItem("Input Bindings", nullptr, &layerPtr->m_ShowInputBindingsWindow);
-			ImGui::MenuItem("Content Browser", nullptr, &layerPtr->m_ShowContentBrowserWindow);
-			ImGui::MenuItem("Scene Browser", nullptr, &layerPtr->m_ShowHierarchyWindow);
-			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
-			ImGui::Separator();
-			ImGui::TextDisabled("Workspace");
-			ImGui::Separator();
+			sectionLabel("Layout");
 			// Always reachable: manual persistence ships no recovery without
 			// this panel, which hosts Retry / Restore / visibility-reset /
 			// full Reset Layout (the geometry rebuild now installs the
 			// designed default arrangement).
-			ImGui::MenuItem("Workspace Settings", nullptr,
+			ImGui::MenuItem(MenuLabel(RT2_ICON_LAYOUT_DASHBOARD, "Workspace settings").c_str(), nullptr,
 				&layerPtr->m_ShowWorkspaceSettingsWindow);
-			if (ImGui::MenuItem("Reset Layout"))
+			if (ImGui::MenuItem(MenuLabel(RT2_ICON_ROTATE_CCW, "Reset layout").c_str()))
 			{
 				layerPtr->m_ShowWorkspaceSettingsWindow = true;
 				layerPtr->m_LayoutResetArmed = true;
 			}
-			ImGui::Separator();
-			ImGui::TextDisabled("Viewport");
-			ImGui::Separator();
-			ImGui::MenuItem("Light / Camera Icons", nullptr, &layerPtr->m_ShowEditorIcons);
-		ImGui::MenuItem("Physics Debug Lines", nullptr, &layerPtr->m_ShowPhysicsDebug);
-			ImGui::TextDisabled("(Viewport is always shown)");
 			ImGui::EndMenu();
 		}
+		if (ImGui::BeginMenu("Help"))
+		{
+			if (ImGui::MenuItem(MenuLabel(RT2_ICON_KEYBOARD, "Keyboard and mouse controls").c_str()))
+				layerPtr->m_ShowInputBindingsWindow = true;
+			ImGui::EndMenu();
+		}
+		ImGui::PopStyleVar(2);
 	});
 	return app;
 }
